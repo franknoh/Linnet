@@ -38,12 +38,15 @@ configure_file(
     @ONLY)
 
 add_library(linnet_core STATIC
+    src/ast/ast.cpp
+    src/ast/dump.cpp
     src/diagnostic/diagnostic.cpp
     src/diagnostic/render.cpp
     src/format/doc.cpp
     src/source/source_manager.cpp
     src/source/utf8.cpp
-    src/syntax/lexer.cpp)
+    src/syntax/lexer.cpp
+    src/syntax/parser.cpp)
 add_library(linnet::core ALIAS linnet_core)
 target_include_directories(linnet_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

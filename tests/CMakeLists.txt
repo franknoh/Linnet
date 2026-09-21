@@ -20,3 +20,8 @@ linnet_add_test(source_manager_test unit/source_manager_test.cpp)
 linnet_add_test(diagnostic_test unit/diagnostic_test.cpp)
 linnet_add_test(doc_test unit/doc_test.cpp)
 linnet_add_test(lexer_test unit/lexer_test.cpp)
+linnet_add_test(parser_test unit/parser_test.cpp)
+
+linnet_add_test(spec_syntax_test spec/spec_syntax_test.cpp)
+target_compile_definitions(spec_syntax_test PRIVATE
+    LINNET_SPEC_TESTS_DIR="${PROJECT_SOURCE_DIR}/spec-tests")
