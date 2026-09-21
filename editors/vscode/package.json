@@ -1,0 +1,37 @@
+{
+    "name": "linnet",
+    "displayName": "Linnet",
+    "description": "Language support for the Linnet tensor language",
+    "version": "0.1.0",
+    "publisher": "linnet",
+    "license": "SEE LICENSE IN ../../LICENSE",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/franknoh/Linnet"
+    },
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": ["Programming Languages"],
+    "scripts": {
+        "prepare-grammar": "node scripts/copy-grammar.js",
+        "vscode:prepublish": "node scripts/copy-grammar.js"
+    },
+    "contributes": {
+        "languages": [
+            {
+                "id": "linnet",
+                "aliases": ["Linnet", "linnet"],
+                "extensions": [".linnet"],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "linnet",
+                "scopeName": "source.linnet",
+                "path": "./syntaxes/linnet.tmLanguage.json"
+            }
+        ]
+    }
+}

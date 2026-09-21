@@ -1,0 +1,237 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Linnet",
+    "scopeName": "source.linnet",
+    "fileTypes": ["linnet"],
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#declarations" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#functions" },
+        { "include": "#names" },
+        { "include": "#operators" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.documentation.linnet",
+                    "match": "///(?!/).*$"
+                },
+                {
+                    "name": "comment.line.double-slash.linnet",
+                    "match": "//.*$"
+                },
+                { "include": "#block-comment" }
+            ]
+        },
+        "block-comment": {
+            "name": "comment.block.linnet",
+            "begin": "/\\*",
+            "end": "\\*/",
+            "patterns": [{ "include": "#block-comment" }]
+        },
+        "strings": {
+            "name": "string.quoted.double.linnet",
+            "begin": "\"",
+            "end": "\"|$",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.linnet",
+                    "match": "\\\\(?:[nrt0\\\\\"]|u\\{[0-9A-Fa-f]{1,6}\\})"
+                },
+                {
+                    "name": "invalid.illegal.escape.linnet",
+                    "match": "\\\\."
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.hex.linnet",
+                    "match": "\\b0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*\\b"
+                },
+                {
+                    "name": "constant.numeric.binary.linnet",
+                    "match": "\\b0b[01](?:_?[01])*\\b"
+                },
+                {
+                    "name": "constant.numeric.float.linnet",
+                    "match": "\\b[0-9](?:_?[0-9])*(?:\\.[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[eE][+-]?[0-9](?:_?[0-9])*)\\b"
+                },
+                {
+                    "name": "constant.numeric.integer.linnet",
+                    "match": "\\b[0-9](?:_?[0-9])*\\b"
+                }
+            ]
+        },
+        "declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(module)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+                    "captures": {
+                        "1": { "name": "keyword.other.module.linnet" },
+                        "2": { "name": "entity.name.namespace.linnet" }
+                    }
+                },
+                {
+                    "match": "\\b(use)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+                    "captures": {
+                        "1": { "name": "keyword.other.use.linnet" },
+                        "2": { "name": "entity.name.namespace.linnet" }
+                    }
+                },
+                {
+                    "match": "\\b(fn|op|entry)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.function.linnet" },
+                        "2": { "name": "entity.name.function.linnet" }
+                    }
+                },
+                {
+                    "match": "\\b(block|struct|enum|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.linnet" },
+                        "2": { "name": "entity.name.type.linnet" }
+                    }
+                },
+                {
+                    "match": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.const.linnet" },
+                        "2": { "name": "variable.other.constant.linnet" }
+                    }
+                },
+                {
+                    "match": "\\b(param|buffer|sub)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.member.linnet" },
+                        "2": { "name": "variable.other.member.linnet" }
+                    }
+                },
+                {
+                    "match": "\\b(let|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.binding.linnet" },
+                        "2": { "name": "variable.other.readwrite.linnet" }
+                    }
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.linnet",
+                    "match": "\\b(?:if|else|match|return|static|for|in|where)\\b"
+                },
+                {
+                    "name": "storage.type.linnet",
+                    "match": "\\b(?:module|use|const|type|struct|enum|fn|op|block|entry|param|buffer|sub|let|var)\\b"
+                },
+                {
+                    "name": "storage.modifier.linnet",
+                    "match": "\\b(?:pub|as)\\b"
+                },
+                {
+                    "name": "variable.language.linnet",
+                    "match": "\\b(?:crate|self|super)\\b"
+                },
+                {
+                    "name": "constant.language.linnet",
+                    "match": "\\b(?:true|false|none)\\b"
+                },
+                {
+                    "name": "support.function.option.linnet",
+                    "match": "\\bsome\\b"
+                },
+                {
+                    "name": "invalid.illegal.reserved.linnet",
+                    "match": "\\b(?:state|extern|while|async|await|effect|unsafe|macro|trait|impl|derive|random|rng|mut|ref|yield|kernel|device)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "support.type.primitive.linnet",
+                    "match": "\\b(?:bool|i8|i16|i32|i64|u8|u16|u32|u64|f16|bf16|f32|f64)\\b"
+                },
+                {
+                    "name": "support.type.tensor.linnet",
+                    "match": "\\bTensor\\b"
+                },
+                {
+                    "name": "support.class.constraint.linnet",
+                    "match": "\\b(?:Dim|Shape|DType|Numeric|Integer|Float)\\b"
+                }
+            ]
+        },
+        "functions": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.reduction.linnet",
+                    "match": "\\b(?:sum|prod|max|min|any|all)(?=\\s*(?:<[^<>\\[\\]]*>)?\\s*\\[)"
+                },
+                {
+                    "name": "support.function.builtin.linnet",
+                    "match": "\\b(?:cast|reshape|permute|broadcast_to|concat|pad|iota|fill|gather|scatter|exp|log|sqrt|rsqrt|sin|cos|tanh|abs|select|min|max)(?=\\s*(?:<[^<>()]*>)?\\s*\\()"
+                },
+                {
+                    "name": "entity.name.function.call.linnet",
+                    "match": "\\b[a-z_][A-Za-z0-9_]*(?=\\s*(?:<[^<>()]*>)?\\s*\\()"
+                }
+            ]
+        },
+        "names": {
+            "patterns": [
+                {
+                    "name": "variable.other.constant.linnet",
+                    "match": "\\b[A-Z][A-Z0-9_]+\\b"
+                },
+                {
+                    "name": "entity.name.type.linnet",
+                    "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+                },
+                {
+                    "match": "(\\*)([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.operator.pack.linnet" },
+                        "2": { "name": "variable.other.pack.linnet" }
+                    }
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.arrow.linnet",
+                    "match": "->|=>"
+                },
+                {
+                    "name": "keyword.operator.comparison.linnet",
+                    "match": "==|!=|<=|>=|<|>"
+                },
+                {
+                    "name": "keyword.operator.logical.linnet",
+                    "match": "&&|\\|\\||!"
+                },
+                {
+                    "name": "keyword.operator.assignment.linnet",
+                    "match": "="
+                },
+                {
+                    "name": "keyword.operator.arithmetic.linnet",
+                    "match": "[+\\-*/%]"
+                },
+                {
+                    "name": "punctuation.separator.linnet",
+                    "match": "::|\\.\\.\\.|[,;:.?]"
+                }
+            ]
+        }
+    }
+}

@@ -40,6 +40,13 @@ per line; otherwise lists are joined when they fit. Comments are always kept;
 a comment written in the middle of an expression moves to the nearest line
 boundary.
 
+## Editors
+
+`editors/` has syntax highlighting for Visual Studio Code (`editors/vscode`),
+Vim and Neovim (`editors/vim`), and a standalone TextMate grammar
+(`editors/textmate`) that other tools can reuse. Each directory explains how to
+install it.
+
 ## Building
 
 Requirements: CMake 3.25+, Ninja, and a C++23 compiler (GCC 13+, Clang 17+, or
