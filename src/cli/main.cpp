@@ -2,6 +2,7 @@
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
+#include "linnet/module/loader.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
 #include "linnet/syntax/lexer.hpp"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -46,7 +48,8 @@ void print_usage(std::FILE* out) {
     std::fputs("Usage: linnet <command> [options]\n"
                "\n"
                "Commands:\n"
-               "  check <file>...                      Check syntax, types, and shapes\n"
+               "  check [--std <dir>] <path>...        Check syntax, types, and shapes of the\n"
+               "                                       given files and everything they import\n"
                "  fmt [--check] <path>...              Format files, or directories recursively;\n"
                "                                       `-` formats stdin to stdout\n"
                "  inspect (--tokens | --ast) <file>    Show compiler-internal views of a file\n"
@@ -84,43 +87,63 @@ int report(const SourceManager& sources, DiagnosticSink& sink, const Options& op
 
 void collect_sources(const std::filesystem::path& root, std::vector<std::filesystem::path>& out);
 
-int run_check(std::span<const std::string_view> args, const Options& options) {
-    std::vector<std::filesystem::path> paths;
-    for (const std::string_view arg : args) {
-        if (arg.starts_with("-")) {
-            return usage_error("unknown check option '" + std::string(arg) + "'");
-        }
-        collect_sources(arg, paths);
+// The standard library directory: an explicit option wins, then the
+// LINNET_STD environment variable, then locations relative to the executable
+// (an installed `share/linnet/stdlib`, or `stdlib` in a source checkout).
+std::filesystem::path find_std_root(const std::string& option, const char* program) {
+    std::error_code error;
+    if (!option.empty()) {
+        return option;
     }
-    if (args.empty()) {
+    if (const char* from_environment = std::getenv("LINNET_STD")) {
+        return from_environment;
+    }
+    std::filesystem::path directory =
+        std::filesystem::weakly_canonical(std::filesystem::path(program), error).parent_path();
+    for (int depth = 0; depth < 4 && !directory.empty(); ++depth) {
+        for (const char* candidate : {"share/linnet/stdlib", "stdlib"}) {
+            if (std::filesystem::is_directory(directory / candidate, error)) {
+                return directory / candidate;
+            }
+        }
+        directory = directory.parent_path();
+    }
+    return {};
+}
+
+int run_check(std::span<const std::string_view> args, const Options& options, const char* program) {
+    std::vector<std::filesystem::path> paths;
+    std::string std_option;
+    bool has_path = false;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        if (arg == "--std") {
+            if (i + 1 == args.size()) {
+                return usage_error("--std requires a directory");
+            }
+            std_option = args[++i];
+        } else if (arg.starts_with("-")) {
+            return usage_error("unknown check option '" + std::string(arg) + "'");
+        } else {
+            has_path = true;
+            collect_sources(arg, paths);
+        }
+    }
+    if (!has_path) {
         return usage_error("check requires at least one path");
     }
     std::sort(paths.begin(), paths.end());
 
     SourceManager sources;
     DiagnosticSink sink;
-    std::vector<ast::Ast> trees;
-    bool has_io_error = false;
-    for (const std::filesystem::path& path : paths) {
-        const auto file = sources.load_file(path);
-        if (!file) {
-            std::fprintf(stderr, "linnet: %s\n", file.error().c_str());
-            has_io_error = true;
-            continue;
-        }
-        trees.push_back(parse(sources, *file, sink));
-    }
+    const LoaderOptions loader_options{find_std_root(std_option, program)};
+    const Program program_modules = load_program(sources, paths, loader_options, sink);
     // Semantic analysis assumes well-formed trees.
     if (!sink.has_errors()) {
-        std::vector<const ast::Ast*> modules;
-        modules.reserve(trees.size());
-        for (const ast::Ast& tree : trees) {
-            modules.push_back(&tree);
-        }
-        sema::analyze(sources, modules, sink);
+        const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
+        sema::analyze(sources, modules, sink, &program_modules.imports);
     }
-    const int status = report(sources, sink, options);
-    return has_io_error ? exit_failure : status;
+    return report(sources, sink, options);
 }
 
 int run_inspect(std::span<const std::string_view> args, const Options& options) {
@@ -326,7 +349,7 @@ int main(int argc, char** argv) {
         return exit_success;
     }
     if (command == "check") {
-        return run_check(rest, options);
+        return run_check(rest, options, argv[0]);
     }
     if (command == "fmt") {
         return run_fmt(rest, options);

@@ -127,7 +127,8 @@ class Checker {
 public:
     Checker(const SourceManager& sources,
             std::span<const ast::Ast* const> modules,
-            DiagnosticSink& sink);
+            DiagnosticSink& sink,
+            const ImportTable* imports);
 
     AnalysisResult run();
 
@@ -175,6 +176,7 @@ private:
     void declare(Scope& scope, EntityId entity, const char* duplicate_code);
     bool check_not_prelude(std::string_view name, SourceSpan span);
     void resolve_imports(std::uint32_t module);
+    void report_import_cycles();
     std::optional<std::uint32_t> find_module(const std::vector<ast::Name>& path) const;
 
     void resolve(EntityId entity);
@@ -295,6 +297,11 @@ private:
     std::vector<Scope> module_scopes_;
     std::vector<EntityId> functions_;
     std::vector<PendingEdge> call_edges_;
+    std::vector<PendingEdge> import_edges_; // between module indices
+    const ImportTable* imports_ = nullptr;
+    // Per module: names that a failed import would have introduced. Uses of
+    // them are consequences of that failure and are not reported again.
+    std::vector<std::vector<std::string_view>> failed_imports_;
     Env* env_ = nullptr;
     AnalysisResult result_;
 };

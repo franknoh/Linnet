@@ -5,8 +5,8 @@ checked statically for shape and dtype correctness, and kept separate from their
 weights. Inspecting or checking a Linnet package never executes package code.
 
 The project is in early development. The toolchain currently provides the
-syntax frontend: lexer, error-recovering parser, and the canonical formatter.
-Type and shape checking are not implemented yet.
+frontend: parsing, canonical formatting, and static checking of names, dtypes,
+symbolic shapes, and tensor index notation. There is no backend yet.
 
 - `spec/` is the normative language specification; `spec/grammar.ebnf` is the
   consolidated grammar.
@@ -17,12 +17,18 @@ Type and shape checking are not implemented yet.
 ## Usage
 
 ```bash
+linnet check src/model.linnet   # check files and every module they import
+linnet check .                  # check every .linnet file below a directory
 linnet fmt src/                 # format files in place (directories recurse)
 linnet fmt --check .            # exit 1 if anything would change; for CI
 linnet fmt - < in.linnet        # format stdin to stdout; for editors
 linnet inspect --ast file.linnet
 linnet inspect --tokens file.linnet
 ```
+
+`check` finds imported modules by fixed rules: `crate.a.b` is `src/a/b.linnet` of
+the package containing `linnet.toml`, and `std.a.b` is `a/b.linnet` in the
+standard library directory given by `--std <dir>` or `LINNET_STD`.
 
 Exit status is 0 on success, 1 when the input has errors (or `--check` finds
 unformatted files), and 2 for command-line mistakes. Files with syntax errors

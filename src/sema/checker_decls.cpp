@@ -74,6 +74,13 @@ Checker::Report::Report(Checker& checker, const char* code, SourceSpan span, std
 }
 
 Checker::Report::~Report() {
+    if (diagnostic_.code == codes::unknown_symbol && checker_.env_ != nullptr) {
+        const auto& failed = checker_.failed_imports_[checker_.env_->module];
+        const std::string_view name = checker_.text(diagnostic_.primary.span);
+        if (std::find(failed.begin(), failed.end(), name) != failed.end()) {
+            return;
+        }
+    }
     checker_.sink_.report(std::move(diagnostic_));
 }
 
@@ -119,19 +126,23 @@ private:
 
 Checker::Checker(const SourceManager& sources,
                  std::span<const ast::Ast* const> modules,
-                 DiagnosticSink& sink)
-    : sources_(sources), modules_(modules.begin(), modules.end()), sink_(sink), types_(dims_) {
+                 DiagnosticSink& sink,
+                 const ImportTable* imports)
+    : sources_(sources), modules_(modules.begin(), modules.end()), sink_(sink), types_(dims_),
+      imports_(imports) {
     types_.set_entity_namer([this](EntityId id) { return std::string(entities_[id].name); });
 }
 
 AnalysisResult Checker::run() {
     module_scopes_.resize(modules_.size());
+    failed_imports_.resize(modules_.size());
     for (std::uint32_t module = 0; module < modules_.size(); ++module) {
         collect_module(module);
     }
     for (std::uint32_t module = 0; module < modules_.size(); ++module) {
         resolve_imports(module);
     }
+    report_import_cycles();
     // Entities created while resolving (generics, parameters) need no pass of
     // their own, so only the declarations collected so far are visited.
     const std::size_t declared = entities_.size();
@@ -282,15 +293,34 @@ EntityId Checker::lookup_in_module(std::uint32_t module, const ast::Name& name) 
 void Checker::resolve_imports(std::uint32_t module) {
     Env env{module, no_entity, {}, no_entity, shape::Solver(dims_), no_type, {}, {}, {}};
     const EnvGuard guard(*this, env);
-    for (const ast::UseDecl& use : modules_[module]->uses) {
+    for (std::uint32_t index = 0; index < modules_[module]->uses.size(); ++index) {
+        const ast::UseDecl& use = modules_[module]->uses[index];
         if (use.path.empty() || use.path.front().text.empty()) {
             continue;
         }
-        const auto target = find_module(use.path);
+        std::optional<std::uint32_t> target;
+        if (imports_ != nullptr) {
+            const auto found = imports_->find({module, index});
+            if (found != imports_->end()) {
+                target = found->second;
+            }
+        } else {
+            target = find_module(use.path);
+        }
+        if (target) {
+            import_edges_.push_back({module, *target, path_span(use.path)});
+        }
         if (!target) {
             error(codes::unknown_module,
                   path_span(use.path),
                   "cannot find module `" + join_path(use.path) + "`");
+            if (use.names.empty()) {
+                failed_imports_[module].push_back(use.path.back().text);
+            }
+            for (const ast::ImportName& import : use.names) {
+                failed_imports_[module].push_back(import.alias.text.empty() ? import.name.text
+                                                                            : import.alias.text);
+            }
             continue;
         }
         if (use.names.empty()) {
@@ -306,10 +336,11 @@ void Checker::resolve_imports(std::uint32_t module) {
         }
         for (const ast::ImportName& import : use.names) {
             const EntityId entity = lookup_in_module(*target, import.name);
+            const ast::Name& local = import.alias.text.empty() ? import.name : import.alias;
             if (entity == no_entity) {
+                failed_imports_[module].push_back(local.text);
                 continue;
             }
-            const ast::Name& local = import.alias.text.empty() ? import.name : import.alias;
             const auto [existing, inserted] = module_scopes_[module].emplace(local.text, entity);
             if (!inserted && existing->second != entity) {
                 error(codes::duplicate_item,
@@ -660,6 +691,36 @@ void Checker::check_function_body(EntityId entity) {
     }
     env.scopes.emplace_back();
     check_body(decl.body, true);
+}
+
+void Checker::report_import_cycles() {
+    std::map<std::uint32_t, std::vector<const PendingEdge*>> graph;
+    for (const PendingEdge& edge : import_edges_) {
+        graph[edge.caller].push_back(&edge);
+    }
+    enum class Mark : std::uint8_t { Unseen, Active, Done };
+    std::vector<Mark> marks(modules_.size(), Mark::Unseen);
+    const std::function<void(std::uint32_t)> visit = [&](std::uint32_t module) {
+        marks[module] = Mark::Active;
+        for (const PendingEdge* edge : graph[module]) {
+            if (marks[edge->callee] == Mark::Active) {
+                error(codes::import_cycle,
+                      edge->span,
+                      "this import makes the modules depend on "
+                      "each other")
+                    .note("import cycles are not supported; move the shared declarations into "
+                          "a module that both can import");
+            } else if (marks[edge->callee] == Mark::Unseen) {
+                visit(edge->callee);
+            }
+        }
+        marks[module] = Mark::Done;
+    };
+    for (std::uint32_t module = 0; module < modules_.size(); ++module) {
+        if (marks[module] == Mark::Unseen) {
+            visit(module);
+        }
+    }
 }
 
 void Checker::report_recursion() {
@@ -1150,8 +1211,9 @@ TypeId Checker::eval_type(ast::TypeId id) {
 
 AnalysisResult analyze(const SourceManager& sources,
                        std::span<const ast::Ast* const> modules,
-                       DiagnosticSink& sink) {
-    return Checker(sources, modules, sink).run();
+                       DiagnosticSink& sink,
+                       const ImportTable* imports) {
+    return Checker(sources, modules, sink, imports).run();
 }
 
 } // namespace linnet::sema

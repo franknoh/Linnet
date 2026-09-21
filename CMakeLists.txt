@@ -51,6 +51,7 @@ add_library(linnet_core STATIC
     src/diagnostic/render.cpp
     src/format/doc.cpp
     src/format/formatter.cpp
+    src/module/loader.cpp
     src/sema/checker_calls.cpp
     src/sema/checker_decls.cpp
     src/sema/checker_exprs.cpp
