@@ -3,6 +3,7 @@
 // syntactic (E10xx, E11xx) must report exactly that code. Cases expecting
 // semantic errors must still parse cleanly.
 
+#include "linnet/format/formatter.hpp"
 #include "linnet/syntax/parser.hpp"
 
 #include "test.hpp"
@@ -92,6 +93,27 @@ TEST("spec: fixtures parse") {
     }
 }
 
+// The executable specification doubles as the reference for canonical style.
+TEST("spec: cases are formatter-clean") {
+    const std::string root = LINNET_SPEC_TESTS_DIR;
+    for (const Case& spec_case : read_manifest(root + "/manifest.toml")) {
+        SourceManager sources;
+        DiagnosticSink sink;
+        const auto file = sources.load_file(root + "/" + spec_case.file);
+        if (!file) {
+            continue;
+        }
+        const ast::Ast tree = parse(sources, *file, sink);
+        if (sink.has_errors()) {
+            continue; // cases with syntax errors cannot be formatted
+        }
+        const std::string formatted = format::format(tree, sources);
+        if (formatted != sources.contents(*file)) {
+            linnet::test::report_failure(spec_case.file.c_str(), 0, "is not formatter-clean");
+        }
+    }
+}
+
 // Every truncation of every case must be handled without crashing, hanging,
 // or flooding diagnostics.
 TEST("spec: truncated inputs are handled gracefully") {
@@ -104,8 +126,18 @@ TEST("spec: truncated inputs are handled gracefully") {
             SourceManager sources;
             DiagnosticSink sink;
             const FileId file = sources.add_file(spec_case.file, text.substr(0, length)).value();
-            parse(sources, file, sink);
+            const ast::Ast tree = parse(sources, file, sink);
             CHECK(sink.diagnostics().size() <= 6);
+            if (sink.has_errors()) {
+                continue;
+            }
+            // Whatever still parses must format to a fixed point.
+            const std::string once = format::format(tree, sources);
+            DiagnosticSink second_sink;
+            const FileId second = sources.add_file(spec_case.file, once).value();
+            const ast::Ast second_tree = parse(sources, second, second_sink);
+            CHECK(!second_sink.has_errors());
+            CHECK_EQ(format::format(second_tree, sources), once);
         }
     }
 }

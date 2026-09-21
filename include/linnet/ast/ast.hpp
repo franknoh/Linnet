@@ -290,6 +290,7 @@ struct TypeAliasDecl {
     Name name;
     std::vector<GenericParam> generics;
     TypeId type;
+    SourceSpan generics_span{}; // `<` through `>`; empty when absent
 };
 struct FieldDecl {
     SourceSpan span;
@@ -300,11 +301,13 @@ struct StructDecl {
     Name name;
     std::vector<GenericParam> generics;
     std::vector<FieldDecl> fields;
+    SourceSpan generics_span{};
 };
 struct EnumDecl {
     Name name;
     std::vector<GenericParam> generics;
     std::vector<Name> variants;
+    SourceSpan generics_span{};
 };
 
 enum class FunctionKind : std::uint8_t { Fn, Op, Entry };
@@ -316,12 +319,15 @@ struct FunctionDecl {
     TypeId return_type; // optional for fn and entry
     std::vector<ExprId> constraints;
     std::vector<StmtId> body;
+    SourceSpan generics_span{};
+    SourceSpan parameters_span{}; // `(` through `)`
 };
 
 struct BlockDecl {
     Name name;
     std::vector<GenericParam> generics;
     std::vector<ItemId> members;
+    SourceSpan generics_span{};
 };
 
 // `param`, `buffer`, and `sub` declarations; valid only inside a block.

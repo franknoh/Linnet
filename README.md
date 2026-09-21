@@ -4,8 +4,35 @@ Linnet is a typed tensor language. Models are written as `.linnet` source files,
 checked statically for shape and dtype correctness, and kept separate from their
 weights. Inspecting or checking a Linnet package never executes package code.
 
-The project is in early development; the toolchain currently provides the
-foundations of the compiler frontend.
+The project is in early development. The toolchain currently provides the
+syntax frontend: lexer, error-recovering parser, and the canonical formatter.
+Type and shape checking are not implemented yet.
+
+- `spec/` is the normative language specification; `spec/grammar.ebnf` is the
+  consolidated grammar.
+- `spec-tests/` is the executable specification: programs that must be accepted
+  or must be rejected with a specific diagnostic code.
+- `examples/` contains sample Linnet sources.
+
+## Usage
+
+```bash
+linnet fmt src/                 # format files in place (directories recurse)
+linnet fmt --check .            # exit 1 if anything would change; for CI
+linnet fmt - < in.linnet        # format stdin to stdout; for editors
+linnet inspect --ast file.linnet
+linnet inspect --tokens file.linnet
+```
+
+Exit status is 0 on success, 1 when the input has errors (or `--check` finds
+unformatted files), and 2 for command-line mistakes. Files with syntax errors
+are never rewritten.
+
+The formatter has one style and no options: 4-space indentation, 100 columns,
+one statement per line. A list that ends with a trailing comma stays one element
+per line; otherwise lists are joined when they fit. Comments are always kept;
+a comment written in the middle of an expression moves to the nearest line
+boundary.
 
 ## Building
 
@@ -18,8 +45,8 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-Other presets: `release`, `sanitize` (ASan + UBSan), `tidy` (clang-tidy), and
-`msvc` (Windows).
+Other presets: `release`, `sanitize` (ASan + UBSan), `tidy` (clang-tidy),
+`fuzz` (libFuzzer targets, Clang only), and `msvc` (Windows).
 
 ## Development
 
@@ -33,6 +60,11 @@ Conventions:
   all presets.
 - Public headers live under `include/linnet/<component>/`, implementations under
   `src/<component>/`, tests under `tests/`.
+- Language changes update the relevant `spec/` chapter, `spec/grammar.ebnf`, and
+  at least one case in `spec-tests/` together with the implementation.
+- Every `.linnet` file in the repository that parses must be formatter-clean.
+- Diagnostic codes are stable; new ones are added to
+  `include/linnet/diagnostic/codes.hpp` and never reused.
 - The compiler core is framework-independent: it must not depend on tensor
   frameworks, and it must not contain model-specific logic.
 - The CLI, language server, formatter, and backends all share the one frontend

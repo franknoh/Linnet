@@ -1,0 +1,23 @@
+// Scaled dot-product attention expressed with typed index notation. Scores are
+// accumulated in f32 regardless of the activation dtype.
+module examples.attention
+
+pub op softmax_last<*S: Shape, N: Dim>(x: Tensor[*S, N; f32]) -> Tensor[*S, N; f32] {
+    let peak[*s] = max[n] x[*s, n]
+    let shifted[*s, n] = exp(x[*s, n] - peak[*s])
+    let total[*s] = sum[n] shifted[*s, n]
+    let y[*s, n] = shifted[*s, n] / total[*s]
+    return y
+}
+
+pub op attention<B: Dim, H: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
+    query: Tensor[B, H, Q, D; T],
+    key: Tensor[B, H, K, D; T],
+    value: Tensor[B, H, K, D; T],
+    scale: f32,
+) -> Tensor[B, H, Q, D; T] {
+    let score[b, h, q, k] = sum<f32>[d] cast<f32>(query[b, h, q, d]) * cast<f32>(key[b, h, k, d])
+    let weights = softmax_last(score * scale)
+    let mixed[b, h, q, d] = sum<f32>[k] weights[b, h, q, k] * cast<f32>(value[b, h, k, d])
+    return cast<T>(mixed)
+}

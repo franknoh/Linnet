@@ -43,6 +43,7 @@ add_library(linnet_core STATIC
     src/diagnostic/diagnostic.cpp
     src/diagnostic/render.cpp
     src/format/doc.cpp
+    src/format/formatter.cpp
     src/source/source_manager.cpp
     src/source/utf8.cpp
     src/syntax/lexer.cpp

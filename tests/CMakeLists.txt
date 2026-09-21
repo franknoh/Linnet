@@ -25,3 +25,13 @@ linnet_add_test(parser_test unit/parser_test.cpp)
 linnet_add_test(spec_syntax_test spec/spec_syntax_test.cpp)
 target_compile_definitions(spec_syntax_test PRIVATE
     LINNET_SPEC_TESTS_DIR="${PROJECT_SOURCE_DIR}/spec-tests")
+linnet_add_test(formatter_test unit/formatter_test.cpp)
+
+add_test(NAME cli_fmt_check_clean
+    COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/spec-tests/valid ${PROJECT_SOURCE_DIR}/spec-tests/fixtures)
+add_test(NAME cli_fmt_rejects_syntax_errors
+    COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/spec-tests/invalid/112_reserved_identifier.linnet)
+set_tests_properties(cli_fmt_rejects_syntax_errors PROPERTIES WILL_FAIL TRUE)
+add_test(NAME cli_inspect_ast
+    COMMAND linnet inspect --ast ${PROJECT_SOURCE_DIR}/spec-tests/valid/001_minimal.linnet)
+set_tests_properties(cli_inspect_ast PROPERTIES PASS_REGULAR_EXPRESSION "pub fn add_one")

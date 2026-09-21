@@ -30,6 +30,15 @@ public:
     DocId soft_line(); // nothing when flat, a newline when broken
     DocId hard_line(); // always a newline; forces every enclosing group to break
 
+    // A newline followed by no indentation at all; forces enclosing groups to
+    // break. Used for the continuation lines of multi-line comments, which are
+    // reproduced verbatim.
+    DocId literal_line();
+
+    // Prints nothing but forces every enclosing group to break, for example
+    // after a trailing line comment.
+    DocId break_parent();
+
     DocId concat(std::span<const DocId> parts);
     DocId concat(std::initializer_list<DocId> parts);
 
@@ -54,6 +63,8 @@ private:
         Line,
         SoftLine,
         HardLine,
+        LiteralLine,
+        BreakParent,
         Concat,
         Indent,
         Group,

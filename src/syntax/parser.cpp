@@ -592,7 +592,7 @@ private:
     TypeAliasDecl parse_type_alias() {
         advance();
         TypeAliasDecl decl{expect_identifier("type name"), {}, no_id};
-        decl.generics = parse_generic_params();
+        decl.generics = parse_generic_params(decl.generics_span);
         expect(K::Equal);
         decl.type = parse_type();
         return decl;
@@ -601,7 +601,7 @@ private:
     StructDecl parse_struct() {
         advance();
         StructDecl decl{expect_identifier("struct name"), {}, {}};
-        decl.generics = parse_generic_params();
+        decl.generics = parse_generic_params(decl.generics_span);
         if (!expect(K::LBrace)) {
             return decl;
         }
@@ -629,7 +629,7 @@ private:
     EnumDecl parse_enum() {
         advance();
         EnumDecl decl{expect_identifier("enum name"), {}, {}};
-        decl.generics = parse_generic_params();
+        decl.generics = parse_generic_params(decl.generics_span);
         if (!expect(K::LBrace)) {
             return decl;
         }
@@ -650,8 +650,8 @@ private:
         const std::string_view keyword = text(peek());
         advance();
         FunctionDecl decl{kind, expect_identifier("function name"), {}, {}, no_id, {}, {}};
-        decl.generics = parse_generic_params();
-        decl.parameters = parse_parameters();
+        decl.generics = parse_generic_params(decl.generics_span);
+        decl.parameters = parse_parameters(decl.parameters_span);
         if (accept(K::Arrow)) {
             decl.return_type = parse_type();
         } else if (kind == FunctionKind::Op) {
@@ -668,7 +668,7 @@ private:
     BlockDecl parse_block() {
         advance();
         BlockDecl decl{expect_identifier("block name"), {}, {}};
-        decl.generics = parse_generic_params();
+        decl.generics = parse_generic_params(decl.generics_span);
         if (!expect(K::LBrace)) {
             return decl;
         }
@@ -705,8 +705,9 @@ private:
         return decl;
     }
 
-    std::vector<GenericParam> parse_generic_params() {
+    std::vector<GenericParam> parse_generic_params(SourceSpan& list_span) {
         std::vector<GenericParam> params;
+        const std::uint32_t list_begin = here();
         if (!accept(K::Less)) {
             return params;
         }
@@ -742,11 +743,13 @@ private:
             }
         }
         expect(K::Greater);
+        list_span = span_from(list_begin);
         return params;
     }
 
-    std::vector<Parameter> parse_parameters() {
+    std::vector<Parameter> parse_parameters(SourceSpan& list_span) {
         std::vector<Parameter> params;
+        const std::uint32_t list_begin = here();
         if (!expect(K::LParen)) {
             return params;
         }
@@ -766,6 +769,7 @@ private:
             }
         }
         expect(K::RParen);
+        list_span = span_from(list_begin);
         return params;
     }
 

@@ -14,6 +14,8 @@ DocBuilder::DocBuilder() {
     nodes_.push_back({Kind::Line, false, 0, 0, 0});
     nodes_.push_back({Kind::SoftLine, false, 0, 0, 0});
     nodes_.push_back({Kind::HardLine, true, 0, 0, 0});
+    nodes_.push_back({Kind::LiteralLine, true, 0, 0, 0});
+    nodes_.push_back({Kind::BreakParent, true, 0, 0, 0});
 }
 
 DocId DocBuilder::add(Node node) {
@@ -45,6 +47,14 @@ DocId DocBuilder::soft_line() {
 
 DocId DocBuilder::hard_line() {
     return 3;
+}
+
+DocId DocBuilder::literal_line() {
+    return 4;
+}
+
+DocId DocBuilder::break_parent() {
+    return 5;
 }
 
 DocId DocBuilder::concat(std::span<const DocId> parts) {
@@ -152,6 +162,11 @@ private:
         case Kind::HardLine:
             newline(command.indent);
             break;
+        case Kind::LiteralLine:
+            newline(0);
+            break;
+        case Kind::BreakParent:
+            break;
         case Kind::Concat:
             push_children(node, command.indent, command.mode, stack_);
             break;
@@ -229,7 +244,10 @@ private:
                 }
                 break;
             case Kind::HardLine:
+            case Kind::LiteralLine:
                 return true;
+            case Kind::BreakParent:
+                break;
             case Kind::Concat:
                 push_children(node, command.indent, command.mode, scratch_);
                 break;
