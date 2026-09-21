@@ -36,3 +36,10 @@ add_test(NAME cli_inspect_ast
     COMMAND linnet inspect --ast ${PROJECT_SOURCE_DIR}/spec-tests/valid/001_minimal.linnet)
 set_tests_properties(cli_inspect_ast PROPERTIES PASS_REGULAR_EXPRESSION "pub fn add_one")
 linnet_add_test(shape_test unit/shape_test.cpp)
+linnet_add_test(sema_test unit/sema_test.cpp)
+
+linnet_add_test(spec_semantic_test spec/spec_semantic_test.cpp)
+target_compile_definitions(spec_semantic_test PRIVATE
+    LINNET_SPEC_TESTS_DIR="${PROJECT_SOURCE_DIR}/spec-tests")
+
+add_test(NAME cli_check_examples COMMAND linnet check ${PROJECT_SOURCE_DIR}/examples)
