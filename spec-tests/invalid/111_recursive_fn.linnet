@@ -1,0 +1,5 @@
+module tests.recursive
+
+pub fn bad(x: i32) -> i32 {
+    return bad(x)
+}

@@ -1,0 +1,9 @@
+module tests.tensor_if
+
+pub fn bad<B: Dim>(
+    cond: Tensor[B; bool],
+    x: Tensor[B; f32],
+    y: Tensor[B; f32],
+) -> Tensor[B; f32] {
+    return if cond { x } else { y }
+}

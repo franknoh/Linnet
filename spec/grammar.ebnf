@@ -1,0 +1,142 @@
+(* Linnet .linnet grammar sketch. Semantic restrictions are specified in prose. *)
+
+source_file        = module_decl, { use_decl }, { item } ;
+
+module_decl        = "module", module_path ;
+module_path        = identifier, { ".", identifier } ;
+
+use_decl           = "use", import_path, [ "::", import_selector ] ;
+import_path        = ( "std" | "crate" | identifier ), { ".", identifier } ;
+import_selector    = identifier | "{", import_name, { ",", import_name }, [ "," ], "}" ;
+import_name        = identifier, [ "as", identifier ] ;
+
+item               = [ "pub" ], ( const_decl
+                                  | type_alias
+                                  | struct_decl
+                                  | enum_decl
+                                  | fn_decl
+                                  | op_decl
+                                  | block_decl
+                                  | entry_decl ) ;
+
+const_decl         = "const", identifier, [ ":", type ], "=", expr ;
+type_alias         = "type", identifier, [ generic_params ], "=", type ;
+
+struct_decl        = "struct", identifier, [ generic_params ], "{", { field_decl }, "}" ;
+field_decl         = identifier, ":", type ;
+
+enum_decl          = "enum", identifier, [ generic_params ], "{", [ identifier, { ",", identifier }, [ "," ] ], "}" ;
+
+fn_decl            = "fn", identifier, [ generic_params ], parameter_list,
+                     [ "->", type ], [ where_clause ], block_body ;
+op_decl            = "op", identifier, [ generic_params ], parameter_list,
+                     "->", type, [ where_clause ], block_body ;
+entry_decl         = "entry", identifier, [ generic_params ], parameter_list,
+                     [ "->", type ], [ where_clause ], block_body ;
+
+block_decl         = "block", identifier, [ generic_params ], "{", { block_item }, "}" ;
+block_item         = param_decl | buffer_decl | sub_decl | item ;
+param_decl         = "param", identifier, ":", type, [ "=", expr ] ;
+buffer_decl        = "buffer", identifier, ":", type ;
+sub_decl           = "sub", identifier, ":", type ;
+
+generic_params     = "<", generic_param, { ",", generic_param }, [ "," ], ">" ;
+generic_param      = [ "*" ], identifier, ":", generic_constraint, [ "=", type_or_expr ] ;
+generic_constraint = "Dim" | "Shape" | "DType" | "Numeric" | "Integer" | "Float" ;
+
+parameter_list     = "(", [ parameter, { ",", parameter }, [ "," ] ], ")" ;
+parameter          = identifier, ":", type, [ "=", expr ] ;
+
+where_clause       = "where", constraint, { ",", constraint }, [ "," ] ;
+constraint         = expr, comparison_op, expr ;
+
+block_body         = "{", { statement }, "}" ;
+statement          = let_stmt
+                   | var_stmt
+                   | assign_stmt
+                   | return_stmt
+                   | static_for_stmt ;
+
+let_stmt           = "let", ( pattern, "=", expr | comprehension_lhs, "=", expr ) ;
+var_stmt           = "var", identifier, [ ":", type ], "=", expr ;
+assign_stmt        = identifier, "=", expr ;
+return_stmt        = "return", [ expr ] ;
+static_for_stmt    = "static", "for", pattern, "in", expr, block_body ;
+
+pattern            = identifier
+                   | "(", pattern, { ",", pattern }, [ "," ], ")"
+                   | "some", "(", pattern, ")"
+                   | "none" ;
+
+comprehension_lhs  = identifier, "[", index_output, { ",", index_output }, "]" ;
+index_output       = identifier | "*", identifier ;
+
+expr               = if_expr | match_expr | logical_or ;
+if_expr            = "if", expr, block_expr, "else", block_expr ;
+block_expr         = "{", expr, "}" ;
+match_expr         = "match", expr, "{", match_arm, { match_arm }, "}" ;
+match_arm          = pattern, "=>", expr ;
+
+logical_or         = logical_and, { "||", logical_and } ;
+logical_and        = equality, { "&&", equality } ;
+equality           = comparison, { ( "==" | "!=" ), comparison } ;
+comparison         = additive, { ( "<" | "<=" | ">" | ">=" ), additive } ;
+additive           = multiplicative, { ( "+" | "-" ), multiplicative } ;
+multiplicative     = unary, { ( "*" | "/" | "%" ), unary } ;
+unary              = [ "!" | "-" | "+" ], postfix ;
+
+postfix            = primary, { call_suffix | index_suffix | member_suffix } ;
+call_suffix        = [ generic_arguments ], "(", [ argument, { ",", argument }, [ "," ] ], ")" ;
+generic_arguments  = "<", type_or_expr, { ",", type_or_expr }, [ "," ], ">" ;
+argument           = [ identifier, "=" ], expr ;
+member_suffix      = ".", identifier ;
+index_suffix       = "[", index_component, { ",", index_component }, "]" ;
+index_component    = expr | "..." | slice_component ;
+slice_component    = [ expr ], ":", [ expr ], [ ":", [ expr ] ] ;
+
+primary            = literal
+                   | identifier
+                   | tuple_expr
+                   | shape_literal
+                   | reduction_expr
+                   | "some", "(", expr, ")"
+                   | "none"
+                   | "(", expr, ")" ;
+
+tuple_expr         = "(", expr, ",", [ expr, { ",", expr }, [ "," ] ], ")" ;
+shape_literal      = "[", [ expr, { ",", expr }, [ "," ] ], "]" ;
+
+reduction_expr     = reduction_kind, [ "<", scalar_type, ">" ],
+                     "[", reduction_index, { ",", reduction_index }, "]", expr ;
+reduction_kind     = "sum" | "prod" | "max" | "min" | "any" | "all" ;
+reduction_index    = identifier ;
+
+type               = type_primary, [ "?" ] ;
+type_primary       = scalar_type
+                   | tensor_type
+                   | tuple_type
+                   | array_type
+                   | named_type ;
+
+scalar_type        = "bool"
+                   | "i8" | "i16" | "i32" | "i64"
+                   | "u8" | "u16" | "u32" | "u64"
+                   | "f16" | "bf16" | "f32" | "f64" ;
+
+tensor_type        = "Tensor", "[", shape_spec, ";", type_atom, "]" ;
+shape_spec         = [ shape_element, { ",", shape_element } ] ;
+shape_element      = expr | "*", identifier ;
+
+tuple_type         = "(", type, ",", [ type, { ",", type }, [ "," ] ], ")" ;
+array_type         = "[", type, ";", expr, "]" ;
+named_type         = module_path, [ generic_arguments ] ;
+type_atom          = scalar_type | named_type ;
+type_or_expr       = type | expr ;
+
+literal            = integer_literal | float_literal | string_literal | "true" | "false" ;
+comparison_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+
+identifier         = ? ASCII [A-Za-z_][A-Za-z0-9_]* ? ;
+integer_literal    = ? integer token ? ;
+float_literal      = ? floating token ? ;
+string_literal     = ? UTF-8 quoted string token ? ;

@@ -1,0 +1,9 @@
+module tests.implicit_reduction
+
+pub fn bad<M: Dim, K: Dim>(
+    a: Tensor[M, K; f32],
+    b: Tensor[K; f32],
+) -> Tensor[M; f32] {
+    let y[i] = a[i, j] * b[j]
+    return y
+}

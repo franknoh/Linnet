@@ -1,0 +1,5 @@
+module fixture_pkg
+
+pub fn identity(x: f32) -> f32 {
+    return x
+}

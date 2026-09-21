@@ -1,0 +1,5 @@
+module tests.param_payload
+
+pub block Bad<H: Dim> {
+    param weight: Tensor[H; f32] = make_weight(H)
+}

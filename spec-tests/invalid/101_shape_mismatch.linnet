@@ -1,0 +1,9 @@
+module tests.bad_shape
+
+pub fn bad<M: Dim, K1: Dim, K2: Dim, N: Dim>(
+    a: Tensor[M, K1; f32],
+    b: Tensor[K2, N; f32],
+) -> Tensor[M, N; f32] {
+    let c[m, n] = sum[k] a[m, k] * b[k, n]
+    return c
+}

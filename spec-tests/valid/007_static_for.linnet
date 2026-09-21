@@ -1,0 +1,23 @@
+module tests.static_for
+
+pub block Layer<H: Dim, T: Float> {
+    pub fn forward<B: Dim, S: Dim>(
+        x: Tensor[B, S, H; T],
+    ) -> Tensor[B, S, H; T] {
+        return x
+    }
+}
+
+pub block Stack<Layers: Dim, H: Dim, T: Float> {
+    sub layers: [Layer<H, T>; Layers]
+
+    pub entry forward<B: Dim, S: Dim>(
+        x0: Tensor[B, S, H; T],
+    ) -> Tensor[B, S, H; T] {
+        var x = x0
+        static for layer in layers {
+            x = layer.forward(x)
+        }
+        return x
+    }
+}

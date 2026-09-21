@@ -1,0 +1,15 @@
+module tests.entries
+
+pub block Model<H: Dim, T: Float> {
+    pub entry prefill<B: Dim, S: Dim>(
+        x: Tensor[B, S, H; T],
+    ) -> Tensor[B, S, H; T] {
+        return x
+    }
+
+    pub entry decode<B: Dim>(
+        x: Tensor[B, 1, H; T],
+    ) -> Tensor[B, 1, H; T] {
+        return x
+    }
+}

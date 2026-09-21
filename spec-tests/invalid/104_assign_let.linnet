@@ -1,0 +1,7 @@
+module tests.assign_let
+
+pub fn bad(x: f32) -> f32 {
+    let y = x
+    y = y + 1.0
+    return y
+}

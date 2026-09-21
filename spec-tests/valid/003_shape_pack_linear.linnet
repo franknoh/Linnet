@@ -1,0 +1,9 @@
+module tests.linear
+
+pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[*S, In; T],
+    weight: Tensor[Out, In; T],
+) -> Tensor[*S, Out; T] {
+    let y[*s, o] = sum[i] x[*s, i] * weight[o, i]
+    return y
+}

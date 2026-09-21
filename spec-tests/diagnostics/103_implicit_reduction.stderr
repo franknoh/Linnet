@@ -1,0 +1,9 @@
+error E3101: index `j` is not bound
+
+  --> invalid/103_implicit_reduction.linnet:7:26
+   |
+ 7 |     let y[i] = a[i, j] * b[j]
+   |                          ^
+   |
+   = note: Linnet does not perform implicit Einstein summation
+   = help: write `sum[j] a[i, j] * b[j]`

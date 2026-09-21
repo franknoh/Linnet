@@ -1,0 +1,10 @@
+error E2103: tensor dtypes do not match
+
+  --> invalid/102_dtype_mismatch.linnet:7:12
+   |
+ 7 |     return x + y
+   |            ^^^^^
+   |
+   = note: left operand has dtype bf16
+   = note: right operand has dtype f32
+   = help: Linnet does not implicitly promote tensor dtypes; use an explicit cast

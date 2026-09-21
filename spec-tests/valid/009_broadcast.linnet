@@ -1,0 +1,8 @@
+module tests.broadcast
+
+pub fn add_bias<B: Dim, S: Dim, H: Dim, T: Float>(
+    x: Tensor[B, S, H; T],
+    bias: Tensor[H; T],
+) -> Tensor[B, S, H; T] {
+    return x + bias
+}

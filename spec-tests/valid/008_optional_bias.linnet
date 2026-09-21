@@ -1,0 +1,11 @@
+module tests.optional
+
+pub fn add_bias<*S: Shape, H: Dim, T: Float>(
+    x: Tensor[*S, H; T],
+    bias: Tensor[H; T]? = none,
+) -> Tensor[*S, H; T] {
+    return match bias {
+        some(b) => x + b
+        none => x
+    }
+}

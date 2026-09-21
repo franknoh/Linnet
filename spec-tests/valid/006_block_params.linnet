@@ -1,0 +1,24 @@
+module tests.blocks
+
+pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[*S, In; T],
+    weight: Tensor[Out, In; T],
+    bias: Tensor[Out; T]? = none,
+) -> Tensor[*S, Out; T] {
+    let y[*s, o] = sum[i] x[*s, i] * weight[o, i]
+    return match bias {
+        some(b) => y + b
+        none => y
+    }
+}
+
+pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
+    param weight: Tensor[Out, In; T]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(
+        x: Tensor[*S, In; T],
+    ) -> Tensor[*S, Out; T] {
+        return linear(x, weight, bias)
+    }
+}

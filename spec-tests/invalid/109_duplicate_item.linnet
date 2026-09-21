@@ -1,0 +1,4 @@
+module tests.duplicate
+
+fn f(x: f32) -> f32 { return x }
+fn f(x: f32) -> f32 { return x }

@@ -1,0 +1,9 @@
+module tests.contraction
+
+pub op matmul<M: Dim, K: Dim, N: Dim, T: Numeric>(
+    a: Tensor[M, K; T],
+    b: Tensor[K, N; T],
+) -> Tensor[M, N; T] {
+    let c[m, n] = sum[k] a[m, k] * b[k, n]
+    return c
+}

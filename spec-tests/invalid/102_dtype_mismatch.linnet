@@ -1,0 +1,8 @@
+module tests.bad_dtype
+
+pub fn bad<B: Dim, H: Dim>(
+    x: Tensor[B, H; bf16],
+    y: Tensor[B, H; f32],
+) -> Tensor[B, H; f32] {
+    return x + y
+}

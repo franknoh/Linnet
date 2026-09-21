@@ -1,0 +1,11 @@
+module tests.constraints
+
+pub fn split_heads<B: Dim, S: Dim, H: Dim, N: Dim, T: Float>(
+    x: Tensor[B, S, H; T],
+) -> Tensor[B, N, S, H / N; T]
+where
+    H % N == 0,
+    N > 0
+{
+    return reshape(x, [B, N, S, H / N])
+}

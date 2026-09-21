@@ -1,0 +1,5 @@
+module tests.literals
+
+pub fn scale<*S: Shape>(x: Tensor[*S; f32]) -> Tensor[*S; f32] {
+    return x * 0.5
+}

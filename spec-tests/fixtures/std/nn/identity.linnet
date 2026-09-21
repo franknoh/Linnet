@@ -1,0 +1,7 @@
+module std.nn.identity
+
+pub op identity<*S: Shape, T: Numeric>(
+    x: Tensor[*S; T],
+) -> Tensor[*S; T] {
+    return x
+}

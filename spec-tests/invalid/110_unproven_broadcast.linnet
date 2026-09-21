@@ -1,0 +1,8 @@
+module tests.unproven_broadcast
+
+pub fn bad<A: Dim, B: Dim>(
+    x: Tensor[A; f32],
+    y: Tensor[B; f32],
+) -> Tensor[A; f32] {
+    return x + y
+}

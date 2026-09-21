@@ -1,0 +1,113 @@
+version = 1
+
+[[case]]
+file = "valid/001_minimal.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/002_generic_tensor.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/003_shape_pack_linear.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/004_shape_constraints.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/005_contraction.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/006_block_params.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/007_static_for.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/008_optional_bias.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/009_broadcast.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/010_slicing.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/011_multiple_entries.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/012_tuple_struct.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/013_contextual_literals.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/101_shape_mismatch.linnet"
+expect = "error"
+code = "E2201"
+
+[[case]]
+file = "invalid/102_dtype_mismatch.linnet"
+expect = "error"
+code = "E2103"
+
+[[case]]
+file = "invalid/103_implicit_reduction.linnet"
+expect = "error"
+code = "E3101"
+
+[[case]]
+file = "invalid/104_assign_let.linnet"
+expect = "error"
+code = "E2108"
+
+[[case]]
+file = "invalid/105_unknown_symbol.linnet"
+expect = "error"
+code = "E1201"
+
+[[case]]
+file = "invalid/106_tensor_if_condition.linnet"
+expect = "error"
+code = "E2114"
+
+[[case]]
+file = "invalid/107_non_exhaustive_match.linnet"
+expect = "error"
+code = "E2118"
+
+[[case]]
+file = "invalid/108_param_payload.linnet"
+expect = "error"
+code = "E4102"
+
+[[case]]
+file = "invalid/109_duplicate_item.linnet"
+expect = "error"
+code = "E1204"
+
+[[case]]
+file = "invalid/110_unproven_broadcast.linnet"
+expect = "error"
+code = "E2207"
+
+[[case]]
+file = "invalid/111_recursive_fn.linnet"
+expect = "error"
+code = "E2119"
+
+[[case]]
+file = "invalid/112_reserved_identifier.linnet"
+expect = "error"
+code = "E1004"

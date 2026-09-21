@@ -1,0 +1,10 @@
+module tests.slicing
+
+pub fn split_even_odd<*S: Shape, D: Dim, T: Float>(
+    x: Tensor[*S, D; T],
+) -> (Tensor[*S, D / 2; T], Tensor[*S, D / 2; T])
+where D % 2 == 0 {
+    let even = x[..., 0::2]
+    let odd = x[..., 1::2]
+    return (even, odd)
+}

@@ -1,0 +1,11 @@
+module tests.aggregates
+
+struct Pair<T: DType> {
+    left: T
+    right: T
+}
+
+pub fn swap<T: DType>(x: (T, T)) -> (T, T) {
+    let (a, b) = x
+    return (b, a)
+}

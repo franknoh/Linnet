@@ -1,0 +1,5 @@
+module tests.unknown_symbol
+
+pub fn bad(x: f32) -> f32 {
+    return x + missing
+}

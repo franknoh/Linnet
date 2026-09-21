@@ -1,0 +1,7 @@
+module tests.generic_tensor
+
+pub fn identity<*S: Shape, T: Numeric>(
+    x: Tensor[*S; T],
+) -> Tensor[*S; T] {
+    return x
+}

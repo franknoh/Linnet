@@ -1,0 +1,10 @@
+error E2201: incompatible contraction dimensions
+
+  --> invalid/101_shape_mismatch.linnet:7:20
+   |
+ 7 |     let c[m, n] = sum[k] a[m, k] * b[k, n]
+   |                    ^^^^^^ reduction index `k` has incompatible domains
+   |
+   = note: `a` binds `k` to K1
+   = note: `b` binds `k` to K2
+   = help: use one shared dimension parameter or add a constraint that proves K1 == K2

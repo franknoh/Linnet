@@ -1,0 +1,7 @@
+module tests.non_exhaustive
+
+pub fn bad(x: f32?) -> f32 {
+    return match x {
+        some(v) => v
+    }
+}
