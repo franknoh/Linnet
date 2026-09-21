@@ -2,6 +2,7 @@
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
+#include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
 #include "linnet/syntax/lexer.hpp"
 #include "linnet/syntax/parser.hpp"
@@ -45,6 +46,7 @@ void print_usage(std::FILE* out) {
     std::fputs("Usage: linnet <command> [options]\n"
                "\n"
                "Commands:\n"
+               "  check <file>...                      Check syntax, types, and shapes\n"
                "  fmt [--check] <path>...              Format files, or directories recursively;\n"
                "                                       `-` formats stdin to stdout\n"
                "  inspect (--tokens | --ast) <file>    Show compiler-internal views of a file\n"
@@ -78,6 +80,47 @@ int report(const SourceManager& sources, DiagnosticSink& sink, const Options& op
         std::fputs(text.c_str(), stderr);
     }
     return sink.has_errors() ? exit_failure : exit_success;
+}
+
+void collect_sources(const std::filesystem::path& root, std::vector<std::filesystem::path>& out);
+
+int run_check(std::span<const std::string_view> args, const Options& options) {
+    std::vector<std::filesystem::path> paths;
+    for (const std::string_view arg : args) {
+        if (arg.starts_with("-")) {
+            return usage_error("unknown check option '" + std::string(arg) + "'");
+        }
+        collect_sources(arg, paths);
+    }
+    if (args.empty()) {
+        return usage_error("check requires at least one path");
+    }
+    std::sort(paths.begin(), paths.end());
+
+    SourceManager sources;
+    DiagnosticSink sink;
+    std::vector<ast::Ast> trees;
+    bool has_io_error = false;
+    for (const std::filesystem::path& path : paths) {
+        const auto file = sources.load_file(path);
+        if (!file) {
+            std::fprintf(stderr, "linnet: %s\n", file.error().c_str());
+            has_io_error = true;
+            continue;
+        }
+        trees.push_back(parse(sources, *file, sink));
+    }
+    // Semantic analysis assumes well-formed trees.
+    if (!sink.has_errors()) {
+        std::vector<const ast::Ast*> modules;
+        modules.reserve(trees.size());
+        for (const ast::Ast& tree : trees) {
+            modules.push_back(&tree);
+        }
+        sema::analyze(sources, modules, sink);
+    }
+    const int status = report(sources, sink, options);
+    return has_io_error ? exit_failure : status;
 }
 
 int run_inspect(std::span<const std::string_view> args, const Options& options) {
@@ -281,6 +324,9 @@ int main(int argc, char** argv) {
     if (command == "-V" || command == "--version") {
         std::printf("linnet %s\n", version_string);
         return exit_success;
+    }
+    if (command == "check") {
+        return run_check(rest, options);
     }
     if (command == "fmt") {
         return run_fmt(rest, options);
