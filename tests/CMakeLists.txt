@@ -35,3 +35,4 @@ set_tests_properties(cli_fmt_rejects_syntax_errors PROPERTIES WILL_FAIL TRUE)
 add_test(NAME cli_inspect_ast
     COMMAND linnet inspect --ast ${PROJECT_SOURCE_DIR}/spec-tests/valid/001_minimal.linnet)
 set_tests_properties(cli_inspect_ast PROPERTIES PASS_REGULAR_EXPRESSION "pub fn add_one")
+linnet_add_test(shape_test unit/shape_test.cpp)
