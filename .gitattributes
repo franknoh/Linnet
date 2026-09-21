@@ -1,4 +1,3 @@
-# Auto detect text files and perform LF normalization
-* text=auto
-
-*.sh text eol=lf
+# Sources are stored and checked out with LF line endings on every platform:
+# the formatter emits LF, and diagnostic snapshots are compared byte for byte.
+* text=auto eol=lf
