@@ -31,10 +31,16 @@ struct Checked {
         result = sema::analyze(sources, modules, sink);
     }
 
-    std::string codes() const {
+    // Error codes only; lints are covered by their own test.
+    std::string codes() const { return codes_of(Severity::Error); }
+    std::string warnings() const { return codes_of(Severity::Warning); }
+
+    std::string codes_of(Severity severity) const {
         std::string out;
         for (const Diagnostic& diagnostic : sink.diagnostics()) {
-            out += (out.empty() ? "" : " ") + diagnostic.code;
+            if (diagnostic.severity == severity) {
+                out += (out.empty() ? "" : " ") + diagnostic.code;
+            }
         }
         return out;
     }
@@ -42,7 +48,9 @@ struct Checked {
     std::string messages() const {
         std::string out;
         for (const Diagnostic& diagnostic : sink.diagnostics()) {
-            out += diagnostic.code + ": " + diagnostic.message + "\n";
+            if (diagnostic.severity == Severity::Error) {
+                out += diagnostic.code + ": " + diagnostic.message + "\n";
+            }
         }
         return out;
     }
@@ -492,6 +500,28 @@ TEST("sema: import cycles are rejected") {
                       "module b\nuse a::{X}\npub const Y = 2\n"})
                  .codes(),
              "E1206");
+}
+
+TEST("sema: lints") {
+    CHECK_EQ(check("fn f(x: f32, unused_parameter: f32) -> f32 {\n    let a = x\n    let b = x\n"
+                   "    let _ignored = x\n    return a\n}\n")
+                 .warnings(),
+             "W1002");
+    CHECK_EQ(check("block B {\n    param used: Tensor[4; f32]\n    param spare: Tensor[4; f32]\n"
+                   "    fn f() -> Tensor[4; f32] { return used }\n}\n")
+                 .warnings(),
+             "W1003");
+    const std::string library = "module lib\npub const A = 1\npub const B = 2\n";
+    CHECK_EQ(Checked({library,
+                      "module app\nuse lib::{A, B}\nuse lib\n"
+                      "fn f(x: Tensor[A; f32]) { return }\n"})
+                 .warnings(),
+             "W1001 W1001");
+    CHECK_EQ(Checked({library, "module app\nuse lib\nfn f(x: f32) -> f32 { return x * lib.B }\n"})
+                 .warnings(),
+             "");
+    // Lints stay quiet while there are errors to fix first.
+    CHECK_EQ(check("fn f(x: f32) -> f32 {\n    let a = x\n    return missing\n}\n").warnings(), "");
 }
 
 TEST("sema: one mistake yields one diagnostic") {

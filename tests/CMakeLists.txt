@@ -51,3 +51,15 @@ target_compile_definitions(loader_test PRIVATE
 add_test(NAME cli_check_package
     COMMAND linnet check --std ${PROJECT_SOURCE_DIR}/spec-tests/fixtures/std
             ${PROJECT_SOURCE_DIR}/spec-tests/fixtures/pkg)
+
+linnet_add_test(json_test unit/json_test.cpp)
+
+add_test(NAME cli_check_warning_passes
+    COMMAND linnet check ${CMAKE_CURRENT_SOURCE_DIR}/cli/unused_local.linnet)
+add_test(NAME cli_check_strict_fails_on_warning
+    COMMAND linnet check --strict ${CMAKE_CURRENT_SOURCE_DIR}/cli/unused_local.linnet)
+set_tests_properties(cli_check_strict_fails_on_warning PROPERTIES WILL_FAIL TRUE)
+add_test(NAME cli_check_json
+    COMMAND linnet check --json ${CMAKE_CURRENT_SOURCE_DIR}/cli/unused_local.linnet)
+set_tests_properties(cli_check_json PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"code\":\"W1002\".*\"summary\":{\"errors\":0,\"warnings\":1}")

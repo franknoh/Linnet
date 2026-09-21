@@ -66,8 +66,10 @@ bool is_prelude_name(std::string_view name) {
 
 // --------------------------------------------------------------------- reports
 
-Checker::Report::Report(Checker& checker, const char* code, SourceSpan span, std::string message)
+Checker::Report::Report(
+    Checker& checker, const char* code, SourceSpan span, std::string message, Severity severity)
     : checker_(checker) {
+    diagnostic_.severity = severity;
     diagnostic_.code = code;
     diagnostic_.message = std::move(message);
     diagnostic_.primary.span = span;
@@ -106,6 +108,10 @@ Checker::Report& Checker::Report::primary_label(std::string text) {
 
 Checker::Report Checker::error(const char* code, SourceSpan span, std::string message) {
     return Report(*this, code, span, std::move(message));
+}
+
+Checker::Report Checker::warning(const char* code, SourceSpan span, std::string message) {
+    return Report(*this, code, span, std::move(message), Severity::Warning);
 }
 
 class Checker::EnvGuard {
@@ -153,6 +159,7 @@ AnalysisResult Checker::run() {
         check_function_body(function);
     }
     report_recursion();
+    report_unused();
     return std::move(result_);
 }
 
@@ -341,6 +348,7 @@ void Checker::resolve_imports(std::uint32_t module) {
                 failed_imports_[module].push_back(local.text);
                 continue;
             }
+            imported_names_.push_back({module, local.text, local.span});
             const auto [existing, inserted] = module_scopes_[module].emplace(local.text, entity);
             if (!inserted && existing->second != entity) {
                 error(codes::duplicate_item,
@@ -504,6 +512,7 @@ void Checker::resolve_function(EntityId entity) {
         local.span = param.name.span;
         local.module = env.module;
         local.type = parameter.type;
+        local.is_parameter = true;
         local.state = ResolveState::Done;
         const EntityId created = add_entity(local);
         declare(seen, created, codes::duplicate_name);
@@ -757,21 +766,65 @@ void Checker::report_recursion() {
 
 // ----------------------------------------------------------------------- names
 
-EntityId Checker::lookup(std::string_view name) const {
+EntityId Checker::lookup(std::string_view name) {
+    const auto use = [&](EntityId entity) {
+        entities_[entity].is_used = true;
+        return entity;
+    };
     for (auto scope = env_->scopes.rbegin(); scope != env_->scopes.rend(); ++scope) {
         if (const auto found = scope->find(name); found != scope->end()) {
-            return found->second;
+            return use(found->second);
         }
     }
     for (EntityId block = env_->block; block != no_entity; block = entities_[block].parent) {
         const Scope& scope = decls_.at(block).scope;
         if (const auto found = scope.find(name); found != scope.end()) {
-            return found->second;
+            return use(found->second);
         }
     }
     const Scope& module_scope = module_scopes_[env_->module];
     const auto found = module_scope.find(name);
-    return found == module_scope.end() ? no_entity : found->second;
+    if (found == module_scope.end()) {
+        return no_entity;
+    }
+    for (ImportedName& imported : imported_names_) {
+        if (imported.module == env_->module && imported.name == name) {
+            imported.is_used = true;
+        }
+    }
+    return use(found->second);
+}
+
+void Checker::report_unused() {
+    // Lints only make sense for programs that are otherwise correct.
+    if (sink_.has_errors()) {
+        return;
+    }
+    for (const ImportedName& imported : imported_names_) {
+        if (!imported.is_used) {
+            warning(codes::unused_import,
+                    imported.span,
+                    "unused import `" + std::string(imported.name) + "`");
+        }
+    }
+    for (const Entity& entity : entities_) {
+        if (entity.is_used || entity.name.starts_with("_")) {
+            continue;
+        }
+        if (entity.kind == EntityKind::Module) {
+            warning(codes::unused_import,
+                    entity.span,
+                    "unused import `" + std::string(entity.name) + "`");
+        } else if (entity.kind == EntityKind::Local && !entity.is_parameter) {
+            warning(
+                codes::unused_local, entity.span, "unused local `" + std::string(entity.name) + "`")
+                .help("prefix the name with `_` if this is intentional");
+        } else if (entity.kind == EntityKind::Member) {
+            warning(codes::unused_member,
+                    entity.span,
+                    "`" + std::string(entity.name) + "` is never used by its block");
+        }
+    }
 }
 
 IndexVar* Checker::find_index(std::string_view name) {

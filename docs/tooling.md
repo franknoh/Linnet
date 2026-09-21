@@ -1,0 +1,88 @@
+# Command-line tooling
+
+## `linnet check`
+
+```bash
+linnet check [--strict] [--json] [--std <dir>] <path>...
+```
+
+Checks the given files — directories are searched recursively for `.linnet`
+files — together with every module they import. Checking never executes
+anything from a package.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | no errors (warnings are allowed unless `--strict`) |
+| 1 | errors were reported, or warnings under `--strict` |
+| 2 | the command line was wrong |
+
+`--strict` changes only which findings fail the command. It never changes what
+a program means.
+
+### Warnings
+
+| Code | Meaning |
+| --- | --- |
+| W1001 | an import that is never used |
+| W1002 | a local binding that is never used; prefix its name with `_` to keep it |
+| W1003 | a `param`, `buffer`, or `sub` that its block never uses |
+
+Warnings are reported only when a program has no errors. The full list of
+diagnostic codes is in [diagnostics/](diagnostics/README.md).
+
+### JSON output
+
+`--json` prints one JSON document on standard output instead of text on
+standard error:
+
+```json
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "code": "E2103",
+      "severity": "error",
+      "message": "tensor dtypes do not match",
+      "label": "",
+      "location": {
+        "file": "model.linnet",
+        "start": { "line": 7, "column": 12, "offset": 141 },
+        "end": { "line": 7, "column": 17, "offset": 146 }
+      },
+      "related": [],
+      "notes": ["left operand has dtype bf16", "right operand has dtype f32"],
+      "help": ["Linnet does not implicitly promote tensor dtypes; use an explicit cast"]
+    }
+  ],
+  "summary": { "errors": 1, "warnings": 0 }
+}
+```
+
+- `severity` is `error`, `warning`, or `note`.
+- `location` is `null` for findings that do not belong to a source position.
+- Lines and columns are 1-based; columns count Unicode code points; `offset`
+  is a 0-based byte offset; `end` is exclusive.
+- `label` annotates the primary location; `related` lists secondary locations
+  with their own messages.
+- Fields may be added in later versions; `version` changes only when existing
+  fields change meaning.
+
+## `linnet fmt`
+
+```bash
+linnet fmt <path>...        # rewrite files in place
+linnet fmt --check <path>...
+linnet fmt - < in.linnet    # standard input to standard output
+```
+
+There is one style and no options. Files with syntax errors are never
+rewritten. A list that ends with a trailing comma stays one element per line.
+
+## `linnet inspect`
+
+```bash
+linnet inspect --tokens file.linnet
+linnet inspect --ast file.linnet
+```
+
+Compiler-internal views for debugging. Their format is not stable.

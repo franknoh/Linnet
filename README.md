@@ -19,6 +19,7 @@ symbolic shapes, and tensor index notation. There is no backend yet.
 ```bash
 linnet check src/model.linnet   # check files and every module they import
 linnet check .                  # check every .linnet file below a directory
+linnet check --strict --json .  # for CI and editors; see docs/tooling.md
 linnet fmt src/                 # format files in place (directories recurse)
 linnet fmt --check .            # exit 1 if anything would change; for CI
 linnet fmt - < in.linnet        # format stdin to stdout; for editors

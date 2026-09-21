@@ -1,0 +1,6 @@
+module tests.cli.unused_local
+
+pub fn f(x: f32) -> f32 {
+    let unused = x
+    return x
+}

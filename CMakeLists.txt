@@ -50,6 +50,7 @@ add_library(linnet_core STATIC
     src/ast/ast.cpp
     src/ast/dump.cpp
     src/diagnostic/diagnostic.cpp
+    src/diagnostic/json.cpp
     src/diagnostic/render.cpp
     src/format/doc.cpp
     src/format/formatter.cpp
