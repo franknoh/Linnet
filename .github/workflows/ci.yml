@@ -16,35 +16,48 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [g++-13, clang++-18]
+        compiler: [g++-13, clang++-20]
         preset: [debug, release]
         include:
-          - compiler: clang++-18
+          - compiler: clang++-20
             preset: sanitize
     env:
       CXX: ${{ matrix.compiler }}
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # Clang needs version 19 or newer to use libstdc++'s <expected>.
+      - if: startsWith(matrix.compiler, 'clang')
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
       - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --preset ${{ matrix.preset }}
       - name: Repository sources are formatter-clean
-        run: build/${{ matrix.preset }}/linnet fmt --check examples spec-tests/valid spec-tests/fixtures
+        run: |
+          build/${{ matrix.preset }}/linnet fmt --check examples spec-tests/valid spec-tests/fixtures
+          build/${{ matrix.preset }}/linnet check examples
 
   lint:
     name: Format and static analysis
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18 clang-format-18 clang-tidy-18
+      - run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y clang-format-20 clang-tidy-20
       - run: scripts/check-format.sh
         env:
-          CLANG_FORMAT: clang-format-18
+          CLANG_FORMAT: clang-format-20
       - run: >
           cmake --preset tidy
-          -DCMAKE_CXX_COMPILER=clang++-18
-          "-DCMAKE_CXX_CLANG_TIDY=clang-tidy-18;--warnings-as-errors=*"
+          -DCMAKE_CXX_COMPILER=clang++-20
+          "-DCMAKE_CXX_CLANG_TIDY=clang-tidy-20;--warnings-as-errors=*"
       - run: cmake --build --preset tidy
 
   fuzz-smoke:
@@ -52,8 +65,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
-      - run: cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++-18
+      - run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y libclang-rt-20-dev
+      - run: cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++-20
       - run: cmake --build --preset fuzz
       - run: |
           mkdir corpus
