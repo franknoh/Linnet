@@ -475,13 +475,23 @@ TEST("sema: imports across modules") {
              "");
     CHECK_EQ(with("module app\nuse std.nn.ops::hidden\n").codes(), "E1203");
     CHECK_EQ(with("module app\nuse std.nn.ops::missing\n").codes(), "E1201");
-    CHECK_EQ(with("module app\nuse std.nn.other::double\n").codes(), "E1202");
+    CHECK_EQ(with("module app\nuse std.nn.other::double\n"
+                  "fn f(x: f32) -> f32 { return double(x) }\n")
+                 .codes(),
+             "E1202");
     CHECK_EQ(with("module app\nuse std.nn.ops::double\nfn double() { return }\n").codes(), "E1204");
     CHECK_EQ(
         Checked({"module pkg.layers.a\npub const N = 2\n",
                  "module pkg.main\nuse crate.layers.a::N\nfn f(x: Tensor[N; f32]) { return }\n"})
             .messages(),
         "");
+}
+
+TEST("sema: import cycles are rejected") {
+    CHECK_EQ(Checked({"module a\nuse b::{Y}\npub const X = 1\n",
+                      "module b\nuse a::{X}\npub const Y = 2\n"})
+                 .codes(),
+             "E1206");
 }
 
 TEST("sema: one mistake yields one diagnostic") {

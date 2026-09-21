@@ -43,3 +43,11 @@ target_compile_definitions(spec_semantic_test PRIVATE
     LINNET_SPEC_TESTS_DIR="${PROJECT_SOURCE_DIR}/spec-tests")
 
 add_test(NAME cli_check_examples COMMAND linnet check ${PROJECT_SOURCE_DIR}/examples)
+
+linnet_add_test(loader_test unit/loader_test.cpp)
+target_compile_definitions(loader_test PRIVATE
+    LINNET_SPEC_TESTS_DIR="${PROJECT_SOURCE_DIR}/spec-tests")
+
+add_test(NAME cli_check_package
+    COMMAND linnet check --std ${PROJECT_SOURCE_DIR}/spec-tests/fixtures/std
+            ${PROJECT_SOURCE_DIR}/spec-tests/fixtures/pkg)

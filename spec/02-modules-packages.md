@@ -31,6 +31,22 @@ This is intentionally safer than executable or relative path imports. Imports MU
 
 `self` and `super` are reserved; support MAY be added later.
 
+### Locating modules
+
+A logical path maps to exactly one source file:
+
+```text
+crate            <package>/src/lib.linnet
+crate.a.b        <package>/src/a/b.linnet
+std.a.b          <standard library>/a/b.linnet
+```
+
+`<package>` is the nearest directory above the importing file that contains `linnet.toml`. Because path segments are identifiers, a logical path can never leave its root directory.
+
+`use a.b::{x, y as z}` imports items from module `a.b`. `use a.b` imports the module itself under its last segment, so that its public items are written `b.x`.
+
+Import cycles between modules are rejected.
+
 ## 2.3 Core prelude
 
 Every module has an implicit, non-shadowable language prelude containing only compiler-defined foundational names. The initial prelude includes:
