@@ -15,7 +15,7 @@ option(LINNET_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 # Interface target carrying the warning and sanitizer policy for project code.
 add_library(linnet_build_options INTERFACE)
 if(MSVC)
-    target_compile_options(linnet_build_options INTERFACE /W4 /permissive- /utf-8)
+    target_compile_options(linnet_build_options INTERFACE /W4 /permissive- /utf-8 /Zc:preprocessor)
     if(LINNET_WARNINGS_AS_ERRORS)
         target_compile_options(linnet_build_options INTERFACE /WX)
     endif()
