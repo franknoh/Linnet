@@ -1,0 +1,6 @@
+module tests.prelude_shadow
+
+pub fn bad(x: f32) -> f32 {
+    let exp = x
+    return exp
+}

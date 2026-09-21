@@ -104,7 +104,11 @@ A numeric reduction may explicitly specify accumulator dtype:
 sum<f32>[d] cast<f32>(x[d]) * cast<f32>(y[d])
 ```
 
-Without an explicit accumulator dtype, accumulation uses the expression dtype.
+Without an explicit accumulator dtype, accumulation uses the expression dtype. With one, the reduced expression MUST already have that dtype; the accumulator dtype never converts implicitly.
+
+`sum`, `prod`, `max`, and `min` reduce `Numeric` values; `any` and `all` reduce `bool` values.
+
+An index variable is not a value: it may appear only as a tensor index. Use `iota(N)[i]` where the position itself is needed.
 
 The result dtype of `sum<T>` and `prod<T>` is `T` unless explicitly converted afterward.
 

@@ -59,7 +59,11 @@ layer.forward(x)
 cast<f32>(x)
 ```
 
-Generic arguments may be inferred where unambiguous.
+Generic arguments may be inferred where unambiguous. Explicit generic arguments bind generic parameters in declaration order, and the remainder are inferred.
+
+Arguments are positional, or named with `name = value`; positional arguments come first. A parameter with a default may be omitted. An optional parameter accepts `none` or an optional value; a plain value MUST be wrapped as `some(value)`.
+
+Every `where` constraint of the callee MUST be provable at the call site from the caller's own constraints.
 
 `name<` begins a generic call only when the matching `>` is immediately followed by `(`; otherwise `<` is the comparison operator. Inside a generic argument list, an argument that is not a type is an arithmetic expression; comparison and logical operators there MUST be parenthesized.
 
@@ -106,6 +110,10 @@ x[:, start:end:step]
 ```
 
 A slice creates a logical tensor view in HIR. Backends determine whether materialization is required.
+
+An integer index removes its axis. A slice `start:stop:step` keeps it with extent `max(0, (min(stop, D) - start + step - 1) / step)` for an axis of size `D`; `start` defaults to `0`, `stop` to `D`, and `step` to `1`. Slice bounds MUST be non-negative compile-time integers and the step a positive integer constant, so that the result shape never depends on runtime data. `...` stands for all axes not addressed explicitly and may appear once. Axes that belong to a shape pack cannot be indexed individually.
+
+Inside index notation (section 6) every tensor access MUST index all axes, using index variables, a pack index, or integers.
 
 Negative literal indices MAY be supported when the dimension is statically known or when the backend plan preserves well-defined indexing semantics. The initial implementation MAY reject negative indices conservatively.
 

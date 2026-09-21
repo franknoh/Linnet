@@ -65,6 +65,14 @@ file = "valid/016_contextual_reduction_names.linnet"
 expect = "ok"
 
 [[case]]
+file = "valid/017_prelude_functions.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/018_calls_and_constraints.linnet"
+expect = "ok"
+
+[[case]]
 file = "invalid/101_shape_mismatch.linnet"
 expect = "error"
 code = "E2201"
@@ -123,3 +131,23 @@ code = "E2119"
 file = "invalid/112_reserved_identifier.linnet"
 expect = "error"
 code = "E1004"
+
+[[case]]
+file = "invalid/113_unsatisfied_constraint.linnet"
+expect = "error"
+code = "E2206"
+
+[[case]]
+file = "invalid/114_reshape_count.linnet"
+expect = "error"
+code = "E2203"
+
+[[case]]
+file = "invalid/115_prelude_shadow.linnet"
+expect = "error"
+code = "E1207"
+
+[[case]]
+file = "invalid/116_unused_reduction_index.linnet"
+expect = "error"
+code = "E3102"

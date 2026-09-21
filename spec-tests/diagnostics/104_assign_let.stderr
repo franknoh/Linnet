@@ -1,0 +1,10 @@
+error E2108: cannot assign to `y`
+
+  --> invalid/104_assign_let.linnet:5:5
+   |
+ 4 |     let y = x
+   |         - not declared with `var`
+ 5 |     y = y + 1.0
+   |     ^
+   |
+   = help: only locals declared with `var` can be reassigned

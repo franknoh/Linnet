@@ -1,0 +1,10 @@
+module tests.unsatisfied_constraint
+
+fn halve<D: Dim>(x: Tensor[D; f32]) -> Tensor[D / 2; f32]
+where D % 2 == 0 {
+    return x[::2]
+}
+
+pub fn bad<D: Dim>(x: Tensor[D; f32]) -> Tensor[D / 2; f32] {
+    return halve(x)
+}

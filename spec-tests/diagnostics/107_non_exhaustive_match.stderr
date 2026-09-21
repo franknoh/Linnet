@@ -1,0 +1,8 @@
+error E2118: `match` does not cover every case
+
+  --> invalid/107_non_exhaustive_match.linnet:4:12
+   |
+ 4 |     return match x {
+   |            ^^^^^^^^^
+   |
+   = note: not covered: none

@@ -1,0 +1,8 @@
+error E2119: `bad` calls itself
+
+  --> invalid/111_recursive_fn.linnet:4:12
+   |
+ 4 |     return bad(x)
+   |            ^^^
+   |
+   = note: recursion is not supported; every call graph must be acyclic

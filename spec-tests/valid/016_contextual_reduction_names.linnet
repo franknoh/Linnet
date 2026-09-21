@@ -1,6 +1,10 @@
 module tests.reduction_names
 
-pub fn largest<N: Dim>(x: Tensor[N; f32]) -> f32 {
-    let max = max[i] x[i]
-    return max
+pub fn total<N: Dim>(x: Tensor[N; f32]) -> f32 {
+    let sum = sum[i] x[i]
+    return sum
+}
+
+pub fn clamp_low<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] {
+    return max(x, 0.0)
 }

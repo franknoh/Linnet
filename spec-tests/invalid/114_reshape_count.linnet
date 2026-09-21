@@ -1,0 +1,6 @@
+module tests.reshape_count
+
+pub fn bad<H: Dim, N: Dim>(x: Tensor[H; f32]) -> Tensor[N, H / N; f32]
+where N > 0 {
+    return reshape(x, [N, H / N])
+}
