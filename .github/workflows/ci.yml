@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.compiler }} ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++-13, clang++-18]
+        preset: [debug, release]
+        include:
+          - compiler: clang++-18
+            preset: sanitize
+    env:
+      CXX: ${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - run: ctest --preset ${{ matrix.preset }}
+      - name: Repository sources are formatter-clean
+        run: build/${{ matrix.preset }}/linnet fmt --check examples spec-tests/valid spec-tests/fixtures
+
+  lint:
+    name: Format and static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18 clang-format-18 clang-tidy-18
+      - run: scripts/check-format.sh
+        env:
+          CLANG_FORMAT: clang-format-18
+      - run: >
+          cmake --preset tidy
+          -DCMAKE_CXX_COMPILER=clang++-18
+          "-DCMAKE_CXX_CLANG_TIDY=clang-tidy-18;--warnings-as-errors=*"
+      - run: cmake --build --preset tidy
+
+  fuzz-smoke:
+    name: Fuzz smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+      - run: cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++-18
+      - run: cmake --build --preset fuzz
+      - run: |
+          mkdir corpus
+          cp spec-tests/valid/*.linnet spec-tests/invalid/*.linnet examples/*/*.linnet corpus/
+          build/fuzz/fuzz/fuzz_frontend -max_total_time=120 -max_len=2048 -timeout=10 \
+            -dict=fuzz/linnet.dict corpus
+
+  windows:
+    name: Windows MSVC
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake --preset msvc
+      - run: cmake --build --preset msvc
+      - run: ctest --preset msvc
+
+  macos:
+    name: macOS Clang
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install ninja
+      - run: cmake --preset debug
+      - run: cmake --build --preset debug
+      - run: ctest --preset debug
