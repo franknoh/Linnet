@@ -43,6 +43,17 @@
             }
         },
         {
+            "name": "fuzz",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "LINNET_BUILD_FUZZERS": "ON",
+                "LINNET_BUILD_TESTS": "OFF"
+            }
+        },
+        {
             "name": "msvc",
             "inherits": "base",
             "generator": "Visual Studio 17 2022",
@@ -58,6 +69,7 @@
         { "name": "release", "configurePreset": "release" },
         { "name": "sanitize", "configurePreset": "sanitize" },
         { "name": "tidy", "configurePreset": "tidy" },
+        { "name": "fuzz", "configurePreset": "fuzz" },
         { "name": "msvc", "configurePreset": "msvc", "configuration": "Debug" }
     ],
     "testPresets": [

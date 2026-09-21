@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(LINNET_WARNINGS_AS_ERRORS "Treat compiler warnings in project code as errors" OFF)
 option(LINNET_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(LINNET_BUILD_FUZZERS "Build libFuzzer targets (requires Clang)" OFF)
 option(LINNET_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 
 # Interface target carrying the warning and sanitizer policy for project code.
@@ -24,6 +25,12 @@ else()
         -Wnon-virtual-dtor -Wold-style-cast -Wimplicit-fallthrough)
     if(LINNET_WARNINGS_AS_ERRORS)
         target_compile_options(linnet_build_options INTERFACE -Werror)
+    endif()
+    if(LINNET_BUILD_FUZZERS)
+        # Instruments all project code; only fuzz targets link the fuzzer runtime.
+        target_compile_options(linnet_build_options INTERFACE
+            -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer)
+        target_link_options(linnet_build_options INTERFACE -fsanitize=address,undefined)
     endif()
     if(LINNET_SANITIZE)
         target_compile_options(linnet_build_options INTERFACE
@@ -56,6 +63,10 @@ target_link_libraries(linnet_core PRIVATE linnet_build_options)
 
 add_executable(linnet src/cli/main.cpp)
 target_link_libraries(linnet PRIVATE linnet::core linnet_build_options)
+
+if(LINNET_BUILD_FUZZERS)
+    add_subdirectory(fuzz)
+endif()
 
 if(LINNET_BUILD_TESTS)
     enable_testing()
