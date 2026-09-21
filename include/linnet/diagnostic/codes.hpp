@@ -79,4 +79,9 @@ inline constexpr const char* pack_index_misuse = "E3106";
 inline constexpr const char* invalid_member_type = "E4101";
 inline constexpr const char* param_payload = "E4102";
 
+// Lints
+inline constexpr const char* unused_import = "W1001";
+inline constexpr const char* unused_local = "W1002";
+inline constexpr const char* unused_member = "W1003";
+
 } // namespace linnet::codes

@@ -712,6 +712,7 @@ TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& membe
         const Scope& scope = decls_[data.decl].scope;
         const auto found = scope.find(member.member.text);
         if (found != scope.end() && entities_[found->second].kind == EntityKind::Member) {
+            entities_[found->second].is_used = true;
             resolve(found->second);
             return types_.substitute(entities_[found->second].type, substitution_of(data));
         }

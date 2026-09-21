@@ -1,5 +1,6 @@
 #include "linnet/ast/dump.hpp"
 #include "linnet/diagnostic/diagnostic.hpp"
+#include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
 #include "linnet/module/loader.hpp"
@@ -48,8 +49,11 @@ void print_usage(std::FILE* out) {
     std::fputs("Usage: linnet <command> [options]\n"
                "\n"
                "Commands:\n"
-               "  check [--std <dir>] <path>...        Check syntax, types, and shapes of the\n"
+               "  check [options] <path>...            Check syntax, types, and shapes of the\n"
                "                                       given files and everything they import\n"
+               "      --strict                         Treat warnings as errors\n"
+               "      --json                           Print diagnostics as JSON on stdout\n"
+               "      --std <dir>                      Standard library directory\n"
                "  fmt [--check] <path>...              Format files, or directories recursively;\n"
                "                                       `-` formats stdin to stdout\n"
                "  inspect (--tokens | --ast) <file>    Show compiler-internal views of a file\n"
@@ -69,10 +73,21 @@ int usage_error(const std::string& message) {
 
 struct Options {
     bool color = stderr_is_terminal();
+    bool json = false;   // diagnostics as JSON on stdout
+    bool strict = false; // warnings fail the command
 };
 
 int report(const SourceManager& sources, DiagnosticSink& sink, const Options& options) {
     sink.sort_by_location();
+    bool has_warnings = false;
+    for (const Diagnostic& diagnostic : sink.diagnostics()) {
+        has_warnings = has_warnings || diagnostic.severity == Severity::Warning;
+    }
+    const bool has_failed = sink.has_errors() || (options.strict && has_warnings);
+    if (options.json) {
+        std::fputs(render_json(sources, sink.diagnostics()).c_str(), stdout);
+        return has_failed ? exit_failure : exit_success;
+    }
     bool is_first = true;
     for (const Diagnostic& diagnostic : sink.diagnostics()) {
         if (!is_first) {
@@ -82,7 +97,7 @@ int report(const SourceManager& sources, DiagnosticSink& sink, const Options& op
         const std::string text = render_diagnostic(sources, diagnostic, {.color = options.color});
         std::fputs(text.c_str(), stderr);
     }
-    return sink.has_errors() ? exit_failure : exit_success;
+    return has_failed ? exit_failure : exit_success;
 }
 
 void collect_sources(const std::filesystem::path& root, std::vector<std::filesystem::path>& out);
@@ -111,7 +126,7 @@ std::filesystem::path find_std_root(const std::string& option, const char* progr
     return {};
 }
 
-int run_check(std::span<const std::string_view> args, const Options& options, const char* program) {
+int run_check(std::span<const std::string_view> args, Options options, const char* program) {
     std::vector<std::filesystem::path> paths;
     std::string std_option;
     bool has_path = false;
@@ -122,6 +137,10 @@ int run_check(std::span<const std::string_view> args, const Options& options, co
                 return usage_error("--std requires a directory");
             }
             std_option = args[++i];
+        } else if (arg == "--json") {
+            options.json = true;
+        } else if (arg == "--strict") {
+            options.strict = true;
         } else if (arg.starts_with("-")) {
             return usage_error("unknown check option '" + std::string(arg) + "'");
         } else {

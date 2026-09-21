@@ -50,6 +50,8 @@ struct Entity {
     EntityId parent = no_entity; // enclosing block of members and methods
     bool is_pub = false;
     bool is_mutable = false;      // Local declared with `var`
+    bool is_parameter = false;    // Local that is a function parameter
+    bool is_used = false;         // referenced at least once
     shape::SymbolId symbol = 0;   // GenericDim, GenericPack
     DTypeVarId dtype_var = 0;     // GenericDType
     std::uint32_t module_ref = 0; // Module: index of the module it names
@@ -136,7 +138,11 @@ private:
     // Reports on destruction, so call sites can chain notes and help.
     class Report {
     public:
-        Report(Checker& checker, const char* code, SourceSpan span, std::string message);
+        Report(Checker& checker,
+               const char* code,
+               SourceSpan span,
+               std::string message,
+               Severity severity = Severity::Error);
         Report(const Report&) = delete;
         Report& operator=(const Report&) = delete;
         ~Report();
@@ -150,6 +156,7 @@ private:
         Diagnostic diagnostic_;
     };
     Report error(const char* code, SourceSpan span, std::string message);
+    Report warning(const char* code, SourceSpan span, std::string message);
 
     // Where names are currently being resolved.
     struct Env {
@@ -193,7 +200,8 @@ private:
     void report_recursion();
 
     // ------------------------------------------------------------------- names
-    EntityId lookup(std::string_view name) const;
+    EntityId lookup(std::string_view name);
+    void report_unused();
     EntityId lookup_in_module(std::uint32_t module, const ast::Name& name);
     IndexVar* find_index(std::string_view name);
     EntityId declare_local(const ast::Name& name, TypeId type, bool is_mutable);
@@ -302,6 +310,13 @@ private:
     // Per module: names that a failed import would have introduced. Uses of
     // them are consequences of that failure and are not reported again.
     std::vector<std::vector<std::string_view>> failed_imports_;
+    struct ImportedName {
+        std::uint32_t module;
+        std::string_view name;
+        SourceSpan span;
+        bool is_used = false;
+    };
+    std::vector<ImportedName> imported_names_;
     Env* env_ = nullptr;
     AnalysisResult result_;
 };
