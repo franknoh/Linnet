@@ -138,7 +138,12 @@ private:
         if (std::holds_alternative<ErrorExpr>(node.data)) {
             return "<error>";
         }
-        return "{" + std::string(source_text(node.span)) + "}";
+        if (const auto* member = std::get_if<MemberExpr>(&node.data)) {
+            return inline_expr(member->base) + "." + name(member->member);
+        }
+        // Other forms are rare inside types. Their source text is not shown:
+        // the dump must not depend on layout or comments.
+        return "{expr}";
     }
 
     std::string_view source_text(SourceSpan span) const { return sources_.text(span); }
