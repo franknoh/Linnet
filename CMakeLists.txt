@@ -40,6 +40,7 @@ configure_file(
 add_library(linnet_core STATIC
     src/diagnostic/diagnostic.cpp
     src/diagnostic/render.cpp
+    src/format/doc.cpp
     src/source/source_manager.cpp
     src/source/utf8.cpp)
 add_library(linnet::core ALIAS linnet_core)
