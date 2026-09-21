@@ -23,3 +23,6 @@ node_modules/
 /.idea/
 *.swp
 .DS_Store
+
+# Copied from editors/textmate when packaging the extension
+/editors/vscode/syntaxes/
