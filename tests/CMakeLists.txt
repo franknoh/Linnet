@@ -15,3 +15,5 @@ set_tests_properties(cli_version PROPERTIES PASS_REGULAR_EXPRESSION "^linnet [0-
 
 add_test(NAME cli_unknown_command COMMAND linnet no-such-command)
 set_tests_properties(cli_unknown_command PROPERTIES WILL_FAIL TRUE)
+
+linnet_add_test(source_manager_test unit/source_manager_test.cpp)

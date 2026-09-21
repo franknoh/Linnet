@@ -37,9 +37,17 @@ configure_file(
     ${CMAKE_CURRENT_BINARY_DIR}/generated/linnet/version.hpp
     @ONLY)
 
+add_library(linnet_core STATIC
+    src/source/source_manager.cpp
+    src/source/utf8.cpp)
+add_library(linnet::core ALIAS linnet_core)
+target_include_directories(linnet_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(linnet_core PRIVATE linnet_build_options)
+
 add_executable(linnet src/cli/main.cpp)
-target_include_directories(linnet PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
-target_link_libraries(linnet PRIVATE linnet_build_options)
+target_link_libraries(linnet PRIVATE linnet::core linnet_build_options)
 
 if(LINNET_BUILD_TESTS)
     enable_testing()

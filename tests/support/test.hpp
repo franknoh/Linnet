@@ -3,6 +3,7 @@
 // Minimal self-registering test harness. Each test executable defines cases
 // with TEST(...) and links tests/support/test_main.cpp.
 
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -20,19 +21,31 @@ std::vector<TestCase>& registry();
 void report_failure(const char* file, int line, const std::string& message);
 
 struct Registrar {
-    Registrar(const char* name, void (*run)()) { registry().push_back({name, run}); }
+    // Runs during static initialization, where an exception could not be caught.
+    Registrar(const char* name, void (*run)()) noexcept {
+        try {
+            registry().push_back({name, run});
+        } catch (...) {
+            std::abort();
+        }
+    }
 };
 
 template <typename T>
 std::string describe(const T& value) {
     if constexpr (std::is_enum_v<T>) {
         return std::to_string(static_cast<long long>(value));
+    } else if constexpr (std::is_same_v<T, char8_t> || std::is_same_v<T, char16_t> ||
+                         std::is_same_v<T, char32_t>) {
+        return "U+" + std::to_string(static_cast<unsigned long>(value));
     } else if constexpr (std::is_convertible_v<const T&, std::string_view>) {
         return '"' + std::string(std::string_view(value)) + '"';
-    } else {
+    } else if constexpr (requires(std::ostream& out) { out << value; }) {
         std::ostringstream out;
         out << value;
         return out.str();
+    } else {
+        return "<unprintable>";
     }
 }
 
@@ -58,10 +71,12 @@ void check_equal(
         name, &LINNET_TEST_CONCAT(linnet_test_fn_, __LINE__)};                                     \
     static void LINNET_TEST_CONCAT(linnet_test_fn_, __LINE__)()
 
-#define CHECK(condition)                                                                           \
+// Variadic so that conditions containing top-level commas (braced
+// initializers) can be written without extra parentheses.
+#define CHECK(...)                                                                                 \
     do {                                                                                           \
-        if (!(condition)) {                                                                        \
-            ::linnet::test::report_failure(__FILE__, __LINE__, "CHECK(" #condition ")");           \
+        if (!(__VA_ARGS__)) {                                                                      \
+            ::linnet::test::report_failure(__FILE__, __LINE__, "CHECK(" #__VA_ARGS__ ")");         \
         }                                                                                          \
     } while (false)
 
