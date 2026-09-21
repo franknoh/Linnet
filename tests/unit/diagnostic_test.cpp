@@ -51,13 +51,15 @@ TEST("render: primary label with code, note, and help") {
     diagnostic.help.push_back("did you mean `for`?");
 
     CHECK_EQ(render_diagnostic(sources, diagnostic),
-             "error[E0001]: unknown name `foo`\n"
-             " --> m.linnet:2:13\n"
-             "  |\n"
-             "2 |     let x = foo\n"
-             "  |             ^^^ not found\n"
-             "  = note: names must be declared before use\n"
-             "  = help: did you mean `for`?\n");
+             "error E0001: unknown name `foo`\n"
+             "\n"
+             "  --> m.linnet:2:13\n"
+             "   |\n"
+             " 2 |     let x = foo\n"
+             "   |             ^^^ not found\n"
+             "   |\n"
+             "   = note: names must be declared before use\n"
+             "   = help: did you mean `for`?\n");
 }
 
 TEST("render: secondary labels, line gaps, and gutter width") {
@@ -73,6 +75,7 @@ TEST("render: secondary labels, line gaps, and gutter width") {
 
     CHECK_EQ(render_diagnostic(sources, diagnostic),
              "error: duplicate definition\n"
+             "\n"
              "  --> m.linnet:11:5\n"
              "   |\n"
              " 1 | let a = 1\n"
@@ -92,14 +95,15 @@ TEST("render: labels in another file") {
 
     CHECK_EQ(render_diagnostic(sources, diagnostic),
              "warning: cannot import\n"
-             " --> a.linnet:1:5\n"
-             "  |\n"
-             "1 | use b\n"
-             "  |     ^\n"
-             " ::: b.linnet:1:1\n"
-             "  |\n"
-             "1 | op x\n"
-             "  | -- declared here\n");
+             "\n"
+             "  --> a.linnet:1:5\n"
+             "   |\n"
+             " 1 | use b\n"
+             "   |     ^\n"
+             "  ::: b.linnet:1:1\n"
+             "   |\n"
+             " 1 | op x\n"
+             "   | -- declared here\n");
 }
 
 TEST("render: tabs, multibyte text, and end-of-file spans") {
@@ -108,17 +112,19 @@ TEST("render: tabs, multibyte text, and end-of-file spans") {
     // Span covers the invalid byte; the column counts code points.
     CHECK_EQ(render_diagnostic(sources, error_at({file, 6, 7}, "invalid UTF-8")),
              "error: invalid UTF-8\n"
-             " --> m.linnet:1:6\n"
-             "  |\n"
-             "1 |     \xC3\xA9 = \xEF\xBF\xBDz\n"
-             "  |         ^\n");
+             "\n"
+             "  --> m.linnet:1:6\n"
+             "   |\n"
+             " 1 |     \xC3\xA9 = \xEF\xBF\xBDz\n"
+             "   |         ^\n");
     // Empty span at end of file still gets one caret.
     CHECK_EQ(render_diagnostic(sources, error_at({file, 8, 8}, "unexpected end of file")),
              "error: unexpected end of file\n"
-             " --> m.linnet:1:8\n"
-             "  |\n"
-             "1 |     \xC3\xA9 = \xEF\xBF\xBDz\n"
-             "  |           ^\n");
+             "\n"
+             "  --> m.linnet:1:8\n"
+             "   |\n"
+             " 1 |     \xC3\xA9 = \xEF\xBF\xBDz\n"
+             "   |           ^\n");
 }
 
 TEST("render: multi-line span underlines its first line") {
@@ -126,10 +132,11 @@ TEST("render: multi-line span underlines its first line") {
     const FileId file = sources.add_file("m.linnet", "/* open\nnever closed").value();
     CHECK_EQ(render_diagnostic(sources, error_at({file, 0, 20}, "unterminated block comment")),
              "error: unterminated block comment\n"
-             " --> m.linnet:1:1\n"
-             "  |\n"
-             "1 | /* open\n"
-             "  | ^^^^^^^\n");
+             "\n"
+             "  --> m.linnet:1:1\n"
+             "   |\n"
+             " 1 | /* open\n"
+             "   | ^^^^^^^\n");
 }
 
 TEST("render: location-free diagnostic") {
@@ -138,7 +145,7 @@ TEST("render: location-free diagnostic") {
     diagnostic.help.push_back("run `linnet init`");
     CHECK_EQ(render_diagnostic(sources, diagnostic),
              "error: no package manifest found\n"
-             "  = help: run `linnet init`\n");
+             "   = help: run `linnet init`\n");
 }
 
 TEST("render: color wraps output in ANSI sequences") {

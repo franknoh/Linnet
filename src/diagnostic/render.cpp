@@ -100,8 +100,13 @@ public:
     std::string render() {
         render_header();
         if (diagnostic_.has_location()) {
+            out_ += '\n';
             place_labels();
             render_excerpts();
+            if (!diagnostic_.notes.empty() || !diagnostic_.help.empty()) {
+                gutter("", '|');
+                out_ += '\n';
+            }
         }
         render_footers("note", diagnostic_.notes);
         render_footers("help", diagnostic_.help);
@@ -113,9 +118,8 @@ private:
         out_ += style_.severity;
         out_ += severity_name(diagnostic_.severity);
         if (!diagnostic_.code.empty()) {
-            out_ += '[';
+            out_ += ' ';
             out_ += diagnostic_.code;
-            out_ += ']';
         }
         out_ += style_.reset;
         out_ += style_.bold;
@@ -258,7 +262,7 @@ private:
     const RenderOptions& options_;
     Style style_;
     std::vector<PlacedLabel> labels_;
-    std::uint32_t gutter_width_ = 1;
+    std::uint32_t gutter_width_ = 2;
     std::string out_;
 };
 

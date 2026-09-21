@@ -14,14 +14,16 @@ struct RenderOptions {
 
 // Renders one diagnostic as human-readable text with source excerpts:
 //
-//   error[E0001]: message
-//    --> path.linnet:3:5
-//     |
-//   3 | let x = foo
-//     |     ^ primary label
-//     |         --- secondary label
-//     = note: ...
-//     = help: ...
+//   error E0001: message
+//
+//     --> path.linnet:3:5
+//      |
+//    3 | let x = foo
+//      |     ^ primary label
+//      |         --- secondary label
+//      |
+//      = note: ...
+//      = help: ...
 //
 // Reported columns are 1-based and count Unicode code points. Spans covering
 // several lines are underlined on their first line only.
