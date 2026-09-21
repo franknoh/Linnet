@@ -1,0 +1,8 @@
+error E4102: a `param` cannot have a value in source
+
+  --> invalid/108_param_payload.linnet:4:36
+   |
+ 4 |     param weight: Tensor[H; f32] = make_weight(H)
+   |                                    ^^^^^^^^^^^^^^
+   |
+   = note: parameter data is bound externally; the only default is `none`, which marks an optional parameter as possibly absent

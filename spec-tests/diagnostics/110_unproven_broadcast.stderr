@@ -1,0 +1,11 @@
+error E2207: cannot prove that these shapes broadcast
+
+  --> invalid/110_unproven_broadcast.linnet:7:12
+   |
+ 7 |     return x + y
+   |            ^^^^^
+   |
+   = note: `A` and `B` must be equal, or one of them must be 1
+   = note: left shape is [A]
+   = note: right shape is [B]
+   = help: use one shared dimension parameter or add a `where` constraint

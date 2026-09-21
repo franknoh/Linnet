@@ -136,6 +136,10 @@ If no context exists:
 
 A literal conversion is valid only if its value is representable by the target scalar type. This rule does not constitute general implicit dtype conversion between tensor values.
 
+An integer literal adopts any `Numeric` dtype; a floating literal adopts only a `Float` dtype. Neither converts to `bool`. Integer literals are limited to the range of `i64`.
+
+Compile-time integers behave like integer literals: a `Dim` generic parameter, an unannotated integer `const`, and arithmetic over them are contextual in the same way, so `x * H` is valid for a floating tensor `x`. An unannotated `let` gives a constant integer the type `i64`, while a symbolic dimension such as `H / 2` stays a compile-time integer that can be used in shapes.
+
 ## 1.8 Whitespace and statement termination
 
 Whitespace is not semantically significant except that it separates tokens.

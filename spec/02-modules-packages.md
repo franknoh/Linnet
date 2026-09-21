@@ -44,7 +44,30 @@ Every module has an implicit, non-shadowable language prelude containing only co
 
 The prelude MUST remain small and model-independent. `linear`, `softmax`, `attention`, `rope`, normalization layers, convolutions, and similar semantic operations are library code and are not implicit prelude names.
 
-Prelude names may be referenced without a `use` declaration. User packages cannot redefine or shadow a core prelude name in a context where that would change program meaning.
+Prelude names may be referenced without a `use` declaration. No declaration — item, parameter, generic parameter, or local — may use a prelude name.
+
+### Prelude functions
+
+In the signatures below, `x` stands for a scalar or a tensor, and the result has the shape of its tensor operands after broadcasting.
+
+```text
+cast<T>(x)                     same shape, dtype T; T is required
+exp log sqrt rsqrt sin cos tanh (x)    x must have a Float dtype
+abs(x)                         x must have a Numeric dtype
+min(a, b)  max(a, b)           elementwise on Numeric operands of one dtype;
+                               on two compile-time integers, a dimension
+select(condition, a, b)        condition is bool; a and b share one dtype
+reshape(x, shape)              element counts must be provably equal
+broadcast_to(x, shape)         each trailing axis of x must equal the target or be 1
+permute(x, axes)               axes is a permutation of 0..rank-1; rank must be known
+concat(a, b, ..., axis = k)    equal shapes except along axis k; `axis` is a keyword.
+                               k >= 0 counts axes from the front, k < 0 from the back;
+                               no shape pack may lie on the side being counted
+iota<T = i64>(n)               Tensor[n; T] holding 0, 1, ..., n - 1
+fill<T>(shape, value)          T may be omitted when `value` is a typed scalar
+```
+
+`shape` and `axes` arguments are shape literals. `pad`, `gather`, and `scatter` are reserved prelude names whose signatures are not yet specified; an implementation MUST reject calls to them rather than guess.
 
 ## 2.4 Visibility
 

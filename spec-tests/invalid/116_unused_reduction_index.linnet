@@ -1,0 +1,5 @@
+module tests.unused_reduction_index
+
+pub fn bad<N: Dim>(x: Tensor[N; f32]) -> f32 {
+    return sum[i, j] x[i]
+}
