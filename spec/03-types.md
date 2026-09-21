@@ -94,7 +94,7 @@ let (q, k) = rope(q, k, positions)
 Structs provide nominal aggregate types:
 
 ```text
-struct KVPair<K, V> {
+struct KVPair<K: DType, V: DType> {
     key: K
     value: V
 }

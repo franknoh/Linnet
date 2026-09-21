@@ -92,6 +92,10 @@ Multiple axes:
 sum[i, j] expr
 ```
 
+The reduced expression extends as far to the right as possible, so `x + sum[i] a[i] * b[i]` reduces the whole product.
+
+Reduction names are contextual rather than reserved. `sum`, `prod`, `max`, `min`, `any`, and `all` begin a reduction only when immediately followed by an index list (`sum[i]`) or an accumulator dtype and an index list (`sum<f32>[i]`). In every other position they are ordinary identifiers, so `max(A, B)` remains a call. A value with one of these names therefore cannot be indexed directly.
+
 ## 6.8 Accumulation dtype
 
 A numeric reduction may explicitly specify accumulator dtype:

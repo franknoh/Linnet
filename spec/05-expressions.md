@@ -12,7 +12,11 @@ Local `var` assignment is syntactic convenience and lowers to SSA values; it is 
 let q = linear(x, q_weight)
 ```
 
-A `let` binding is immutable.
+A `let` binding is immutable. It may carry a type annotation, which also gives contextual literals their type:
+
+```text
+let scale: f32 = 0.5
+```
 
 Tuple destructuring:
 
@@ -56,6 +60,8 @@ cast<f32>(x)
 ```
 
 Generic arguments may be inferred where unambiguous.
+
+`name<` begins a generic call only when the matching `>` is immediately followed by `(`; otherwise `<` is the comparison operator. Inside a generic argument list, an argument that is not a type is an arithmetic expression; comparison and logical operators there MUST be parenthesized.
 
 ## 5.6 `if` expression
 

@@ -53,6 +53,18 @@ file = "valid/013_contextual_literals.linnet"
 expect = "ok"
 
 [[case]]
+file = "valid/014_let_annotation.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/015_generic_call_vs_comparison.linnet"
+expect = "ok"
+
+[[case]]
+file = "valid/016_contextual_reduction_names.linnet"
+expect = "ok"
+
+[[case]]
 file = "invalid/101_shape_mismatch.linnet"
 expect = "error"
 code = "E2201"

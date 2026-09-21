@@ -57,7 +57,7 @@ statement          = let_stmt
                    | return_stmt
                    | static_for_stmt ;
 
-let_stmt           = "let", ( pattern, "=", expr | comprehension_lhs, "=", expr ) ;
+let_stmt           = "let", ( pattern, [ ":", type ], "=", expr | comprehension_lhs, "=", expr ) ;
 var_stmt           = "var", identifier, [ ":", type ], "=", expr ;
 assign_stmt        = identifier, "=", expr ;
 return_stmt        = "return", [ expr ] ;
@@ -91,7 +91,7 @@ generic_arguments  = "<", type_or_expr, { ",", type_or_expr }, [ "," ], ">" ;
 argument           = [ identifier, "=" ], expr ;
 member_suffix      = ".", identifier ;
 index_suffix       = "[", index_component, { ",", index_component }, "]" ;
-index_component    = expr | "..." | slice_component ;
+index_component    = expr | "..." | "*", identifier | slice_component ;
 slice_component    = [ expr ], ":", [ expr ], [ ":", [ expr ] ] ;
 
 primary            = literal
@@ -108,6 +108,8 @@ shape_literal      = "[", [ expr, { ",", expr }, [ "," ] ], "]" ;
 
 reduction_expr     = reduction_kind, [ "<", scalar_type, ">" ],
                      "[", reduction_index, { ",", reduction_index }, "]", expr ;
+(* Reduction names are contextual: they begin a reduction only when followed
+   by "[" or by "<", scalar_type, ">", "[". Elsewhere they are identifiers. *)
 reduction_kind     = "sum" | "prod" | "max" | "min" | "any" | "all" ;
 reduction_index    = identifier ;
 
@@ -131,7 +133,10 @@ tuple_type         = "(", type, ",", [ type, { ",", type }, [ "," ] ], ")" ;
 array_type         = "[", type, ";", expr, "]" ;
 named_type         = module_path, [ generic_arguments ] ;
 type_atom          = scalar_type | named_type ;
-type_or_expr       = type | expr ;
+(* A generic argument is a type when it parses as one; otherwise it is an
+   arithmetic expression. Comparison and logical operators must be
+   parenthesized inside generic argument lists. *)
+type_or_expr       = type | additive ;
 
 literal            = integer_literal | float_literal | string_literal | "true" | "false" ;
 comparison_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" ;

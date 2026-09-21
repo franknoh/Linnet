@@ -1,0 +1,6 @@
+module tests.reduction_names
+
+pub fn largest<N: Dim>(x: Tensor[N; f32]) -> f32 {
+    let max = max[i] x[i]
+    return max
+}

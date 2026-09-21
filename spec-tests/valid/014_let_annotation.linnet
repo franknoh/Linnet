@@ -1,0 +1,6 @@
+module tests.let_annotation
+
+pub fn half(x: f32) -> f32 {
+    let scale: f32 = 0.5
+    return x * scale
+}

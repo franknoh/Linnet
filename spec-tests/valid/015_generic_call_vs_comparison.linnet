@@ -1,0 +1,9 @@
+module tests.generic_call
+
+pub fn widen<B: Dim, H: Dim>(x: Tensor[B, H; bf16]) -> Tensor[B, H; f32] {
+    return cast<f32>(x)
+}
+
+pub fn in_range(a: i32, b: i32, c: i32) -> bool {
+    return a < b && c > (a)
+}
