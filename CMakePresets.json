@@ -1,0 +1,74 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "LINNET_WARNINGS_AS_ERRORS": "ON",
+                "LINNET_BUILD_TESTS": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "release",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "sanitize",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "LINNET_SANITIZE": "ON"
+            }
+        },
+        {
+            "name": "tidy",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_CXX_CLANG_TIDY": "clang-tidy;--warnings-as-errors=*"
+            }
+        },
+        {
+            "name": "msvc",
+            "inherits": "base",
+            "generator": "Visual Studio 17 2022",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "debug", "configurePreset": "debug" },
+        { "name": "release", "configurePreset": "release" },
+        { "name": "sanitize", "configurePreset": "sanitize" },
+        { "name": "tidy", "configurePreset": "tidy" },
+        { "name": "msvc", "configurePreset": "msvc", "configuration": "Debug" }
+    ],
+    "testPresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "output": { "outputOnFailure": true }
+        },
+        { "name": "debug", "inherits": "base", "configurePreset": "debug" },
+        { "name": "release", "inherits": "base", "configurePreset": "release" },
+        { "name": "sanitize", "inherits": "base", "configurePreset": "sanitize" },
+        { "name": "msvc", "inherits": "base", "configurePreset": "msvc", "configuration": "Debug" }
+    ]
+}

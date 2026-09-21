@@ -1,0 +1,13 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  misc-const-correctness,
+  misc-unused-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  performance-*,
+  readability-container-size-empty,
+  readability-redundant-*
+HeaderFilterRegex: '(include/linnet|src|tests)/.*'

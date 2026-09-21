@@ -1,0 +1,25 @@
+# Build output
+/build/
+/.cache/
+/compile_commands.json
+
+# Local scratch output
+/.artifacts/
+/tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+*.vsix
+
+# Editor state
+/.vscode/
+/.idea/
+*.swp
+.DS_Store
