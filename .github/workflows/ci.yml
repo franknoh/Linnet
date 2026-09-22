@@ -96,7 +96,7 @@ jobs:
         working-directory: editors/vscode
 
   python:
-    name: linnet_torch
+    name: Python adapters
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -111,6 +111,16 @@ jobs:
         working-directory: python/linnet_torch
       - run: uv run pytest -q
         working-directory: python/linnet_torch
+        env:
+          LINNET_BIN: ${{ github.workspace }}/build/release/linnet
+      - run: uv sync --all-extras
+        working-directory: python/linnet_jax
+      - run: uv run ruff check src tests && uv run ruff format --check src tests
+        working-directory: python/linnet_jax
+      - run: uv run pyright
+        working-directory: python/linnet_jax
+      - run: uv run pytest -q
+        working-directory: python/linnet_jax
         env:
           LINNET_BIN: ${{ github.workspace }}/build/release/linnet
 

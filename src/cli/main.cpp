@@ -397,11 +397,14 @@ int run_emit(std::span<const std::string_view> args, const Options& options) {
         }
         text.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
     }
-    const auto core = backend::import_plan(text);
+    auto core = backend::import_plan(text);
     if (!core) {
         std::fprintf(stderr, "linnet: %s\n", core.error().c_str());
         return exit_failure;
     }
+    // Adapters translate whole graphs; values nothing uses are not worth
+    // a line of source.
+    opt::eliminate_dead_code(*core);
     const auto source = emit::emit_source(*core, emit::EmitOptions{});
     if (!source) {
         std::fprintf(stderr, "linnet: cannot emit source: %s\n", source.error().c_str());
