@@ -151,3 +151,8 @@ code = "E1207"
 file = "invalid/116_unused_reduction_index.linnet"
 expect = "error"
 code = "E3102"
+
+[[case]]
+file = "invalid/117_tuple_match_arm.linnet"
+expect = "error"
+code = "E1101"

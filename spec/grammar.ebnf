@@ -75,7 +75,10 @@ expr               = if_expr | match_expr | logical_or ;
 if_expr            = "if", expr, block_expr, "else", block_expr ;
 block_expr         = "{", expr, "}" ;
 match_expr         = "match", expr, "{", match_arm, { match_arm }, "}" ;
-match_arm          = pattern, "=>", expr ;
+(* An arm pattern never starts with "(": arms have no separator, and a
+   parenthesized pattern would read as a call on the previous arm's value. *)
+match_arm          = arm_pattern, "=>", expr ;
+arm_pattern        = identifier | "some", "(", pattern, ")" | "none" ;
 
 logical_or         = logical_and, { "||", logical_and } ;
 logical_and        = equality, { "&&", equality } ;

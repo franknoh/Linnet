@@ -1,0 +1,8 @@
+module tests.tuple_match_arm
+
+pub fn bad(o: (f32, f32)?, x: f32) -> f32 {
+    return match o {
+        (a, b) => a + b
+        none => x
+    }
+}
