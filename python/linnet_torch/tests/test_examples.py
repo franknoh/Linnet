@@ -211,3 +211,80 @@ def test_vit_matches_reference(tmp_path: Path) -> None:
     pooled = layer_norm(x, w["norm.weight"], w["norm.bias"])[:, 0, :]
     reference = linear(pooled, "head")
     torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
+
+
+def test_clip_matches_reference(tmp_path: Path) -> None:
+    height, width, channels, patch = 8, 8, 3, 4
+    vocab, context, D, heads, inner, layers, embed = 11, 16, 8, 2, 16, 2, 6  # noqa: N806
+    generics: dict[str, int | str] = {
+        "Height": height,
+        "Width": width,
+        "Channels": channels,
+        "Patch": patch,
+        "Vocab": vocab,
+        "Context": context,
+        "D": D,
+        "Heads": heads,
+        "Inner": inner,
+        "Layers": layers,
+        "Embed": embed,
+        "T": "f32",
+    }
+    source = EXAMPLES / "13-clip/src/lib.linnet"
+    model, w = _with_random_weights(source, generics, tmp_path)
+    B, C, S = 2, 3, 5  # noqa: N806
+    image = torch.randn(B, channels, height, width)
+    tokens = torch.randint(0, vocab, (C, S), dtype=torch.int32)
+    similarity = model.run_entry("similarity", [image, tokens])
+    assert similarity.shape == (B, C)
+
+    def linear(x: torch.Tensor, prefix: str) -> torch.Tensor:
+        return x @ w[prefix + ".weight"].T + w[prefix + ".bias"]
+
+    def encoder(x: torch.Tensor, prefix: str, causal: bool) -> torch.Tensor:
+        n = x.shape[1]
+        for i in range(layers):
+            p = f"{prefix}.layers.{i}."
+            h = layer_norm(x, w[p + "norm_1.weight"], w[p + "norm_1.bias"])
+            qkv = linear(h, p + "qkv")
+            q, k, v = (
+                qkv[..., j * D : (j + 1) * D].reshape(-1, n, heads, D // heads).permute(0, 2, 1, 3)
+                for j in range(3)
+            )
+            mixed = causal_attention(q, k, v, (D // heads) ** -0.5, causal)
+            x = x + linear(mixed.permute(0, 2, 1, 3).reshape(-1, n, D), p + "out")
+            h = layer_norm(x, w[p + "norm_2.weight"], w[p + "norm_2.bias"])
+            x = x + linear(
+                torch.nn.functional.gelu(linear(h, p + "up"), approximate="tanh"), p + "down"
+            )
+        return x
+
+    def normalize(x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt((x * x).sum(-1, keepdim=True) + 1e-12)
+
+    n = (height // patch) * (width // patch)
+    patches = (
+        image.reshape(B, channels, height // patch, patch, width // patch, patch)
+        .permute(0, 2, 4, 1, 3, 5)
+        .reshape(B, n, channels * patch * patch)
+    )
+    v = torch.cat(
+        [w["vision.class_token"].expand(B, 1, D), linear(patches, "vision.patch_embed")], 1
+    )
+    v = layer_norm(
+        v + w["vision.positions"], w["vision.pre_norm.weight"], w["vision.pre_norm.bias"]
+    )
+    v = encoder(v, "vision.encoder", causal=False)[:, 0, :]
+    v = linear(
+        layer_norm(v, w["vision.post_norm.weight"], w["vision.post_norm.bias"]), "vision.projection"
+    )
+    t = w["text.token_embedding"][tokens.long()] + w["text.positions"][:S]
+    t = encoder(t, "text.encoder", causal=True)[:, S - 1, :]
+    t = linear(
+        layer_norm(t, w["text.final_norm.weight"], w["text.final_norm.bias"]), "text.projection"
+    )
+    reference = (normalize(v) @ normalize(t).T) * torch.exp(w["logit_scale"])
+    torch.testing.assert_close(similarity, reference, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(
+        model.run_entry("embed_image", [image]), normalize(v), atol=1e-4, rtol=1e-4
+    )

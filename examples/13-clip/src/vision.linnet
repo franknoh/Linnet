@@ -1,0 +1,49 @@
+// The image tower: patches, a class token, positions, the shared encoder,
+// and a projection of the class token into the joint embedding space.
+module clip.vision
+
+use crate.encoder::{Encoder, LayerNorm}
+use std.nn.linear::{Linear}
+
+pub block VisionTower<
+    Height: Dim,
+    Width: Dim,
+    Channels: Dim,
+    Patch: Dim,
+    D: Dim,
+    Heads: Dim,
+    Inner: Dim,
+    Layers: Dim,
+    Embed: Dim,
+    T: Float,
+>
+where
+    Patch > 0,
+    Heads > 0,
+    Height % Patch == 0,
+    Width % Patch == 0,
+    D % Heads == 0
+{
+    sub patch_embed: Linear<Channels * Patch * Patch, D, T>
+    param class_token: Tensor[1, 1, D; T]
+    param positions: Tensor[(Height / Patch) * (Width / Patch) + 1, D; T]
+    sub pre_norm: LayerNorm<D, T>
+    sub encoder: Encoder<D, Heads, Inner, Layers, T>
+    sub post_norm: LayerNorm<D, T>
+    sub projection: Linear<D, Embed, T>
+
+    pub fn forward<B: Dim>(image: Tensor[B, Channels, Height, Width; T]) -> Tensor[B, Embed; T] {
+        let grid = reshape(image, [B, Channels, Height / Patch, Patch, Width / Patch, Patch])
+        let patches = reshape(
+            permute(grid, [0, 2, 4, 1, 3, 5]),
+            [B, (Height / Patch) * (Width / Patch), Channels * Patch * Patch],
+        )
+        let tokens = concat(
+            broadcast_to(class_token, [B, 1, D]),
+            patch_embed.forward(patches),
+            axis = 1,
+        )
+        let encoded = encoder.forward(pre_norm.forward(tokens + positions), none)
+        return projection.forward(post_norm.forward(encoded[:, 0, :]))
+    }
+}
