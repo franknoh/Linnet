@@ -57,10 +57,12 @@ void print_usage(std::FILE* out) {
         "Usage: linnet <command> [options]\n"
         "\n"
         "Commands:\n"
-        "  plan [--root <Block>] [--std <dir>] [--no-optimize] <file>\n"
+        "  plan [--root <Block>] [--std <dir>] [--numerics exact|equivalent]\n"
+        "       [--no-optimize] <file>\n"
         "                                       Print the materializer plan (JSON) of a\n"
         "                                       root block and everything it uses\n"
-        "  explain [--std <dir>] <file>         Show how each semantic operation would be\n"
+        "  explain [--std <dir>] [--numerics exact|equivalent] <file>\n"
+        "                                       Show how each semantic operation would be\n"
         "                                       implemented and why\n"
         "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
         "  check [options] <path>...            Check syntax, types, and shapes of the\n"
@@ -235,15 +237,16 @@ int run_init(std::span<const std::string_view> args) {
 int run_explain(std::span<const std::string_view> args,
                 const Options& options,
                 const char* program) {
+    std::string numerics = "exact";
     std::string std_option;
     std::string_view path;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
-        if (arg == "--std") {
+        if (arg == "--std" || arg == "--numerics") {
             if (i + 1 == args.size()) {
-                return usage_error("--std requires a directory");
+                return usage_error(std::string(arg) + " requires a value");
             }
-            std_option = args[++i];
+            (arg == "--std" ? std_option : numerics) = args[++i];
         } else if (arg.starts_with("-")) {
             return usage_error("unknown explain option '" + std::string(arg) + "'");
         } else if (!path.empty()) {
@@ -269,26 +272,34 @@ int run_explain(std::span<const std::string_view> args,
     if (sink.has_errors()) {
         return report(sources, sink, options);
     }
+    const auto allowed = opt::parse_legality(numerics);
+    if (!allowed) {
+        return usage_error("--numerics must be `exact` or `equivalent`");
+    }
     ir::Module core = ir::lower(sources, modules, analysis.model);
     opt::run_pipeline(core, opt::canonical_passes());
-    std::fputs(opt::render_explanations(opt::explain(core), sources).c_str(), stdout);
+    std::fputs(
+        opt::render_explanations(opt::explain(core, opt::torch_candidates(), *allowed), sources)
+            .c_str(),
+        stdout);
     return report(sources, sink, options);
 }
 
 int run_plan(std::span<const std::string_view> args, const Options& options, const char* program) {
     std::string std_option;
     std::string root;
+    std::string numerics = "exact";
     std::string_view path;
     bool is_optimized = true;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (arg == "--no-optimize") {
             is_optimized = false;
-        } else if (arg == "--std" || arg == "--root") {
+        } else if (arg == "--std" || arg == "--root" || arg == "--numerics") {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
             }
-            (arg == "--std" ? std_option : root) = args[++i];
+            (arg == "--std" ? std_option : arg == "--root" ? root : numerics) = args[++i];
         } else if (arg.starts_with("-")) {
             return usage_error("unknown plan option '" + std::string(arg) + "'");
         } else if (!path.empty()) {
@@ -322,9 +333,14 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     if (!problems.empty()) {
         return exit_failure;
     }
+    const auto allowed = opt::parse_legality(numerics);
+    if (!allowed) {
+        return usage_error("--numerics must be `exact` or `equivalent`");
+    }
     if (is_optimized) {
         opt::run_pipeline(core, opt::canonical_passes());
     }
+    opt::select_candidates(core, opt::torch_candidates(), *allowed);
     const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules});
     if (!plan) {
         std::fprintf(stderr, "linnet: %s\n", plan.error().c_str());

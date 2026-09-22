@@ -3,7 +3,9 @@
 #include "linnet/ir/ir.hpp"
 #include "linnet/opt/passes.hpp"
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace linnet::opt {
@@ -26,10 +28,35 @@ struct Explanation {
     std::vector<Candidate> candidates;
 };
 
-// Lists every semantic call of the module with its candidates. A backend
-// that claims ops adds candidates; with none registered, every call reports
-// only its canonical decomposition.
-std::vector<Explanation> explain(const ir::Module& module);
+// A backend's registered implementations of semantic operations, by the
+// operation's semantic identity.
+struct NativeCandidate {
+    std::string semantic_op;
+    std::string implementation;
+    Legality legality;
+    std::vector<std::string> requirements;
+};
+
+// The PyTorch backend's registry. Every entry is a library call whose
+// results agree with the canonical decomposition up to floating-point
+// rounding, so none is Exact.
+std::vector<NativeCandidate> torch_candidates();
+
+// Chooses an implementation for every semantic call: the strongest registered
+// candidate whose legality is within `allowed`, else the canonical
+// decomposition. Records the choice in the call's attributes (`name` is
+// unchanged; `names` gains the selected implementation as its only entry).
+void select_candidates(ir::Module& module,
+                       const std::vector<NativeCandidate>& registry,
+                       Legality allowed);
+
+// Lists every semantic call of the module with its candidates, as selected by
+// `select_candidates` (or the canonical decomposition when it did not run).
+std::vector<Explanation>
+explain(ir::Module& module, const std::vector<NativeCandidate>& registry, Legality allowed);
+
+// Parses "exact" or "equivalent" (numerically equivalent).
+std::optional<Legality> parse_legality(std::string_view text);
 
 // Text rendering for `linnet explain`.
 std::string render_explanations(const std::vector<Explanation>& explanations,

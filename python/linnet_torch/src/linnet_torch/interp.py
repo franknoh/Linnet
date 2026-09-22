@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import torch
 
+from .native import NATIVE
 from .plan import Env, Plan, PlanError
 
 Value = Any
@@ -268,6 +269,13 @@ class Interpreter:
             return self.run_region(chosen, env, dict(values), grid)
 
         if kind in ("call", "semantic.call"):
+            selected = attrs.get("selected", "canonical decomposition")
+            if selected != "canonical decomposition":
+                if selected not in NATIVE:
+                    raise PlanError(
+                        f"the plan selected `{selected}`, which this materializer lacks"
+                    )
+                return [NATIVE[selected](operands, result_dtype() if result_type else None)]
             callee = self.plan.functions[attrs["callee"]]
             callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
             return [self.call(callee, callee_env, operands)]
