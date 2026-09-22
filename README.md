@@ -12,7 +12,8 @@ checked model as a `torch.nn.Module` with SafeTensors weights and exports a
 `torch.nn.Module` back to Linnet source (see [docs/torch.md](docs/torch.md)),
 `linnet stablehlo` prints an entry as a StableHLO module for XLA, and
 `python/linnet_jax` runs models in JAX and exports JAX functions to Linnet
-(see [docs/jax.md](docs/jax.md)).
+(see [docs/jax.md](docs/jax.md)), and `python/linnet_onnx` imports ONNX graphs
+as Linnet source (see [docs/onnx.md](docs/onnx.md)).
 
 - `spec/` is the normative language specification; `spec/grammar.ebnf` is the
   consolidated grammar.

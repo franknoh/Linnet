@@ -123,6 +123,16 @@ jobs:
         working-directory: python/linnet_jax
         env:
           LINNET_BIN: ${{ github.workspace }}/build/release/linnet
+      - run: uv sync --all-extras
+        working-directory: python/linnet_onnx
+      - run: uv run ruff check src tests && uv run ruff format --check src tests
+        working-directory: python/linnet_onnx
+      - run: uv run pyright
+        working-directory: python/linnet_onnx
+      - run: uv run pytest -q
+        working-directory: python/linnet_onnx
+        env:
+          LINNET_BIN: ${{ github.workspace }}/build/release/linnet
 
   windows:
     name: Windows MSVC

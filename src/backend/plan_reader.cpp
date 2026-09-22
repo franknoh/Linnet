@@ -509,11 +509,19 @@ private:
         for (const Json& result : description["results"].as_array()) {
             result_types.push_back(type(result["type"]));
         }
-        const ir::OpId op = module_.add_op(block,
-                                           *kind,
-                                           std::move(operands),
-                                           result_types,
-                                           attributes(*kind, description["attrs"]));
+        ir::Attributes attrs = attributes(*kind, description["attrs"]);
+        if (*kind == ir::OpKind::Slice && !operands.empty()) {
+            // Every sliced axis records its source unit, so that a range to
+            // the end of the axis can be recognized later.
+            const TypeData& source = types().get(module_.value(operands.front()).type);
+            for (std::size_t i = 0; i < attrs.pack_units.size() && i < source.shape.size(); ++i) {
+                if (!attrs.whole[i]) {
+                    attrs.pack_units[i] = source.shape[i];
+                }
+            }
+        }
+        const ir::OpId op =
+            module_.add_op(block, *kind, std::move(operands), result_types, std::move(attrs));
         const Json::Array& results = description["results"].as_array();
         for (std::size_t i = 0; i < results.size(); ++i) {
             const ir::ValueId id = module_.op(op).results[i];
