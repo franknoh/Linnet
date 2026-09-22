@@ -4,6 +4,7 @@
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
 #include "linnet/module/loader.hpp"
+#include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
 #include "linnet/syntax/lexer.hpp"
@@ -51,11 +52,13 @@ void print_usage(std::FILE* out) {
                "Commands:\n"
                "  check [options] <path>...            Check syntax, types, and shapes of the\n"
                "                                       given files and everything they import\n"
+               "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"
                "      --strict                         Treat warnings as errors\n"
                "      --json                           Print diagnostics as JSON on stdout\n"
                "      --std <dir>                      Standard library directory\n"
                "  fmt [--check] <path>...              Format files, or directories recursively;\n"
                "                                       `-` formats stdin to stdout\n"
+               "  spec-test [--std <dir>] <dir>        Run the executable specification in <dir>\n"
                "  inspect --tokens <file>              Show the tokens of a file\n"
                "  inspect --ast <file>                 Show the syntax tree of a file\n"
                "  inspect --parameters [--json] <file> Show the parameter manifest of each\n"
@@ -166,6 +169,104 @@ int run_check(std::span<const std::string_view> args, Options options, const cha
         sema::analyze(sources, modules, sink, &program_modules.imports);
     }
     return report(sources, sink, options);
+}
+
+// Runs every case of a spec-tests directory through the frontend and compares
+// the diagnostic codes with the manifest. Diagnostics snapshots under
+// diagnostics/ must match the rendered text exactly.
+int run_spec_test(std::span<const std::string_view> args,
+                  const Options& options,
+                  const char* program) {
+    std::string std_option;
+    std::filesystem::path root;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        if (arg == "--std") {
+            if (i + 1 == args.size()) {
+                return usage_error("--std requires a directory");
+            }
+            std_option = args[++i];
+        } else if (arg.starts_with("-")) {
+            return usage_error("unknown spec-test option '" + std::string(arg) + "'");
+        } else if (!root.empty()) {
+            return usage_error("spec-test takes exactly one directory");
+        } else {
+            root = arg;
+        }
+    }
+    if (root.empty()) {
+        return usage_error("spec-test requires the spec-tests directory");
+    }
+    const auto cases = read_spec_manifest(root / "manifest.toml");
+    if (!cases) {
+        std::fprintf(stderr, "linnet: %s\n", cases.error().c_str());
+        return exit_failure;
+    }
+
+    const LoaderOptions loader_options{find_std_root(std_option, program)};
+    std::size_t failures = 0;
+    for (const SpecCase& spec_case : *cases) {
+        SourceManager sources;
+        DiagnosticSink sink;
+        const std::vector<std::filesystem::path> files{root / spec_case.file};
+        const Program program_modules = load_program(sources, files, loader_options, sink);
+        if (!sink.has_errors()) {
+            const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
+            sema::analyze(sources, modules, sink, &program_modules.imports);
+        }
+        sink.sort_by_location();
+
+        std::string rendered;
+        std::string problem;
+        for (const Diagnostic& diagnostic : sink.diagnostics()) {
+            if (diagnostic.severity != Severity::Error) {
+                continue;
+            }
+            rendered += rendered.empty() ? "" : "\n";
+            rendered += render_diagnostic(sources, diagnostic);
+            if (!spec_case.expects_error) {
+                problem = "expected no errors";
+            } else if (diagnostic.code != spec_case.code) {
+                problem = "expected only " + spec_case.code;
+            }
+        }
+        if (spec_case.expects_error && !sink.has_errors()) {
+            problem = "expected " + spec_case.code + ", got no errors";
+        }
+
+        const std::filesystem::path snapshot =
+            root / "diagnostics" / std::filesystem::path(spec_case.file).stem().concat(".stderr");
+        std::error_code error;
+        if (problem.empty() && std::filesystem::is_regular_file(snapshot, error)) {
+            std::ifstream stream(snapshot, std::ios::binary);
+            const std::string expected{std::istreambuf_iterator<char>(stream),
+                                       std::istreambuf_iterator<char>()};
+            // Snapshots name files relative to the spec-tests directory.
+            std::string relative = rendered;
+            const std::string prefix = (root / "").generic_string();
+            for (std::size_t at = relative.find(prefix); at != std::string::npos;
+                 at = relative.find(prefix, at)) {
+                relative.erase(at, prefix.size());
+            }
+            if (relative != expected) {
+                problem = "diagnostics differ from " + snapshot.generic_string();
+                rendered = relative;
+            }
+        }
+
+        if (!problem.empty()) {
+            ++failures;
+            std::fprintf(stderr, "FAIL %s: %s\n", spec_case.file.c_str(), problem.c_str());
+            if (!rendered.empty()) {
+                std::fputs(rendered.c_str(), stderr);
+                std::fputc('\n', stderr);
+            }
+        } else if (options.color) {
+            std::printf("ok   %s\n", spec_case.file.c_str());
+        }
+    }
+    std::printf("%zu cases, %zu failed\n", cases->size(), failures);
+    return failures == 0 ? exit_success : exit_failure;
 }
 
 std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool as_json) {
@@ -473,6 +574,13 @@ int main(int argc, char** argv) {
     }
     if (command == "check") {
         return run_check(rest, options, argv[0]);
+    }
+    if (command == "lint") {
+        options.strict = true;
+        return run_check(rest, options, argv[0]);
+    }
+    if (command == "spec-test") {
+        return run_spec_test(rest, options, argv[0]);
     }
     if (command == "fmt") {
         return run_fmt(rest, options);

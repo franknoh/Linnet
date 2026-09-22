@@ -55,6 +55,8 @@ add_library(linnet_core STATIC
     src/format/doc.cpp
     src/format/formatter.cpp
     src/module/loader.cpp
+    src/package/spec_manifest.cpp
+    src/package/toml.cpp
     src/sema/checker_calls.cpp
     src/sema/checker_decls.cpp
     src/sema/checker_exprs.cpp
