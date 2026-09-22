@@ -4,7 +4,7 @@
     "description": "Language support for the Linnet tensor language",
     "version": "0.1.0",
     "publisher": "linnet",
-    "license": "SEE LICENSE IN ../../LICENSE",
+    "license": "MIT",
     "repository": {
         "type": "git",
         "url": "https://github.com/franknoh/Linnet"

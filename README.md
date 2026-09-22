@@ -83,3 +83,7 @@ Conventions:
   frameworks, and it must not contain model-specific logic.
 - The CLI, language server, formatter, and backends all share the one frontend
   library.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
