@@ -668,10 +668,20 @@ class _Translator:
         body = match.group(1) or ""
         return [int(x) for x in body.split(",") if x.strip()]
 
-    def unify(self, left: _Value, right: _Value) -> tuple[_Value, _Value]:
-        if left.type.dtype != right.type.dtype:
-            raise ExportError("operands of different dtypes")
-        return left, right
+    def call(
+        self, callee: str, generics: list[dict[str, Any]], operands: list[_Value], kind: _Type
+    ) -> _Value:
+        """A call to a standard-library operation with explicit generics."""
+        return self.builder.op(
+            "semantic.call",
+            operands,
+            kind,
+            {
+                "callee": callee,
+                "substitution": {"dims": {}, "packs": {}, "dtypes": {}},
+                "generics": generics,
+            },
+        )
 
 
 def _key(value: Any) -> Any:
@@ -972,6 +982,40 @@ def _dot_general(t: _Translator, operation: Any) -> _Value:
         raise ExportError("dot_general operands differ in dtype")
     lhs_free = [i for i in range(len(a.type.shape)) if i not in lhs_batch and i not in lhs_contract]
     rhs_free = [i for i in range(len(b.type.shape)) if i not in rhs_batch and i not in rhs_contract]
+    # The matrix-product layouts are the standard library's `matmul` and
+    # `batched_matmul` exactly; anything else is spelled in index notation.
+    rank = len(a.type.shape)
+    is_matrix_product = (
+        len(lhs_free) == 1
+        and len(rhs_free) == 1
+        and len(lhs_contract) == 1
+        and lhs_batch == list(range(rank - 2))
+        and rhs_batch == list(range(rank - 2))
+        and lhs_contract == [rank - 1]
+        and rhs_contract == [rank - 2]
+        and len(b.type.shape) == rank
+    )
+    if is_matrix_product:
+        m, k, n = a.type.shape[-2], a.type.shape[-1], b.type.shape[-1]
+        if rank == 2:
+            return t.call(
+                "std.linalg::matmul",
+                [{"dim": m}, {"dim": k}, {"dim": n}, {"dtype": kind.dtype}],
+                [a, b],
+                kind,
+            )
+        return t.call(
+            "std.linalg::batched_matmul",
+            [
+                {"shape": list(a.type.shape[:-2])},
+                {"dim": m},
+                {"dim": k},
+                {"dim": n},
+                {"dtype": kind.dtype},
+            ],
+            [a, b],
+            kind,
+        )
     outputs: list[tuple[str, int]] = []
     outputs += [(f"b{i}", a.type.shape[d]) for i, d in enumerate(lhs_batch)]
     outputs += [(f"m{i}", a.type.shape[d]) for i, d in enumerate(lhs_free)]
