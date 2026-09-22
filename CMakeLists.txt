@@ -84,6 +84,15 @@ target_link_libraries(linnet_core PRIVATE linnet_build_options)
 add_executable(linnet src/cli/main.cpp)
 target_link_libraries(linnet PRIVATE linnet::core linnet_build_options)
 
+include(GNUInstallDirs)
+install(TARGETS linnet RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# The executable looks for the standard library at share/linnet/stdlib
+# relative to its own location.
+install(DIRECTORY stdlib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/linnet/stdlib
+        FILES_MATCHING PATTERN "*.linnet")
+install(DIRECTORY editors/vim/ DESTINATION ${CMAKE_INSTALL_DATADIR}/linnet/vim)
+install(FILES LICENSE README.md DESTINATION ${CMAKE_INSTALL_DATADIR}/linnet)
+
 if(LINNET_BUILD_FUZZERS)
     add_subdirectory(fuzz)
 endif()

@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, preset: release }
+          - { name: macos-arm64, os: macos-15, preset: release }
+          - { name: windows-x86_64, os: windows-2022, preset: msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - if: runner.os == 'macOS'
+        run: brew install ninja
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }} --config Release
+      - run: ctest --preset ${{ matrix.preset }} -C Release
+      - run: cmake --install build/${{ matrix.preset }} --config Release --prefix dist/linnet-${{ github.ref_name }}-${{ matrix.name }}
+      - if: runner.os != 'Windows'
+        run: tar -C dist -czf linnet-${{ github.ref_name }}-${{ matrix.name }}.tar.gz linnet-${{ github.ref_name }}-${{ matrix.name }}
+      - if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist/linnet-${{ github.ref_name }}-${{ matrix.name }} -DestinationPath linnet-${{ github.ref_name }}-${{ matrix.name }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: linnet-${{ github.ref_name }}-${{ matrix.name }}.*
+
+  vscode:
+    name: VS Code extension
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && npm run check && npx --yes @vscode/vsce package --out linnet-${{ github.ref_name }}.vsix
+        working-directory: editors/vscode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode
+          path: editors/vscode/linnet-${{ github.ref_name }}.vsix
+
+  publish:
+    needs: [build, vscode]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
