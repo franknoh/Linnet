@@ -77,7 +77,7 @@ def test_llama_matches_reference(tmp_path: Path) -> None:
         "Layers": layers,
         "T": "f32",
     }
-    source = EXAMPLES / "10-llama/src/lib.linnet"
+    source = EXAMPLES / "05-llama/src/lib.linnet"
     model, w = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     B, S, D = 2, 5, H // heads  # noqa: N806
     tokens = torch.randint(0, vocab, (B, S), dtype=torch.int32)
@@ -133,7 +133,7 @@ def test_gpt2_matches_reference(tmp_path: Path) -> None:
         "Layers": layers,
         "T": "f32",
     }
-    source = EXAMPLES / "11-gpt2/gpt2.linnet"
+    source = EXAMPLES / "06-gpt2/gpt2.linnet"
     model, w = _with_random_weights(source, generics, tmp_path)
     B, S, D = 2, 5, H // heads  # noqa: N806
     tokens = torch.randint(0, vocab, (B, S), dtype=torch.int32)
@@ -176,7 +176,7 @@ def test_vit_matches_reference(tmp_path: Path) -> None:
         "Classes": classes,
         "T": "f32",
     }
-    source = EXAMPLES / "12-vit/vit.linnet"
+    source = EXAMPLES / "07-vit/vit.linnet"
     model, w = _with_random_weights(source, generics, tmp_path)
     B = 2  # noqa: N806
     image = torch.randn(B, channels, height, width)
@@ -230,7 +230,7 @@ def test_clip_matches_reference(tmp_path: Path) -> None:
         "Embed": embed,
         "T": "f32",
     }
-    source = EXAMPLES / "13-clip/src/lib.linnet"
+    source = EXAMPLES / "08-clip/src/lib.linnet"
     model, w = _with_random_weights(source, generics, tmp_path)
     B, C, S = 2, 3, 5  # noqa: N806
     image = torch.randn(B, channels, height, width)

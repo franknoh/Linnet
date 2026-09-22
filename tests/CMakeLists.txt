@@ -65,7 +65,7 @@ set_tests_properties(cli_check_json PROPERTIES
     PASS_REGULAR_EXPRESSION "\"code\":\"W1002\".*\"summary\":{\"errors\":0,\"warnings\":1}")
 
 add_test(NAME cli_inspect_parameters
-    COMMAND linnet inspect --parameters ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+    COMMAND linnet inspect --parameters ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
 set_tests_properties(cli_inspect_parameters PROPERTIES
     PASS_REGULAR_EXPRESSION "param layers\\[\\*\\].up.weight: Tensor\\[Inner, H; T\\] x Layers")
 
@@ -90,20 +90,20 @@ linnet_add_test(lsp_test unit/lsp_test.cpp)
 add_test(NAME stdlib_checks COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib)
 add_test(NAME stdlib_is_formatted COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/stdlib)
 add_test(NAME example_transformer_checks
-    COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer)
+    COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer)
 add_test(NAME example_models_check
-    COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/10-llama
-            ${PROJECT_SOURCE_DIR}/examples/11-gpt2 ${PROJECT_SOURCE_DIR}/examples/12-vit
-            ${PROJECT_SOURCE_DIR}/examples/13-clip)
+    COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/05-llama
+            ${PROJECT_SOURCE_DIR}/examples/06-gpt2 ${PROJECT_SOURCE_DIR}/examples/07-vit
+            ${PROJECT_SOURCE_DIR}/examples/08-clip)
 add_test(NAME example_models_are_formatted
     COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/examples)
 linnet_add_test(ir_test unit/ir_test.cpp)
 add_test(NAME cli_core_ir_stdlib
     COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib/nn/attention.linnet)
 add_test(NAME cli_core_ir_transformer
-    COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+    COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 add_test(NAME cli_plan_transformer
-    COMMAND linnet plan --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+    COMMAND linnet plan --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"version\":1,\"module\":\"tiny_transformer\",\"root\":\\{\"name\":\"Model\"")
 linnet_add_test(opt_test unit/opt_test.cpp)
 linnet_add_test(egraph_test unit/egraph_test.cpp)
@@ -116,8 +116,8 @@ if(NOT WIN32)
         COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/plan_emit_round_trip.sh
                 ${CMAKE_CURRENT_BINARY_DIR}/plan_emit_scratch ${PROJECT_SOURCE_DIR}/stdlib
-                ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet
-                ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+                ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet
+                ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
     file(GLOB_RECURSE linnet_round_trip_sources
         ${PROJECT_SOURCE_DIR}/stdlib/*.linnet ${PROJECT_SOURCE_DIR}/examples/*.linnet)
     add_test(NAME cli_emit_round_trip
@@ -129,17 +129,17 @@ endif()
 add_test(NAME cli_stablehlo_transformer
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind Vocab=11 --bind H=8 --bind Heads=2
             --bind Inner=16 --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5
-            ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+            ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_stablehlo_transformer PROPERTIES
     PASS_REGULAR_EXPRESSION "func.func @main\\(%tokens: tensor<2x5xi32>.*linnet.path = \"layers.1.mlp.down.weight\".*\"stablehlo.reduce\"")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
-            ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+            ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
 set_tests_properties(cli_stablehlo_unbound PROPERTIES
     PASS_REGULAR_EXPRESSION "generic `Inner` needs a value: pass --bind Inner=")
 add_test(NAME cli_explain
-    COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+    COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
 set_tests_properties(cli_explain PROPERTIES PASS_REGULAR_EXPRESSION "examples.model::rms_norm\n.*\n.*\n.*canonical decomposition")
 add_test(NAME cli_explain_equivalent
-    COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib --numerics equivalent ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+    COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib --numerics equivalent ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_explain_equivalent PROPERTIES PASS_REGULAR_EXPRESSION "selected: torch.nn.functional.scaled_dot_product_attention")

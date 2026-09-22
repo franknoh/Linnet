@@ -23,8 +23,8 @@ checked model as a `torch.nn.Module` with SafeTensors weights and exports a
   `layer_norm`, `rope`, `attention`, `swiglu`). Every high-level operation is
   ordinary source that `linnet check` verifies like any other.
 - `examples/` contains sample Linnet sources, from a linear layer to a small
-  transformer built from the standard library (`09-tiny-transformer`) and
-  models in the shape of Llama, GPT-2, and a Vision Transformer (`10`–`12`);
+  transformer built from the standard library (`04-tiny-transformer`) and
+  models in the shape of Llama, GPT-2, a Vision Transformer, and CLIP (`05`–`08`);
   see [examples/README.md](examples/README.md) for what each one shows.
 
 [docs/getting-started.md](docs/getting-started.md) builds the toolchain, writes

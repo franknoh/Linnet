@@ -17,7 +17,7 @@ import jax
 from linnet_jax import load
 
 model = load(
-    "examples/09-tiny-transformer/src/lib.linnet",
+    "examples/04-tiny-transformer/src/lib.linnet",
     generics={"Vocab": 100, "H": 64, "Heads": 4, "Inner": 256, "Layers": 2, "T": "f32"},
     weights="weights/",       # .safetensors file or directory, or {path: array}
     std_root="stdlib",
