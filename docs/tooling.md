@@ -106,9 +106,10 @@ its module, formatted. Only the declarations of the plan's own module are
 printed; functions and blocks it references from other modules become `use`
 lines, and calls to them keep their explicit generic arguments, so a plan
 that carries only its own functions (as a framework adapter writes) emits a
-module that checks against the libraries it uses. Emitting the plan of a
-file prints the same text as `linnet inspect --emit` on that file. The
-command reads JSON only; it never executes anything.
+module that checks against the libraries it uses. Values nothing uses are
+dropped first; otherwise emitting the plan of a file prints the same text as
+`linnet inspect --emit` on that file. The command reads JSON only; it never
+executes anything.
 
 ## `linnet stablehlo`
 
