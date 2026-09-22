@@ -1,5 +1,6 @@
 #pragma once
 
+#include "linnet/backend/graph_export.hpp"
 #include "linnet/ir/ir.hpp"
 
 #include <cstdint>
@@ -22,13 +23,7 @@ namespace linnet::backend {
 //
 // Everything StableHLO cannot express as captured is a capability failure
 // reported in the error string, never a silent approximation.
-struct StableHloOptions {
-    std::string root;  // root block; empty selects the only block with entries
-    std::string entry; // entry to export; empty selects the block's only entry
-    std::uint32_t root_module = 0;
-    std::map<std::string, std::string> bindings; // generic name -> integer or dtype
-    bool optionals_present = false;
-};
+using StableHloOptions = GraphExportOptions;
 
 std::expected<std::string, std::string> export_stablehlo(ir::Module& module,
                                                          const StableHloOptions& options);

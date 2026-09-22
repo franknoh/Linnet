@@ -49,6 +49,8 @@ configure_file(
 add_library(linnet_core STATIC
     src/ast/ast.cpp
     src/ast/dump.cpp
+    src/backend/graph_export.cpp
+    src/backend/onnx.cpp
     src/backend/plan.cpp
     src/backend/plan_reader.cpp
     src/backend/stablehlo.cpp
