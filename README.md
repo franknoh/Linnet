@@ -10,7 +10,9 @@ shapes, and tensor index notation, packages, a language server, Core Tensor
 IR, an optimizer) and two backends: `python/linnet_torch` materializes a
 checked model as a `torch.nn.Module` with SafeTensors weights and exports a
 `torch.nn.Module` back to Linnet source (see [docs/torch.md](docs/torch.md)),
-and `linnet stablehlo` prints an entry as a StableHLO module for XLA.
+`linnet stablehlo` prints an entry as a StableHLO module for XLA, and
+`python/linnet_jax` runs models in JAX and exports JAX functions to Linnet
+(see [docs/jax.md](docs/jax.md)).
 
 - `spec/` is the normative language specification; `spec/grammar.ebnf` is the
   consolidated grammar.
