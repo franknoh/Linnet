@@ -67,6 +67,8 @@ struct ShapeElem {
 
     static ShapeElem of(shape::Poly dim) { return {false, 0, std::move(dim)}; }
     static ShapeElem of_pack(shape::SymbolId pack) { return {true, pack, {}}; }
+    // Structural identity, not provable equality.
+    friend bool operator==(const ShapeElem&, const ShapeElem&) = default;
 };
 using Shape = std::vector<ShapeElem>;
 
@@ -98,6 +100,7 @@ struct GenericValue {
     shape::Poly dim;
     Shape shape;
     DType dtype;
+    friend bool operator==(const GenericValue&, const GenericValue&) = default;
 };
 
 struct TypeData {
@@ -118,6 +121,7 @@ struct Substitution {
     std::map<DTypeVarId, DType> dtypes;
 
     bool empty() const { return dims.empty() && packs.empty() && dtypes.empty(); }
+    friend bool operator==(const Substitution&, const Substitution&) = default;
 };
 
 struct DTypeVar {

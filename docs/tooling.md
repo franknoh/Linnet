@@ -94,6 +94,28 @@ the plan of the root block (the only block with entries, or `--root`) as JSON
 on standard output; see [plan-format.md](plan-format.md). The plan is what
 `linnet_torch` consumes. It contains no tensor data.
 
+## `linnet explain`
+
+```bash
+linnet explain [--std <dir>] file.linnet
+```
+
+Lists every semantic operation the program calls, where it is called from,
+the implementations a backend could use for it, which one is selected, and
+why. Today the only registered implementation is each operation's canonical
+decomposition — its own `.linnet` body — so that is what every call reports;
+backends that claim operations will add their candidates here. Optimization is
+meant to be inspectable, and this is where it is inspected.
+
+## Optimization
+
+`linnet plan` and `linnet inspect --core-ir -O` run the canonical passes:
+identity `reshape`/`broadcast_to`/`cast`/`permute` removal, composition of
+nested permutations, double negation, integer constant folding, common
+subexpression elimination, and dead-code elimination. Every pass is *exact*
+(bit-identical results); the IR verifier runs after each pass and a failure
+aborts the compilation. `--no-optimize` disables them.
+
 ## `linnet lsp`
 
 ```bash

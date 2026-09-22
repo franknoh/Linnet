@@ -99,3 +99,7 @@ add_test(NAME cli_core_ir_transformer
 add_test(NAME cli_plan_transformer
     COMMAND linnet plan --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"version\":1,\"root\":\\{\"name\":\"Model\"")
+linnet_add_test(opt_test unit/opt_test.cpp)
+add_test(NAME cli_explain
+    COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+set_tests_properties(cli_explain PROPERTIES PASS_REGULAR_EXPRESSION "examples.model::rms_norm\n.*\n.*\n.*canonical decomposition")

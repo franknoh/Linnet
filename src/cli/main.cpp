@@ -7,6 +7,8 @@
 #include "linnet/ir/lower.hpp"
 #include "linnet/lsp/server.hpp"
 #include "linnet/module/loader.hpp"
+#include "linnet/opt/candidates.hpp"
+#include "linnet/opt/passes.hpp"
 #include "linnet/package/manifest.hpp"
 #include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
@@ -51,34 +53,37 @@ bool stderr_is_terminal() {
 }
 
 void print_usage(std::FILE* out) {
-    std::fputs("Usage: linnet <command> [options]\n"
-               "\n"
-               "Commands:\n"
-               "  plan [--root <Block>] [--std <dir>] <file>\n"
-               "                                       Print the materializer plan (JSON) of a\n"
-               "                                       root block and everything it uses\n"
-               "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
-               "  check [options] <path>...            Check syntax, types, and shapes of the\n"
-               "                                       given files and everything they import\n"
-               "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"
-               "      --strict                         Treat warnings as errors\n"
-               "      --json                           Print diagnostics as JSON on stdout\n"
-               "      --std <dir>                      Standard library directory\n"
-               "  fmt [--check] <path>...              Format files, or directories recursively;\n"
-               "                                       `-` formats stdin to stdout\n"
-               "  lsp --stdio [--std <dir>]            Run the language server\n"
-               "  spec-test [--std <dir>] <dir>        Run the executable specification in <dir>\n"
-               "  inspect --tokens <file>              Show the tokens of a file\n"
-               "  inspect --ast <file>                 Show the syntax tree of a file\n"
-               "  inspect --core-ir <file>             Show the Core IR of a file\n"
-               "  inspect --parameters [--json] <file> Show the parameter manifest of each\n"
-               "                                       block declared in a file\n"
-               "\n"
-               "Options:\n"
-               "      --no-color   Disable colored diagnostics\n"
-               "  -h, --help       Show this help\n"
-               "  -V, --version    Show the toolchain version\n",
-               out);
+    std::fputs(
+        "Usage: linnet <command> [options]\n"
+        "\n"
+        "Commands:\n"
+        "  plan [--root <Block>] [--std <dir>] [--no-optimize] <file>\n"
+        "                                       Print the materializer plan (JSON) of a\n"
+        "                                       root block and everything it uses\n"
+        "  explain [--std <dir>] <file>         Show how each semantic operation would be\n"
+        "                                       implemented and why\n"
+        "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
+        "  check [options] <path>...            Check syntax, types, and shapes of the\n"
+        "                                       given files and everything they import\n"
+        "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"
+        "      --strict                         Treat warnings as errors\n"
+        "      --json                           Print diagnostics as JSON on stdout\n"
+        "      --std <dir>                      Standard library directory\n"
+        "  fmt [--check] <path>...              Format files, or directories recursively;\n"
+        "                                       `-` formats stdin to stdout\n"
+        "  lsp --stdio [--std <dir>]            Run the language server\n"
+        "  spec-test [--std <dir>] <dir>        Run the executable specification in <dir>\n"
+        "  inspect --tokens <file>              Show the tokens of a file\n"
+        "  inspect --ast <file>                 Show the syntax tree of a file\n"
+        "  inspect --core-ir [-O] <file>        Show the Core IR of a file, optimized with -O\n"
+        "  inspect --parameters [--json] <file> Show the parameter manifest of each\n"
+        "                                       block declared in a file\n"
+        "\n"
+        "Options:\n"
+        "      --no-color   Disable colored diagnostics\n"
+        "  -h, --help       Show this help\n"
+        "  -V, --version    Show the toolchain version\n",
+        out);
 }
 
 int usage_error(const std::string& message) {
@@ -227,13 +232,59 @@ int run_init(std::span<const std::string_view> args) {
     return exit_success;
 }
 
+int run_explain(std::span<const std::string_view> args,
+                const Options& options,
+                const char* program) {
+    std::string std_option;
+    std::string_view path;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        if (arg == "--std") {
+            if (i + 1 == args.size()) {
+                return usage_error("--std requires a directory");
+            }
+            std_option = args[++i];
+        } else if (arg.starts_with("-")) {
+            return usage_error("unknown explain option '" + std::string(arg) + "'");
+        } else if (!path.empty()) {
+            return usage_error("explain takes exactly one file");
+        } else {
+            path = arg;
+        }
+    }
+    if (path.empty()) {
+        return usage_error("explain requires a file");
+    }
+    SourceManager sources;
+    DiagnosticSink sink;
+    const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
+    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
+    const Program program_modules = load_program(sources, paths, loader_options, sink);
+    if (sink.has_errors()) {
+        return report(sources, sink, options);
+    }
+    const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
+    const sema::AnalysisResult analysis =
+        sema::analyze(sources, modules, sink, &program_modules.imports);
+    if (sink.has_errors()) {
+        return report(sources, sink, options);
+    }
+    ir::Module core = ir::lower(sources, modules, analysis.model);
+    opt::run_pipeline(core, opt::canonical_passes());
+    std::fputs(opt::render_explanations(opt::explain(core), sources).c_str(), stdout);
+    return report(sources, sink, options);
+}
+
 int run_plan(std::span<const std::string_view> args, const Options& options, const char* program) {
     std::string std_option;
     std::string root;
     std::string_view path;
+    bool is_optimized = true;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
-        if (arg == "--std" || arg == "--root") {
+        if (arg == "--no-optimize") {
+            is_optimized = false;
+        } else if (arg == "--std" || arg == "--root") {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
             }
@@ -270,6 +321,9 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     }
     if (!problems.empty()) {
         return exit_failure;
+    }
+    if (is_optimized) {
+        opt::run_pipeline(core, opt::canonical_passes());
     }
     const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules});
     if (!plan) {
@@ -440,6 +494,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
     std::string_view view;
     std::string_view path;
     std::string std_option;
+    bool is_optimized = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (arg == "--json") {
@@ -449,6 +504,8 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
                 return usage_error("--std requires a directory");
             }
             std_option = args[++i];
+        } else if (arg == "-O") {
+            is_optimized = true;
         } else if (arg == "--tokens" || arg == "--ast" || arg == "--parameters" ||
                    arg == "--core-ir") {
             if (!view.empty()) {
@@ -486,9 +543,12 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
             return report(sources, sink, options);
         }
         if (view == "--core-ir") {
-            const ir::Module core = ir::lower(sources, modules, analysis.model);
+            ir::Module core = ir::lower(sources, modules, analysis.model);
             for (const std::string& problem : ir::verify(core)) {
                 std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
+            }
+            if (is_optimized && ir::verify(core).empty()) {
+                opt::run_pipeline(core, opt::canonical_passes());
             }
             std::fputs(ir::print(core).c_str(), stdout);
             return ir::verify(core).empty() ? exit_success : exit_failure;
@@ -717,6 +777,9 @@ int main(int argc, char** argv) {
         }
         lsp::Server server(lsp::ServerOptions{find_std_root(std_option, argv[0])});
         return server.run(std::cin, std::cout);
+    }
+    if (command == "explain") {
+        return run_explain(rest, options, argv[0]);
     }
     if (command == "plan") {
         return run_plan(rest, options, argv[0]);

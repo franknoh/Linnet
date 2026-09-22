@@ -23,6 +23,7 @@ def load(
     bindings: str | Path | None = None,
     device: str | torch.device = "cpu",
     strict: bool = True,
+    optimize: bool = True,
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
 
@@ -31,7 +32,7 @@ def load(
     shape, and dtype is checked before anything runs; otherwise they stay
     zero. Compilation runs `linnet plan`, which never executes the model.
     """
-    plan = compile_plan(source, root=root, std_root=std_root)
+    plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize)
     module = LinnetModule(plan, generics, torch.device(device))
     if weights is not None:
         bind_weights(module, weights, bindings, strict=strict)
