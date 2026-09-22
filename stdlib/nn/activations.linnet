@@ -1,0 +1,20 @@
+module std.nn.activations
+
+pub op relu<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return max(x, 0.0)
+}
+
+pub op sigmoid<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return 1.0 / (1.0 + exp(-x))
+}
+
+pub op silu<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return x * sigmoid(x)
+}
+
+// The tanh approximation of GELU, evaluated in f32.
+pub op gelu<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    let xf = cast<f32>(x)
+    let inner = 0.7978845608 * (xf + 0.044715 * xf * xf * xf)
+    return cast<T>(0.5 * xf * (1.0 + tanh(inner)))
+}

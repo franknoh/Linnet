@@ -423,6 +423,9 @@ private:
                 [&](const BlockDecl& decl) {
                     nested(visibility + "block " + name(decl.name), [&] {
                         generics(decl.generics);
+                        for (const ExprId constraint : decl.constraints) {
+                            nested("where", [&] { expr(constraint); });
+                        }
                         for (const ItemId member : decl.members) {
                             item(member);
                         }

@@ -13,7 +13,12 @@ There is no backend yet.
   consolidated grammar.
 - `spec-tests/` is the executable specification: programs that must be accepted
   or must be rejected with a specific diagnostic code.
-- `examples/` contains sample Linnet sources.
+- `stdlib/` is the standard library, written in Linnet: `std.linalg` and
+  `std.nn` (`linear`, `embedding`, activations, `softmax`, `rms_norm`,
+  `layer_norm`, `rope`, `attention`, `swiglu`). Every high-level operation is
+  ordinary source that `linnet check` verifies like any other.
+- `examples/` contains sample Linnet sources, up to a small transformer built
+  from the standard library (`examples/09-tiny-transformer`).
 
 ## Usage
 

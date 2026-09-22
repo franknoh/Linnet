@@ -188,6 +188,7 @@ private:
 
     void resolve(EntityId entity);
     void resolve_generics(const std::vector<ast::GenericParam>& params, DeclInfo& info);
+    void resolve_constraints(const std::vector<ast::ExprId>& constraints, DeclInfo& info);
     void resolve_function(EntityId entity);
     void resolve_block(EntityId entity);
     void resolve_member(EntityId entity);

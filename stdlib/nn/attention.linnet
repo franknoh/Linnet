@@ -1,0 +1,31 @@
+module std.nn.attention
+
+use std.nn.softmax::{softmax}
+
+// A [Q, K] mask that keeps key positions at or before each query position.
+pub fn causal_mask<Q: Dim, K: Dim>() -> Tensor[Q, K; bool] {
+    let queries = iota(Q)
+    let keys = iota(K)
+    let mask[q, k] = keys[k] <= queries[q] + (K - Q)
+    return mask
+}
+
+// Scaled dot-product attention. Scores are accumulated in f32; masked
+// positions receive a large negative score before the softmax.
+pub op attention<B: Dim, H: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
+    query: Tensor[B, H, Q, D; T],
+    key: Tensor[B, H, K, D; T],
+    value: Tensor[B, H, K, D; T],
+    scale: f32,
+    mask: Tensor[Q, K; bool]? = none,
+) -> Tensor[B, H, Q, D; T] {
+    let score[b, h, q, k] = sum<f32>[d] cast<f32>(query[b, h, q, d]) * cast<f32>(key[b, h, k, d])
+    let scaled = score * scale
+    let masked = match mask {
+        some(m) => select(m, scaled, fill<f32>([Q, K], -1e30))
+        none => scaled
+    }
+    let weights = softmax(masked)
+    let mixed[b, h, q, d] = sum[k] weights[b, h, q, k] * cast<f32>(value[b, h, k, d])
+    return cast<T>(mixed)
+}

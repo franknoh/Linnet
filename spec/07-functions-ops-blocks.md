@@ -70,6 +70,16 @@ pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
 
 A block is not itself a runtime tensor value. It defines a parameter/state namespace and callable methods.
 
+A block may carry a `where` clause over its generic parameters. The constraints hold inside every member and method of the block, and MUST be provable wherever the block type is instantiated, such as in a `sub` declaration:
+
+```text
+pub block Attention<H: Dim, Heads: Dim, T: Float>
+where H % Heads == 0, Heads > 0 {
+    sub q_proj: Linear<H, H, T>
+    ...
+}
+```
+
 ## 7.5 Sub-blocks
 
 ```text

@@ -1,0 +1,18 @@
+module std.nn.embedding
+
+// Row lookup: `out[..., h] = table[ids[...], h]`.
+pub op embedding<*S: Shape, Vocab: Dim, H: Dim, T: Float>(
+    ids: Tensor[*S; i32],
+    table: Tensor[Vocab, H; T],
+) -> Tensor[*S, H; T] {
+    let out[*s, h] = table[ids[*s], h]
+    return out
+}
+
+pub block Embedding<Vocab: Dim, H: Dim, T: Float = bf16> {
+    param weight: Tensor[Vocab, H; T]
+
+    pub fn forward<*S: Shape>(ids: Tensor[*S; i32]) -> Tensor[*S, H; T] {
+        return embedding(ids, weight)
+    }
+}

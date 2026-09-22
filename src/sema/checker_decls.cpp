@@ -373,6 +373,12 @@ Checker::Env Checker::make_env(EntityId entity) {
     env.block = target.kind == EntityKind::Block ? entity : target.parent;
     if (env.block != no_entity && env.block != entity) {
         resolve(env.block);
+        // What the enclosing blocks require holds inside their members.
+        for (EntityId block = env.block; block != no_entity; block = entities_[block].parent) {
+            for (const ConstraintInfo& constraint : decls_[block].constraints) {
+                env.solver.assume(constraint.relation, constraint.lhs, constraint.rhs);
+            }
+        }
     }
     return env;
 }
@@ -488,22 +494,7 @@ void Checker::resolve_function(EntityId entity) {
     resolve_generics(decl.generics, info);
 
     // Constraints come first: they justify divisions in the signature.
-    for (const ast::ExprId id : decl.constraints) {
-        const ast::Expr& node = ast().expr(id);
-        const auto* comparison = std::get_if<ast::BinaryExpr>(&node.data);
-        const auto relation = comparison ? relation_of(comparison->op) : std::nullopt;
-        if (!relation) {
-            continue;
-        }
-        ConstraintInfo constraint{*relation,
-                                  eval_dim(comparison->lhs, false),
-                                  eval_dim(comparison->rhs, false),
-                                  node.span};
-        if (constraint.lhs.is_valid() && constraint.rhs.is_valid()) {
-            env.solver.assume(constraint.relation, constraint.lhs, constraint.rhs);
-            info.constraints.push_back(std::move(constraint));
-        }
-    }
+    resolve_constraints(decl.constraints, info);
 
     Scope seen;
     for (const ast::Parameter& param : decl.parameters) {
@@ -528,6 +519,25 @@ void Checker::resolve_function(EntityId entity) {
     info.scope = env.scopes.front();
 }
 
+void Checker::resolve_constraints(const std::vector<ast::ExprId>& constraints, DeclInfo& info) {
+    for (const ast::ExprId id : constraints) {
+        const ast::Expr& node = ast().expr(id);
+        const auto* comparison = std::get_if<ast::BinaryExpr>(&node.data);
+        const auto relation = comparison ? relation_of(comparison->op) : std::nullopt;
+        if (!relation) {
+            continue;
+        }
+        ConstraintInfo constraint{*relation,
+                                  eval_dim(comparison->lhs, false),
+                                  eval_dim(comparison->rhs, false),
+                                  node.span};
+        if (constraint.lhs.is_valid() && constraint.rhs.is_valid()) {
+            env_->solver.assume(constraint.relation, constraint.lhs, constraint.rhs);
+            info.constraints.push_back(std::move(constraint));
+        }
+    }
+}
+
 void Checker::resolve_block(EntityId entity) {
     const Entity& target = entities_[entity];
     const auto& decl = std::get<ast::BlockDecl>(modules_[target.module]->item(target.item).data);
@@ -538,6 +548,7 @@ void Checker::resolve_block(EntityId entity) {
     env.scopes.push_back(std::move(info.scope));
     const EnvGuard guard(*this, env);
     resolve_generics(decl.generics, info);
+    resolve_constraints(decl.constraints, info);
     info.scope = std::move(env.scopes.back());
 }
 
@@ -1198,8 +1209,25 @@ TypeId Checker::eval_named_type(const ast::NamedType& named, SourceSpan span) {
     case EntityKind::Enum:
     case EntityKind::Block: {
         std::vector<GenericValue> values;
-        if (!bind_generic_args(decls_[entity], named.args, span, &values)) {
+        const auto substitution = bind_generic_args(decls_[entity], named.args, span, &values);
+        if (!substitution) {
             return types_.error();
+        }
+        // Instantiating a block must satisfy its `where` clause, unless the
+        // instantiation is the block's own body referring to itself.
+        for (const ConstraintInfo& constraint : decls_[entity].constraints) {
+            const shape::Poly lhs = types_.substitute(constraint.lhs, *substitution);
+            const shape::Poly rhs = types_.substitute(constraint.rhs, *substitution);
+            if (!env_->solver.prove(constraint.relation, lhs, rhs)) {
+                error(codes::constraint_unsatisfied,
+                      span,
+                      "cannot prove a constraint of block `" + std::string(target.name) + "`")
+                    .label(constraint.span, "required here")
+                    .note("required: `" + std::string(text(constraint.span)) + "`")
+                    .note("with `" + str(lhs) + "` on the left and `" + str(rhs) + "` on the right")
+                    .help("state the same constraint in the enclosing `where` clause");
+                return types_.error();
+            }
         }
         const TypeKind kind = target.kind == EntityKind::Struct ? TypeKind::Struct
                               : target.kind == EntityKind::Enum ? TypeKind::Enum

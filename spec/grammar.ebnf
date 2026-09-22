@@ -34,7 +34,8 @@ op_decl            = "op", identifier, [ generic_params ], parameter_list,
 entry_decl         = "entry", identifier, [ generic_params ], parameter_list,
                      [ "->", type ], [ where_clause ], block_body ;
 
-block_decl         = "block", identifier, [ generic_params ], "{", { block_item }, "}" ;
+block_decl         = "block", identifier, [ generic_params ], [ where_clause ],
+                     "{", { block_item }, "}" ;
 block_item         = param_decl | buffer_decl | sub_decl | item ;
 param_decl         = "param", identifier, ":", type, [ "=", expr ] ;
 buffer_decl        = "buffer", identifier, ":", type ;

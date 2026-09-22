@@ -37,8 +37,8 @@ jobs:
       - run: ctest --preset ${{ matrix.preset }}
       - name: Repository sources are formatter-clean
         run: |
-          build/${{ matrix.preset }}/linnet fmt --check examples spec-tests/valid spec-tests/fixtures
-          build/${{ matrix.preset }}/linnet check examples
+          build/${{ matrix.preset }}/linnet fmt --check examples spec-tests/valid spec-tests/fixtures stdlib
+          build/${{ matrix.preset }}/linnet lint --std stdlib examples stdlib
 
   lint:
     name: Format and static analysis

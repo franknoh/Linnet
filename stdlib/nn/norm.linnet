@@ -1,0 +1,39 @@
+module std.nn.norm
+
+// Root-mean-square normalization over the last axis, in f32.
+pub op rms_norm<*S: Shape, H: Dim, T: Float>(
+    x: Tensor[*S, H; T],
+    weight: Tensor[H; T],
+    eps: f32 = 1e-5,
+) -> Tensor[*S, H; T] {
+    let xf = cast<f32>(x)
+    let mean_square[*s] = sum[h] xf[*s, h] * xf[*s, h] / cast<f32>(H)
+    let normalized[*s, h] = xf[*s, h] * rsqrt(mean_square[*s] + eps)
+    return cast<T>(normalized) * weight
+}
+
+pub op layer_norm<*S: Shape, H: Dim, T: Float>(
+    x: Tensor[*S, H; T],
+    weight: Tensor[H; T],
+    bias: Tensor[H; T]? = none,
+    eps: f32 = 1e-5,
+) -> Tensor[*S, H; T] {
+    let xf = cast<f32>(x)
+    let mean[*s] = sum[h] xf[*s, h] / cast<f32>(H)
+    let centered[*s, h] = xf[*s, h] - mean[*s]
+    let variance[*s] = sum[h] centered[*s, h] * centered[*s, h] / cast<f32>(H)
+    let normalized[*s, h] = centered[*s, h] * rsqrt(variance[*s] + eps)
+    let scaled = cast<T>(normalized) * weight
+    return match bias {
+        some(b) => scaled + b
+        none => scaled
+    }
+}
+
+pub block RmsNorm<H: Dim, T: Float = bf16> {
+    param weight: Tensor[H; T]
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, H; T]) -> Tensor[*S, H; T] {
+        return rms_norm(x, weight)
+    }
+}

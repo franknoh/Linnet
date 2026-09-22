@@ -176,6 +176,19 @@ TEST("solver: bounds and inequalities") {
     CHECK(fresh.prove(Relation::GreaterEqual, f.n, Poly(1)));
 }
 
+TEST("solver: quotients by constants are bounded by their dividend") {
+    Fixture f;
+    DimContext& c = f.context;
+    Solver solver(f.context);
+    const Poly half = c.floor_div(f.d, Poly(2));
+    CHECK(solver.prove(Relation::GreaterEqual, f.d - half, Poly(0)));
+    CHECK(solver.prove(Relation::LessEqual, half, f.d));
+    CHECK(solver.prove_equal(c.min(f.d, half), half));
+    CHECK(solver.prove_equal(c.max(Poly(0), f.d - half), f.d - half));
+    CHECK(!solver.prove(Relation::GreaterEqual, half - f.d, Poly(0)));
+    CHECK(!solver.prove(Relation::GreaterEqual, f.d - c.floor_div(f.h, Poly(2)), Poly(0)));
+}
+
 TEST("solver: unprovable is not the same as false") {
     Fixture f;
     Solver solver(f.context);

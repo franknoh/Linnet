@@ -86,3 +86,8 @@ if(NOT WIN32)
                 ${CMAKE_CURRENT_BINARY_DIR}/init_scratch)
 endif()
 linnet_add_test(lsp_test unit/lsp_test.cpp)
+
+add_test(NAME stdlib_checks COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib)
+add_test(NAME stdlib_is_formatted COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/stdlib)
+add_test(NAME example_transformer_checks
+    COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer)
