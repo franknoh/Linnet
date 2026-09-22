@@ -1662,8 +1662,65 @@ def _split(exporter: _Exporter, node: Any) -> _Value | None:
 def _getitem(exporter: _Exporter, node: Any) -> _Value:
     source = node.args[0]
     if isinstance(source, torch.fx.Node) and source.name in exporter.tuples:
-        return exporter.tuples[source.name][int(node.args[1])]
+        element = exporter.tuples[source.name][int(node.args[1])]
+        if element.id < 0:
+            raise ExportError("this result of the operation is not available")
+        return element
     raise ExportError("indexing into a value that is not a known tuple")
+
+
+@_handles("aten.native_layer_norm.default", "aten.layer_norm.default")
+def _layer_norm(exporter: _Exporter, node: Any) -> _Value | None:
+    """`layer_norm` over the last axis is the standard library's op; the
+    statistics PyTorch also returns are not offered."""
+    x = exporter.tensor_arg(node, 0)
+    shape = list(x.shape or ())
+    normalized = [exporter.dim_of(d) for d in node.args[1]]
+    if len(normalized) != 1 or normalized[0] != shape[-1]:
+        raise ExportError("layer_norm over more than the last axis is not supported")
+    weight_node, bias_node = node.args[2], node.args[3]
+    eps = node.args[4] if len(node.args) > 4 else node.kwargs.get("eps", 1e-5)
+    if weight_node is None:
+        raise ExportError("layer_norm without an affine weight is not supported")
+    weight = exporter.value_of(weight_node)
+    optional_type = {
+        "kind": "optional",
+        "inner": exporter.builder.tensor_type((shape[-1],), x.dtype),
+    }
+    if bias_node is not None:
+        bias = exporter.builder.op(
+            "option.some",
+            [exporter.value_of(bias_node)],
+            (x.dtype, (shape[-1],)),
+            type_json=optional_type,
+        )
+    else:
+        bias = exporter.builder.op(
+            "option.none", [], (x.dtype, (shape[-1],)), type_json=optional_type
+        )
+    epsilon = exporter.builder.const(float(eps), torch.float32)
+    result_type = (x.dtype, tuple(shape))
+    call = exporter.builder.op(
+        "semantic.call",
+        [x, weight, bias, epsilon],
+        result_type,
+        {
+            "callee": "std.nn.norm::layer_norm",
+            "substitution": {"dims": {}, "packs": {}, "dtypes": {}},
+            "generics": [
+                _generic_shape(exporter, shape[:-1]),
+                _generic_dim(exporter, shape[-1]),
+                _generic_dtype(x.dtype),
+            ],
+        },
+        name=node.name,
+    )
+    exporter.imports.add("std.nn.norm")
+    if str(node.target).startswith("aten.native_layer_norm"):
+        unavailable = _Value(-1, torch.float32, None)
+        exporter.tuples[node.name] = [call, unavailable, unavailable]
+        return None
+    return call
 
 
 @_handles("aten.clamp.default", "aten.clamp_min.default", "aten.clamp_max.default")
