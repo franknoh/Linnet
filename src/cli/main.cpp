@@ -264,8 +264,11 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
         return report(sources, sink, options);
     }
     ir::Module core = ir::lower(sources, modules, analysis.model);
-    for (const std::string& problem : ir::verify(core)) {
+    const std::vector<std::string> problems = ir::verify(core);
+    for (const std::string& problem : problems) {
         std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
+    }
+    if (!problems.empty()) {
         return exit_failure;
     }
     const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules});
