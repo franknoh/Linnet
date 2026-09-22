@@ -10,7 +10,8 @@ shapes, and tensor index notation, packages, a language server, Core Tensor
 IR, an optimizer) and two backends: `python/linnet_torch` materializes a
 checked model as a `torch.nn.Module` with SafeTensors weights and exports a
 `torch.nn.Module` back to Linnet source (see [docs/torch.md](docs/torch.md)),
-`linnet stablehlo` prints an entry as a StableHLO module for XLA, and
+`linnet stablehlo` and `linnet onnx` print an entry as a StableHLO module or an
+ONNX model, and
 `python/linnet_jax` runs models in JAX and exports JAX functions to Linnet
 (see [docs/jax.md](docs/jax.md)), and `python/linnet_onnx` imports ONNX graphs
 as Linnet source (see [docs/onnx.md](docs/onnx.md)).
@@ -44,6 +45,7 @@ linnet fmt - < in.linnet        # format stdin to stdout; for editors
 linnet inspect --ast file.linnet
 linnet plan --root Model model.linnet   # JSON plan for a materializer
 linnet stablehlo --bind H=64 --bind B=1 --bind S=128 model.linnet   # StableHLO text
+linnet onnx --bind H=64 --bind B=1 --bind S=128 model.linnet        # ONNX (text format)
 linnet emit plan.json                   # Linnet source back from a plan
 linnet inspect --tokens file.linnet
 ```

@@ -45,6 +45,34 @@ Anything else — `Erf`, custom domains, `Gather` on other axes, symbolic
 broadcasting the checker cannot prove — stops the import with a message
 naming every such node. Nothing is executed and no weight enters the source.
 
+## Linnet to ONNX
+
+```bash
+linnet onnx --std stdlib --bind Vocab=11 --bind H=8 --bind Heads=2 --bind Inner=16 \
+            --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5 \
+            examples/04-tiny-transformer/src/lib.linnet > model.onnx.txt
+```
+
+`linnet onnx` takes the same options as `linnet stablehlo` and prints the
+entry as an ONNX model in the ONNX text format (`onnx.parser.parse_model`
+reads it; `onnx.save` turns it into a `.onnx` file). The graph is `main`; its
+inputs are the entry's inputs followed by the parameters of the block
+hierarchy as `param<N>`, and the model's `metadata_props` map each
+`linnet.path.param<N>` to its parameter path, so weights bind by name and the
+model itself carries none. Both exporters share one evaluator
+(`backend::export_graph`): the same static-shape lowering of calls, loops,
+and index notation feeds a `GraphTarget` that spells the primitives in one
+format or the other — `GatherND` for element lookups, `Range` for `iota`,
+`Reshape`+`Expand` (after a `Transpose` when axes reorder) for broadcasts,
+`ReduceSum`/`ReduceMax`/... with an `axes` input for reductions.
+
+`import_onnx` recognizes the metadata, so an exported model imports back into
+Linnet with its parameters intact.
+
+`tests/test_export.py` exports the tiny transformer, runs it under onnxruntime
+with the same weights as the PyTorch materializer, checks the outputs agree,
+and imports it back into Linnet that agrees too.
+
 `tests/test_import.py` builds a GPT-style graph with `onnx.helper` (dynamic
 batch and sequence, shape arithmetic feeding the reshapes, a causal mask as
 an input), imports it, loads the result through the PyTorch adapter with the

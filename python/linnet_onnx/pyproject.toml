@@ -25,6 +25,7 @@ dev = [
     "ruff>=0.6",
     "torch>=2.4",
     "onnxscript>=0.3",
+    "onnxruntime>=1.18",
     "linnet-torch",
 ]
 
