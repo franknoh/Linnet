@@ -936,11 +936,12 @@ private:
                                               "a match arm cannot start with a tuple pattern",
                                               codes::unexpected_token);
             if (diagnostic != nullptr) {
-                diagnostic->notes.emplace_back(
-                    "`match` works on optional and enum values; arms are `some(...)`, "
-                    "`none`, a variant, or a name");
+                diagnostic->notes.emplace_back("`match` works on optional and enum values; arms "
+                                               "are `some(...)`, `none`, a variant, or a name");
             }
             emit(diagnostic);
+            // Consume the tuple so that the rest of the match still parses.
+            skip_tuple_pattern();
         } else if (at(K::Identifier) || at(K::ReservedWord)) {
             data = BindingPattern{expect_identifier("pattern")};
         } else if (accept(K::KwNone)) {
@@ -964,6 +965,14 @@ private:
             error_expected("a pattern");
         }
         return ast_.add(Pattern{span_from(begin), std::move(data)});
+    }
+
+    void skip_tuple_pattern() {
+        int depth = 0;
+        do {
+            depth += at(K::LParen) ? 1 : at(K::RParen) ? -1 : 0;
+            advance();
+        } while (depth != 0 && !at(K::Eof));
     }
 
     // ------------------------------------------------------------------- types
@@ -1130,8 +1139,9 @@ private:
         if (expect(K::LBrace)) {
             while (!at(K::RBrace) && !at(K::Eof) && !should_stop()) {
                 const std::size_t before = pos_;
-                const std::size_t errors_before = error_count_;
                 MatchArm arm{parse_pattern(true), no_id};
+                // A rejected arm pattern was skipped whole; the arm can go on.
+                const std::size_t errors_before = error_count_;
                 arm.value = expect(K::FatArrow) ? parse_expr() : add_expr(here(), ErrorExpr{});
                 node.arms.push_back(arm);
                 if (error_count_ != errors_before || pos_ == before) {
