@@ -118,7 +118,7 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
 def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:
     """The hand-written transformer example, materialized through JAX, agrees
     with the same model's `jnp` reference for its weights."""
-    source = EXAMPLES / "09-tiny-transformer/src/lib.linnet"
+    source = EXAMPLES / "04-tiny-transformer/src/lib.linnet"
     generics: dict[str, int | str] = {
         "Vocab": 11,
         "H": 8,

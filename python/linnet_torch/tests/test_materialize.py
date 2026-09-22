@@ -30,7 +30,7 @@ def _compiler() -> None:
 @pytest.mark.parametrize("dtype", ["f32", "bf16"])
 def test_block_model_matches_reference(tmp_path: Path, dtype: str) -> None:
     generics: dict[str, int | str] = {"H": 8, "Inner": 16, "Layers": 2, "Vocab": 12, "T": dtype}
-    model = load(EXAMPLES / "05-block-and-weights/model.linnet", generics=generics, std_root=STDLIB)
+    model = load(EXAMPLES / "03-block-and-weights/model.linnet", generics=generics, std_root=STDLIB)
     # Random weights in the checkpoint layout, then bound through SafeTensors.
     weights: dict[str, torch.Tensor] = {}
     for name, parameter in model.named_parameters():
@@ -40,7 +40,7 @@ def test_block_model_matches_reference(tmp_path: Path, dtype: str) -> None:
         weights[path] = torch.randn(parameter.shape).to(parameter.dtype)
     save_file(weights, str(tmp_path / "model.safetensors"))
     model = load(
-        EXAMPLES / "05-block-and-weights/model.linnet",
+        EXAMPLES / "03-block-and-weights/model.linnet",
         generics=generics,
         std_root=STDLIB,
         weights=tmp_path,
@@ -87,7 +87,7 @@ def test_checkpoint_mismatch_is_rejected_before_running(tmp_path: Path) -> None:
     )
     with pytest.raises(PlanError, match="shape"):
         load(
-            EXAMPLES / "05-block-and-weights/model.linnet",
+            EXAMPLES / "03-block-and-weights/model.linnet",
             generics=generics,
             std_root=STDLIB,
             weights=tmp_path,
@@ -97,7 +97,7 @@ def test_checkpoint_mismatch_is_rejected_before_running(tmp_path: Path) -> None:
             {"embedding": torch.zeros(12, 8, dtype=torch.bfloat16)}, str(tmp_path / "w.safetensors")
         )
         load(
-            EXAMPLES / "05-block-and-weights/model.linnet",
+            EXAMPLES / "03-block-and-weights/model.linnet",
             generics=generics,
             std_root=STDLIB,
             weights=tmp_path,
@@ -106,9 +106,9 @@ def test_checkpoint_mismatch_is_rejected_before_running(tmp_path: Path) -> None:
 
 def test_wrong_generics_and_inputs_are_rejected() -> None:
     with pytest.raises(PlanError, match="needs a value"):
-        load(EXAMPLES / "05-block-and-weights/model.linnet", generics={"H": 8}, std_root=STDLIB)
+        load(EXAMPLES / "03-block-and-weights/model.linnet", generics={"H": 8}, std_root=STDLIB)
     model = load(
-        EXAMPLES / "05-block-and-weights/model.linnet",
+        EXAMPLES / "03-block-and-weights/model.linnet",
         generics={"H": 8, "Inner": 16, "Layers": 1, "Vocab": 12},
         std_root=STDLIB,
     )
@@ -132,7 +132,7 @@ def test_tiny_transformer_matches_reference(tmp_path: Path, optimize: bool) -> N
         "Layers": layers,
         "T": "f32",
     }
-    source = EXAMPLES / "09-tiny-transformer/src/lib.linnet"
+    source = EXAMPLES / "04-tiny-transformer/src/lib.linnet"
     skeleton = load(source, generics=generics, std_root=STDLIB)
     weights: dict[str, torch.Tensor] = {}
     for name, parameter in skeleton.named_parameters():
@@ -191,7 +191,7 @@ def test_emitted_source_materializes_identically(tmp_path: Path) -> None:
 
     from linnet_torch.plan import find_compiler
 
-    source = EXAMPLES / "09-tiny-transformer/src/lib.linnet"
+    source = EXAMPLES / "04-tiny-transformer/src/lib.linnet"
     generics: dict[str, int | str] = {
         "Vocab": 11,
         "H": 8,

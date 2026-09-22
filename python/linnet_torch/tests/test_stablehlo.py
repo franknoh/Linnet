@@ -96,7 +96,7 @@ def test_block_model_matches_torch(tmp_path: Path) -> None:
     generics: dict[str, int | str] = {"H": 8, "Inner": 16, "Layers": 2, "Vocab": 12, "T": "f32"}
     tokens = torch.randint(0, 12, (2, 3), dtype=torch.int32)
     _round_trip(
-        EXAMPLES / "05-block-and-weights/model.linnet",
+        EXAMPLES / "03-block-and-weights/model.linnet",
         generics,
         {"B": 2, "S": 3},
         [tokens],
@@ -121,7 +121,7 @@ def test_tiny_transformer_matches_torch(tmp_path: Path) -> None:
     cos_table = torch.cat([angles.cos(), angles.cos()], dim=-1)
     sin_table = torch.cat([angles.sin(), angles.sin()], dim=-1)
     _round_trip(
-        EXAMPLES / "09-tiny-transformer/src/lib.linnet",
+        EXAMPLES / "04-tiny-transformer/src/lib.linnet",
         generics,
         {"B": 2, "S": seq},
         [tokens, cos_table, sin_table],
@@ -141,7 +141,7 @@ def test_llama_next_token_matches_torch(tmp_path: Path) -> None:
         "Layers": 2,
         "T": "f32",
     }
-    source = EXAMPLES / "10-llama/src/lib.linnet"
+    source = EXAMPLES / "05-llama/src/lib.linnet"
     reference = load(source, generics=generics, std_root=STDLIB)
     weights: dict[str, torch.Tensor] = {}
     for name, parameter in reference.named_parameters():
@@ -169,7 +169,7 @@ def test_unbound_generic_is_reported() -> None:
             str(STDLIB),
             "--bind",
             "H=8",
-            str(EXAMPLES / "05-block-and-weights/model.linnet"),
+            str(EXAMPLES / "03-block-and-weights/model.linnet"),
         ],
         capture_output=True,
         text=True,

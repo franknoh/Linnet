@@ -12,7 +12,7 @@ export LINNET_BIN=/path/to/build/release/linnet   # or put `linnet` on PATH
 from linnet_torch import load
 
 model = load(
-    "examples/09-tiny-transformer/src/lib.linnet",
+    "examples/04-tiny-transformer/src/lib.linnet",
     root="Model",
     generics={"Vocab": 32000, "H": 4096, "Heads": 32, "Inner": 11008, "Layers": 32, "T": "bf16"},
     std_root="stdlib",
