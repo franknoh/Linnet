@@ -116,6 +116,41 @@ OpId Module::add_op(BlockId block,
     return id;
 }
 
+void Module::replace_uses(ValueId from, ValueId to) {
+    for (Operation& operation : ops_) {
+        for (ValueId& operand : operation.operands) {
+            if (operand == from) {
+                operand = to;
+            }
+        }
+    }
+}
+
+void Module::erase_op(OpId id) {
+    std::vector<OpId>& ops = blocks_[ops_[id].block].ops;
+    std::erase(ops, id);
+}
+
+std::vector<BlockId> Module::all_blocks() const {
+    std::vector<BlockId> result;
+    for (const Function& function : functions_) {
+        std::vector<RegionId> pending{function.body};
+        while (!pending.empty()) {
+            const RegionId region = pending.back();
+            pending.pop_back();
+            for (const BlockId block : regions_[region].blocks) {
+                result.push_back(block);
+                for (const OpId op : blocks_[block].ops) {
+                    for (const RegionId nested : ops_[op].regions) {
+                        pending.push_back(nested);
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
 // -------------------------------------------------------------------- verifier
 
 namespace {

@@ -118,9 +118,11 @@ def test_wrong_generics_and_inputs_are_rejected() -> None:
         model(torch.zeros(2, dtype=torch.int32))
 
 
-def test_tiny_transformer_matches_reference(tmp_path: Path) -> None:
+@pytest.mark.parametrize("optimize", [True, False])
+def test_tiny_transformer_matches_reference(tmp_path: Path, optimize: bool) -> None:
     """The transformer example, built only from the standard library, against
-    a straightforward PyTorch implementation of the same architecture."""
+    a straightforward PyTorch implementation of the same architecture, with
+    and without the compiler's canonicalization passes."""
     H, heads, inner, layers, vocab = 8, 2, 16, 2, 11  # noqa: N806
     generics: dict[str, int | str] = {
         "Vocab": vocab,
@@ -138,7 +140,7 @@ def test_tiny_transformer_matches_reference(tmp_path: Path) -> None:
         if not path.endswith(".bias"):
             weights[path] = torch.randn(parameter.shape) * 0.3
     save_file(weights, str(tmp_path / "model.safetensors"))
-    model = load(source, generics=generics, std_root=STDLIB, weights=tmp_path)
+    model = load(source, generics=generics, std_root=STDLIB, weights=tmp_path, optimize=optimize)
 
     B, S, D = 2, 5, H // heads  # noqa: N806
     tokens = torch.randint(0, vocab, (B, S), dtype=torch.int32)

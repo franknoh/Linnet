@@ -171,10 +171,19 @@ def find_compiler() -> str:
 
 
 def compile_plan(
-    source: str | Path, root: str | None = None, std_root: str | Path | None = None
+    source: str | Path,
+    root: str | None = None,
+    std_root: str | Path | None = None,
+    optimize: bool = True,
 ) -> Plan:
-    """Runs `linnet plan` on a source file. Checking never executes the model."""
+    """Runs `linnet plan` on a source file. Checking never executes the model.
+
+    With `optimize`, the compiler's exact canonicalization passes run first;
+    they never change results.
+    """
     command = [find_compiler(), "plan"]
+    if not optimize:
+        command.append("--no-optimize")
     if root is not None:
         command += ["--root", root]
     if std_root is not None:

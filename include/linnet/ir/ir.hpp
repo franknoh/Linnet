@@ -123,6 +123,8 @@ struct Attributes {
     sema::Shape pack_units;          // slice: the shape unit of each axis (the pack for whole axes)
     std::int64_t axis = 0;           // concat
     sema::Substitution substitution; // call: generic bindings
+
+    friend bool operator==(const Attributes&, const Attributes&) = default;
 };
 
 struct Value {
@@ -190,6 +192,13 @@ public:
     RegionId add_region(OpId parent);
     BlockId add_block(RegionId region);
     ValueId add_argument(BlockId block, sema::TypeId type, std::string name = {});
+    // Rewrites every use of `from` in the module to `to`.
+    void replace_uses(ValueId from, ValueId to);
+    // Removes `id` from its block. Its results must have no uses.
+    void erase_op(OpId id);
+    // Every block of the module, outermost first.
+    std::vector<BlockId> all_blocks() const;
+
     // Appends an operation to `block` and creates one value per result type.
     OpId add_op(BlockId block,
                 OpKind kind,
