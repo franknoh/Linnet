@@ -1,0 +1,39 @@
+// The text tower: token and position embeddings, a causal encoder, and the
+// last position projected into the joint embedding space.
+module clip.text
+
+use crate.encoder::{Encoder, LayerNorm}
+use std.nn.attention::{causal_mask}
+use std.nn.embedding::{embedding}
+use std.nn.linear::{Linear}
+
+pub block TextTower<
+    Vocab: Dim,
+    Context: Dim,
+    D: Dim,
+    Heads: Dim,
+    Inner: Dim,
+    Layers: Dim,
+    Embed: Dim,
+    T: Float,
+>
+where
+    Heads > 0,
+    D % Heads == 0
+{
+    param token_embedding: Tensor[Vocab, D; T]
+    param positions: Tensor[Context, D; T]
+    sub encoder: Encoder<D, Heads, Inner, Layers, T>
+    sub final_norm: LayerNorm<D, T>
+    sub projection: Linear<D, Embed, T>
+
+    pub fn forward<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, Embed; T]
+    where
+        S > 0,
+        S <= Context
+    {
+        let x = embedding(tokens, token_embedding) + embedding(iota<i32>(S), positions)
+        let encoded = encoder.forward(x, some(causal_mask<S, S>()))
+        return projection.forward(final_norm.forward(encoded[:, S - 1, :]))
+    }
+}

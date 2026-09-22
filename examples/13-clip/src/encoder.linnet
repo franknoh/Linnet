@@ -1,0 +1,79 @@
+// The transformer encoder both towers share. Whether attention is causal
+// is a compile-time choice of the caller, passed as an optional mask.
+module clip.encoder
+
+use std.nn.activations::{gelu}
+use std.nn.attention::{attention}
+use std.nn.linear::{Linear}
+use std.nn.norm::{layer_norm}
+
+pub block LayerNorm<D: Dim, T: Float> {
+    param weight: Tensor[D; T]
+    param bias: Tensor[D; T]
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, D; T]) -> Tensor[*S, D; T] {
+        return layer_norm(x, weight, some(bias))
+    }
+}
+
+pub block EncoderLayer<D: Dim, Heads: Dim, Inner: Dim, T: Float>
+where
+    Heads > 0,
+    D % Heads == 0
+{
+    sub norm_1: LayerNorm<D, T>
+    sub qkv: Linear<D, 3 * D, T>
+    sub out: Linear<D, D, T>
+    sub norm_2: LayerNorm<D, T>
+    sub up: Linear<D, Inner, T>
+    sub down: Linear<Inner, D, T>
+
+    pub fn forward<B: Dim, N: Dim>(
+        x: Tensor[B, N, D; T],
+        mask: Tensor[N, N; bool]?,
+    ) -> Tensor[B, N, D; T] {
+        let projected = qkv.forward(norm_1.forward(x))
+        let mixed = attention(
+            heads<B, N, Heads, D / Heads, T>(projected[:, :, 0:D]),
+            heads<B, N, Heads, D / Heads, T>(projected[:, :, D:2 * D]),
+            heads<B, N, Heads, D / Heads, T>(projected[:, :, 2 * D:3 * D]),
+            rsqrt(cast<f32>(D / Heads)),
+            mask,
+        )
+        let attended = x + out.forward(reshape(permute(mixed, [0, 2, 1, 3]), [B, N, D]))
+        return attended + down.forward(gelu(up.forward(norm_2.forward(attended))))
+    }
+}
+
+fn heads<B: Dim, N: Dim, Heads: Dim, Dh: Dim, T: Float>(
+    x: Tensor[B, N, Heads * Dh; T],
+) -> Tensor[B, Heads, N, Dh; T] {
+    return permute(reshape(x, [B, N, Heads, Dh]), [0, 2, 1, 3])
+}
+
+pub block Encoder<D: Dim, Heads: Dim, Inner: Dim, Layers: Dim, T: Float>
+where
+    Heads > 0,
+    D % Heads == 0
+{
+    sub layers: [EncoderLayer<D, Heads, Inner, T>; Layers]
+
+    pub fn forward<B: Dim, N: Dim>(
+        x: Tensor[B, N, D; T],
+        mask: Tensor[N, N; bool]?,
+    ) -> Tensor[B, N, D; T] {
+        var h = x
+        static for layer in layers {
+            h = layer.forward(h, mask)
+        }
+        return h
+    }
+}
+
+// Rows scaled to unit length, in f32.
+pub fn normalize<B: Dim, D: Dim, T: Float>(x: Tensor[B, D; T]) -> Tensor[B, D; f32] {
+    let xf = cast<f32>(x)
+    let squared[b] = sum[d] xf[b, d] * xf[b, d]
+    let unit[b, d] = xf[b, d] * rsqrt(squared[b] + 1e-12)
+    return unit
+}

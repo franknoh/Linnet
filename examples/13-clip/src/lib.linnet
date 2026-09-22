@@ -1,0 +1,64 @@
+// CLIP: two towers trained to agree. Each tower is its own module and the
+// root block exposes three entries — one per embedding and the similarity
+// matrix — over the same parameters.
+module clip
+
+use crate.encoder::{normalize}
+use crate.text::{TextTower}
+use crate.vision::{VisionTower}
+
+pub block Clip<
+    Height: Dim,
+    Width: Dim,
+    Channels: Dim,
+    Patch: Dim,
+    Vocab: Dim,
+    Context: Dim,
+    D: Dim,
+    Heads: Dim,
+    Inner: Dim,
+    Layers: Dim,
+    Embed: Dim,
+    T: Float = f32,
+>
+where
+    Patch > 0,
+    Heads > 0,
+    Height % Patch == 0,
+    Width % Patch == 0,
+    D % Heads == 0
+{
+    sub vision: VisionTower<Height, Width, Channels, Patch, D, Heads, Inner, Layers, Embed, T>
+    sub text: TextTower<Vocab, Context, D, Heads, Inner, Layers, Embed, T>
+    // The learned temperature, stored as its logarithm.
+    param logit_scale: Tensor[1; f32]
+
+    pub entry embed_image<B: Dim>(
+        image: Tensor[B, Channels, Height, Width; T],
+    ) -> Tensor[B, Embed; f32] {
+        return normalize(vision.forward(image))
+    }
+
+    pub entry embed_text<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, Embed; f32]
+    where
+        S > 0,
+        S <= Context
+    {
+        return normalize(text.forward(tokens))
+    }
+
+    // `[images, texts]` cosine similarities scaled by the temperature.
+    pub entry similarity<B: Dim, C: Dim, S: Dim>(
+        image: Tensor[B, Channels, Height, Width; T],
+        tokens: Tensor[C, S; i32],
+    ) -> Tensor[B, C; f32]
+    where
+        S > 0,
+        S <= Context
+    {
+        let images = normalize(vision.forward(image))
+        let texts = normalize(text.forward(tokens))
+        let logits[b, c] = sum[d] images[b, d] * texts[c, d]
+        return logits * exp(logit_scale)
+    }
+}
