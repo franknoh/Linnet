@@ -167,6 +167,16 @@ struct Function {
     std::vector<sema::TypeId> results;
 };
 
+// A module-level constant: its initializer as a region yielding one value.
+// Uses are lowered inline, so the region exists for tools that print the
+// module back (the source emitter, plan documents).
+struct Constant {
+    std::string name; // `module.path::NAME`
+    sema::EntityId entity = sema::no_entity;
+    sema::TypeId type = sema::no_type;
+    RegionId body = no_id;
+};
+
 class Module {
 public:
     explicit Module(std::shared_ptr<sema::Model> model) : model_(std::move(model)) {}
@@ -177,6 +187,7 @@ public:
     const sema::TypeStore& types() const { return model_->types; }
 
     const std::vector<Function>& functions() const { return functions_; }
+    const std::vector<Constant>& constants() const { return constants_; }
     Function& function(FunctionId id) { return functions_[id]; }
     const Function& function(FunctionId id) const { return functions_[id]; }
     const Value& value(ValueId id) const { return values_[id]; }
@@ -190,6 +201,7 @@ public:
     std::size_t value_count() const { return values_.size(); }
 
     FunctionId add_function(Function function);
+    void add_constant(Constant constant);
     RegionId add_region(OpId parent);
     BlockId add_block(RegionId region);
     ValueId add_argument(BlockId block, sema::TypeId type, std::string name = {});
@@ -211,6 +223,7 @@ public:
 private:
     std::shared_ptr<sema::Model> model_;
     std::vector<Function> functions_;
+    std::vector<Constant> constants_;
     std::deque<Value> values_;
     std::deque<Operation> ops_;
     std::deque<Block> blocks_;

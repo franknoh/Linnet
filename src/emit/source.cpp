@@ -19,14 +19,57 @@ class Emitter {
 public:
     Emitter(const ir::Module& module, const EmitOptions& options)
         : module_(module), model_(module.model()), options_(options) {
+        // Arms of a match on a constant variant that cannot be taken are
+        // not emitted, so their uses do not count.
+        std::set<ir::BlockId> dead;
         for (const ir::BlockId block : module_.all_blocks()) {
+            if (dead.contains(
+                    module_.region(module_.block(block).region).parent == ir::no_id
+                        ? block
+                        : module_.op(module_.region(module_.block(block).region).parent).block)) {
+                dead.insert(block);
+                continue;
+            }
+            for (const ir::OpId id : module_.block(block).ops) {
+                const ir::Operation& op = module_.op(id);
+                if (op.kind != ir::OpKind::EnumMatch) {
+                    continue;
+                }
+                const ir::OpId producer = module_.value(op.operands[0]).producer;
+                if (producer == ir::no_id || module_.op(producer).kind != ir::OpKind::EnumConst) {
+                    continue;
+                }
+                const std::string& variant = module_.op(producer).attributes.name;
+                bool is_taken = false;
+                for (std::size_t i = 0; i < op.regions.size(); ++i) {
+                    const bool matches =
+                        !is_taken && i < op.attributes.names.size() &&
+                        (op.attributes.names[i] == variant || op.attributes.names[i] == "_");
+                    if (matches) {
+                        is_taken = true;
+                        // The taken arm is spelled in place of the match.
+                        for (const ir::BlockId inner : module_.region(op.regions[i]).blocks) {
+                            folded_into_[inner] = block;
+                        }
+                    } else {
+                        for (const ir::BlockId inner : module_.region(op.regions[i]).blocks) {
+                            dead.insert(inner);
+                        }
+                    }
+                }
+            }
+        }
+        for (const ir::BlockId block : module_.all_blocks()) {
+            if (dead.contains(block)) {
+                continue;
+            }
             for (const ir::OpId id : module_.block(block).ops) {
                 if (module_.op(id).kind == ir::OpKind::TupleGet) {
                     continue; // destructuring consumes its tuple once, inline
                 }
                 for (const ir::ValueId operand : module_.op(id).operands) {
                     ++uses_[operand];
-                    if (module_.value(operand).block != block) {
+                    if (module_.value(operand).block != enclosing(block)) {
                         used_across_blocks_.insert(operand);
                     }
                 }
@@ -36,6 +79,9 @@ public:
             functions_by_name_[function.name] = &function;
             functions_by_entity_[function.entity] = &function;
             collect_statement_blocks(function.body);
+        }
+        for (const ir::Constant& constant : module_.constants()) {
+            constants_by_entity_[constant.entity] = &constant;
         }
     }
 
@@ -51,8 +97,12 @@ public:
                 text = emit_function(id, 0);
             } else if (entity.kind == EntityKind::Block) {
                 text = emit_block(id);
+            } else if (entity.kind == EntityKind::Const && constants_by_entity_.contains(id)) {
+                text = emit_constant(id);
+            } else if (entity.kind == EntityKind::Enum || entity.kind == EntityKind::Struct) {
+                text = emit_type(id);
             } else {
-                continue; // constants and types are folded into their uses
+                continue; // aliases are spelled where they are used
             }
             if (!text) {
                 return text;
@@ -61,7 +111,7 @@ public:
         }
         std::string out = "module " + module_path() + "\n" + (imports_.empty() ? "" : "\n");
         for (const auto& [path, names] : imports_) {
-            out += "use " + path + "::{";
+            out += "use " + import_path(path) + "::{";
             bool is_first = true;
             for (const std::string& name : names) {
                 out += (is_first ? "" : ", ") + name;
@@ -81,6 +131,18 @@ private:
         }
         return options_.module < model_.module_paths.size() ? model_.module_paths[options_.module]
                                                             : "generated";
+    }
+
+    // Modules of the same package are imported as `crate.rest`: a package's
+    // module paths all start with its name, and only `std` and dependency
+    // names resolve as absolute prefixes.
+    std::string import_path(const std::string& path) const {
+        const std::string own = module_path();
+        const std::string root = own.substr(0, own.find('.'));
+        if (root != "std" && path.starts_with(root + ".")) {
+            return "crate" + path.substr(root.size());
+        }
+        return path;
     }
 
     // Records a `use` for a declaration of another module.
@@ -260,6 +322,43 @@ private:
         return header + *statements + pad + "}\n";
     }
 
+    // `pub enum Name { A, B }` or `pub struct Name { field: Type, ... }`.
+    std::expected<std::string, std::string> emit_type(EntityId entity) {
+        const Entity& target = model_.entities[entity];
+        const DeclInfo& info = model_.decls.at(entity);
+        std::string text = std::string(target.is_pub ? "pub " : "") +
+                           (target.kind == EntityKind::Enum ? "enum " : "struct ") +
+                           std::string(target.name) + generics_header(info.generics) + " {\n";
+        for (const std::string_view variant : info.variants) {
+            text += "    " + std::string(variant) + ",\n";
+        }
+        for (const FieldInfo& field : info.fields) {
+            text += "    " + std::string(field.name) + ": " + type(field.type) + ",\n";
+        }
+        return text + "}\n";
+    }
+
+    // `pub const NAME: Type = value`. A constant declared without a type
+    // stays a contextual literal, so its annotation is left out too.
+    std::expected<std::string, std::string> emit_constant(EntityId entity) {
+        const Entity& target = model_.entities[entity];
+        const ir::Constant& constant = *constants_by_entity_.at(entity);
+        names_.clear();
+        used_names_.clear();
+        auto value = region_value(constant.body);
+        if (!value) {
+            return value;
+        }
+        const TypeKind kind = model_.types.kind(target.type);
+        const bool is_contextual = kind == TypeKind::CompileInt || kind == TypeKind::FloatLiteral;
+        std::string text =
+            std::string(target.is_pub ? "pub " : "") + "const " + std::string(target.name);
+        if (!is_contextual) {
+            text += ": " + type(target.type);
+        }
+        return text + " = " + *value + "\n";
+    }
+
     std::expected<std::string, std::string> emit_block(EntityId entity) {
         const Entity& target = model_.entities[entity];
         const DeclInfo& info = model_.decls.at(entity);
@@ -302,6 +401,16 @@ private:
     }
 
     // -------------------------------------------------------------- statements
+
+    // The block whose statements a value in `block` belongs to: a folded
+    // match arm counts as its parent.
+    ir::BlockId enclosing(ir::BlockId block) const {
+        for (auto found = folded_into_.find(block); found != folded_into_.end();
+             found = folded_into_.find(block)) {
+            block = found->second;
+        }
+        return block;
+    }
 
     // Blocks whose operations become statements: function bodies and
     // `static for` bodies. Every other region is a single expression.
@@ -630,7 +739,13 @@ private:
                 } else if (a.squeezed[i]) {
                     text += dim(a.starts[i]);
                 } else {
-                    text += dim(a.starts[i]) + ":" + dim(a.stops[i]) +
+                    // A full axis is written `:`; a range from 0 or to the end
+                    // leaves that bound out.
+                    const bool from_start = a.starts[i].constant() == 0;
+                    const bool to_end =
+                        !a.pack_units[i].is_pack && a.stops[i] == a.pack_units[i].dim;
+                    text += (from_start ? "" : dim(a.starts[i])) + ":" +
+                            (to_end ? "" : dim(a.stops[i])) +
                             (a.steps[i] == 1 ? "" : ":" + std::to_string(a.steps[i]));
                 }
             }
@@ -679,6 +794,17 @@ private:
             return text + " none => " + region_text(op.regions[1]) + " }";
         }
         case ir::OpKind::EnumMatch: {
+            // A match on a constant variant is decided here: the checker
+            // would reject the arms that cannot match.
+            const ir::OpId producer = module_.value(op.operands[0]).producer;
+            if (producer != ir::no_id && module_.op(producer).kind == ir::OpKind::EnumConst) {
+                const std::string& variant = module_.op(producer).attributes.name;
+                for (std::size_t i = 0; i < a.names.size() && i < op.regions.size(); ++i) {
+                    if (a.names[i] == variant || a.names[i] == "_") {
+                        return region_text(op.regions[i]);
+                    }
+                }
+            }
             std::string text = "match " + expr(op.operands[0]) + " {";
             for (std::size_t i = 0; i < op.regions.size(); ++i) {
                 text += " " + a.names[i] + " => ";
@@ -776,12 +902,14 @@ private:
     const EmitOptions& options_;
     std::map<std::string, const ir::Function*> functions_by_name_;
     std::map<EntityId, const ir::Function*> functions_by_entity_;
+    std::map<EntityId, const ir::Constant*> constants_by_entity_;
     std::map<std::string, std::set<std::string>> imports_;
     std::map<ir::ValueId, std::string> names_;
     std::set<std::string> used_names_;
     std::map<ir::ValueId, std::size_t> uses_;
     std::set<ir::BlockId> statement_blocks_;
     std::set<ir::ValueId> used_across_blocks_;
+    std::map<ir::BlockId, ir::BlockId> folded_into_; // taken match arm -> its match's block
     std::map<ir::ValueId, bool> binding_memo_;
 };
 

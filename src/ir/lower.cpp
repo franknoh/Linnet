@@ -54,6 +54,8 @@ public:
         for (EntityId id = 0; id < model.entities.size(); ++id) {
             if (model.entities[id].kind == EntityKind::Function) {
                 lower_function(id);
+            } else if (model.entities[id].kind == EntityKind::Const) {
+                lower_constant(id);
             }
         }
         return std::move(module_);
@@ -251,6 +253,29 @@ private:
         }
         frame_ = nullptr;
         (void)id;
+    }
+
+    // A constant's initializer, in a region of its own; uses stay inlined.
+    void lower_constant(EntityId entity) {
+        const Entity& target = model().entities[entity];
+        const auto& decl =
+            std::get<ast::ConstDecl>(modules_[target.module]->item(target.item).data);
+        if (decl.value == ast::no_id || target.type == no_type || types().is_error(target.type)) {
+            return;
+        }
+        Constant constant;
+        constant.name = qualified_name(entity);
+        constant.entity = entity;
+        constant.body = module_.add_region(no_id);
+        Frame frame;
+        frame.module = target.module;
+        frame_ = &frame;
+        block_ = module_.add_block(constant.body);
+        const ValueId value = lower_expr(decl.value, target.type);
+        constant.type = module_.value(value).type;
+        yield({value});
+        frame_ = nullptr;
+        module_.add_constant(std::move(constant));
     }
 
     // -------------------------------------------------------------- statements

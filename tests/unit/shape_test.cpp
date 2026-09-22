@@ -116,6 +116,19 @@ TEST("solver: divisibility lets split dimensions multiply back") {
     CHECK(!solver.divides(f.n, f.h + Poly(1)));
 }
 
+TEST("solver: several quotients in one product fold back") {
+    Fixture f;
+    DimContext& c = f.context;
+    Solver solver(f.context);
+    // Patchifying an image: (H / N) * N * (S / N) * N == H * S.
+    const Poly patches = f.b * c.floor_div(f.h, f.n) * f.n * c.floor_div(f.s, f.n) * f.n;
+    CHECK(!solver.prove_equal(patches, f.b * f.h * f.s));
+    solver.assume(Relation::Greater, f.n, Poly(0));
+    solver.assume(Relation::Equal, c.mod(f.h, f.n), Poly(0));
+    solver.assume(Relation::Equal, c.mod(f.s, f.n), Poly(0));
+    CHECK(solver.prove_equal(patches, f.b * f.h * f.s));
+}
+
 TEST("solver: even dimension halves consistently for both strided slices") {
     Fixture f;
     DimContext& c = f.context;

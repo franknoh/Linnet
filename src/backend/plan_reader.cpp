@@ -65,6 +65,9 @@ public:
         for (const Json& function : document_["functions"].as_array()) {
             define_function(function);
         }
+        for (const Json& constant : document_["constants"].as_array()) {
+            define_constant(constant);
+        }
         return std::move(module_);
     }
 
@@ -448,6 +451,32 @@ private:
         module_.add_function(std::move(out));
         values_.clear();
         fill_region(body, require(function, "body", "function"));
+    }
+
+    void define_constant(const Json& description) {
+        const std::string qualified = require(description, "name", "constant").as_string();
+        const QualifiedName parts = split_name(qualified);
+        const EntityId id = add_entity(EntityKind::Const, parts.name, module_index(parts.path));
+        Entity& entity = model().entities[id];
+        entity.is_pub = description["pub"].is_null() || description["pub"].as_bool();
+        ir::Constant constant;
+        constant.name = qualified;
+        constant.entity = id;
+        constant.type = type(require(description, "type", "constant"));
+        // A contextual constant keeps its literal type so the emitter leaves
+        // the annotation out.
+        entity.type = constant.type;
+        if (description["contextual"].as_bool()) {
+            const TypeData& data = types().get(constant.type);
+            entity.type = data.kind == TypeKind::Scalar && is_float(data.dtype.scalar)
+                              ? types().float_literal(std::nullopt)
+                              : types().compile_int(shape::Poly(0));
+        }
+        constant.body = module_.add_region(ir::no_id);
+        const ir::RegionId body = constant.body;
+        module_.add_constant(std::move(constant));
+        values_.clear();
+        fill_region(body, require(description, "body", "constant"));
     }
 
     void fill_region(ir::RegionId region, const Json& description) {

@@ -37,6 +37,21 @@ public:
             is_first = false;
             out += function_json(function);
         }
+        out += "],\"constants\":[";
+        is_first = true;
+        for (const ir::Constant& constant : module_.constants()) {
+            const Entity& entity = model_.entities[constant.entity];
+            out += is_first ? "" : ",";
+            is_first = false;
+            out += "{\"name\":" + json_string(constant.name) +
+                   ",\"pub\":" + (entity.is_pub ? "true" : "false") +
+                   ",\"type\":" + type_json(constant.type) + ",\"contextual\":" +
+                   (types_.kind(entity.type) == TypeKind::CompileInt ||
+                            types_.kind(entity.type) == TypeKind::FloatLiteral
+                        ? "true"
+                        : "false") +
+                   ",\"body\":" + region_json(constant.body) + "}";
+        }
         out += "]}\n";
         return out;
     }
