@@ -406,11 +406,14 @@ TypeId Checker::check_expr(ast::ExprId id, TypeId expected) {
     if (id == ast::no_id) {
         return types_.error();
     }
-    return check_expr_inner(id, expected);
+    const TypeId type = check_expr_inner(id, expected);
+    facts(id).type = type;
+    return type;
 }
 
 TypeId Checker::check_expr_inner(ast::ExprId id, TypeId expected) {
     const ast::Expr& node = ast().expr(id);
+    current_expr_ = id;
     return std::visit(
         Overloaded{
             [&](const ast::ErrorExpr&) { return types_.error(); },
@@ -499,6 +502,7 @@ TypeId Checker::check_name(const ast::Expr& node, const ast::NameExpr& name) {
         return types_.error();
     }
     const EntityId entity = lookup(name.name);
+    facts(current_expr_).entity = entity;
     if (entity == no_entity) {
         auto report = error(codes::unknown_symbol,
                             node.span,
@@ -669,12 +673,14 @@ Substitution Checker::substitution_of(const TypeData& nominal) {
 }
 
 TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& member) {
+    const ast::ExprId self = current_expr_;
     // `module.item` and `Enum.Variant` are paths rather than value accesses.
     if (const auto* base = std::get_if<ast::NameExpr>(&ast().expr(member.base).data)) {
         const EntityId entity =
             find_index(base->name.text) == nullptr ? lookup(base->name) : no_entity;
         if (entity != no_entity && entities_[entity].kind == EntityKind::Module) {
             const EntityId item = lookup_in_module(entities_[entity].module_ref, member.member);
+            facts(self).entity = item;
             return item == no_entity ? types_.error() : value_of_entity(item, node.span);
         }
         if (entity != no_entity && entities_[entity].kind == EntityKind::Enum) {
@@ -703,9 +709,12 @@ TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& membe
     }
     if (data.kind == TypeKind::Struct) {
         resolve(data.decl);
-        for (const FieldInfo& field : decls_[data.decl].fields) {
-            if (field.name == member.member.text) {
-                return types_.substitute(field.type, substitution_of(data));
+        const std::vector<FieldInfo>& fields = decls_[data.decl].fields;
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i].name == member.member.text) {
+                facts(self).is_field = true;
+                facts(self).field = static_cast<std::uint32_t>(i);
+                return types_.substitute(fields[i].type, substitution_of(data));
             }
         }
     } else if (data.kind == TypeKind::Block) {
@@ -714,6 +723,7 @@ TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& membe
         if (found != scope.end() && entities_[found->second].kind == EntityKind::Member) {
             entities_[found->second].is_used = true;
             record_ref(member.member.span, found->second);
+            facts(self).entity = found->second;
             resolve(found->second);
             return types_.substitute(entities_[found->second].type, substitution_of(data));
         }
@@ -789,7 +799,8 @@ TypeId Checker::check_match(const ast::Expr& node, const ast::MatchExpr& match, 
                            has_catch_all = true;
                            if (binding.name.text != "_") {
                                record_binding(binding.name, scrutinee);
-                               declare_local(binding.name, scrutinee, false);
+                               model_->bound[env_->module][arm.pattern] =
+                                   declare_local(binding.name, scrutinee, false);
                            }
                        },
                        [&](const ast::SomePattern& some) {
@@ -871,6 +882,7 @@ void Checker::bind_index_domain(IndexVar& var,
 }
 
 TypeId Checker::check_reduction(const ast::Expr& node, const ast::ReductionExpr& reduction) {
+    const ast::ExprId self = current_expr_;
     std::vector<IndexVar> scope;
     if (!reduction.indices.empty()) {
         const SourceSpan head{
@@ -893,6 +905,9 @@ TypeId Checker::check_reduction(const ast::Expr& node, const ast::ReductionExpr&
     const TypeId body = check_expr(reduction.body);
     const std::vector<IndexVar> vars = std::move(env_->index_scopes.back());
     env_->index_scopes.pop_back();
+    for (const IndexVar& var : vars) {
+        facts(self).index_domains.push_back(var.domain);
+    }
 
     std::optional<DType> accumulator;
     if (reduction.accumulator != ast::no_id) {
@@ -1191,6 +1206,8 @@ TypeId Checker::check_index(const ast::Expr& node, const ast::IndexExpr& index) 
     if (const auto* name = std::get_if<ast::NameExpr>(&ast().expr(index.base).data)) {
         if (const EntityId entity = lookup(name->name); entity != no_entity) {
             base = value_of_entity(entity, ast().expr(index.base).span);
+            facts(index.base).type = base;
+            facts(index.base).entity = entity;
         }
     }
     if (base == no_type) {
@@ -1253,7 +1270,7 @@ void Checker::bind_pattern(ast::PatternId id, TypeId type, bool is_mutable) {
             [&](const ast::BindingPattern& binding) {
                 if (binding.name.text != "_") {
                     record_binding(binding.name, type);
-                    declare_local(binding.name, type, is_mutable);
+                    model_->bound[env_->module][id] = declare_local(binding.name, type, is_mutable);
                 }
             },
             [&](const ast::TuplePattern& tuple) {
@@ -1344,7 +1361,8 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                 binding_is_annotated_ = var.type != ast::no_id;
                 record_binding(var.name, type);
                 binding_is_annotated_ = false;
-                declare_local(var.name, type, true);
+                facts_of_stmt(id).type = type;
+                facts_of_stmt(id).entity = declare_local(var.name, type, true);
             },
             [&](const ast::ComprehensionStmt& comprehension) {
                 std::vector<IndexVar> outputs;
@@ -1399,7 +1417,12 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                                                     : "index every tensor, for example `a[i, j]`");
                 }
                 record_binding(comprehension.target, type);
-                declare_local(comprehension.target, type, false);
+                StmtFacts& stmt_facts = facts_of_stmt(id);
+                stmt_facts.type = type;
+                for (const IndexVar& var : vars) {
+                    stmt_facts.output_domains.push_back(var.domain);
+                }
+                stmt_facts.entity = declare_local(comprehension.target, type, false);
             },
             [&](const ast::AssignStmt& assign) {
                 const EntityId entity = lookup(assign.target);

@@ -184,3 +184,22 @@ void Checker::collect_symbols() {
 }
 
 } // namespace linnet::sema
+
+namespace linnet::sema {
+
+namespace {
+const ExprFacts empty_expr_facts;
+const StmtFacts empty_stmt_facts;
+} // namespace
+
+const ExprFacts& Model::expr(std::uint32_t module, ast::ExprId id) const {
+    const auto found = exprs[module].find(id);
+    return found == exprs[module].end() ? empty_expr_facts : found->second;
+}
+
+const StmtFacts& Model::stmt(std::uint32_t module, ast::StmtId id) const {
+    const auto found = stmts[module].find(id);
+    return found == stmts[module].end() ? empty_stmt_facts : found->second;
+}
+
+} // namespace linnet::sema

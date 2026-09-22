@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -77,11 +78,15 @@ struct Reference {
     std::uint32_t symbol; // index into AnalysisResult::symbols
 };
 
+struct Model;
+
 struct AnalysisResult {
     std::vector<BindingInfo> bindings;
     std::vector<ManifestBlock> manifests;
     std::vector<SymbolInfo> symbols;
     std::vector<Reference> references;
+    // The typed model (see sema/model.hpp); complete only without errors.
+    std::shared_ptr<Model> model;
 };
 
 // Where each `use` declaration leads, as decided by the module loader: the key

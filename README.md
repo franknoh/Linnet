@@ -6,8 +6,8 @@ weights. Inspecting or checking a Linnet package never executes package code.
 
 The project is in early development. The toolchain currently provides the
 frontend: parsing, canonical formatting, static checking of names, dtypes,
-symbolic shapes, and tensor index notation, packages, and a language server.
-There is no backend yet.
+symbolic shapes, and tensor index notation, packages, a language server, and
+lowering to Core Tensor IR. There is no backend yet.
 
 - `spec/` is the normative language specification; `spec/grammar.ebnf` is the
   consolidated grammar.

@@ -114,11 +114,14 @@ rewritten. A list that ends with a trailing comma stays one element per line.
 ```bash
 linnet inspect --tokens file.linnet
 linnet inspect --ast file.linnet
+linnet inspect --core-ir [--std <dir>] file.linnet
 linnet inspect --parameters [--json] file.linnet
 ```
 
-`--tokens` and `--ast` are compiler-internal views for debugging; their format
-is not stable.
+`--tokens`, `--ast`, and `--core-ir` are compiler-internal views for
+debugging; their format is not stable. `--core-ir` prints the Core Tensor IR
+of every function, op, entry, and block method of the file and the modules it
+imports, after running the IR verifier.
 
 `--parameters` prints the parameter manifest of every block declared in the
 file: one line per `param` or `buffer`, with its path from the block, its

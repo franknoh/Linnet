@@ -54,6 +54,8 @@ add_library(linnet_core STATIC
     src/diagnostic/render.cpp
     src/format/doc.cpp
     src/format/formatter.cpp
+    src/ir/ir.cpp
+    src/ir/lower.cpp
     src/lsp/json.cpp
     src/lsp/server.cpp
     src/module/loader.cpp

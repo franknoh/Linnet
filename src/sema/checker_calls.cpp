@@ -237,6 +237,7 @@ bool Checker::unify(Inference& inference, TypeId param, TypeId arg) {
 // ----------------------------------------------------------------------- calls
 
 TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
+    const ast::ExprId self = current_expr_;
     const ast::Expr& callee = ast().expr(call.callee);
     const auto check_arguments_only = [&] {
         for (const ast::Argument& arg : call.args) {
@@ -245,6 +246,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
         return types_.error();
     };
     const auto call_entity = [&](EntityId entity, SourceSpan span, const Substitution& receiver) {
+        current_expr_ = self; // checking the receiver moved it
         if (entities_[entity].kind != EntityKind::Function) {
             error(codes::not_callable,
                   span,
@@ -260,6 +262,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
             return call_entity(entity, callee.span, {});
         }
         if (is_prelude_name(name->name.text) && !scalar_from_name(name->name.text)) {
+            facts(self).builtin = std::string(name->name.text);
             return check_builtin_call(node, call, name->name.text);
         }
         error(codes::unknown_symbol,
@@ -295,6 +298,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
                     return check_arguments_only();
                 }
                 record_ref(member->member.span, found->second);
+                current_expr_ = self;
                 return check_user_call(node, call, found->second, substitution_of(data));
             }
         }
@@ -312,6 +316,8 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                                 const ast::CallExpr& call,
                                 EntityId callee,
                                 const Substitution& receiver) {
+    const ast::ExprId self = current_expr_;
+    facts(self).entity = callee;
     resolve(callee);
     const DeclInfo& info = decls_[callee];
     const std::string name(entities_[callee].name);
@@ -385,6 +391,7 @@ TypeId Checker::check_user_call(const ast::Expr& node,
             continue;
         }
         assigned[slot] = &arg;
+        facts(self).argument_slots.push_back(static_cast<std::uint32_t>(slot));
     }
 
     for (std::size_t i = 0; i < info.params.size(); ++i) {
@@ -510,6 +517,7 @@ TypeId Checker::check_user_call(const ast::Expr& node,
             return types_.error();
         }
     }
+    facts(self).substitution = inference.bound;
     return types_.substitute(info.result, inference.bound);
 }
 
