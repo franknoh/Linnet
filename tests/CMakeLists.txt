@@ -67,7 +67,7 @@ set_tests_properties(cli_check_json PROPERTIES
 add_test(NAME cli_inspect_parameters
     COMMAND linnet inspect --parameters ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
 set_tests_properties(cli_inspect_parameters PROPERTIES
-    PASS_REGULAR_EXPRESSION "param layers\\[\\*\\].up.weight: Tensor\\[Inner, H; bf16\\] x Layers")
+    PASS_REGULAR_EXPRESSION "param layers\\[\\*\\].up.weight: Tensor\\[Inner, H; T\\] x Layers")
 
 linnet_add_test(toml_test unit/toml_test.cpp)
 
@@ -96,3 +96,6 @@ add_test(NAME cli_core_ir_stdlib
     COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib/nn/attention.linnet)
 add_test(NAME cli_core_ir_transformer
     COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+add_test(NAME cli_plan_transformer
+    COMMAND linnet plan --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"version\":1,\"root\":\\{\"name\":\"Model\"")

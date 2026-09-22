@@ -28,23 +28,23 @@ pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
     }
 }
 
-pub block Mlp<H: Dim, Inner: Dim> {
-    param norm_weight: Tensor[H; bf16]
-    sub up: Linear<H, Inner>
-    sub down: Linear<Inner, H>
+pub block Mlp<H: Dim, Inner: Dim, T: Float> {
+    param norm_weight: Tensor[H; T]
+    sub up: Linear<H, Inner, T>
+    sub down: Linear<Inner, H, T>
 
-    pub fn forward<*S: Shape>(x: Tensor[*S, H; bf16]) -> Tensor[*S, H; bf16] {
+    pub fn forward<*S: Shape>(x: Tensor[*S, H; T]) -> Tensor[*S, H; T] {
         let hidden = up.forward(rms_norm(x, norm_weight, 1e-5))
         return x + down.forward(max(hidden, 0.0))
     }
 }
 
-pub block Model<H: Dim, Inner: Dim, Layers: Dim, Vocab: Dim> {
-    param embedding: Tensor[Vocab, H; bf16]
-    sub layers: [Mlp<H, Inner>; Layers]
-    sub head: Linear<H, Vocab>
+pub block Model<H: Dim, Inner: Dim, Layers: Dim, Vocab: Dim, T: Float = bf16> {
+    param embedding: Tensor[Vocab, H; T]
+    sub layers: [Mlp<H, Inner, T>; Layers]
+    sub head: Linear<H, Vocab, T>
 
-    pub entry forward<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, Vocab; bf16] {
+    pub entry forward<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, Vocab; T] {
         let embedded[b, s, h] = embedding[tokens[b, s], h]
         var x = embedded
         static for layer in layers {

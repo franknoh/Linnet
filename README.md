@@ -5,9 +5,10 @@ checked statically for shape and dtype correctness, and kept separate from their
 weights. Inspecting or checking a Linnet package never executes package code.
 
 The project is in early development. The toolchain currently provides the
-frontend: parsing, canonical formatting, static checking of names, dtypes,
-symbolic shapes, and tensor index notation, packages, a language server, and
-lowering to Core Tensor IR. There is no backend yet.
+frontend (parsing, formatting, static checking of names, dtypes, symbolic
+shapes, and tensor index notation, packages, a language server, Core Tensor
+IR) and a first backend: `python/linnet_torch` materializes a checked model as
+a `torch.nn.Module` with SafeTensors weights, see [docs/torch.md](docs/torch.md).
 
 - `spec/` is the normative language specification; `spec/grammar.ebnf` is the
   consolidated grammar.
@@ -30,6 +31,7 @@ linnet fmt src/                 # format files in place (directories recurse)
 linnet fmt --check .            # exit 1 if anything would change; for CI
 linnet fmt - < in.linnet        # format stdin to stdout; for editors
 linnet inspect --ast file.linnet
+linnet plan --root Model model.linnet   # JSON plan for a materializer
 linnet inspect --tokens file.linnet
 ```
 
