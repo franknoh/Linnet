@@ -182,3 +182,48 @@ def test_tiny_transformer_matches_reference(tmp_path: Path, optimize: bool) -> N
     reference = linear(rms_norm(x, weights["norm.weight"]), "head")
     torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
     assert next(iter(model.state_dict())) == "root.embedding.weight"
+
+
+def test_emitted_source_materializes_identically(tmp_path: Path) -> None:
+    """Source emitted back from the transformer's Core IR loads to a module
+    with the same parameters and the same outputs as the original."""
+    import subprocess
+
+    from linnet_torch.plan import find_compiler
+
+    source = EXAMPLES / "09-tiny-transformer/src/lib.linnet"
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "T": "f32",
+    }
+    emitted = subprocess.run(
+        [find_compiler(), "inspect", "--emit", "--std", str(STDLIB), str(source)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    package = tmp_path / "emitted"
+    (package / "src").mkdir(parents=True)
+    (package / "linnet.toml").write_text((source.parents[1] / "linnet.toml").read_text())
+    (package / "src/lib.linnet").write_text(emitted)
+
+    original = load(source, generics=generics, std_root=STDLIB)
+    weights: dict[str, torch.Tensor] = {}
+    for name, parameter in original.named_parameters():
+        path = name.removeprefix("root.")
+        if not path.endswith(".bias"):
+            weights[path] = torch.randn(parameter.shape) * 0.3
+    save_file(weights, str(tmp_path / "model.safetensors"))
+    original = load(source, generics=generics, std_root=STDLIB, weights=tmp_path)
+    copy = load(package / "src/lib.linnet", generics=generics, std_root=STDLIB, weights=tmp_path)
+    assert list(copy.state_dict()) == list(original.state_dict())
+
+    tokens = torch.randint(0, 11, (2, 5), dtype=torch.int32)
+    cos_table, sin_table = torch.randn(5, 4), torch.randn(5, 4)
+    torch.testing.assert_close(
+        copy(tokens, cos_table, sin_table), original(tokens, cos_table, sin_table)
+    )

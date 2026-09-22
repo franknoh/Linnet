@@ -295,7 +295,9 @@ private:
                 [&](const ast::VarStmt& var) {
                     const TypeId declared = substituted(stmt_facts.type);
                     const ValueId value = lower_expr(var.value, declared);
-                    module_.value(value).name = std::string(var.name.text);
+                    if (module_.value(value).name.empty()) {
+                        module_.value(value).name = std::string(var.name.text);
+                    }
                     frame_->locals[stmt_facts.entity] = value;
                 },
                 [&](const ast::ComprehensionStmt& comprehension) {
@@ -388,7 +390,8 @@ private:
         assigned_locals(loop.body, carried);
         std::vector<ValueId> operands{array};
         std::vector<TypeId> results;
-        std::vector<std::pair<TypeId, std::string>> arguments{{element, "element"}};
+        // Named by the loop pattern when it is a plain binding.
+        std::vector<std::pair<TypeId, std::string>> arguments{{element, ""}};
         for (const EntityId entity : carried) {
             operands.push_back(frame_->locals.at(entity));
             results.push_back(module_.value(frame_->locals.at(entity)).type);
@@ -778,7 +781,7 @@ private:
             const OpId op = region_op(OpKind::OptionMatch, {scrutinee}, {type}, {}, node.span);
             const TypeId inner = subject.elements.front();
             const RegionId some_region =
-                nested_region(op, {{inner, "value"}}, [&](const std::vector<ValueId>& args) {
+                nested_region(op, {{inner, ""}}, [&](const std::vector<ValueId>& args) {
                     if (some_arm != nullptr) {
                         bind_pattern(
                             std::get<ast::SomePattern>(ast().pattern(some_arm->pattern).data).inner,

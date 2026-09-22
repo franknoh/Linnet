@@ -55,6 +55,7 @@ struct Entity {
     bool is_pub = false;
     bool is_mutable = false;      // Local declared with `var`
     bool is_parameter = false;    // Local that is a function parameter
+    bool is_buffer = false;       // Member declared with `buffer`
     bool is_used = false;         // referenced at least once
     shape::SymbolId symbol = 0;   // GenericDim, GenericPack
     DTypeVarId dtype_var = 0;     // GenericDType
@@ -147,6 +148,7 @@ struct StmtFacts {
 struct Model {
     shape::DimContext dims;
     TypeStore types{dims};
+    std::vector<std::string> module_paths; // `a.b.c` per module index
     std::deque<Entity> entities;
     std::map<EntityId, DeclInfo> decls;
     std::vector<std::unordered_map<ast::ExprId, ExprFacts>> exprs;   // per module
