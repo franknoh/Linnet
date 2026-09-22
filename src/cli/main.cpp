@@ -3,6 +3,7 @@
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
+#include "linnet/emit/source.hpp"
 #include "linnet/format/formatter.hpp"
 #include "linnet/ir/lower.hpp"
 #include "linnet/lsp/server.hpp"
@@ -78,6 +79,7 @@ void print_usage(std::FILE* out) {
         "  inspect --tokens <file>              Show the tokens of a file\n"
         "  inspect --ast <file>                 Show the syntax tree of a file\n"
         "  inspect --core-ir [-O] <file>        Show the Core IR of a file, optimized with -O\n"
+        "  inspect --emit [-O] <file>           Emit the file's Core IR back as Linnet source\n"
         "  inspect --parameters [--json] <file> Show the parameter manifest of each\n"
         "                                       block declared in a file\n"
         "\n"
@@ -523,7 +525,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
         } else if (arg == "-O") {
             is_optimized = true;
         } else if (arg == "--tokens" || arg == "--ast" || arg == "--parameters" ||
-                   arg == "--core-ir") {
+                   arg == "--core-ir" || arg == "--emit") {
             if (!view.empty()) {
                 return usage_error("inspect takes exactly one view option");
             }
@@ -544,7 +546,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
     }
 
     SourceManager sources;
-    if (view == "--parameters" || view == "--core-ir") {
+    if (view == "--parameters" || view == "--core-ir" || view == "--emit") {
         DiagnosticSink sink;
         const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
         const LoaderOptions loader_options{find_std_root(std_option, program), {}};
@@ -558,16 +560,28 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
         if (sink.has_errors()) {
             return report(sources, sink, options);
         }
-        if (view == "--core-ir") {
+        if (view == "--core-ir" || view == "--emit") {
             ir::Module core = ir::lower(sources, modules, analysis.model);
             for (const std::string& problem : ir::verify(core)) {
                 std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
             }
-            if (is_optimized && ir::verify(core).empty()) {
+            if (!ir::verify(core).empty()) {
+                return exit_failure;
+            }
+            if (is_optimized) {
                 opt::run_pipeline(core, opt::canonical_passes());
             }
-            std::fputs(ir::print(core).c_str(), stdout);
-            return ir::verify(core).empty() ? exit_success : exit_failure;
+            if (view == "--core-ir") {
+                std::fputs(ir::print(core).c_str(), stdout);
+                return exit_success;
+            }
+            const auto text = emit::emit_source(core, emit::EmitOptions{});
+            if (!text) {
+                std::fprintf(stderr, "linnet: cannot emit source: %s\n", text.error().c_str());
+                return exit_failure;
+            }
+            std::fputs(text->c_str(), stdout);
+            return exit_success;
         }
         // Only blocks of the requested file, not of what it imports.
         std::vector<sema::ManifestBlock> blocks;

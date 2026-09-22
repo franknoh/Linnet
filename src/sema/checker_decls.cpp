@@ -168,6 +168,14 @@ AnalysisResult Checker::run() {
         collect_manifests();
     }
     collect_symbols();
+    for (const ast::Ast* module : modules_) {
+        std::string path;
+        for (const ast::Name& segment : module->module_path) {
+            path += path.empty() ? "" : ".";
+            path += segment.text;
+        }
+        model_->module_paths.push_back(std::move(path));
+    }
     result_.model = model_;
     return std::move(result_);
 }
@@ -241,6 +249,7 @@ void Checker::collect_module(std::uint32_t module) {
                            [&](const ast::MemberDecl& decl) {
                                if (parent != no_entity) {
                                    entity.kind = EntityKind::Member;
+                                   entity.is_buffer = decl.kind == ast::MemberKind::Buffer;
                                    name = &decl.name;
                                }
                            },

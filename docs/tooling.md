@@ -149,14 +149,26 @@ rewritten. A list that ends with a trailing comma stays one element per line.
 ```bash
 linnet inspect --tokens file.linnet
 linnet inspect --ast file.linnet
-linnet inspect --core-ir [--std <dir>] file.linnet
+linnet inspect --core-ir [-O] [--std <dir>] file.linnet
+linnet inspect --emit [-O] [--std <dir>] file.linnet
 linnet inspect --parameters [--json] file.linnet
 ```
 
 `--tokens`, `--ast`, and `--core-ir` are compiler-internal views for
 debugging; their format is not stable. `--core-ir` prints the Core Tensor IR
 of every function, op, entry, and block method of the file and the modules it
-imports, after running the IR verifier.
+imports, after running the IR verifier; `-O` runs the canonical optimizer
+passes first.
+
+`--emit` reconstructs Linnet source for the file's declarations from that IR:
+functions, ops, entries, and blocks with their members and methods. The
+result is a complete module that checks and lints clean and that emits itself
+again unchanged, so it is the canonical form a program takes after lowering.
+SSA values become `let` bindings named after their source names; values used
+once are written inline; index notation is rebuilt from comprehension and
+reduction regions; calls spell their generic arguments explicitly and pass
+every argument, since defaults are resolved before lowering. The same emitter
+is how programs imported from other frameworks become `.linnet` files.
 
 `--parameters` prints the parameter manifest of every block declared in the
 file: one line per `param` or `buffer`, with its path from the block, its
