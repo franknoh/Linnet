@@ -53,6 +53,13 @@ def _rms_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return normalized.to(x.dtype) * weight
 
 
+def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, weight, bias, eps = args
+    normalized = functional.layer_norm(x.float(), [x.shape[-1]], eps=float(eps.item()))
+    scaled = normalized.to(x.dtype) * weight
+    return scaled if bias is None else scaled + bias
+
+
 def _attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     query, key, value, scale, mask = args
     # The canonical body computes in f32; SDPA is asked to do the same so
@@ -76,5 +83,6 @@ NATIVE: dict[str, Native] = {
     "torch.nn.functional.silu": _silu,
     "torch.nn.functional.gelu(tanh)": _gelu,
     "torch.rms_norm": _rms_norm,
+    "torch.nn.functional.layer_norm": _layer_norm,
     "torch.nn.functional.scaled_dot_product_attention": _attention,
 }
