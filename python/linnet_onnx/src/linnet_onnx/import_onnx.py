@@ -508,7 +508,9 @@ class _Translator:
                 tuple(int(d) for d in array.shape), _numpy_dtype_name(array)
             )
         # Initializers that are tensors become parameters; scalars and shape
-        # vectors are folded where they are used.
+        # vectors are folded where they are used. Graph inputs that the
+        # model's metadata marks as `linnet.path.<input>` are parameters
+        # too: `linnet onnx` writes weight-free models that way.
         leaves: dict[str, _Type] = {}
         for initializer in self.graph.initializer:
             array = self.constants[initializer.name]
@@ -516,6 +518,16 @@ class _Translator:
                 array.dtype == np.int64 and array.ndim == 1 and array.size <= 8
             ):
                 leaves[initializer.name] = self.types[initializer.name]
+        declared: dict[str, str] = {}  # graph input -> parameter path
+        for prop in self.proto.metadata_props:
+            if prop.key.startswith("linnet.path."):
+                declared[prop.key.removeprefix("linnet.path.")] = prop.value
+        for info in self.graph.input:
+            if info.name in declared:
+                kind = self.types.get(info.name)
+                if kind is None:
+                    raise OnnxImportError(f"parameter input `{info.name}` has no static shape")
+                leaves[declared[info.name]] = kind
         root = self.hierarchy.describe(leaves, self.root_name) if leaves else None
         if root is None:
             raise OnnxImportError("the graph has no tensor initializers to become parameters")
@@ -523,12 +535,15 @@ class _Translator:
         root_block = cast(_Block, root.block)
         initializer_names = {i.name for i in self.graph.initializer}
         for name in leaves:
-            self.parameters[name] = self.constants[name]
-            self.values[name] = self._member_value(root, name)
+            if name in self.constants:
+                self.parameters[name] = self.constants[name]
+                self.values[name] = self._member_value(root, name)
+        for input_name, path in declared.items():
+            self.values[input_name] = self._member_value(root, path)
 
         inputs: list[tuple[str, _Value]] = []
         for info in self.graph.input:
-            if info.name in initializer_names:
+            if info.name in initializer_names or info.name in declared:
                 continue
             kind = self.types.get(info.name)
             if kind is None:
@@ -958,6 +973,19 @@ def _reshape_to(t: _Translator, node: Any, value: _Value, kind: _Type) -> None:
     if tuple(kind.shape) == tuple(value.type.shape):
         t.define(node, value)
         return
+    if value.type.is_scalar:
+        # A scalar has no axes to reshape; a tensor of ones of it is a fill.
+        t.define(
+            node,
+            t.builder.op(
+                "fill",
+                [value],
+                kind,
+                {"shape": [t.symbols.json(d) for d in kind.shape]},
+                name=node.output[0],
+            ),
+        )
+        return
     t.define(
         node,
         t.builder.op(
@@ -1006,6 +1034,90 @@ def _constant_of_shape(t: _Translator, node: Any) -> None:
     )
 
 
+@_handles("Range")
+def _range(t: _Translator, node: Any) -> None:
+    """`Range(0, n, 1)` is `iota`; other ranges shift and scale it."""
+    start = t.dims_of(node.input[0])
+    limit = t.dims_of(node.input[1])
+    delta = t.dims_of(node.input[2])
+    if (
+        len(start) != 1
+        or len(limit) != 1
+        or len(delta) != 1
+        or not all(isinstance(v[0], int) for v in (start, limit, delta))
+    ):
+        raise OnnxImportError("Range needs constant bounds")
+    first, stop, step = cast(int, start[0]), cast(int, limit[0]), cast(int, delta[0])
+    if step == 0:
+        raise OnnxImportError("Range with a zero step")
+    count = max(0, -(-(stop - first) // step))
+    kind = t.result(node) if node.output[0] in t.types else _Type((count,), "i64")
+    value = t.builder.op("iota", [], _Type((count,), "i64"), {"shape": [count]})
+    if step != 1:
+        value = t.builder.op("mul", [value, t.builder.const(step, "i64")], _Type((count,), "i64"))
+    if first != 0:
+        value = t.builder.op("add", [value, t.builder.const(first, "i64")], _Type((count,), "i64"))
+    if kind.dtype != "i64":
+        value = t.builder.op("cast", [value], _Type((count,), kind.dtype))
+    t.types[node.output[0]] = _Type((count,), kind.dtype)
+    t.define(node, value)
+
+
+@_handles("GatherND")
+def _gather_nd(t: _Translator, node: Any) -> None:
+    """`out[g...] = source[indices[g..., 0], indices[g..., 1], ...]`."""
+    if int(t.attr(node, "batch_dims", 0)) != 0:
+        raise OnnxImportError("GatherND with batch dimensions is not supported")
+    source, indices = t.operand(node, 0), t.operand(node, 1)
+    index_shape = list(indices.type.shape)
+    depth = index_shape[-1]
+    if not isinstance(depth, int):
+        raise OnnxImportError("GatherND needs a static index depth")
+    grid = index_shape[:-1]
+    trailing = list(source.type.shape)[depth:]
+    kind = _Type(tuple(grid + trailing), source.type.dtype)
+    t.types[node.output[0]] = kind
+
+    def body(positions: list[_Value]) -> _Value:
+        rows: list[_Value] = []
+        for j in range(depth):
+            column = t.builder.const(j, "i64")
+            row = t.builder.element(indices, [*positions[: len(grid)], column])
+            if row.type.dtype != "i64":
+                row = t.builder.op("cast", [row], _Type((), "i64"))
+            rows.append(row)
+        return t.builder.element(source, [*rows, *positions[len(grid) :]])
+
+    t.define(
+        node,
+        t.builder.comprehension(
+            [(f"g{i}", d) for i, d in enumerate(grid)]
+            + [(f"h{i}", d) for i, d in enumerate(trailing)],
+            kind.dtype,
+            body,
+            name=node.output[0],
+        ),
+    )
+
+
+@_handles("Not")
+def _not(t: _Translator, node: Any) -> None:
+    x = t.operand(node, 0)
+    kind = t.result(node) if node.output[0] in t.types else x.type
+    if kind.is_scalar:
+        t.define(node, t.builder.op("not", [x], kind, name=node.output[0]))
+        return
+    t.define(
+        node,
+        t.builder.op(
+            "select",
+            [x, t.builder.const(False, "bool"), t.builder.const(True, "bool")],
+            kind,
+            name=node.output[0],
+        ),
+    )
+
+
 @_handles("Expand")
 def _expand(t: _Translator, node: Any) -> None:
     source = t.operand(node, 0)
@@ -1047,6 +1159,14 @@ def _binary(t: _Translator, node: Any) -> None:
         raise OnnxImportError(
             "symbolic shape arithmetic other than picking dimensions is not supported"
         )
+    if all(n in t.constants and n not in t.values for n in node.input):
+        arrays = [t.constants[n] for n in node.input]
+        folded = {
+            "Add": np.add, "Sub": np.subtract, "Mul": np.multiply, "Div": np.divide,
+            "Max": np.maximum, "Min": np.minimum,
+        }[node.op_type](arrays[0], arrays[1])  # fmt: skip
+        _fold_constant(t, node, np.asarray(folded, dtype=arrays[0].dtype))
+        return
     left, right = t.operand(node, 0), t.operand(node, 1)
     t.define(
         node,
@@ -1060,8 +1180,24 @@ _UNARY = {
 }  # fmt: skip
 
 
+_NUMPY_UNARY: dict[str, Callable[[Any], Any]] = {
+    "Exp": np.exp, "Log": np.log, "Sqrt": np.sqrt, "Tanh": np.tanh, "Sin": np.sin,
+    "Cos": np.cos, "Abs": np.abs, "Neg": np.negative,
+}  # fmt: skip
+
+
+def _fold_constant(t: _Translator, node: Any, array: Any) -> None:
+    """A node over constants stays a constant."""
+    t.constants[node.output[0]] = array
+    t.types[node.output[0]] = _Type(tuple(int(d) for d in array.shape), _numpy_dtype_name(array))
+
+
 @_handles(*_UNARY)
 def _unary(t: _Translator, node: Any) -> None:
+    source = node.input[0]
+    if source in t.constants and source not in t.values:
+        _fold_constant(t, node, _NUMPY_UNARY[node.op_type](t.constants[source]))
+        return
     t.define(
         node,
         t.builder.op(
@@ -1228,6 +1364,10 @@ def _compare(t: _Translator, node: Any) -> None:
 
 @_handles("Cast")
 def _cast(t: _Translator, node: Any) -> None:
+    if node.input[0] in t.constants and node.input[0] not in t.values:
+        target = _NUMPY_DTYPES[_dtype_name(int(t.attr(node, "to")))]
+        _fold_constant(t, node, t.constants[node.input[0]].astype(target))
+        return
     source = t.operand(node, 0)
     kind = t.result(node)
     if kind.dtype == source.type.dtype:

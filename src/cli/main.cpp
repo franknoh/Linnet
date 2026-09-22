@@ -1,4 +1,5 @@
 #include "linnet/ast/dump.hpp"
+#include "linnet/backend/onnx.hpp"
 #include "linnet/backend/plan.hpp"
 #include "linnet/backend/plan_reader.hpp"
 #include "linnet/backend/stablehlo.hpp"
@@ -73,6 +74,8 @@ void print_usage(std::FILE* out) {
         "            [--optionals present|absent] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments\n"
+        "  onnx [same options as stablehlo] <file>\n"
+        "                                       Print an entry as an ONNX model (text format)\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent] <file>\n"
@@ -300,11 +303,13 @@ int run_explain(std::span<const std::string_view> args,
     return report(sources, sink, options);
 }
 
-// `linnet stablehlo`: one entry of a root block as MLIR text.
-int run_stablehlo(std::span<const std::string_view> args,
-                  const Options& options,
-                  const char* program) {
-    backend::StableHloOptions export_options;
+// `linnet stablehlo` and `linnet onnx`: one entry of a root block as a
+// static-shape graph in the named format.
+int run_graph_export(std::span<const std::string_view> args,
+                     const Options& options,
+                     const char* program,
+                     std::string_view format) {
+    backend::GraphExportOptions export_options;
     std::string std_option;
     std::string_view path;
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -335,15 +340,16 @@ int run_stablehlo(std::span<const std::string_view> args,
                     std::string(value.substr(equals + 1));
             }
         } else if (arg.starts_with("-")) {
-            return usage_error("unknown stablehlo option '" + std::string(arg) + "'");
+            return usage_error("unknown " + std::string(format) + " option '" + std::string(arg) +
+                               "'");
         } else if (!path.empty()) {
-            return usage_error("stablehlo takes exactly one file");
+            return usage_error(std::string(format) + " takes exactly one file");
         } else {
             path = arg;
         }
     }
     if (path.empty()) {
-        return usage_error("stablehlo requires a file");
+        return usage_error(std::string(format) + " requires a file");
     }
     SourceManager sources;
     DiagnosticSink sink;
@@ -361,9 +367,13 @@ int run_stablehlo(std::span<const std::string_view> args,
     }
     ir::Module core = ir::lower(sources, modules, analysis.model);
     opt::run_pipeline(core, opt::optimizing_passes(opt::Legality::Exact));
-    const auto text = backend::export_stablehlo(core, export_options);
+    const auto text = format == "onnx" ? backend::export_onnx(core, export_options)
+                                       : backend::export_stablehlo(core, export_options);
     if (!text) {
-        std::fprintf(stderr, "linnet: cannot export StableHLO: %s\n", text.error().c_str());
+        std::fprintf(stderr,
+                     "linnet: cannot export %s: %s\n",
+                     format == "onnx" ? "ONNX" : "StableHLO",
+                     text.error().c_str());
         return exit_failure;
     }
     std::fputs(text->c_str(), stdout);
@@ -979,8 +989,8 @@ int main(int argc, char** argv) {
     if (command == "emit") {
         return run_emit(rest, options);
     }
-    if (command == "stablehlo") {
-        return run_stablehlo(rest, options, argv[0]);
+    if (command == "stablehlo" || command == "onnx") {
+        return run_graph_export(rest, options, argv[0], command);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

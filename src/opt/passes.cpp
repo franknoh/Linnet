@@ -223,14 +223,31 @@ bool canonicalize(Module& module) {
                     }
                 }
                 break;
-            case OpKind::Neg:
-                // neg(neg(x)) == x.
-                if (const ValueId inner = op.operands.front();
-                    module.value(inner).producer != no_id &&
-                    module.op(module.value(inner).producer).kind == OpKind::Neg) {
-                    replace_with(module.op(module.value(inner).producer).operands.front());
+            case OpKind::Neg: {
+                // neg(neg(x)) == x, and the negation of a literal is a literal
+                // (exact: negation only flips the sign bit).
+                const ValueId inner = op.operands.front();
+                const OpId producer = module.value(inner).producer;
+                if (producer == no_id) {
+                    break;
+                }
+                const Operation& source = module.op(producer);
+                if (source.kind == OpKind::Neg) {
+                    replace_with(source.operands.front());
+                } else if (source.kind == OpKind::ConstFloat ||
+                           (source.kind == OpKind::ConstInt &&
+                            source.attributes.integer !=
+                                std::numeric_limits<std::int64_t>::min())) {
+                    const Attributes negated = source.attributes;
+                    op.kind = source.kind;
+                    op.operands.clear();
+                    op.attributes = {};
+                    op.attributes.integer = -negated.integer;
+                    op.attributes.number = -negated.number;
+                    has_changed = true;
                 }
                 break;
+            }
             case OpKind::Not:
                 if (const ValueId inner = op.operands.front();
                     module.value(inner).producer != no_id &&

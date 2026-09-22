@@ -131,6 +131,17 @@ grid. What StableHLO cannot express as captured is reported as an error, never
 approximated. `python/linnet_torch/tests/test_stablehlo.py` compiles the output
 with XLA and checks it against the PyTorch materializer.
 
+## `linnet onnx`
+
+```bash
+linnet onnx [same options as stablehlo] file.linnet
+```
+
+The same export in the ONNX text format: a `main` graph whose inputs are the
+entry's inputs followed by the parameters as `param<N>`, with `metadata_props`
+mapping each `linnet.path.param<N>` to its parameter path. `python/linnet_onnx`
+imports the result back (see [onnx.md](onnx.md)).
+
 ## `linnet explain`
 
 ```bash
