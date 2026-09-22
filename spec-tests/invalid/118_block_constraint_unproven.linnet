@@ -1,0 +1,10 @@
+module tests.block_constraint_unproven
+
+pub block Heads<H: Dim, N: Dim>
+where H % N == 0 {
+    param scale: Tensor[H; f32]
+}
+
+pub block Bad<H: Dim> {
+    sub heads: Heads<H, 8>
+}

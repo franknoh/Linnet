@@ -1,0 +1,34 @@
+// Linear algebra on dense tensors, written with index notation so that every
+// contraction is explicit.
+module std.linalg
+
+pub op dot<N: Dim, T: Numeric>(a: Tensor[N; T], b: Tensor[N; T]) -> T {
+    return sum[i] a[i] * b[i]
+}
+
+pub op outer<M: Dim, N: Dim, T: Numeric>(a: Tensor[M; T], b: Tensor[N; T]) -> Tensor[M, N; T] {
+    let c[i, j] = a[i] * b[j]
+    return c
+}
+
+pub op matmul<M: Dim, K: Dim, N: Dim, T: Numeric>(
+    a: Tensor[M, K; T],
+    b: Tensor[K, N; T],
+) -> Tensor[M, N; T] {
+    let c[m, n] = sum[k] a[m, k] * b[k, n]
+    return c
+}
+
+// Batched matrix multiplication over any number of leading axes.
+pub op batched_matmul<*B: Shape, M: Dim, K: Dim, N: Dim, T: Numeric>(
+    a: Tensor[*B, M, K; T],
+    b: Tensor[*B, K, N; T],
+) -> Tensor[*B, M, N; T] {
+    let c[*b, m, n] = sum[k] a[*b, m, k] * b[*b, k, n]
+    return c
+}
+
+pub op transpose<M: Dim, N: Dim, T: DType>(x: Tensor[M, N; T]) -> Tensor[N, M; T] {
+    let y[j, i] = x[i, j]
+    return y
+}

@@ -326,6 +326,7 @@ struct FunctionDecl {
 struct BlockDecl {
     Name name;
     std::vector<GenericParam> generics;
+    std::vector<ExprId> constraints; // `where` clause
     std::vector<ItemId> members;
     SourceSpan generics_span{};
 };

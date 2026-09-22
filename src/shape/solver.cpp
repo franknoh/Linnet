@@ -302,10 +302,39 @@ bool Solver::is_non_negative(const Poly& poly) {
         return true;
     }
     // poly = fact + (poly - fact), with fact >= 0.
-    return std::any_of(non_negative_.begin(), non_negative_.end(), [&](const Poly& fact) {
-        const Bound rest = bounds(poly - fact, 0).low;
-        return rest && *rest >= 0;
-    });
+    const bool has_fact =
+        std::any_of(non_negative_.begin(), non_negative_.end(), [&](const Poly& fact) {
+            const Bound rest = bounds(poly - fact, 0).low;
+            return rest && *rest >= 0;
+        });
+    if (has_fact) {
+        return true;
+    }
+    // 0 <= x / c <= x for x >= 0 and a constant c >= 1, so replacing such a
+    // quotient by x where it is subtracted, and by 0 where it is added, gives
+    // a polynomial that is never larger than `poly`.
+    Poly smaller = poly;
+    bool has_changed = false;
+    for (const Term& term : poly.terms()) {
+        if (term.atoms.size() != 1) {
+            continue;
+        }
+        const Atom atom = context_->atom(term.atoms.front());
+        const auto divisor = atom.rhs.constant();
+        if (atom.kind != AtomKind::FloorDiv || !divisor || *divisor < 1 ||
+            !is_non_negative(atom.lhs)) {
+            continue;
+        }
+        const Poly quotient = Poly::atom(term.atoms.front());
+        const Poly replacement = term.coefficient < 0 ? atom.lhs : Poly(0);
+        smaller = smaller + Poly(term.coefficient) * (replacement - quotient);
+        has_changed = true;
+    }
+    if (!has_changed) {
+        return false;
+    }
+    const Bound reduced = bounds(smaller, 0).low;
+    return reduced && *reduced >= 0;
 }
 
 // --------------------------------------------------------------------- queries

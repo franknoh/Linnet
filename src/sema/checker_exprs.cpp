@@ -1185,7 +1185,17 @@ Checker::check_slicing(const ast::Expr& node, const ast::IndexExpr& index, const
 }
 
 TypeId Checker::check_index(const ast::Expr& node, const ast::IndexExpr& index) {
-    const TypeId base = check_expr(index.base);
+    // The indexed value is a value even when an index variable shares its
+    // name, as in `b[*b, k, n]`.
+    TypeId base = no_type;
+    if (const auto* name = std::get_if<ast::NameExpr>(&ast().expr(index.base).data)) {
+        if (const EntityId entity = lookup(name->name); entity != no_entity) {
+            base = value_of_entity(entity, ast().expr(index.base).span);
+        }
+    }
+    if (base == no_type) {
+        base = check_expr(index.base);
+    }
     const TypeData& data = types_.get(base);
     if (data.kind == TypeKind::Error) {
         return base;

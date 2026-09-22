@@ -682,30 +682,36 @@ private:
             parts.push_back(type(decl.return_type));
         }
 
-        if (decl.constraints.size() == 1) {
+        where_clause(parts, decl.constraints);
+        parts.push_back(braced(statement_elements(decl.body), item_span.end - 1));
+        return b_.concat(parts);
+    }
+
+    // Appends the `where` clause and the space or line before the body's `{`.
+    // One constraint stays on the `where` line; several go one per line with
+    // the `{` on its own line.
+    void where_clause(std::vector<DocId>& parts, const std::vector<ExprId>& constraints) {
+        if (constraints.size() == 1) {
             parts.push_back(b_.hard_line());
             parts.push_back(b_.text("where "));
-            parts.push_back(expr(decl.constraints.front()));
+            parts.push_back(expr(constraints.front()));
             parts.push_back(b_.text(" "));
-        } else if (!decl.constraints.empty()) {
-            std::vector<DocId> constraints;
-            for (std::size_t i = 0; i < decl.constraints.size(); ++i) {
-                constraints.push_back(b_.hard_line());
-                constraints.push_back(expr(decl.constraints[i]));
-                if (i + 1 != decl.constraints.size()) {
-                    constraints.push_back(b_.text(","));
+        } else if (!constraints.empty()) {
+            std::vector<DocId> lines;
+            for (std::size_t i = 0; i < constraints.size(); ++i) {
+                lines.push_back(b_.hard_line());
+                lines.push_back(expr(constraints[i]));
+                if (i + 1 != constraints.size()) {
+                    lines.push_back(b_.text(","));
                 }
             }
             parts.push_back(b_.hard_line());
             parts.push_back(b_.text("where"));
-            parts.push_back(b_.indent(b_.concat(constraints)));
+            parts.push_back(b_.indent(b_.concat(lines)));
             parts.push_back(b_.hard_line());
         } else {
             parts.push_back(b_.text(" "));
         }
-
-        parts.push_back(braced(statement_elements(decl.body), item_span.end - 1));
-        return b_.concat(parts);
     }
 
     static bool is_compact(const Item& item) {
@@ -781,11 +787,12 @@ private:
                 },
                 [&](const FunctionDecl& decl) { return function(decl, node.span); },
                 [&](const BlockDecl& decl) {
-                    const DocId head = b_.concat({b_.text("block "),
-                                                  name(decl.name),
-                                                  generic_params(decl.generics, decl.generics_span),
-                                                  b_.text(" ")});
-                    return b_.concat({head, braced(item_elements(decl.members), close)});
+                    std::vector<DocId> parts{b_.text("block "),
+                                             name(decl.name),
+                                             generic_params(decl.generics, decl.generics_span)};
+                    where_clause(parts, decl.constraints);
+                    parts.push_back(braced(item_elements(decl.members), close));
+                    return b_.concat(parts);
                 },
                 [&](const MemberDecl& decl) {
                     const std::string_view keyword = decl.kind == MemberKind::Param    ? "param "

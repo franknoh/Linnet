@@ -1,0 +1,28 @@
+module std.nn.mlp
+
+use std.nn.activations::{silu}
+use std.nn.linear::{Linear}
+
+// The gated MLP of Llama-style models: `down(silu(gate(x)) * up(x))`.
+pub op swiglu<*S: Shape, H: Dim, Inner: Dim, T: Float>(
+    x: Tensor[*S, H; T],
+    gate_weight: Tensor[Inner, H; T],
+    up_weight: Tensor[Inner, H; T],
+    down_weight: Tensor[H, Inner; T],
+) -> Tensor[*S, H; T] {
+    let gate[*s, i] = sum[h] x[*s, h] * gate_weight[i, h]
+    let up[*s, i] = sum[h] x[*s, h] * up_weight[i, h]
+    let hidden = silu(gate) * up
+    let out[*s, h] = sum[i] hidden[*s, i] * down_weight[h, i]
+    return out
+}
+
+pub block SwiGlu<H: Dim, Inner: Dim, T: Float = bf16> {
+    sub gate: Linear<H, Inner, T>
+    sub up: Linear<H, Inner, T>
+    sub down: Linear<Inner, H, T>
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, H; T]) -> Tensor[*S, H; T] {
+        return down.forward(silu(gate.forward(x)) * up.forward(x))
+    }
+}

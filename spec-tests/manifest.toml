@@ -156,3 +156,12 @@ code = "E3102"
 file = "invalid/117_tuple_match_arm.linnet"
 expect = "error"
 code = "E1101"
+
+[[case]]
+file = "valid/019_block_where.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/118_block_constraint_unproven.linnet"
+expect = "error"
+code = "E2206"

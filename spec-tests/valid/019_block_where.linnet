@@ -1,0 +1,22 @@
+module tests.block_where
+
+pub block Heads<H: Dim, N: Dim>
+where
+    H % N == 0,
+    N > 0
+{
+    param scale: Tensor[N, H / N; f32]
+
+    pub fn split<B: Dim>(x: Tensor[B, H; f32]) -> Tensor[B, N, H / N; f32] {
+        return reshape(x, [B, N, H / N]) * scale
+    }
+}
+
+pub block Model<H: Dim>
+where H % 8 == 0 {
+    sub heads: Heads<H, 8>
+
+    pub fn run<B: Dim>(x: Tensor[B, H; f32]) -> Tensor[B, 8, H / 8; f32] {
+        return heads.split(x)
+    }
+}

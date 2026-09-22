@@ -667,8 +667,11 @@ private:
 
     BlockDecl parse_block() {
         advance();
-        BlockDecl decl{expect_identifier("block name"), {}, {}};
+        BlockDecl decl{expect_identifier("block name"), {}, {}, {}};
         decl.generics = parse_generic_params(decl.generics_span);
+        if (at(K::KwWhere)) {
+            decl.constraints = parse_where();
+        }
         if (!expect(K::LBrace)) {
             return decl;
         }

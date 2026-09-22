@@ -1,0 +1,12 @@
+module std.nn.softmax
+
+// Softmax over the last axis, computed in f32 with the running maximum
+// subtracted for stability.
+pub op softmax<*S: Shape, N: Dim, T: Float>(x: Tensor[*S, N; T]) -> Tensor[*S, N; T] {
+    let xf = cast<f32>(x)
+    let peak[*s] = max[n] xf[*s, n]
+    let shifted[*s, n] = exp(xf[*s, n] - peak[*s])
+    let total[*s] = sum[n] shifted[*s, n]
+    let y[*s, n] = shifted[*s, n] / total[*s]
+    return cast<T>(y)
+}
