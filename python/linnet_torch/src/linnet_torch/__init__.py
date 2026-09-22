@@ -1,4 +1,4 @@
-"""Materialize Linnet models as PyTorch modules."""
+"""Materialize Linnet models as PyTorch modules, and export PyTorch modules as Linnet."""
 
 from __future__ import annotations
 
@@ -7,10 +7,21 @@ from pathlib import Path
 
 import torch
 
+from .export import ExportError, ExportResult, export_linnet
 from .module import LinnetModule, bind_weights
 from .plan import Plan, PlanError, compile_plan
 
-__all__ = ["LinnetModule", "Plan", "PlanError", "bind_weights", "compile_plan", "load"]
+__all__ = [
+    "ExportError",
+    "ExportResult",
+    "LinnetModule",
+    "Plan",
+    "PlanError",
+    "bind_weights",
+    "compile_plan",
+    "export_linnet",
+    "load",
+]
 
 
 def load(

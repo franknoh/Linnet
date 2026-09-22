@@ -8,6 +8,9 @@
 
 namespace linnet {
 
+// The token kind of a word: a keyword, a reserved word, or an identifier.
+TokenKind classify_word(std::string_view word);
+
 struct LexResult {
     std::vector<Token> tokens;     // always terminated by one Eof token
     std::vector<Comment> comments; // in source order; never part of `tokens`

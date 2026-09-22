@@ -1,6 +1,10 @@
 #include "linnet/emit/source.hpp"
 
+#include "linnet/sema/model.hpp"
+#include "linnet/syntax/lexer.hpp"
+
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <sstream>
@@ -112,6 +116,10 @@ private:
         if (clean.empty() || (clean.front() >= '0' && clean.front() <= '9')) {
             clean = "v" + clean;
         }
+        // Keywords, reserved words, and prelude names cannot be locals.
+        if (classify_word(clean) != TokenKind::Identifier || is_prelude_name(clean)) {
+            clean += "_";
+        }
         return clean;
     }
 
@@ -129,6 +137,22 @@ private:
         used_names_.insert(candidate);
         names_[id] = candidate;
         return candidate;
+    }
+
+    // Locals must not shadow what a function body can otherwise name: the
+    // functions and blocks of the program and, in a method, the members and
+    // methods of its block.
+    void reserve_visible_names(const Entity& function) {
+        for (const Entity& entity : model_.entities) {
+            if (entity.kind == EntityKind::Function || entity.kind == EntityKind::Block) {
+                used_names_.insert(std::string(entity.name));
+            }
+        }
+        if (function.parent != no_entity) {
+            for (const auto& [name, member] : model_.decls.at(function.parent).scope) {
+                used_names_.insert(std::string(name));
+            }
+        }
     }
 
     void bind_name(ir::ValueId id, const std::string& name) {
@@ -203,6 +227,7 @@ private:
         const Entity& target = model_.entities[entity];
         names_.clear();
         used_names_.clear();
+        reserve_visible_names(target);
         const std::string pad(static_cast<std::size_t>(indent) * 4, ' ');
 
         // Defaults are not part of the IR: emitted signatures have none and
@@ -291,6 +316,13 @@ private:
         }
     }
 
+    // Member paths such as `layers[0].norm.weight` are spelled where they
+    // are used, like names.
+    static bool is_member_path(ir::OpKind kind) {
+        return kind == ir::OpKind::BlockParam || kind == ir::OpKind::BlockSub ||
+               kind == ir::OpKind::ArrayGet;
+    }
+
     static bool is_constant(ir::OpKind kind) {
         return kind == ir::OpKind::ConstInt || kind == ir::OpKind::ConstFloat ||
                kind == ir::OpKind::ConstBool || kind == ir::OpKind::ConstDim ||
@@ -299,19 +331,52 @@ private:
 
     // Whether a value gets a `let` of its own: it is used more than once or
     // from inside a region (so no region body repeats an outer computation),
-    // or it is a comprehension, which only exists as a statement. Constants
-    // are always inlined so literals keep adopting their type from context.
-    bool needs_binding(const ir::Operation& op) const {
+    // it is a comprehension, which only exists as a statement, or inlining it
+    // would nest expressions deeper than `max_inline_depth`. Constants are
+    // always inlined so literals keep adopting their type from context.
+    static constexpr int max_inline_depth = 2;
+
+    bool needs_binding(const ir::Operation& op) {
         if (op.kind == ir::OpKind::Comprehension) {
             return true;
         }
-        if (is_constant(op.kind) || op.results.size() != 1 ||
+        if (is_constant(op.kind) || is_member_path(op.kind) || op.results.size() != 1 ||
             !statement_blocks_.contains(op.block)) {
             return false;
         }
-        const auto found = uses_.find(op.results.front());
-        return (found != uses_.end() && found->second > 1) ||
-               used_across_blocks_.contains(op.results.front());
+        const ir::ValueId result = op.results.front();
+        if (const auto memo = binding_memo_.find(result); memo != binding_memo_.end()) {
+            return memo->second;
+        }
+        const auto found = uses_.find(result);
+        const bool is_bound = (found != uses_.end() && found->second > 1) ||
+                              used_across_blocks_.contains(result) ||
+                              inline_depth(op) > max_inline_depth;
+        binding_memo_[result] = is_bound;
+        return is_bound;
+    }
+
+    // Nesting depth of the expression an inlined operation produces: leaves
+    // (arguments, bound values, constants) count 0, each operation adds 1.
+    int inline_depth(const ir::Operation& op) {
+        if (is_member_path(op.kind)) {
+            return 0;
+        }
+        int depth = op.regions.empty() ? 0 : 1;
+        for (const ir::ValueId operand : op.operands) {
+            const ir::OpId producer = module_.value(operand).producer;
+            if (producer == ir::no_id) {
+                continue;
+            }
+            const ir::Operation& source = module_.op(producer);
+            const bool is_leaf = is_constant(source.kind) || source.results.size() != 1 ||
+                                 source.kind == ir::OpKind::StaticFor ||
+                                 source.kind == ir::OpKind::TupleGet || needs_binding(source);
+            if (!is_leaf) {
+                depth = std::max(depth, inline_depth(source));
+            }
+        }
+        return depth + 1;
     }
 
     // `let (a, b) = t` for the tuple.get operations of `tuple` in `block`,
@@ -445,6 +510,24 @@ private:
         return "[" + model_.types.to_string(shape) + "]";
     }
 
+    // The shortest decimal that reads back as the same double.
+    static std::string float_literal(double value) {
+        std::string text;
+        for (int precision = 6; precision <= 17; ++precision) {
+            std::ostringstream stream;
+            stream.precision(precision);
+            stream << value;
+            text = stream.str();
+            if (precision == 17 || std::strtod(text.c_str(), nullptr) == value) {
+                break;
+            }
+        }
+        if (text.find_first_of(".eE") == std::string::npos) {
+            text += ".0";
+        }
+        return text;
+    }
+
     // The expression for a value: its name when it is bound, else its
     // definition inlined.
     std::string expr(ir::ValueId id) {
@@ -475,16 +558,8 @@ private:
         switch (op.kind) {
         case ir::OpKind::ConstInt:
             return std::to_string(a.integer);
-        case ir::OpKind::ConstFloat: {
-            std::ostringstream stream;
-            stream.precision(17);
-            stream << a.number;
-            std::string text = stream.str();
-            if (text.find_first_of(".eE") == std::string::npos) {
-                text += ".0";
-            }
-            return text;
-        }
+        case ir::OpKind::ConstFloat:
+            return float_literal(a.number);
         case ir::OpKind::ConstBool:
             return a.integer != 0 ? "true" : "false";
         case ir::OpKind::ConstDim:
@@ -707,6 +782,7 @@ private:
     std::map<ir::ValueId, std::size_t> uses_;
     std::set<ir::BlockId> statement_blocks_;
     std::set<ir::ValueId> used_across_blocks_;
+    std::map<ir::ValueId, bool> binding_memo_;
 };
 
 } // namespace

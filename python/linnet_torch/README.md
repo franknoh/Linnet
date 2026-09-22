@@ -1,6 +1,7 @@
 # linnet-torch
 
-Materializes a Linnet model as a `torch.nn.Module`.
+Materializes a Linnet model as a `torch.nn.Module`, and exports a
+`torch.nn.Module` as Linnet source (`export_linnet`; see `docs/torch.md`).
 
 ```python
 from linnet_torch import load
