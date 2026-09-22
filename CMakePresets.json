@@ -76,7 +76,8 @@
         {
             "name": "base",
             "hidden": true,
-            "output": { "outputOnFailure": true }
+            "output": { "outputOnFailure": true },
+            "execution": { "timeout": 300 }
         },
         { "name": "debug", "inherits": "base", "configurePreset": "debug" },
         { "name": "release", "inherits": "base", "configurePreset": "release" },
