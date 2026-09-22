@@ -213,7 +213,8 @@ imports, after running the IR verifier; `-O` runs the canonical optimizer
 passes first.
 
 `--emit` reconstructs Linnet source for the file's declarations from that IR:
-functions, ops, entries, and blocks with their members and methods. The
+functions, ops, entries, blocks with their members and methods, constants,
+enums, and structs; imports of the same package are spelled `crate.`. The
 result is a complete module that checks and lints clean and that emits itself
 again unchanged, so it is the canonical form a program takes after lowering.
 SSA values become `let` bindings named after their source names; values used

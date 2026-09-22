@@ -154,7 +154,21 @@ Poly Solver::simplify_term(const Term& term, int depth) {
                 }
             }
             if (const auto reduced = others.exact_div(quotient.rhs)) {
-                factors = {*reduced, quotient.lhs};
+                // Keep the remaining product as separate factors so that
+                // another quotient among them can fold in the next round.
+                factors.clear();
+                if (reduced->is_single_term()) {
+                    const shape::Term& remaining = reduced->terms().front();
+                    if (remaining.coefficient != 1) {
+                        factors.emplace_back(remaining.coefficient);
+                    }
+                    for (const AtomId atom_id : remaining.atoms) {
+                        factors.push_back(Poly::atom(atom_id));
+                    }
+                } else {
+                    factors.push_back(*reduced);
+                }
+                factors.push_back(quotient.lhs);
                 has_changed = true;
             }
         }

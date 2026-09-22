@@ -31,14 +31,14 @@ using Dims = std::vector<std::int64_t>;
 // A value during emission. Tensors (scalars are rank 0) live in the MLIR
 // text; the other kinds are resolved statically while inlining.
 struct Val {
-    enum class Kind : std::uint8_t { Tensor, None, Some, Tuple, Block, Array, Index, Pack };
+    enum class Kind : std::uint8_t { Tensor, None, Some, Tuple, Block, Array, Index, Pack, Enum };
     Kind kind = Kind::Tensor;
     std::string name; // Tensor: `%n`
     Dims shape;       // Tensor
     ScalarKind dtype = ScalarKind::F32;
     std::size_t grid_rank = 0;     // Tensor: leading axes that are grid axes
     std::vector<Val> elements;     // Tuple, Array; Some holds one
-    std::string path;              // Block: member path prefix, `layers.0.`
+    std::string path;              // Block: member path prefix, `layers.0.`; Enum: variant
     EntityId block = no_entity;    // Block: declaration
     Substitution subst;            // Block: its generic bindings
     std::vector<std::size_t> axes; // Index (one), Pack (several): grid axes
@@ -606,7 +606,25 @@ private:
         frame().values[op.results.front()] = std::move(value);
     }
 
+    // Inside index notation most operations are scalar and evaluate over the
+    // grid, but a tensor-valued expression there (`iota(N)[i]`, a call whose
+    // result is then indexed) is a whole tensor computed once.
     void run_op(const ir::Operation& op) {
+        if (in_grid() && op.results.size() == 1 && op.kind != ir::OpKind::Reduce) {
+            const TypeData& data = types_.get(
+                types_.substitute(module_.value(op.results.front()).type, frame().subst));
+            if (data.kind == TypeKind::Tensor) {
+                const Dims saved = grid_;
+                grid_.clear();
+                run_scalar_or_tensor_op(op);
+                grid_ = saved;
+                return;
+            }
+        }
+        run_scalar_or_tensor_op(op);
+    }
+
+    void run_scalar_or_tensor_op(const ir::Operation& op) {
         const ir::Attributes& a = op.attributes;
         const auto operand = [&](std::size_t i) -> const Val& { return value(op.operands[i]); };
         const auto elementwise = [&](const char* name, ScalarKind dtype) {
@@ -942,8 +960,28 @@ private:
             }
             return;
         }
-        case ir::OpKind::EnumConst:
-        case ir::OpKind::EnumMatch:
+        case ir::OpKind::EnumConst: {
+            // Enum values are compile-time; a match on one picks its arm.
+            Val variant;
+            variant.kind = Val::Kind::Enum;
+            variant.path = a.name;
+            define(op, variant);
+            return;
+        }
+        case ir::OpKind::EnumMatch: {
+            const Val& subject = operand(0);
+            if (subject.kind != Val::Kind::Enum) {
+                fail("`match` on a runtime enum value is not supported");
+            }
+            // Arms are named by variant; a catch-all arm is `_`.
+            for (std::size_t i = 0; i < a.names.size() && i < op.regions.size(); ++i) {
+                if (a.names[i] == subject.path || a.names[i] == "_") {
+                    define(op, run_region(op.regions[i], {subject}).front());
+                    return;
+                }
+            }
+            fail("no arm matches enum variant `" + subject.path + "`");
+        }
         case ir::OpKind::StructMake:
         case ir::OpKind::StructGet:
             fail(std::string("`") + std::string(ir::op_spelling(op.kind)) +

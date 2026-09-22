@@ -75,6 +75,10 @@ FunctionId Module::add_function(Function function) {
     return static_cast<FunctionId>(functions_.size() - 1);
 }
 
+void Module::add_constant(Constant constant) {
+    constants_.push_back(std::move(constant));
+}
+
 RegionId Module::add_region(OpId parent) {
     regions_.push_back({{}, parent});
     return static_cast<RegionId>(regions_.size() - 1);
@@ -133,8 +137,16 @@ void Module::erase_op(OpId id) {
 
 std::vector<BlockId> Module::all_blocks() const {
     std::vector<BlockId> result;
+    std::vector<RegionId> roots;
+    roots.reserve(functions_.size() + constants_.size());
     for (const Function& function : functions_) {
-        std::vector<RegionId> pending{function.body};
+        roots.push_back(function.body);
+    }
+    for (const Constant& constant : constants_) {
+        roots.push_back(constant.body);
+    }
+    for (const RegionId root : roots) {
+        std::vector<RegionId> pending{root};
         while (!pending.empty()) {
             const RegionId region = pending.back();
             pending.pop_back();
@@ -164,6 +176,10 @@ public:
             const Function& function = module_.functions()[i];
             const std::set<ValueId> visible;
             check_region(function.body, visible, "function " + function.name, &function);
+        }
+        for (const Constant& constant : module_.constants()) {
+            // A constant body is a nested region: it yields its value.
+            check_region(constant.body, {}, "constant " + constant.name, nullptr);
         }
         return std::move(problems_);
     }
@@ -247,6 +263,14 @@ public:
     explicit Printer(const Module& module) : module_(module) {}
 
     std::string run() {
+        for (const Constant& constant : module_.constants()) {
+            line("const @" + constant.name + " : " + type(constant.type) + " {");
+            ++indent_;
+            print_block(module_.block(module_.region(constant.body).blocks.front()));
+            --indent_;
+            line("}");
+            out_ += '\n';
+        }
         for (const Function& function : module_.functions()) {
             print_function(function);
             out_ += '\n';

@@ -14,8 +14,14 @@ materializer consumes. Version 1:
                                           "type": type } ] } },
   "functions": [ { "name", "kind": "fn" | "op" | "entry", "block": name | null, "pub",
                    "generics": [generic], "constraints": [constraint],
-                   "results": [type], "body": region } ] }
+                   "results": [type], "body": region } ],
+  "constants": [ { "name", "pub", "type": type, "contextual", "body": region } ] }
 ```
+
+- `constants` are module-level `const` items with their initializer as a
+  region yielding one value; uses are already inlined into the functions.
+  `contextual` marks a constant declared without a type (a compile-time
+  integer or a float literal that adopts its dtype where it is used).
 
 - `module` is the path of the root file's module; function names are
   `module.path::name` (`module.path::Block.method` for methods).
