@@ -11,6 +11,7 @@
 #include "linnet/lsp/server.hpp"
 #include "linnet/module/loader.hpp"
 #include "linnet/opt/candidates.hpp"
+#include "linnet/opt/egraph.hpp"
 #include "linnet/opt/passes.hpp"
 #include "linnet/package/manifest.hpp"
 #include "linnet/package/spec_manifest.hpp"
@@ -291,7 +292,7 @@ int run_explain(std::span<const std::string_view> args,
         return usage_error("--numerics must be `exact` or `equivalent`");
     }
     ir::Module core = ir::lower(sources, modules, analysis.model);
-    opt::run_pipeline(core, opt::canonical_passes());
+    opt::run_pipeline(core, opt::optimizing_passes(*allowed));
     std::fputs(
         opt::render_explanations(opt::explain(core, opt::torch_candidates(), *allowed), sources)
             .c_str(),
@@ -359,7 +360,7 @@ int run_stablehlo(std::span<const std::string_view> args,
         return report(sources, sink, options);
     }
     ir::Module core = ir::lower(sources, modules, analysis.model);
-    opt::run_pipeline(core, opt::canonical_passes());
+    opt::run_pipeline(core, opt::optimizing_passes(opt::Legality::Exact));
     const auto text = backend::export_stablehlo(core, export_options);
     if (!text) {
         std::fprintf(stderr, "linnet: cannot export StableHLO: %s\n", text.error().c_str());
@@ -476,7 +477,7 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
         return usage_error("--numerics must be `exact` or `equivalent`");
     }
     if (is_optimized) {
-        opt::run_pipeline(core, opt::canonical_passes());
+        opt::run_pipeline(core, opt::optimizing_passes(*allowed));
     }
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
     const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules});
@@ -705,7 +706,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
                 return exit_failure;
             }
             if (is_optimized) {
-                opt::run_pipeline(core, opt::canonical_passes());
+                opt::run_pipeline(core, opt::optimizing_passes(opt::Legality::Exact));
             }
             if (view == "--core-ir") {
                 std::fputs(ir::print(core).c_str(), stdout);

@@ -147,12 +147,27 @@ to be inspectable, and this is where it is inspected.
 
 ## Optimization
 
-`linnet plan` and `linnet inspect --core-ir -O` run the canonical passes:
-identity `reshape`/`broadcast_to`/`cast`/`permute` removal, composition of
-nested permutations, double negation, integer constant folding, common
-subexpression elimination, and dead-code elimination. Every pass is *exact*
-(bit-identical results); the IR verifier runs after each pass and a failure
-aborts the compilation. `--no-optimize` disables them.
+`linnet plan`, `linnet explain`, `linnet stablehlo`, and `linnet inspect
+--core-ir -O` run the canonical passes — identity `reshape`/`broadcast_to`/
+`cast`/`permute` removal, composition of nested permutations, double
+negation, integer constant folding, common subexpression elimination, and
+dead-code elimination — followed by equality saturation. Saturation builds an
+e-graph of the region-free operations of each block, applies rewrite rules
+until nothing new appears (or a budget is spent), and extracts the cheapest
+term of every value under a shape-based cost model; the block is then rebuilt
+in dependency order. The IR verifier runs after each pass and a failure aborts
+the compilation. `--no-optimize` disables all of it.
+
+Every rule declares how far it may change floating-point results, and the
+`--numerics` policy decides which rules run:
+
+| policy | rules |
+| --- | --- |
+| `exact` (default) | view composition, double negation, commutativity, `x * 1`, `select(c, x, x)` |
+| `equivalent` | also `x + 0` (sign of zero), reassociation of `+` and `*`, factoring `a*c + b*c` |
+
+Rewrites never look inside comprehensions, reductions, or matches, and never
+merge values of different types.
 
 ## `linnet lsp`
 
