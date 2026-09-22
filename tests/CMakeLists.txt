@@ -63,3 +63,8 @@ add_test(NAME cli_check_json
     COMMAND linnet check --json ${CMAKE_CURRENT_SOURCE_DIR}/cli/unused_local.linnet)
 set_tests_properties(cli_check_json PROPERTIES
     PASS_REGULAR_EXPRESSION "\"code\":\"W1002\".*\"summary\":{\"errors\":0,\"warnings\":1}")
+
+add_test(NAME cli_inspect_parameters
+    COMMAND linnet inspect --parameters ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+set_tests_properties(cli_inspect_parameters PROPERTIES
+    PASS_REGULAR_EXPRESSION "param layers\\[\\*\\].up.weight: Tensor\\[Inner, H; bf16\\] x Layers")

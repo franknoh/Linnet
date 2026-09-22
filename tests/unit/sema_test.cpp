@@ -524,6 +524,38 @@ TEST("sema: lints") {
     CHECK_EQ(check("fn f(x: f32) -> f32 {\n    let a = x\n    return missing\n}\n").warnings(), "");
 }
 
+TEST("sema: parameter manifest") {
+    const Checked checked =
+        check("block Linear<In: Dim, Out: Dim, T: Float = bf16> {\n"
+              "    param weight: Tensor[Out, In; T]\n    param bias: Tensor[Out; T]? = none\n}\n"
+              "block Model<H: Dim, Layers: Dim> {\n"
+              "    buffer scale: Tensor[H; f32]\n    sub layers: [Linear<H, 2 * H>; Layers]\n"
+              "    sub head: Linear<H, 8, f16>\n}\n");
+    CHECK_EQ(checked.messages(), "");
+    CHECK_EQ(checked.result.manifests.size(), 2U);
+    const sema::ManifestBlock& model = checked.result.manifests[1];
+    CHECK_EQ(model.name, "Model");
+    CHECK_EQ(model.entries.size(), 5U);
+    std::string rendered;
+    for (const sema::ManifestEntry& entry : model.entries) {
+        rendered += entry.kind + " " + entry.path + " " + entry.dtype + " [";
+        for (const std::string& dim : entry.shape) {
+            rendered += dim + ";";
+        }
+        rendered += "]";
+        for (const std::string& count : entry.repeat) {
+            rendered += " x" + count;
+        }
+        rendered += entry.is_optional ? " optional\n" : "\n";
+    }
+    CHECK_EQ(rendered,
+             "buffer scale f32 [H;]\n"
+             "param layers[*].weight bf16 [2 * H;H;] xLayers\n"
+             "param layers[*].bias bf16 [2 * H;] xLayers optional\n"
+             "param head.weight f16 [8;H;]\n"
+             "param head.bias f16 [8;] optional\n");
+}
+
 TEST("sema: one mistake yields one diagnostic") {
     CHECK_EQ(body_codes("let a = missing + 1\nlet b = a * x\nlet c = b[0]"), "E1201");
     CHECK_EQ(body_codes("let a = x + n\nlet b = a + a\nlet c[i] = a[i]"), "E2103");

@@ -83,6 +83,26 @@ rewritten. A list that ends with a trailing comma stays one element per line.
 ```bash
 linnet inspect --tokens file.linnet
 linnet inspect --ast file.linnet
+linnet inspect --parameters [--json] file.linnet
 ```
 
-Compiler-internal views for debugging. Their format is not stable.
+`--tokens` and `--ast` are compiler-internal views for debugging; their format
+is not stable.
+
+`--parameters` prints the parameter manifest of every block declared in the
+file: one line per `param` or `buffer`, with its path from the block, its
+tensor type, and the array lengths along the path. The block's own generic
+parameters stay symbolic; sub-block arguments are substituted.
+
+```text
+examples.model::Model<H, Inner, Layers, Vocab>
+  param embedding: Tensor[Vocab, H; bf16]
+  param layers[*].up.weight: Tensor[Inner, H; bf16] x Layers
+  param head.bias: Tensor[Vocab; bf16]?
+```
+
+`--json` gives the same data as `{"version": 1, "blocks": [...]}`, where each
+block has `name`, `module`, `generics`, and `entries` with `path`, `kind`,
+`dtype`, `shape`, `repeat`, and `optional`. `[*]` in a path stands for every
+index of a sub-block array and `repeat` lists the array lengths, outermost
+first. The manifest contains no tensor data.

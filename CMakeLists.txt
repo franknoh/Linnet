@@ -58,6 +58,7 @@ add_library(linnet_core STATIC
     src/sema/checker_calls.cpp
     src/sema/checker_decls.cpp
     src/sema/checker_exprs.cpp
+    src/sema/manifest.cpp
     src/sema/types.cpp
     src/shape/dim.cpp
     src/shape/solver.cpp

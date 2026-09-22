@@ -21,8 +21,30 @@ struct BindingInfo {
     std::string type;
 };
 
+// One externally bound tensor of a block, or a nested block. Paths use `.`
+// between levels and `[*]` for every element of a sub-block array; `repeat`
+// lists the array lengths along the path, outermost first.
+struct ManifestEntry {
+    std::string path;
+    std::string kind; // "param" or "buffer"
+    std::string dtype;
+    std::vector<std::string> shape; // one dimension expression per axis
+    std::vector<std::string> repeat;
+    bool is_optional = false;
+};
+
+// The parameter manifest of a block declared at module level. Generic
+// parameters of the block itself stay symbolic in shapes and repeats.
+struct ManifestBlock {
+    std::string name;
+    std::string module;
+    std::vector<std::string> generics;
+    std::vector<ManifestEntry> entries;
+};
+
 struct AnalysisResult {
     std::vector<BindingInfo> bindings;
+    std::vector<ManifestBlock> manifests;
 };
 
 // Where each `use` declaration leads, as decided by the module loader: the key
