@@ -21,7 +21,7 @@ use std.linalg::{batched_matmul, matmul}
 use std.nn.activations::{gelu, relu, sigmoid, silu}
 use std.nn.attention::{attention, causal_mask}
 use std.nn.linear::{linear}
-use std.nn.norm::{rms_norm}
+use std.nn.norm::{layer_norm, rms_norm}
 use std.nn.softmax::{softmax}
 
 pub block Ops<H: Dim, T: Float> {
@@ -36,7 +36,7 @@ pub block Ops<H: Dim, T: Float> {
     pub entry projections<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
         let y = linear(x, weight, some(bias))
         let z = matmul(y, weight) + batched_matmul(x, weight)
-        return softmax(rms_norm(z, norm))
+        return softmax(layer_norm(rms_norm(z, norm), norm, some(bias)))
     }
 
     pub entry attend<B: Dim, N: Dim, S: Dim>(

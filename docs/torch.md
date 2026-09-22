@@ -46,7 +46,8 @@ with, not a fast implementation.
 
 `numerics="equivalent"` lets the compiler select PyTorch library calls for the
 standard library's semantic operations — `torch.nn.functional.linear`,
-`scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`, the
+`scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`,
+`torch.nn.functional.layer_norm`, the
 activations, `torch.matmul`. Each one agrees with the canonical definition up
 to floating-point rounding, and the differential tests in `tests/test_native.py`
 check that against the decompositions. `linnet explain --numerics equivalent`
@@ -80,8 +81,8 @@ becomes the root block's `entry`, dimensions marked dynamic become the entry's
 generic parameters named after their `Dim`s, and each ATen operation becomes
 the Linnet primitive or standard-library operation with the same meaning —
 `aten.mm` is `std.linalg::matmul`, `aten._softmax` is `std.nn.softmax::softmax`,
-reductions and `embedding` become index notation, views become `reshape` and
-`permute`. `linnet emit` then prints the plan as formatted source, and the
+`native_layer_norm` is `std.nn.norm::layer_norm`, reductions and `embedding`
+become index notation, views become `reshape` and `permute`. `linnet emit` then prints the plan as formatted source, and the
 result is checked before it is written.
 
 The translation never guesses: an operation without a mapping stops the export

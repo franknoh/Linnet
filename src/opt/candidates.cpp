@@ -16,6 +16,7 @@ std::vector<NativeCandidate> torch_candidates() {
         {"std.nn.activations::silu", "torch.nn.functional.silu", equivalent, {}},
         {"std.nn.activations::gelu", "torch.nn.functional.gelu(tanh)", equivalent, {}},
         {"std.nn.norm::rms_norm", "torch.rms_norm", equivalent, {}},
+        {"std.nn.norm::layer_norm", "torch.nn.functional.layer_norm", equivalent, {}},
         {"std.nn.attention::attention",
          "torch.nn.functional.scaled_dot_product_attention",
          equivalent,

@@ -81,15 +81,17 @@ class Transformer(nn.Module):
 
 class Mlp(nn.Module):
     """A non-uniform `Sequential` (its activations own nothing) exercises the
-    renamed-member path and the bindings file."""
+    renamed-member path and the bindings file; `LayerNorm` maps to the
+    standard library's `layer_norm`."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        self.norm = nn.LayerNorm(6)
         self.net = nn.Sequential(nn.Linear(6, 10), nn.ReLU(), nn.Linear(10, 3), nn.GELU("tanh"))
         self.register_buffer("scale", torch.full((3,), 0.5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x) * self.scale
+        return self.net(self.norm(x)) * self.scale
 
 
 def _compiler_ok(*args: str) -> None:
@@ -148,6 +150,7 @@ def test_static_mlp_with_bindings(tmp_path: Path) -> None:
     source = result.source.read_text()
     assert "buffer scale: Tensor[3; f32]" in source
     assert "sub _0: Linear" in source and "sub _2: Linear" in source
+    assert "layer_norm<[4], 6, f32>(x, norm.weight, some(norm.bias), 1e-05)" in source
     assert result.bindings is not None
     copy = load(
         result.source,
