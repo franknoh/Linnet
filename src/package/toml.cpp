@@ -5,6 +5,14 @@
 #include <set>
 #include <utility>
 
+// GCC 13 with optimization reports the variant inside std::expected<Value, ...>
+// as possibly uninitialized on every return path of this parser. The warning
+// is a known false positive for std::expected; it is silenced for this file
+// only, in the compiler that produces it.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
 namespace linnet::toml {
 
 const Value* Value::find(std::string_view key) const {
