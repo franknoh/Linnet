@@ -1,0 +1,55 @@
+// A small model built from nested blocks. Its parameter manifest lists every
+// tensor a checkpoint must supply:
+//
+//     linnet inspect --parameters model.linnet
+module examples.model
+
+pub op rms_norm<*S: Shape, H: Dim, T: Float>(
+    x: Tensor[*S, H; T],
+    weight: Tensor[H; T],
+    eps: f32,
+) -> Tensor[*S, H; T] {
+    let xf = cast<f32>(x)
+    let mean_square[*s] = sum[h] xf[*s, h] * xf[*s, h] / cast<f32>(H)
+    let scale[*s, h] = xf[*s, h] * rsqrt(mean_square[*s] + eps)
+    return cast<T>(scale) * weight
+}
+
+pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
+    param weight: Tensor[Out, In; T]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        let y[*s, o] = sum[i] x[*s, i] * weight[o, i]
+        return match bias {
+            some(b) => y + b
+            none => y
+        }
+    }
+}
+
+pub block Mlp<H: Dim, Inner: Dim> {
+    param norm_weight: Tensor[H; bf16]
+    sub up: Linear<H, Inner>
+    sub down: Linear<Inner, H>
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, H; bf16]) -> Tensor[*S, H; bf16] {
+        let hidden = up.forward(rms_norm(x, norm_weight, 1e-5))
+        return x + down.forward(max(hidden, 0.0))
+    }
+}
+
+pub block Model<H: Dim, Inner: Dim, Layers: Dim, Vocab: Dim> {
+    param embedding: Tensor[Vocab, H; bf16]
+    sub layers: [Mlp<H, Inner>; Layers]
+    sub head: Linear<H, Vocab>
+
+    pub entry forward<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, Vocab; bf16] {
+        let embedded[b, s, h] = embedding[tokens[b, s], h]
+        var x = embedded
+        static for layer in layers {
+            x = layer.forward(x)
+        }
+        return head.forward(x)
+    }
+}

@@ -56,7 +56,10 @@ void print_usage(std::FILE* out) {
                "      --std <dir>                      Standard library directory\n"
                "  fmt [--check] <path>...              Format files, or directories recursively;\n"
                "                                       `-` formats stdin to stdout\n"
-               "  inspect (--tokens | --ast) <file>    Show compiler-internal views of a file\n"
+               "  inspect --tokens <file>              Show the tokens of a file\n"
+               "  inspect --ast <file>                 Show the syntax tree of a file\n"
+               "  inspect --parameters [--json] <file> Show the parameter manifest of each\n"
+               "                                       block declared in a file\n"
                "\n"
                "Options:\n"
                "      --no-color   Disable colored diagnostics\n"
@@ -165,11 +168,78 @@ int run_check(std::span<const std::string_view> args, Options options, const cha
     return report(sources, sink, options);
 }
 
-int run_inspect(std::span<const std::string_view> args, const Options& options) {
+std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool as_json) {
+    std::string out;
+    if (as_json) {
+        out = "{\"version\":1,\"blocks\":[";
+        for (std::size_t b = 0; b < blocks.size(); ++b) {
+            const sema::ManifestBlock& block = blocks[b];
+            out += b == 0 ? "" : ",";
+            out += "{\"name\":" + json_string(block.name) +
+                   ",\"module\":" + json_string(block.module) + ",\"generics\":[";
+            for (std::size_t i = 0; i < block.generics.size(); ++i) {
+                out += (i == 0 ? "" : ",") + json_string(block.generics[i]);
+            }
+            out += "],\"entries\":[";
+            for (std::size_t e = 0; e < block.entries.size(); ++e) {
+                const sema::ManifestEntry& entry = block.entries[e];
+                out += e == 0 ? "" : ",";
+                out += "{\"path\":" + json_string(entry.path) +
+                       ",\"kind\":" + json_string(entry.kind) +
+                       ",\"dtype\":" + json_string(entry.dtype) + ",\"shape\":[";
+                for (std::size_t i = 0; i < entry.shape.size(); ++i) {
+                    out += (i == 0 ? "" : ",") + json_string(entry.shape[i]);
+                }
+                out += "],\"repeat\":[";
+                for (std::size_t i = 0; i < entry.repeat.size(); ++i) {
+                    out += (i == 0 ? "" : ",") + json_string(entry.repeat[i]);
+                }
+                out +=
+                    std::string("],\"optional\":") + (entry.is_optional ? "true" : "false") + "}";
+            }
+            out += "]}";
+        }
+        return out + "]}\n";
+    }
+    for (const sema::ManifestBlock& block : blocks) {
+        out += block.module + "::" + block.name;
+        if (!block.generics.empty()) {
+            out += "<";
+            for (std::size_t i = 0; i < block.generics.size(); ++i) {
+                out += (i == 0 ? "" : ", ") + block.generics[i];
+            }
+            out += ">";
+        }
+        out += "\n";
+        for (const sema::ManifestEntry& entry : block.entries) {
+            out += "  " + entry.kind + " " + entry.path + ": Tensor[";
+            for (std::size_t i = 0; i < entry.shape.size(); ++i) {
+                out += (i == 0 ? "" : ", ") + entry.shape[i];
+            }
+            out += "; " + entry.dtype + "]" + (entry.is_optional ? "?" : "");
+            for (const std::string& count : entry.repeat) {
+                out += " x " + count;
+            }
+            out += "\n";
+        }
+    }
+    return out;
+}
+
+int run_inspect(std::span<const std::string_view> args, Options options, const char* program) {
     std::string_view view;
     std::string_view path;
-    for (const std::string_view arg : args) {
-        if (arg == "--tokens" || arg == "--ast") {
+    std::string std_option;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        if (arg == "--json") {
+            options.json = true;
+        } else if (arg == "--std") {
+            if (i + 1 == args.size()) {
+                return usage_error("--std requires a directory");
+            }
+            std_option = args[++i];
+        } else if (arg == "--tokens" || arg == "--ast" || arg == "--parameters") {
             if (!view.empty()) {
                 return usage_error("inspect takes exactly one view option");
             }
@@ -185,8 +255,42 @@ int run_inspect(std::span<const std::string_view> args, const Options& options) 
     if (view.empty() || path.empty()) {
         return usage_error("inspect requires a view option and a file");
     }
+    if (options.json && view != "--parameters") {
+        return usage_error("--json is only available with --parameters");
+    }
 
     SourceManager sources;
+    if (view == "--parameters") {
+        DiagnosticSink sink;
+        const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
+        const LoaderOptions loader_options{find_std_root(std_option, program)};
+        const Program program_modules = load_program(sources, paths, loader_options, sink);
+        if (sink.has_errors()) {
+            return report(sources, sink, options);
+        }
+        const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
+        const sema::AnalysisResult analysis =
+            sema::analyze(sources, modules, sink, &program_modules.imports);
+        if (sink.has_errors()) {
+            return report(sources, sink, options);
+        }
+        // Only blocks of the requested file, not of what it imports.
+        std::vector<sema::ManifestBlock> blocks;
+        std::string wanted;
+        for (const ast::Name& segment : modules.front()->module_path) {
+            wanted += wanted.empty() ? "" : ".";
+            wanted += segment.text;
+        }
+        for (const sema::ManifestBlock& block : analysis.manifests) {
+            if (block.module == wanted) {
+                blocks.push_back(block);
+            }
+        }
+        std::fputs(render_manifests(blocks, options.json).c_str(), stdout);
+        options.json = false; // diagnostics stay on stderr as text
+        return report(sources, sink, options);
+    }
+
     const auto file = sources.load_file(path);
     if (!file) {
         std::fprintf(stderr, "linnet: %s\n", file.error().c_str());
@@ -374,7 +478,7 @@ int main(int argc, char** argv) {
         return run_fmt(rest, options);
     }
     if (command == "inspect") {
-        return run_inspect(rest, options);
+        return run_inspect(rest, options, argv[0]);
     }
     return usage_error("unknown command '" + std::string(command) + "'");
 }

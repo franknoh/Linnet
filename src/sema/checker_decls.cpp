@@ -160,6 +160,9 @@ AnalysisResult Checker::run() {
     }
     report_recursion();
     report_unused();
+    if (!sink_.has_errors()) {
+        collect_manifests();
+    }
     return std::move(result_);
 }
 
