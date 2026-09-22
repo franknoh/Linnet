@@ -12,17 +12,29 @@
     "engines": {
         "vscode": "^1.75.0"
     },
-    "categories": ["Programming Languages"],
+    "categories": [
+        "Programming Languages"
+    ],
     "scripts": {
         "prepare-grammar": "node scripts/copy-grammar.js",
-        "vscode:prepublish": "node scripts/copy-grammar.js"
+        "compile": "tsc -p .",
+        "lint": "eslint src",
+        "check-format": "prettier --check src package.json language-configuration.json",
+        "format": "prettier --write src package.json language-configuration.json",
+        "check": "npm run prepare-grammar && npm run compile && npm run lint && npm run check-format",
+        "vscode:prepublish": "npm run check"
     },
     "contributes": {
         "languages": [
             {
                 "id": "linnet",
-                "aliases": ["Linnet", "linnet"],
-                "extensions": [".linnet"],
+                "aliases": [
+                    "Linnet",
+                    "linnet"
+                ],
+                "extensions": [
+                    ".linnet"
+                ],
                 "configuration": "./language-configuration.json"
             }
         ],
@@ -32,6 +44,43 @@
                 "scopeName": "source.linnet",
                 "path": "./syntaxes/linnet.tmLanguage.json"
             }
-        ]
+        ],
+        "commands": [
+            {
+                "command": "linnet.restartServer",
+                "title": "Linnet: Restart Language Server"
+            }
+        ],
+        "configuration": {
+            "title": "Linnet",
+            "properties": {
+                "linnet.path": {
+                    "type": "string",
+                    "default": "linnet",
+                    "description": "Path to the linnet executable."
+                },
+                "linnet.stdRoot": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Directory of the Linnet standard library, passed as --std."
+                }
+            }
+        }
+    },
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:linnet"
+    ],
+    "devDependencies": {
+        "@types/node": "^20.14.0",
+        "@types/vscode": "^1.75.0",
+        "@eslint/js": "^9.9.0",
+        "eslint": "^9.9.0",
+        "prettier": "^3.3.3",
+        "typescript": "^5.5.4",
+        "typescript-eslint": "^8.3.0"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
     }
 }

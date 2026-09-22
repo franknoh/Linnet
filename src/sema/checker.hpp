@@ -207,7 +207,10 @@ private:
                           ManifestBlock& out);
 
     // ------------------------------------------------------------------- names
-    EntityId lookup(std::string_view name);
+    EntityId lookup(const ast::Name& name);
+    void record_ref(SourceSpan span, EntityId entity);
+    void collect_symbols();
+    std::string describe(EntityId entity);
     void report_unused();
     EntityId lookup_in_module(std::uint32_t module, const ast::Name& name);
     IndexVar* find_index(std::string_view name);
@@ -324,6 +327,8 @@ private:
         bool is_used = false;
     };
     std::vector<ImportedName> imported_names_;
+    std::vector<std::pair<SourceSpan, EntityId>> refs_;
+    bool binding_is_annotated_ = false; // while binding a `let x: T` pattern
     Env* env_ = nullptr;
     AnalysisResult result_;
 };

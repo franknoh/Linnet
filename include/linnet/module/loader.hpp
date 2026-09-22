@@ -7,7 +7,9 @@
 
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace linnet {
@@ -16,6 +18,10 @@ struct LoaderOptions {
     // Directory of the toolchain standard library: `std.nn.linear` is the file
     // `<std_root>/nn/linear.linnet`. Empty when no standard library is known.
     std::filesystem::path std_root;
+
+    // Contents to use instead of the file on disk, keyed by the file's
+    // canonical path. Editors supply their unsaved buffers this way.
+    std::map<std::string, std::string> overlays;
 };
 
 // A set of parsed modules closed under their imports.

@@ -255,7 +255,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
     };
 
     if (const auto* name = std::get_if<ast::NameExpr>(&callee.data)) {
-        const EntityId entity = lookup(name->name.text);
+        const EntityId entity = lookup(name->name);
         if (entity != no_entity) {
             return call_entity(entity, callee.span, {});
         }
@@ -270,7 +270,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
 
     if (const auto* member = std::get_if<ast::MemberExpr>(&callee.data)) {
         if (const auto* base = std::get_if<ast::NameExpr>(&ast().expr(member->base).data)) {
-            const EntityId module = lookup(base->name.text);
+            const EntityId module = lookup(base->name);
             if (module != no_entity && entities_[module].kind == EntityKind::Module) {
                 const EntityId item =
                     lookup_in_module(entities_[module].module_ref, member->member);
@@ -294,6 +294,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
                           "method `" + std::string(method.name) + "` is private");
                     return check_arguments_only();
                 }
+                record_ref(member->member.span, found->second);
                 return check_user_call(node, call, found->second, substitution_of(data));
             }
         }

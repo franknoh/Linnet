@@ -163,6 +163,7 @@ AnalysisResult Checker::run() {
     if (!sink_.has_errors()) {
         collect_manifests();
     }
+    collect_symbols();
     return std::move(result_);
 }
 
@@ -297,6 +298,7 @@ EntityId Checker::lookup_in_module(std::uint32_t module, const ast::Name& name) 
             .label(entity.span, "declared here without `pub`");
         return no_entity;
     }
+    record_ref(name.span, found->second);
     return found->second;
 }
 
@@ -769,9 +771,17 @@ void Checker::report_recursion() {
 
 // ----------------------------------------------------------------------- names
 
-EntityId Checker::lookup(std::string_view name) {
+void Checker::record_ref(SourceSpan span, EntityId entity) {
+    if (entity != no_entity && span.file != invalid_file_id && !span.empty()) {
+        refs_.emplace_back(span, entity);
+    }
+}
+
+EntityId Checker::lookup(const ast::Name& use_site) {
+    const std::string_view name = use_site.text;
     const auto use = [&](EntityId entity) {
         entities_[entity].is_used = true;
+        record_ref(use_site.span, entity);
         return entity;
     };
     for (auto scope = env_->scopes.rbegin(); scope != env_->scopes.rend(); ++scope) {
@@ -918,7 +928,7 @@ shape::Poly Checker::eval_dim(ast::ExprId id, bool check_divisors) {
         return types_.is_error(type) ? shape::Poly::invalid() : types_.get(type).value;
     }
     if (const auto* name = std::get_if<ast::NameExpr>(&node.data)) {
-        const EntityId entity = lookup(name->name.text);
+        const EntityId entity = lookup(name->name);
         if (entity == no_entity) {
             error(codes::unknown_symbol,
                   node.span,
@@ -1017,7 +1027,7 @@ Checker::eval_generic_arg(const ast::GenericArg& arg, const GenericInfo& param, 
         value.kind = GenericValue::Kind::Dim;
         if (bare_name != nullptr && !scalar_from_name(bare_name->path.front().text)) {
             const ast::Name& name = bare_name->path.front();
-            const EntityId entity = lookup(name.text);
+            const EntityId entity = lookup(name);
             if (entity == no_entity) {
                 return unknown(name);
             }
@@ -1038,7 +1048,7 @@ Checker::eval_generic_arg(const ast::GenericArg& arg, const GenericInfo& param, 
         value.kind = GenericValue::Kind::Pack;
         if (bare_name != nullptr) {
             const ast::Name& name = bare_name->path.front();
-            const EntityId entity = lookup(name.text);
+            const EntityId entity = lookup(name);
             if (entity == no_entity) {
                 return unknown(name);
             }
@@ -1149,10 +1159,9 @@ TypeId Checker::eval_named_type(const ast::NamedType& named, SourceSpan span) {
             }
             return types_.scalar(*scalar);
         }
-        entity = lookup(last.text);
+        entity = lookup(last);
     } else {
-        const EntityId module =
-            named.path.size() == 2 ? lookup(named.path.front().text) : no_entity;
+        const EntityId module = named.path.size() == 2 ? lookup(named.path.front()) : no_entity;
         if (module == no_entity || entities_[module].kind != EntityKind::Module) {
             error(codes::unknown_symbol,
                   path_span(named.path),
@@ -1221,7 +1230,7 @@ TypeId Checker::eval_type(ast::TypeId id) {
                         shape.push_back(ShapeElem::of(std::move(dim)));
                         continue;
                     }
-                    const EntityId pack = lookup(element.pack.text);
+                    const EntityId pack = lookup(element.pack);
                     if (pack == no_entity || entities_[pack].kind != EntityKind::GenericPack) {
                         if (!element.pack.text.empty()) {
                             error(pack == no_entity ? codes::unknown_symbol

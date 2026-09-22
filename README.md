@@ -5,8 +5,9 @@ checked statically for shape and dtype correctness, and kept separate from their
 weights. Inspecting or checking a Linnet package never executes package code.
 
 The project is in early development. The toolchain currently provides the
-frontend: parsing, canonical formatting, and static checking of names, dtypes,
-symbolic shapes, and tensor index notation. There is no backend yet.
+frontend: parsing, canonical formatting, static checking of names, dtypes,
+symbolic shapes, and tensor index notation, packages, and a language server.
+There is no backend yet.
 
 - `spec/` is the normative language specification; `spec/grammar.ebnf` is the
   consolidated grammar.
@@ -45,10 +46,10 @@ boundary.
 
 ## Editors
 
-`editors/` has syntax highlighting for Visual Studio Code (`editors/vscode`),
-Vim and Neovim (`editors/vim`), and a standalone TextMate grammar
-(`editors/textmate`) that other tools can reuse. Each directory explains how to
-install it.
+`linnet lsp --stdio` is the language server. `editors/vscode` is a VS Code
+extension that launches it and ships the syntax highlighting; `editors/vim` has
+Vim and Neovim runtime files and the client setup; `editors/textmate` is the
+standalone grammar other tools can reuse.
 
 ## Building
 

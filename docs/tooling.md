@@ -83,6 +83,21 @@ accepted (`expect = "ok"`) or rejected with exactly its `code`, and each
 snapshot in `diagnostics/` must match the rendered errors byte for byte. This
 is a compiler developer's command; `ctest` runs it too.
 
+## `linnet lsp`
+
+```bash
+linnet lsp --stdio [--std <dir>]
+```
+
+The language server, speaking JSON-RPC over standard input and output. It
+provides diagnostics (published on open and on every change), hover, go to
+definition, references, rename, document and workspace symbols, completion,
+whole-document formatting, semantic tokens, and inlay hints for inferred
+binding types. Each open document is analyzed with the modules it imports;
+unsaved contents of other open documents are used in place of the files on
+disk. The VS Code extension in `editors/vscode` and the Neovim snippet in
+`editors/vim/README.md` launch it.
+
 ## `linnet fmt`
 
 ```bash

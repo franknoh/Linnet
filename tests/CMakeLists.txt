@@ -85,3 +85,4 @@ if(NOT WIN32)
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/init_and_check.sh
                 ${CMAKE_CURRENT_BINARY_DIR}/init_scratch)
 endif()
+linnet_add_test(lsp_test unit/lsp_test.cpp)
