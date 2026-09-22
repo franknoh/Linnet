@@ -1,0 +1,96 @@
+// GPT-2: learned absolute positions, pre-norm blocks with biased LayerNorm,
+// a fused QKV projection split by slicing, the tanh GELU, and an output head
+// tied to the token embedding through index notation.
+module examples.gpt2
+
+use std.nn.activations::{gelu}
+use std.nn.attention::{attention, causal_mask}
+use std.nn.embedding::{embedding}
+use std.nn.linear::{Linear}
+use std.nn.norm::{layer_norm}
+
+// LayerNorm with the bias GPT-2 uses; `layer_norm` takes it as an optional.
+pub block LayerNorm<H: Dim, T: Float> {
+    param weight: Tensor[H; T]
+    param bias: Tensor[H; T]
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, H; T]) -> Tensor[*S, H; T] {
+        return layer_norm(x, weight, some(bias))
+    }
+}
+
+pub block Attention<H: Dim, Heads: Dim, T: Float>
+where
+    Heads > 0,
+    H % Heads == 0
+{
+    // One projection produces queries, keys, and values side by side.
+    sub qkv: Linear<H, 3 * H, T>
+    sub out: Linear<H, H, T>
+
+    pub fn forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
+        let projected = qkv.forward(x)
+        let q = heads<B, S, Heads, H / Heads, T>(projected[:, :, 0:H])
+        let k = heads<B, S, Heads, H / Heads, T>(projected[:, :, H:2 * H])
+        let v = heads<B, S, Heads, H / Heads, T>(projected[:, :, 2 * H:3 * H])
+        let mixed = attention(q, k, v, rsqrt(cast<f32>(H / Heads)), some(causal_mask<S, S>()))
+        return out.forward(reshape(permute(mixed, [0, 2, 1, 3]), [B, S, H]))
+    }
+}
+
+fn heads<B: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
+    x: Tensor[B, S, N * D; T],
+) -> Tensor[B, N, S, D; T] {
+    return permute(reshape(x, [B, S, N, D]), [0, 2, 1, 3])
+}
+
+pub block Mlp<H: Dim, T: Float> {
+    sub up: Linear<H, 4 * H, T>
+    sub down: Linear<4 * H, H, T>
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, H; T]) -> Tensor[*S, H; T] {
+        return down.forward(gelu(up.forward(x)))
+    }
+}
+
+pub block Block<H: Dim, Heads: Dim, T: Float>
+where
+    Heads > 0,
+    H % Heads == 0
+{
+    sub ln_1: LayerNorm<H, T>
+    sub attn: Attention<H, Heads, T>
+    sub ln_2: LayerNorm<H, T>
+    sub mlp: Mlp<H, T>
+
+    pub fn forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
+        let attended = x + attn.forward(ln_1.forward(x))
+        return attended + mlp.forward(ln_2.forward(attended))
+    }
+}
+
+pub block Model<Vocab: Dim, MaxPositions: Dim, H: Dim, Heads: Dim, Layers: Dim, T: Float = f32>
+where
+    Heads > 0,
+    H % Heads == 0
+{
+    param wte: Tensor[Vocab, H; T]
+    param wpe: Tensor[MaxPositions, H; T]
+    sub blocks: [Block<H, Heads, T>; Layers]
+    sub ln_f: LayerNorm<H, T>
+
+    // Sequences longer than the position table are rejected at compile time.
+    pub entry forward<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, Vocab; T]
+    where S <= MaxPositions {
+        // Positions 0..S come from `iota`; both lookups are the same operation.
+        let x0 = embedding(tokens, wte) + embedding(iota<i32>(S), wpe)
+        var x = x0
+        static for layer in blocks {
+            x = layer.forward(x)
+        }
+        let h = ln_f.forward(x)
+        // The head shares the embedding: a contraction against `wte`.
+        let logits[b, s, v] = sum[i] h[b, s, i] * wte[v, i]
+        return logits
+    }
+}

@@ -34,8 +34,10 @@ def _compiler() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 
-def _export(source: Path, bindings: dict[str, str | int]) -> str:
+def _export(source: Path, bindings: dict[str, str | int], entry: str | None = None) -> str:
     command = [find_compiler(), "stablehlo", "--std", str(STDLIB)]
+    if entry is not None:
+        command += ["--entry", entry]
     for name, value in bindings.items():
         command += ["--bind", f"{name}={value}"]
     completed = subprocess.run([*command, str(source)], capture_output=True, text=True, check=False)
@@ -125,6 +127,37 @@ def test_tiny_transformer_matches_torch(tmp_path: Path) -> None:
         [tokens, cos_table, sin_table],
         tmp_path,
     )
+
+
+def test_llama_next_token_matches_torch(tmp_path: Path) -> None:
+    """Grouped-query attention, rotary tables from `iota`, and a slice of the
+    last position, through a named entry."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "T": "f32",
+    }
+    source = EXAMPLES / "10-llama/src/lib.linnet"
+    reference = load(source, generics=generics, std_root=STDLIB)
+    weights: dict[str, torch.Tensor] = {}
+    for name, parameter in reference.named_parameters():
+        path = name.removeprefix("root.")
+        if not path.endswith(".bias"):
+            weights[path] = torch.randn(parameter.shape) * 0.3
+    save_file(weights, str(tmp_path / "model.safetensors"))
+    reference = load(source, generics=generics, std_root=STDLIB, weights=tmp_path)
+    tokens = torch.randint(0, 11, (2, 5), dtype=torch.int32)
+    expected = reference.run_entry("next_token", [tokens])
+
+    text = _export(source, {**generics, "B": 2, "S": 5}, entry="next_token")
+    paths = _parameter_paths(text)
+    arguments = [tokens.numpy()] + [weights[path].numpy() for path in paths]
+    actual = _run_xla(text, arguments)
+    torch.testing.assert_close(torch.tensor(np.array(actual)), expected, atol=1e-4, rtol=1e-4)
 
 
 def test_unbound_generic_is_reported() -> None:
