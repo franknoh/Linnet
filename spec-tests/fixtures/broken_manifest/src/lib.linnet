@@ -1,0 +1,3 @@
+module broken
+
+use missing_dep::{x}

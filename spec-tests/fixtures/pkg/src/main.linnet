@@ -3,7 +3,13 @@ module fixture_pkg.main
 use std.nn.identity::{identity as tensor_identity}
 use crate::{identity}
 use crate.layers.scale::{double}
+use dep_fixture::{Width}
+use dep_fixture.ops::{triple}
 
 pub fn run<N: Dim>(x: Tensor[N; f32], s: f32) -> Tensor[N; f32] {
     return double(tensor_identity(x)) * identity(s)
+}
+
+pub fn widen(x: Tensor[Width; f32]) -> Tensor[Width; f32] {
+    return triple(x)
 }

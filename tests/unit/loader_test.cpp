@@ -46,11 +46,16 @@ TEST("loader: finds the package root") {
     CHECK(find_package_root(fixture("std/nn/identity.linnet")).empty());
 }
 
-TEST("loader: follows crate and std imports transitively") {
+TEST("loader: follows crate, std, and dependency imports transitively") {
     const Loaded loaded(fixture("pkg/src/main.linnet"), fixture("std"));
     CHECK_EQ(loaded.codes(), "");
-    CHECK_EQ(loaded.program.modules.size(), 4U);
-    CHECK_EQ(loaded.program.imports.size(), 3U);
+    CHECK_EQ(loaded.program.modules.size(), 6U);
+    CHECK_EQ(loaded.program.imports.size(), 5U);
+}
+
+TEST("loader: a malformed manifest is reported once") {
+    const Loaded loaded(fixture("broken_manifest/src/lib.linnet"), {});
+    CHECK_EQ(loaded.codes(), "E5001");
 }
 
 TEST("loader: a missing standard library is an unknown module, reported once") {

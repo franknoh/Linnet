@@ -39,9 +39,10 @@ A logical path maps to exactly one source file:
 crate            <package>/src/lib.linnet
 crate.a.b        <package>/src/a/b.linnet
 std.a.b          <standard library>/a/b.linnet
+dep.a.b          <dependency dep>/src/a/b.linnet
 ```
 
-`<package>` is the nearest directory above the importing file that contains `linnet.toml`. Because path segments are identifiers, a logical path can never leave its root directory.
+`<package>` is the nearest directory above the importing file that contains `linnet.toml`; `dep` is a key of that manifest's `[dependencies]` table. A dependency key is an identifier and is never `std` or `crate`. Because path segments are identifiers, a logical path can never leave its root directory.
 
 `use a.b::{x, y as z}` imports items from module `a.b`. `use a.b` imports the module itself under its last segment, so that its public items are written `b.x`.
 
@@ -109,6 +110,8 @@ language = "0.1"
 [dependencies]
 foo = { path = "../foo" }
 ```
+
+`language` names the language version the package is written for. A toolchain MUST reject a manifest whose language version it does not implement.
 
 Future dependency forms MAY include pinned Git revisions and a registry. Dependency resolution MUST be reproducible when a lockfile exists.
 

@@ -32,11 +32,14 @@ struct Program {
 //   std.a.b     <std_root>/a/b.linnet
 //   crate       <package>/src/lib.linnet
 //   crate.a.b   <package>/src/a/b.linnet
+//   dep.a.b     <dependency>/src/a/b.linnet
 //
 // where <package> is the nearest directory above the importing file that
-// contains `linnet.toml`. Loading only reads and parses files; nothing from a
-// package is ever executed. Imports that cannot be mapped are left out of the
-// import table for semantic analysis to report.
+// contains `linnet.toml`, and `dep` is a key of that manifest's
+// [dependencies] table naming <dependency>. Loading only reads and parses
+// files; nothing from a package is ever executed. Imports that cannot be
+// mapped are left out of the import table for semantic analysis to report;
+// malformed manifests are reported to `sink`.
 Program load_program(SourceManager& sources,
                      std::span<const std::filesystem::path> files,
                      const LoaderOptions& options,

@@ -27,9 +27,11 @@ linnet inspect --ast file.linnet
 linnet inspect --tokens file.linnet
 ```
 
-`check` finds imported modules by fixed rules: `crate.a.b` is `src/a/b.linnet` of
-the package containing `linnet.toml`, and `std.a.b` is `a/b.linnet` in the
-standard library directory given by `--std <dir>` or `LINNET_STD`.
+`linnet init` creates a package (`linnet.toml` plus `src/lib.linnet`). Imports
+are logical paths: `crate.a.b` is `src/a/b.linnet` of the package, `std.a.b`
+lives in the standard library directory (`--std <dir>` or `LINNET_STD`), and
+`dep.a.b` is found through the `[dependencies]` table. See
+[docs/modules-and-packages.md](docs/modules-and-packages.md).
 
 Exit status is 0 on success, 1 when the input has errors (or `--check` finds
 unformatted files), and 2 for command-line mistakes. Files with syntax errors
