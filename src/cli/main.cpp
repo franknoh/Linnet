@@ -26,6 +26,7 @@
 #include <crtdbg.h>
 #endif
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -893,12 +894,25 @@ int main(int argc, char** argv) {
 #ifdef _MSC_VER
     // Debug assertions and aborts must fail loudly on the console instead
     // of waiting on a dialog nobody can dismiss under CI.
-    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    _set_abort_behavior(_WRITE_ABORT_MSG, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
     _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
 #endif
+    // An exception nothing caught is a compiler bug; name it before dying.
+    std::set_terminate([] {
+        try {
+            if (const std::exception_ptr current = std::current_exception()) {
+                std::rethrow_exception(current);
+            }
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "linnet: fatal: %s\n", error.what());
+        } catch (...) {
+            std::fputs("linnet: fatal: unknown exception\n", stderr);
+        }
+        std::abort();
+    });
     std::vector<std::string_view> args;
     Options options;
     for (int i = 1; i < argc; ++i) {
