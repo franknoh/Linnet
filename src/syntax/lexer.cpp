@@ -54,23 +54,6 @@ constexpr auto reserved_words = std::to_array<std::string_view>({
     "device",
 });
 
-TokenKind classify_word(std::string_view word) {
-    constexpr auto first = static_cast<std::size_t>(TokenKind::KwModule);
-    constexpr auto last = static_cast<std::size_t>(TokenKind::KwExtern);
-    for (std::size_t i = first; i <= last; ++i) {
-        const auto kind = static_cast<TokenKind>(i);
-        if (token_kind_name(kind) == word) {
-            return kind;
-        }
-    }
-    for (const std::string_view reserved : reserved_words) {
-        if (reserved == word) {
-            return TokenKind::ReservedWord;
-        }
-    }
-    return TokenKind::Identifier;
-}
-
 // Validates `digits` as one or more digits with `_` allowed only between digits.
 template <typename IsDigit>
 bool valid_digit_run(std::string_view digits, IsDigit is_valid_digit) {
@@ -458,6 +441,23 @@ private:
 };
 
 } // namespace
+
+TokenKind classify_word(std::string_view word) {
+    constexpr auto first = static_cast<std::size_t>(TokenKind::KwModule);
+    constexpr auto last = static_cast<std::size_t>(TokenKind::KwExtern);
+    for (std::size_t i = first; i <= last; ++i) {
+        const auto kind = static_cast<TokenKind>(i);
+        if (token_kind_name(kind) == word) {
+            return kind;
+        }
+    }
+    for (const std::string_view reserved : reserved_words) {
+        if (reserved == word) {
+            return TokenKind::ReservedWord;
+        }
+    }
+    return TokenKind::Identifier;
+}
 
 LexResult lex(const SourceManager& sources, FileId file, DiagnosticSink& sink) {
     return Lexer(sources, file, sink).run();
