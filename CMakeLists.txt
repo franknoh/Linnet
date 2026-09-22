@@ -64,6 +64,7 @@ add_library(linnet_core STATIC
     src/lsp/server.cpp
     src/module/loader.cpp
     src/opt/candidates.cpp
+    src/opt/egraph.cpp
     src/opt/passes.cpp
     src/package/manifest.cpp
     src/package/spec_manifest.cpp

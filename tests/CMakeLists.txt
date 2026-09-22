@@ -100,6 +100,7 @@ add_test(NAME cli_plan_transformer
     COMMAND linnet plan --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"version\":1,\"module\":\"tiny_transformer\",\"root\":\\{\"name\":\"Model\"")
 linnet_add_test(opt_test unit/opt_test.cpp)
+linnet_add_test(egraph_test unit/egraph_test.cpp)
 linnet_add_test(emit_test unit/emit_test.cpp)
 add_test(NAME cli_inspect_emit
     COMMAND linnet inspect --emit --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib/nn/softmax.linnet)
