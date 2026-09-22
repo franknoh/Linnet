@@ -334,7 +334,9 @@ private:
                     for (const TypeId element : tuple.elements) {
                         docs.push_back(type(element));
                     }
-                    return b_.concat({b_.text("("), comma_separated(docs), b_.text(")")});
+                    return b_.concat({b_.text("("),
+                                      comma_separated(docs),
+                                      b_.text(tuple.elements.size() == 1 ? ",)" : ")")});
                 },
                 [&](const ArrayType& array) {
                     return b_.concat({b_.text("["),
