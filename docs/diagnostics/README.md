@@ -62,6 +62,7 @@ Codes are stable: a code is never reused for a different condition.
 | E3106 | a pack index used where a plain index is needed, or the reverse |
 | E4101 | a `param`, `buffer`, or `sub` with a type it cannot have |
 | E4102 | a `param` with a value in source |
+| E5001 | a `linnet.toml` that cannot be read or is malformed |
 | W1001 | an import that is never used |
 | W1002 | a local binding that is never used |
 | W1003 | a block member that its block never uses |

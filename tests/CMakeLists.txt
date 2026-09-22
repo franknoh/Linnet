@@ -76,3 +76,12 @@ add_test(NAME cli_spec_test
 add_test(NAME cli_lint_fails_on_warning
     COMMAND linnet lint ${CMAKE_CURRENT_SOURCE_DIR}/cli/unused_local.linnet)
 set_tests_properties(cli_lint_fails_on_warning PROPERTIES WILL_FAIL TRUE)
+
+linnet_add_test(manifest_test unit/manifest_test.cpp)
+
+if(NOT WIN32)
+    add_test(NAME cli_init_and_check
+        COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
+                bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/init_and_check.sh
+                ${CMAKE_CURRENT_BINARY_DIR}/init_scratch)
+endif()

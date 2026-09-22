@@ -4,6 +4,7 @@
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
 #include "linnet/module/loader.hpp"
+#include "linnet/package/manifest.hpp"
 #include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
@@ -50,6 +51,7 @@ void print_usage(std::FILE* out) {
     std::fputs("Usage: linnet <command> [options]\n"
                "\n"
                "Commands:\n"
+               "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
                "  check [options] <path>...            Check syntax, types, and shapes of the\n"
                "                                       given files and everything they import\n"
                "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"
@@ -169,6 +171,52 @@ int run_check(std::span<const std::string_view> args, Options options, const cha
         sema::analyze(sources, modules, sink, &program_modules.imports);
     }
     return report(sources, sink, options);
+}
+
+// Creates a package skeleton without touching files that already exist.
+bool write_file(const std::filesystem::path& path, const std::string& contents);
+
+int run_init(std::span<const std::string_view> args) {
+    if (args.size() > 1 || (!args.empty() && args.front().starts_with("-"))) {
+        return usage_error("init takes at most one directory");
+    }
+    std::error_code error;
+    const std::filesystem::path directory =
+        args.empty() ? std::filesystem::current_path(error) : std::filesystem::path(args.front());
+    std::string name = std::filesystem::weakly_canonical(directory, error).filename().string();
+    for (char& c : name) {
+        if (c == '-' || c == ' ' || c == '.') {
+            c = '_';
+        }
+    }
+    if (!is_valid_package_name(name)) {
+        name = "model";
+    }
+
+    const std::filesystem::path manifest = directory / "linnet.toml";
+    const std::filesystem::path library = directory / "src" / "lib.linnet";
+    if (std::filesystem::exists(manifest, error)) {
+        std::fprintf(stderr, "linnet: %s already exists\n", manifest.generic_string().c_str());
+        return exit_failure;
+    }
+    std::filesystem::create_directories(directory / "src", error);
+    if (error) {
+        std::fprintf(
+            stderr, "linnet: cannot create %s\n", (directory / "src").generic_string().c_str());
+        return exit_failure;
+    }
+    if (!write_file(manifest, default_manifest(name))) {
+        std::fprintf(stderr, "linnet: cannot write %s\n", manifest.generic_string().c_str());
+        return exit_failure;
+    }
+    if (!std::filesystem::exists(library, error) &&
+        !write_file(library,
+                    "module " + name + "\n\npub fn identity(x: f32) -> f32 {\n    return x\n}\n")) {
+        std::fprintf(stderr, "linnet: cannot write %s\n", library.generic_string().c_str());
+        return exit_failure;
+    }
+    std::printf("created package `%s` in %s\n", name.c_str(), directory.generic_string().c_str());
+    return exit_success;
 }
 
 // Runs every case of a spec-tests directory through the frontend and compares
@@ -574,6 +622,9 @@ int main(int argc, char** argv) {
     }
     if (command == "check") {
         return run_check(rest, options, argv[0]);
+    }
+    if (command == "init") {
+        return run_init(rest);
     }
     if (command == "lint") {
         options.strict = true;
