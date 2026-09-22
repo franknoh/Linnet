@@ -149,6 +149,7 @@ struct Model {
     shape::DimContext dims;
     TypeStore types{dims};
     std::vector<std::string> module_paths; // `a.b.c` per module index
+    std::deque<std::string> names;         // owned names of entities without source
     std::deque<Entity> entities;
     std::map<EntityId, DeclInfo> decls;
     std::vector<std::unordered_map<ast::ExprId, ExprFacts>> exprs;   // per module

@@ -123,6 +123,7 @@ struct Attributes {
     sema::Shape pack_units;          // slice: the shape unit of each axis (the pack for whole axes)
     std::int64_t axis = 0;           // concat
     sema::Substitution substitution; // call: generic bindings
+    std::vector<sema::GenericValue> generic_args; // call: the same, in the callee's order
 
     friend bool operator==(const Attributes&, const Attributes&) = default;
 };

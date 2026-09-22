@@ -94,6 +94,22 @@ the plan of the root block (the only block with entries, or `--root`) as JSON
 on standard output; see [plan-format.md](plan-format.md). The plan is what
 `linnet_torch` consumes. It contains no tensor data.
 
+## `linnet emit`
+
+```bash
+linnet emit plan.json
+linnet emit - < plan.json
+```
+
+The other direction: reads a plan document and prints the Linnet source of
+its module, formatted. Only the declarations of the plan's own module are
+printed; functions and blocks it references from other modules become `use`
+lines, and calls to them keep their explicit generic arguments, so a plan
+that carries only its own functions (as a framework adapter writes) emits a
+module that checks against the libraries it uses. Emitting the plan of a
+file prints the same text as `linnet inspect --emit` on that file. The
+command reads JSON only; it never executes anything.
+
 ## `linnet explain`
 
 ```bash

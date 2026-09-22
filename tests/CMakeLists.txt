@@ -98,13 +98,19 @@ add_test(NAME cli_core_ir_transformer
     COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
 add_test(NAME cli_plan_transformer
     COMMAND linnet plan --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
-set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"version\":1,\"root\":\\{\"name\":\"Model\"")
+set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"version\":1,\"module\":\"tiny_transformer\",\"root\":\\{\"name\":\"Model\"")
 linnet_add_test(opt_test unit/opt_test.cpp)
 linnet_add_test(emit_test unit/emit_test.cpp)
 add_test(NAME cli_inspect_emit
     COMMAND linnet inspect --emit --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib/nn/softmax.linnet)
 set_tests_properties(cli_inspect_emit PROPERTIES PASS_REGULAR_EXPRESSION "let total\\[\\*s\\] = sum\\[n\\] shifted\\[\\*s, n\\]")
 if(NOT WIN32)
+    add_test(NAME cli_plan_emit_round_trip
+        COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
+                bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/plan_emit_round_trip.sh
+                ${CMAKE_CURRENT_BINARY_DIR}/plan_emit_scratch ${PROJECT_SOURCE_DIR}/stdlib
+                ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet
+                ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
     file(GLOB_RECURSE linnet_round_trip_sources
         ${PROJECT_SOURCE_DIR}/stdlib/*.linnet ${PROJECT_SOURCE_DIR}/examples/*.linnet)
     add_test(NAME cli_emit_round_trip
