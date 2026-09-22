@@ -21,6 +21,10 @@ a `torch.nn.Module` with SafeTensors weights, see [docs/torch.md](docs/torch.md)
 - `examples/` contains sample Linnet sources, up to a small transformer built
   from the standard library (`examples/09-tiny-transformer`).
 
+[docs/getting-started.md](docs/getting-started.md) builds the toolchain, writes
+a first model, and runs it in PyTorch; [docs/language-tour.md](docs/language-tour.md)
+walks through the language.
+
 ## Usage
 
 ```bash
