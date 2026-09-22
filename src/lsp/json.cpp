@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace linnet::lsp {
 
@@ -96,11 +97,13 @@ private:
                 peek() == '+' || peek() == '.' || peek() == 'e' || peek() == 'E')) {
             ++pos_;
         }
-        double value = 0;
-        const std::string_view digits = text_.substr(begin, pos_ - begin);
-        const auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value);
-        if (result.ec != std::errc() || result.ptr != digits.data() + digits.size() ||
-            !std::isfinite(value)) {
+        // strtod accepts more than JSON (hex, infinity), but the scan above
+        // only admits JSON's number characters. Apple's libc++ lacks the
+        // floating-point std::from_chars, so strtod is the portable choice.
+        const std::string digits(text_.substr(begin, pos_ - begin));
+        char* end = nullptr;
+        const double value = std::strtod(digits.c_str(), &end);
+        if (digits.empty() || end != digits.c_str() + digits.size() || !std::isfinite(value)) {
             return std::unexpected(fail("malformed number"));
         }
         return Json(value);
