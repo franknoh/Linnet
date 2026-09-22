@@ -922,13 +922,25 @@ private:
 
     // ---------------------------------------------------------------- patterns
 
-    PatternId parse_pattern() {
+    // Match arms have no separator, so an arm pattern cannot begin with `(`:
+    // it would read as a call on the previous arm's value.
+    PatternId parse_pattern(bool is_arm = false) {
         const DepthGuard guard(*this);
         const std::uint32_t begin = here();
         PatternData data = ErrorPattern{};
 
         if (guard.exceeded()) {
             // leave the error pattern
+        } else if (is_arm && at(K::LParen)) {
+            Diagnostic* diagnostic = error_at(peek().span,
+                                              "a match arm cannot start with a tuple pattern",
+                                              codes::unexpected_token);
+            if (diagnostic != nullptr) {
+                diagnostic->notes.emplace_back(
+                    "`match` works on optional and enum values; arms are `some(...)`, "
+                    "`none`, a variant, or a name");
+            }
+            emit(diagnostic);
         } else if (at(K::Identifier) || at(K::ReservedWord)) {
             data = BindingPattern{expect_identifier("pattern")};
         } else if (accept(K::KwNone)) {
@@ -1119,7 +1131,7 @@ private:
             while (!at(K::RBrace) && !at(K::Eof) && !should_stop()) {
                 const std::size_t before = pos_;
                 const std::size_t errors_before = error_count_;
-                MatchArm arm{parse_pattern(), no_id};
+                MatchArm arm{parse_pattern(true), no_id};
                 arm.value = expect(K::FatArrow) ? parse_expr() : add_expr(here(), ErrorExpr{});
                 node.arms.push_back(arm);
                 if (error_count_ != errors_before || pos_ == before) {

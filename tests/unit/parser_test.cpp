@@ -363,6 +363,20 @@ TEST("parser: reserved syntax is rejected, not reinterpreted") {
     CHECK_EQ(Parsed("module m\nfn f(mut: f32) { return }\n").codes(), "E1004");
 }
 
+TEST("parser: a match arm cannot start with a tuple pattern") {
+    const Parsed first("module m\nfn f() { return match o { (c, d) => c none => x } }\n");
+    CHECK_EQ(first.codes(), "E1101");
+    CHECK(first.messages().find("tuple pattern") != std::string::npos);
+    // After another arm the tuple is consumed as a call on that arm's value,
+    // so the report is about the `=>`; it is one error either way.
+    const Parsed later("module m\nfn f() { return match o { some(a) => a (c, d) => c } }\n");
+    CHECK_EQ(later.codes(), "E1101");
+    // Tuples inside `some(...)` are still patterns.
+    CHECK_EQ(
+        Parsed("module m\nfn f() { return match o { some((a, b)) => a none => x } }\n").codes(),
+        "");
+}
+
 TEST("parser: hostile nesting does not overflow the stack") {
     const std::string cases[] = {
         "module m\nfn f() { return " + std::string(100000, '(') + " }\n",

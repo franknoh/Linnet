@@ -97,6 +97,8 @@ let y = match bias {
 
 Patterns MUST be exhaustive.
 
+An arm pattern is a variant or binding name, `some(pattern)`, or `none`; a tuple pattern may appear only inside `some(...)`. Arms have no separator, so a tuple pattern at the start of an arm would be read as a call on the previous arm's value.
+
 ## 5.8 Slicing and indexing
 
 Value-level tensor indexing syntax includes:
