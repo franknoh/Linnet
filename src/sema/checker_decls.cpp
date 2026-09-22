@@ -134,14 +134,18 @@ Checker::Checker(const SourceManager& sources,
                  std::span<const ast::Ast* const> modules,
                  DiagnosticSink& sink,
                  const ImportTable* imports)
-    : sources_(sources), modules_(modules.begin(), modules.end()), sink_(sink), types_(dims_),
-      imports_(imports) {
-    types_.set_entity_namer([this](EntityId id) { return std::string(entities_[id].name); });
+    : sources_(sources), modules_(modules.begin(), modules.end()), sink_(sink), imports_(imports) {
+    // The model outlives this checker; the namer must not refer back to it.
+    types_.set_entity_namer(
+        [model = model_.get()](EntityId id) { return std::string(model->entities[id].name); });
 }
 
 AnalysisResult Checker::run() {
     module_scopes_.resize(modules_.size());
     failed_imports_.resize(modules_.size());
+    model_->exprs.resize(modules_.size());
+    model_->stmts.resize(modules_.size());
+    model_->bound.resize(modules_.size());
     for (std::uint32_t module = 0; module < modules_.size(); ++module) {
         collect_module(module);
     }
@@ -164,6 +168,7 @@ AnalysisResult Checker::run() {
         collect_manifests();
     }
     collect_symbols();
+    result_.model = model_;
     return std::move(result_);
 }
 

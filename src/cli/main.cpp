@@ -3,6 +3,7 @@
 #include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
+#include "linnet/ir/lower.hpp"
 #include "linnet/lsp/server.hpp"
 #include "linnet/module/loader.hpp"
 #include "linnet/package/manifest.hpp"
@@ -65,6 +66,7 @@ void print_usage(std::FILE* out) {
                "  spec-test [--std <dir>] <dir>        Run the executable specification in <dir>\n"
                "  inspect --tokens <file>              Show the tokens of a file\n"
                "  inspect --ast <file>                 Show the syntax tree of a file\n"
+               "  inspect --core-ir <file>             Show the Core IR of a file\n"
                "  inspect --parameters [--json] <file> Show the parameter manifest of each\n"
                "                                       block declared in a file\n"
                "\n"
@@ -390,7 +392,8 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
                 return usage_error("--std requires a directory");
             }
             std_option = args[++i];
-        } else if (arg == "--tokens" || arg == "--ast" || arg == "--parameters") {
+        } else if (arg == "--tokens" || arg == "--ast" || arg == "--parameters" ||
+                   arg == "--core-ir") {
             if (!view.empty()) {
                 return usage_error("inspect takes exactly one view option");
             }
@@ -411,7 +414,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
     }
 
     SourceManager sources;
-    if (view == "--parameters") {
+    if (view == "--parameters" || view == "--core-ir") {
         DiagnosticSink sink;
         const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
         const LoaderOptions loader_options{find_std_root(std_option, program), {}};
@@ -424,6 +427,14 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
             sema::analyze(sources, modules, sink, &program_modules.imports);
         if (sink.has_errors()) {
             return report(sources, sink, options);
+        }
+        if (view == "--core-ir") {
+            const ir::Module core = ir::lower(sources, modules, analysis.model);
+            for (const std::string& problem : ir::verify(core)) {
+                std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
+            }
+            std::fputs(ir::print(core).c_str(), stdout);
+            return ir::verify(core).empty() ? exit_success : exit_failure;
         }
         // Only blocks of the requested file, not of what it imports.
         std::vector<sema::ManifestBlock> blocks;
