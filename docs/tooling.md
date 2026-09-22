@@ -83,6 +83,17 @@ accepted (`expect = "ok"`) or rejected with exactly its `code`, and each
 snapshot in `diagnostics/` must match the rendered errors byte for byte. This
 is a compiler developer's command; `ctest` runs it too.
 
+## `linnet plan`
+
+```bash
+linnet plan [--root <Block>] [--std <dir>] file.linnet
+```
+
+Checks the file and everything it imports, lowers it to Core IR, and prints
+the plan of the root block (the only block with entries, or `--root`) as JSON
+on standard output; see [plan-format.md](plan-format.md). The plan is what
+`linnet_torch` consumes. It contains no tensor data.
+
 ## `linnet lsp`
 
 ```bash

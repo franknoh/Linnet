@@ -868,6 +868,7 @@ private:
             attributes.steps.push_back(1);
             attributes.squeezed.push_back(false);
             attributes.whole.push_back(true);
+            attributes.pack_units.push_back(unit);
             ++axis;
         };
         for (const ast::IndexComponent& component : index.components) {
@@ -893,6 +894,7 @@ private:
                 attributes.steps.push_back(1);
                 attributes.squeezed.push_back(true);
                 attributes.whole.push_back(false);
+                attributes.pack_units.push_back(unit);
             } else {
                 attributes.starts.push_back(dim_of(component.start, shape::Poly(0)));
                 attributes.stops.push_back(dim_of(component.stop, unit.dim));
@@ -900,6 +902,7 @@ private:
                     dim_of(component.step, shape::Poly(1)).constant().value_or(1));
                 attributes.squeezed.push_back(false);
                 attributes.whole.push_back(false);
+                attributes.pack_units.push_back(unit);
             }
             ++axis;
         }

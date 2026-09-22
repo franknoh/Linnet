@@ -120,6 +120,7 @@ struct Attributes {
     std::vector<std::int64_t> steps;
     std::vector<bool> squeezed;      // slice: axes removed by an integer index
     std::vector<bool> whole;         // slice: axes kept entirely (shape packs)
+    sema::Shape pack_units;          // slice: the shape unit of each axis (the pack for whole axes)
     std::int64_t axis = 0;           // concat
     sema::Substitution substitution; // call: generic bindings
 };

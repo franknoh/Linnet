@@ -1,4 +1,5 @@
 #include "linnet/ast/dump.hpp"
+#include "linnet/backend/plan.hpp"
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
@@ -53,6 +54,9 @@ void print_usage(std::FILE* out) {
     std::fputs("Usage: linnet <command> [options]\n"
                "\n"
                "Commands:\n"
+               "  plan [--root <Block>] [--std <dir>] <file>\n"
+               "                                       Print the materializer plan (JSON) of a\n"
+               "                                       root block and everything it uses\n"
                "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
                "  check [options] <path>...            Check syntax, types, and shapes of the\n"
                "                                       given files and everything they import\n"
@@ -221,6 +225,56 @@ int run_init(std::span<const std::string_view> args) {
     }
     std::printf("created package `%s` in %s\n", name.c_str(), directory.generic_string().c_str());
     return exit_success;
+}
+
+int run_plan(std::span<const std::string_view> args, const Options& options, const char* program) {
+    std::string std_option;
+    std::string root;
+    std::string_view path;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        if (arg == "--std" || arg == "--root") {
+            if (i + 1 == args.size()) {
+                return usage_error(std::string(arg) + " requires a value");
+            }
+            (arg == "--std" ? std_option : root) = args[++i];
+        } else if (arg.starts_with("-")) {
+            return usage_error("unknown plan option '" + std::string(arg) + "'");
+        } else if (!path.empty()) {
+            return usage_error("plan takes exactly one file");
+        } else {
+            path = arg;
+        }
+    }
+    if (path.empty()) {
+        return usage_error("plan requires a file");
+    }
+    SourceManager sources;
+    DiagnosticSink sink;
+    const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
+    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
+    const Program program_modules = load_program(sources, paths, loader_options, sink);
+    if (sink.has_errors()) {
+        return report(sources, sink, options);
+    }
+    const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
+    const sema::AnalysisResult analysis =
+        sema::analyze(sources, modules, sink, &program_modules.imports);
+    if (sink.has_errors()) {
+        return report(sources, sink, options);
+    }
+    ir::Module core = ir::lower(sources, modules, analysis.model);
+    for (const std::string& problem : ir::verify(core)) {
+        std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
+        return exit_failure;
+    }
+    const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules});
+    if (!plan) {
+        std::fprintf(stderr, "linnet: %s\n", plan.error().c_str());
+        return exit_failure;
+    }
+    std::fputs(plan->c_str(), stdout);
+    return report(sources, sink, options);
 }
 
 // Runs every case of a spec-tests directory through the frontend and compares
@@ -660,6 +714,9 @@ int main(int argc, char** argv) {
         }
         lsp::Server server(lsp::ServerOptions{find_std_root(std_option, argv[0])});
         return server.run(std::cin, std::cout);
+    }
+    if (command == "plan") {
+        return run_plan(rest, options, argv[0]);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

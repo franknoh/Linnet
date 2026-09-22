@@ -95,6 +95,25 @@ jobs:
       - run: npm run check
         working-directory: editors/vscode
 
+  python:
+    name: linnet_torch
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: cmake --preset release && cmake --build --preset release
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras
+        working-directory: python/linnet_torch
+      - run: uv run ruff check src tests && uv run ruff format --check src tests
+        working-directory: python/linnet_torch
+      - run: uv run pyright
+        working-directory: python/linnet_torch
+      - run: uv run pytest -q
+        working-directory: python/linnet_torch
+        env:
+          LINNET_BIN: ${{ github.workspace }}/build/release/linnet
+
   windows:
     name: Windows MSVC
     runs-on: windows-2022
