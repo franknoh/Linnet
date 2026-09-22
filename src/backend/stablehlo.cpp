@@ -924,7 +924,7 @@ private:
             return;
         }
         case ir::OpKind::StaticFor: {
-            const Val array = operand(0); // the body's calls push frames
+            const Val& array = operand(0);
             if (array.kind != Val::Kind::Array) {
                 fail("`static for` over a non-array");
             }
