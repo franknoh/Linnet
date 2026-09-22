@@ -556,6 +556,9 @@ private:
         case ir::OpKind::SemanticCall:
             attrs.push_back("\"callee\":" + json_string(a.name));
             attrs.push_back("\"substitution\":" + substitution_json(a.substitution));
+            if (op.kind == ir::OpKind::SemanticCall && !a.names.empty()) {
+                attrs.push_back("\"selected\":" + json_string(a.names.front()));
+            }
             break;
         case ir::OpKind::EnumMatch: {
             std::string variants = "\"variants\":[";

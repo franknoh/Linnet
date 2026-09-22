@@ -38,10 +38,19 @@ What `load` does:
    one. Entry generics such as `B` and `S` are bound from the input shapes on
    every call, and the inputs are checked against the declared types.
 
-Evaluation interprets Core IR with PyTorch operations. Semantic operations run
-through their canonical `.linnet` decompositions; index notation is evaluated
-on index grids exactly as specified. This is the correctness path: it is what
-optimized backends must agree with, not a fast implementation.
+Evaluation interprets Core IR with PyTorch operations. Index notation is
+evaluated on index grids exactly as specified. With the default
+`numerics="exact"`, semantic operations run through their canonical `.linnet`
+decompositions: this is the correctness path that everything else must agree
+with, not a fast implementation.
+
+`numerics="equivalent"` lets the compiler select PyTorch library calls for the
+standard library's semantic operations — `torch.nn.functional.linear`,
+`scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`, the
+activations, `torch.matmul`. Each one agrees with the canonical definition up
+to floating-point rounding, and the differential tests in `tests/test_native.py`
+check that against the decompositions. `linnet explain --numerics equivalent`
+shows what would be selected and why.
 
 Generic arguments of the root block with defaults (`T: Float = bf16`) may be
 omitted. Root blocks with shape-pack generics are not supported.

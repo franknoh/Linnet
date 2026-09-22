@@ -2,39 +2,133 @@
 
 namespace linnet::opt {
 
-std::vector<Explanation> explain(const ir::Module& module) {
-    std::vector<Explanation> explanations;
-    for (const ir::Function& function : module.functions()) {
+std::vector<NativeCandidate> torch_candidates() {
+    // Each library call reorders or fuses floating-point arithmetic relative
+    // to the `.linnet` body, so results agree only up to rounding.
+    const Legality equivalent = Legality::NumericallyEquivalent;
+    return {
+        {"std.linalg::matmul", "torch.matmul", equivalent, {}},
+        {"std.linalg::batched_matmul", "torch.matmul", equivalent, {}},
+        {"std.nn.linear::linear", "torch.nn.functional.linear", equivalent, {}},
+        {"std.nn.softmax::softmax", "torch.softmax", equivalent, {}},
+        {"std.nn.activations::relu", "torch.relu", Legality::IEEEEquivalent, {}},
+        {"std.nn.activations::sigmoid", "torch.sigmoid", equivalent, {}},
+        {"std.nn.activations::silu", "torch.nn.functional.silu", equivalent, {}},
+        {"std.nn.activations::gelu", "torch.nn.functional.gelu(tanh)", equivalent, {}},
+        {"std.nn.norm::rms_norm", "torch.rms_norm", equivalent, {}},
+        {"std.nn.attention::attention",
+         "torch.nn.functional.scaled_dot_product_attention",
+         equivalent,
+         {"mask is boolean with true meaning attend"}},
+    };
+}
+
+namespace {
+
+const char* canonical_name = "canonical decomposition";
+
+// The candidate of highest allowed strength; null for the decomposition.
+const NativeCandidate* choose(const std::string& semantic_op,
+                              const std::vector<NativeCandidate>& registry,
+                              Legality allowed) {
+    const NativeCandidate* best = nullptr;
+    for (const NativeCandidate& candidate : registry) {
+        if (candidate.semantic_op == semantic_op && candidate.legality <= allowed &&
+            (best == nullptr || candidate.legality < best->legality)) {
+            best = &candidate;
+        }
+    }
+    return best;
+}
+
+template <typename Visit>
+void for_each_semantic_call(ir::Module& module, Visit&& visit) {
+    for (std::size_t i = 0; i < module.functions().size(); ++i) {
+        const ir::Function& function = module.functions()[i];
         std::vector<ir::RegionId> pending{function.body};
         while (!pending.empty()) {
             const ir::RegionId region = pending.back();
             pending.pop_back();
             for (const ir::BlockId block : module.region(region).blocks) {
                 for (const ir::OpId id : module.block(block).ops) {
-                    const ir::Operation& op = module.op(id);
-                    for (const ir::RegionId nested : op.regions) {
+                    for (const ir::RegionId nested : module.op(id).regions) {
                         pending.push_back(nested);
                     }
-                    if (op.kind != ir::OpKind::SemanticCall) {
-                        continue;
+                    if (module.op(id).kind == ir::OpKind::SemanticCall) {
+                        visit(function, module.op(id));
                     }
-                    Explanation explanation{function.name, op.attributes.name, op.span, {}};
-                    explanation.candidates.push_back(
-                        {"canonical decomposition",
-                         Legality::Exact,
-                         {},
-                         true,
-                         "the only implementation registered for this backend"});
-                    explanations.push_back(std::move(explanation));
                 }
             }
         }
     }
+}
+
+} // namespace
+
+void select_candidates(ir::Module& module,
+                       const std::vector<NativeCandidate>& registry,
+                       Legality allowed) {
+    for_each_semantic_call(module, [&](const ir::Function&, ir::Operation& op) {
+        const NativeCandidate* chosen = choose(op.attributes.name, registry, allowed);
+        op.attributes.names = {chosen == nullptr ? canonical_name : chosen->implementation};
+    });
+}
+
+std::optional<Legality> parse_legality(std::string_view text) {
+    if (text == "exact") {
+        return Legality::Exact;
+    }
+    if (text == "equivalent") {
+        return Legality::NumericallyEquivalent;
+    }
+    return std::nullopt;
+}
+
+std::vector<Explanation>
+explain(ir::Module& module, const std::vector<NativeCandidate>& registry, Legality allowed) {
+    std::vector<Explanation> explanations;
+    for_each_semantic_call(module, [&](const ir::Function& function, ir::Operation& op) {
+        Explanation explanation{function.name, op.attributes.name, op.span, {}};
+        const NativeCandidate* chosen = choose(op.attributes.name, registry, allowed);
+        explanation.candidates.push_back(
+            {canonical_name,
+             Legality::Exact,
+             {},
+             chosen == nullptr,
+             chosen == nullptr ? "no registered implementation is allowed by the numerics policy"
+                               : ""});
+        for (const NativeCandidate& candidate : registry) {
+            if (candidate.semantic_op != op.attributes.name) {
+                continue;
+            }
+            const bool is_selected = chosen == &candidate;
+            explanation.candidates.push_back(
+                {candidate.implementation,
+                 candidate.legality,
+                 candidate.requirements,
+                 is_selected,
+                 is_selected ? "strongest implementation allowed by the numerics policy" : ""});
+        }
+        explanations.push_back(std::move(explanation));
+    });
     return explanations;
 }
 
 std::string render_explanations(const std::vector<Explanation>& explanations,
                                 const SourceManager& sources) {
+    const auto legality_name = [](Legality legality) {
+        switch (legality) {
+        case Legality::Exact:
+            return "exact";
+        case Legality::IEEEEquivalent:
+            return "IEEE-equivalent";
+        case Legality::NumericallyEquivalent:
+            return "numerically equivalent";
+        case Legality::Approximate:
+            return "approximate";
+        }
+        return "?";
+    };
     std::string out;
     for (const Explanation& explanation : explanations) {
         const LineColumn where = sources.line_column(explanation.span.file, explanation.span.begin);
@@ -45,7 +139,7 @@ std::string render_explanations(const std::vector<Explanation>& explanations,
         out += "  implementations:\n";
         for (const Candidate& candidate : explanation.candidates) {
             out += std::string("    ") + (candidate.is_selected ? "* " : "  ") +
-                   candidate.implementation;
+                   candidate.implementation + " (" + legality_name(candidate.legality) + ")";
             for (const std::string& requirement : candidate.requirements) {
                 out += "\n        requires " + requirement;
             }
