@@ -265,6 +265,11 @@ TEST("format: comments in untracked positions move to a line boundary") {
         "}\n");
 }
 
+TEST("format: one-element tuple types keep their comma") {
+    CHECK_EQ(fmt("module m\nfn f(x: (f32,)) -> (f32,) { return x }\n"),
+             "module m\n\nfn f(x: (f32,)) -> (f32,) {\n    return x\n}\n");
+}
+
 TEST("format: CRLF input and trailing whitespace") {
     CHECK_EQ(fmt("module m\r\n\r\n// note   \r\nfn f() {   \r\n    return\r\n}\r\n"),
              "module m\n"
