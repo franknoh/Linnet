@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <deque>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -184,6 +185,9 @@ private:
         return out;
     }
 
+    // Frames live in a deque so that references into an outer frame's
+    // values survive the frames a call pushes; a vector would move (or, on
+    // some standard libraries, copy) them on growth.
     struct Frame {
         std::map<ir::ValueId, Val> values;
         Substitution subst;
@@ -920,7 +924,7 @@ private:
             return;
         }
         case ir::OpKind::StaticFor: {
-            const Val& array = operand(0);
+            const Val array = operand(0); // the body's calls push frames
             if (array.kind != Val::Kind::Array) {
                 fail("`static for` over a non-array");
             }
@@ -1299,7 +1303,7 @@ private:
     const StableHloOptions& options_;
     std::map<std::string, const ir::Function*> functions_;
     std::vector<Parameter> parameters_;
-    std::vector<Frame> frames_;
+    std::deque<Frame> frames_; // deque: frames stay put while calls push new ones
     Dims grid_;
     std::string body_;
     std::string indent_ = "    ";
