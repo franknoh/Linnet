@@ -620,20 +620,37 @@ private:
         }
         case ir::OpKind::Call:
         case ir::OpKind::SemanticCall: {
+            // A callee the module defines is named through its entity; one
+            // it only references (an external plan) through its qualified
+            // name `path::name` or `path::Block.method`.
             const auto callee = functions_by_name_.find(a.name);
-            const Entity* target = callee == functions_by_name_.end()
-                                       ? nullptr
-                                       : &model_.entities[callee->second->entity];
-            if (target != nullptr && target->parent != no_entity) {
+            const bool is_defined = callee != functions_by_name_.end();
+            std::string name;
+            bool is_method = false;
+            if (is_defined) {
+                const Entity& target = model_.entities[callee->second->entity];
+                name = std::string(target.name);
+                is_method = target.parent != no_entity;
+                if (!is_method) {
+                    import_entity(callee->second->entity);
+                }
+            } else {
+                const std::size_t separator = a.name.find("::");
+                const std::string path = a.name.substr(0, separator);
+                name = separator == std::string::npos ? a.name : a.name.substr(separator + 2);
+                if (const std::size_t dot = name.find('.'); dot != std::string::npos) {
+                    name = name.substr(dot + 1);
+                    is_method = true;
+                } else if (path != module_path()) {
+                    imports_[path].insert(name);
+                }
+            }
+            if (is_method) {
                 const std::string receiver = expr(op.operands[0]);
                 const std::string prefix = receiver == "self" ? "" : receiver + ".";
-                return prefix + std::string(target->name) + "(" + operand_list(op, 1) + ")";
+                return prefix + name + "(" + operand_list(op, 1) + ")";
             }
-            if (target != nullptr) {
-                import_entity(callee->second->entity);
-            }
-            return std::string(target != nullptr ? target->name : a.name) + generic_arguments(a) +
-                   "(" + operand_list(op) + ")";
+            return name + generic_arguments(a) + "(" + operand_list(op) + ")";
         }
         case ir::OpKind::BlockParam:
         case ir::OpKind::BlockSub: {
@@ -649,43 +666,34 @@ private:
 
     // Explicit generic arguments make emitted calls independent of inference.
     std::string generic_arguments(const ir::Attributes& a) const {
-        const auto callee = functions_by_name_.find(a.name);
-        if (callee == functions_by_name_.end() || callee->second->generics.empty()) {
-            return "";
-        }
         std::string text;
-        for (const GenericInfo& generic : callee->second->generics) {
+        for (const GenericValue& generic : a.generic_args) {
             std::string value;
             switch (generic.kind) {
-            case GenericKind::Dim:
-                if (a.substitution.dims.contains(generic.symbol)) {
-                    value = dim(a.substitution.dims.at(generic.symbol));
-                }
+            case GenericValue::Kind::Dim:
+                value = dim(generic.dim);
                 break;
-            case GenericKind::Pack:
-                if (a.substitution.packs.contains(generic.symbol)) {
-                    const Shape& shape = a.substitution.packs.at(generic.symbol);
-                    const bool has_pack = std::any_of(
-                        shape.begin(), shape.end(), [](const ShapeElem& e) { return e.is_pack; });
-                    if (shape.size() == 1 && shape.front().is_pack) {
-                        value = std::string(model_.dims.symbol_name(shape.front().pack));
-                    } else if (!has_pack) {
-                        value = "[" + model_.types.to_string(shape) + "]";
-                    } // a shape mixing packs and dimensions has no literal
-                }
+            case GenericValue::Kind::Pack: {
+                const Shape& shape = generic.shape;
+                const bool has_pack = std::any_of(
+                    shape.begin(), shape.end(), [](const ShapeElem& e) { return e.is_pack; });
+                if (shape.size() == 1 && shape.front().is_pack) {
+                    value = std::string(model_.dims.symbol_name(shape.front().pack));
+                } else if (!has_pack) {
+                    value = "[" + model_.types.to_string(shape) + "]";
+                } // a shape mixing packs and dimensions has no literal
                 break;
-            case GenericKind::DType:
-                if (a.substitution.dtypes.contains(generic.dtype_var)) {
-                    value = model_.types.to_string(a.substitution.dtypes.at(generic.dtype_var));
-                }
+            }
+            case GenericValue::Kind::DType:
+                value = model_.types.to_string(generic.dtype);
                 break;
             }
             if (value.empty()) {
-                return ""; // let inference decide when a binding is unknown
+                return ""; // let inference decide when a binding has no spelling
             }
             text += (text.empty() ? "<" : ", ") + value;
         }
-        return text + ">";
+        return text.empty() ? text : text + ">";
     }
 
     const ir::Module& module_;

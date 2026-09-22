@@ -1,5 +1,6 @@
 #include "linnet/ast/dump.hpp"
 #include "linnet/backend/plan.hpp"
+#include "linnet/backend/plan_reader.hpp"
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
@@ -62,6 +63,8 @@ void print_usage(std::FILE* out) {
         "       [--no-optimize] <file>\n"
         "                                       Print the materializer plan (JSON) of a\n"
         "                                       root block and everything it uses\n"
+        "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
+        "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent] <file>\n"
         "                                       Show how each semantic operation would be\n"
         "                                       implemented and why\n"
@@ -285,6 +288,60 @@ int run_explain(std::span<const std::string_view> args,
             .c_str(),
         stdout);
     return report(sources, sink, options);
+}
+
+// `linnet emit`: a plan document (as `linnet plan` prints, or as a framework
+// adapter writes) back to source, formatted.
+int run_emit(std::span<const std::string_view> args, const Options& options) {
+    std::string_view path;
+    for (const std::string_view arg : args) {
+        if (arg.starts_with("-") && arg != "-") {
+            return usage_error("unknown emit option '" + std::string(arg) + "'");
+        }
+        if (!path.empty()) {
+            return usage_error("emit takes exactly one plan file");
+        }
+        path = arg;
+    }
+    if (path.empty()) {
+        return usage_error("emit requires a plan file");
+    }
+    std::string text;
+    if (path == "-") {
+        text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+    } else {
+        std::ifstream stream{std::filesystem::path(path), std::ios::binary};
+        if (!stream) {
+            std::fprintf(stderr, "linnet: cannot read '%s'\n", std::string(path).c_str());
+            return exit_failure;
+        }
+        text.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    }
+    const auto core = backend::import_plan(text);
+    if (!core) {
+        std::fprintf(stderr, "linnet: %s\n", core.error().c_str());
+        return exit_failure;
+    }
+    const auto source = emit::emit_source(*core, emit::EmitOptions{});
+    if (!source) {
+        std::fprintf(stderr, "linnet: cannot emit source: %s\n", source.error().c_str());
+        return exit_failure;
+    }
+    SourceManager sources;
+    DiagnosticSink sink;
+    const auto file = sources.add_file(std::string(path), *source);
+    if (!file) {
+        std::fputs(source->c_str(), stdout);
+        return exit_failure;
+    }
+    const ast::Ast tree = parse(sources, *file, sink);
+    if (sink.has_errors()) {
+        // Output that does not parse is a bug in the emitter; show it as is.
+        std::fputs(source->c_str(), stdout);
+        return report(sources, sink, options);
+    }
+    std::fputs(format::format(tree, sources).c_str(), stdout);
+    return exit_success;
 }
 
 int run_plan(std::span<const std::string_view> args, const Options& options, const char* program) {
@@ -813,6 +870,9 @@ int main(int argc, char** argv) {
     }
     if (command == "plan") {
         return run_plan(rest, options, argv[0]);
+    }
+    if (command == "emit") {
+        return run_emit(rest, options);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

@@ -977,6 +977,32 @@ private:
         Attributes attributes;
         attributes.name = qualified_name(callee);
         attributes.substitution = substitution;
+        for (const GenericInfo& generic : info.generics) {
+            GenericValue value;
+            bool is_bound = true;
+            switch (generic.kind) {
+            case GenericKind::Dim:
+                value.kind = GenericValue::Kind::Dim;
+                is_bound = substitution.dims.contains(generic.symbol);
+                value.dim = is_bound ? substitution.dims.at(generic.symbol) : shape::Poly{};
+                break;
+            case GenericKind::Pack:
+                value.kind = GenericValue::Kind::Pack;
+                is_bound = substitution.packs.contains(generic.symbol);
+                value.shape = is_bound ? substitution.packs.at(generic.symbol) : Shape{};
+                break;
+            case GenericKind::DType:
+                value.kind = GenericValue::Kind::DType;
+                is_bound = substitution.dtypes.contains(generic.dtype_var);
+                value.dtype = is_bound ? substitution.dtypes.at(generic.dtype_var) : DType{};
+                break;
+            }
+            if (!is_bound) {
+                attributes.generic_args.clear(); // all or nothing
+                break;
+            }
+            attributes.generic_args.push_back(std::move(value));
+        }
         const OpKind kind =
             decl.kind == ast::FunctionKind::Op ? OpKind::SemanticCall : OpKind::Call;
         const TypeId result = types().kind(type) == TypeKind::Unit ? no_type : type;

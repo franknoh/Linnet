@@ -26,6 +26,7 @@ public:
             return std::unexpected(root.error());
         }
         std::string out = "{\"version\":1";
+        out += ",\"module\":" + json_string(model_.module_paths.at(options_.root_module));
         out += ",\"root\":" + block_description(*root);
         out += ",\"manifest\":" + manifest(*root);
         out += ",\"blocks\":" + blocks_json();
@@ -198,12 +199,14 @@ private:
         case TypeKind::Struct:
         case TypeKind::Enum:
         case TypeKind::Block: {
-            std::string out = std::string("{\"kind\":\"") +
-                              (data.kind == TypeKind::Block  ? "block"
-                               : data.kind == TypeKind::Enum ? "enum"
-                                                             : "struct") +
-                              "\",\"name\":" + json_string(model_.entities[data.decl].name) +
-                              ",\"args\":[";
+            std::string out =
+                std::string("{\"kind\":\"") +
+                (data.kind == TypeKind::Block  ? "block"
+                 : data.kind == TypeKind::Enum ? "enum"
+                                               : "struct") +
+                "\",\"name\":" + json_string(model_.entities[data.decl].name) + ",\"module\":" +
+                json_string(model_.module_paths.at(model_.entities[data.decl].module)) +
+                ",\"args\":[";
             for (std::size_t i = 0; i < data.args.size(); ++i) {
                 out += (i == 0 ? "" : ",") + generic_value(data.args[i]);
             }
@@ -234,6 +237,12 @@ private:
                    "\"";
             if (generic.kind == GenericKind::DType) {
                 out += ",\"var\":" + std::to_string(generic.dtype_var);
+                out += std::string(",\"class\":\"") +
+                       (generic.constraint == DTypeClass::Float     ? "float"
+                        : generic.constraint == DTypeClass::Integer ? "integer"
+                        : generic.constraint == DTypeClass::Numeric ? "numeric"
+                                                                    : "any") +
+                       "\"";
             } else {
                 out += ",\"sym\":" + std::to_string(generic.symbol);
             }
@@ -318,7 +327,10 @@ private:
             });
             out += is_first ? "" : ",";
             is_first = false;
-            out += json_string(entity.name) + ":{\"generics\":" + generics_json(info.generics) +
+            out += json_string(entity.name) +
+                   ":{\"module\":" + json_string(model_.module_paths.at(entity.module)) +
+                   ",\"pub\":" + (entity.is_pub ? "true" : "false") +
+                   ",\"generics\":" + generics_json(info.generics) +
                    ",\"constraints\":" + constraints_json(info.constraints) + ",\"members\":[";
             for (std::size_t i = 0; i < members.size(); ++i) {
                 const Entity& member = model_.entities[members[i].first];
@@ -450,6 +462,7 @@ private:
         out += ",\"block\":" + (entity.parent == no_entity
                                     ? std::string("null")
                                     : json_string(model_.entities[entity.parent].name));
+        out += std::string(",\"pub\":") + (entity.is_pub ? "true" : "false");
         out += ",\"generics\":" + generics_json(function.generics);
         out += ",\"constraints\":" + constraints_json(function.constraints);
         out += ",\"results\":[";
@@ -556,6 +569,13 @@ private:
         case ir::OpKind::SemanticCall:
             attrs.push_back("\"callee\":" + json_string(a.name));
             attrs.push_back("\"substitution\":" + substitution_json(a.substitution));
+            {
+                std::string generics = "\"generics\":[";
+                for (std::size_t i = 0; i < a.generic_args.size(); ++i) {
+                    generics += (i == 0 ? "" : ",") + generic_value(a.generic_args[i]);
+                }
+                attrs.push_back(generics + "]");
+            }
             if (op.kind == ir::OpKind::SemanticCall && !a.names.empty()) {
                 attrs.push_back("\"selected\":" + json_string(a.names.front()));
             }
