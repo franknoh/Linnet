@@ -1,0 +1,17 @@
+// Rotary position tables computed from the compile-time sequence length:
+// the positions and frequencies come from `iota`, so a model needs no
+// precomputed inputs and the tables have exactly the length of the sequence.
+module llama.rope
+
+// Llama 3 stretched the base frequency from 10000 to 500000.
+pub const THETA: f32 = 500000.0
+
+// `(cos, sin)` tables of shape `[S, D]`, each frequency repeated for both
+// halves of the head dimension as `rope` expects.
+pub fn tables<S: Dim, D: Dim, T: Float>(theta: f32) -> (Tensor[S, D; T], Tensor[S, D; T])
+where D % 2 == 0 {
+    let inv_freq[i] = exp(-(cast<f32>(iota<i64>(D / 2)[i]) * 2.0 / cast<f32>(D)) * log(theta))
+    let angles[s, i] = cast<f32>(iota<i64>(S)[s]) * inv_freq[i]
+    let full = concat(angles, angles, axis = -1)
+    return (cast<T>(cos(full)), cast<T>(sin(full)))
+}

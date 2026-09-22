@@ -1,0 +1,77 @@
+// A Llama-style decoder: RMSNorm, grouped-query attention with rotary
+// positions, SwiGLU, and an untied output head. Widths, head counts, and
+// depth are generic parameters; the dtype defaults to bf16 and every
+// intermediate accumulation is spelled out in the standard library.
+module llama
+
+use crate.attention::{GroupedQueryAttention}
+use std.nn.embedding::{Embedding}
+use std.nn.linear::{Linear}
+use std.nn.mlp::{SwiGlu}
+use std.nn.norm::{RmsNorm}
+
+pub block DecoderLayer<H: Dim, Heads: Dim, KvHeads: Dim, Inner: Dim, T: Float>
+where
+    Heads > 0,
+    KvHeads > 0,
+    H % Heads == 0,
+    Heads % KvHeads == 0,
+    (H / Heads) % 2 == 0
+{
+    sub attention_norm: RmsNorm<H, T>
+    sub attention: GroupedQueryAttention<H, Heads, KvHeads, T>
+    sub mlp_norm: RmsNorm<H, T>
+    sub mlp: SwiGlu<H, Inner, T>
+
+    pub fn forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
+        let attended = x + attention.forward(attention_norm.forward(x))
+        return attended + mlp.forward(mlp_norm.forward(attended))
+    }
+}
+
+pub block Model<
+    Vocab: Dim,
+    H: Dim,
+    Heads: Dim,
+    KvHeads: Dim,
+    Inner: Dim,
+    Layers: Dim,
+    T: Float = bf16,
+>
+where
+    Heads > 0,
+    KvHeads > 0,
+    H % Heads == 0,
+    Heads % KvHeads == 0,
+    (H / Heads) % 2 == 0
+{
+    sub embedding: Embedding<Vocab, H, T>
+    sub layers: [DecoderLayer<H, Heads, KvHeads, Inner, T>; Layers]
+    sub norm: RmsNorm<H, T>
+    sub lm_head: Linear<H, Vocab, T>
+
+    // Logits for every position.
+    pub entry forward<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, Vocab; T] {
+        return lm_head.forward(hidden(tokens))
+    }
+
+    // Logits for the last position only, as decoding needs: the final norm
+    // and projection run on one row per sequence.
+    pub entry next_token<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, Vocab; T]
+    where S > 0 {
+        let last = hidden_states(tokens)[:, S - 1, :]
+        return lm_head.forward(norm.forward(last))
+    }
+
+    fn hidden<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, H; T] {
+        return norm.forward(hidden_states(tokens))
+    }
+
+    fn hidden_states<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, H; T] {
+        var x = embedding.forward(tokens)
+        static for layer in layers {
+            x = layer.forward(x)
+        }
+        return x
+    }
+}

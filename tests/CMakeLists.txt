@@ -91,6 +91,11 @@ add_test(NAME stdlib_checks COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdl
 add_test(NAME stdlib_is_formatted COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/stdlib)
 add_test(NAME example_transformer_checks
     COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer)
+add_test(NAME example_models_check
+    COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/10-llama
+            ${PROJECT_SOURCE_DIR}/examples/11-gpt2 ${PROJECT_SOURCE_DIR}/examples/12-vit)
+add_test(NAME example_models_are_formatted
+    COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/examples)
 linnet_add_test(ir_test unit/ir_test.cpp)
 add_test(NAME cli_core_ir_stdlib
     COMMAND linnet inspect --core-ir --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib/nn/attention.linnet)

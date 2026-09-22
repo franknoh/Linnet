@@ -1,0 +1,68 @@
+// Grouped-query attention: `KvHeads` key/value heads shared by `Heads`
+// query heads. The `where` clause states the divisibility the reshapes
+// below depend on; the checker proves every shape from it.
+module llama.attention
+
+use crate.rope::{THETA, tables}
+use std.nn.attention::{attention, causal_mask}
+use std.nn.linear::{Linear}
+use std.nn.rope::{rope}
+
+pub block GroupedQueryAttention<H: Dim, Heads: Dim, KvHeads: Dim, T: Float>
+where
+    Heads > 0,
+    KvHeads > 0,
+    H % Heads == 0,
+    Heads % KvHeads == 0,
+    (H / Heads) % 2 == 0
+{
+    sub q_proj: Linear<H, H, T>
+    sub k_proj: Linear<H, KvHeads * (H / Heads), T>
+    sub v_proj: Linear<H, KvHeads * (H / Heads), T>
+    sub o_proj: Linear<H, H, T>
+
+    pub fn forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
+        let (cos_table, sin_table) = tables<S, H / Heads, T>(THETA)
+        let q = rope(
+            split_heads<B, S, Heads, H / Heads, T>(q_proj.forward(x)),
+            cos_table,
+            sin_table,
+        )
+        let k = rope(
+            split_heads<B, S, KvHeads, H / Heads, T>(k_proj.forward(x)),
+            cos_table,
+            sin_table,
+        )
+        let v = split_heads<B, S, KvHeads, H / Heads, T>(v_proj.forward(x))
+        let mixed = attention(
+            q,
+            repeat_kv<B, KvHeads, Heads / KvHeads, S, H / Heads, T>(k),
+            repeat_kv<B, KvHeads, Heads / KvHeads, S, H / Heads, T>(v),
+            rsqrt(cast<f32>(H / Heads)),
+            some(causal_mask<S, S>()),
+        )
+        return o_proj.forward(merge_heads<B, S, Heads, H / Heads, T>(mixed))
+    }
+}
+
+// `[B, S, N * D]` -> `[B, N, S, D]`.
+fn split_heads<B: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
+    x: Tensor[B, S, N * D; T],
+) -> Tensor[B, N, S, D; T] {
+    return permute(reshape(x, [B, S, N, D]), [0, 2, 1, 3])
+}
+
+fn merge_heads<B: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
+    x: Tensor[B, N, S, D; T],
+) -> Tensor[B, S, N * D; T] {
+    return reshape(permute(x, [0, 2, 1, 3]), [B, S, N * D])
+}
+
+// Each key/value head serves `Groups` consecutive query heads: a size-one
+// axis is broadcast to the group size and folded into the head axis.
+fn repeat_kv<B: Dim, Kv: Dim, Groups: Dim, S: Dim, D: Dim, T: Float>(
+    x: Tensor[B, Kv, S, D; T],
+) -> Tensor[B, Kv * Groups, S, D; T] {
+    let grouped = broadcast_to(reshape(x, [B, Kv, 1, S, D]), [B, Kv, Groups, S, D])
+    return reshape(grouped, [B, Kv * Groups, S, D])
+}
