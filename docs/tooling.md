@@ -67,6 +67,22 @@ standard error:
 - Fields may be added in later versions; `version` changes only when existing
   fields change meaning.
 
+## `linnet lint`
+
+`linnet lint` is `linnet check --strict`: the same analysis, with warnings
+failing the command. It exists so that scripts and editors can name the intent.
+
+## `linnet spec-test`
+
+```bash
+linnet spec-test [--std <dir>] spec-tests/
+```
+
+Runs the executable specification: every `[[case]]` in `manifest.toml` must be
+accepted (`expect = "ok"`) or rejected with exactly its `code`, and each
+snapshot in `diagnostics/` must match the rendered errors byte for byte. This
+is a compiler developer's command; `ctest` runs it too.
+
 ## `linnet fmt`
 
 ```bash

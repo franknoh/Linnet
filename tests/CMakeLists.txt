@@ -68,3 +68,11 @@ add_test(NAME cli_inspect_parameters
     COMMAND linnet inspect --parameters ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
 set_tests_properties(cli_inspect_parameters PROPERTIES
     PASS_REGULAR_EXPRESSION "param layers\\[\\*\\].up.weight: Tensor\\[Inner, H; bf16\\] x Layers")
+
+linnet_add_test(toml_test unit/toml_test.cpp)
+
+add_test(NAME cli_spec_test
+    COMMAND linnet spec-test --std ${PROJECT_SOURCE_DIR}/spec-tests/fixtures/std ${PROJECT_SOURCE_DIR}/spec-tests)
+add_test(NAME cli_lint_fails_on_warning
+    COMMAND linnet lint ${CMAKE_CURRENT_SOURCE_DIR}/cli/unused_local.linnet)
+set_tests_properties(cli_lint_fails_on_warning PROPERTIES WILL_FAIL TRUE)

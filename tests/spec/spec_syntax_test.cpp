@@ -4,6 +4,7 @@
 // semantic errors must still parse cleanly.
 
 #include "linnet/format/formatter.hpp"
+#include "linnet/package/spec_manifest.hpp"
 #include "linnet/syntax/parser.hpp"
 
 #include "test.hpp"
@@ -16,34 +17,6 @@ using namespace linnet;
 
 namespace {
 
-struct Case {
-    std::string file;
-    std::string code; // empty when the case expects success
-};
-
-// Reads the `file` and `code` keys of each [[case]] table. The manifest is a
-// flat list of string keys, so no general TOML support is needed here.
-std::vector<Case> read_manifest(const std::string& path) {
-    std::vector<Case> cases;
-    std::ifstream stream(path);
-    std::string line;
-    const auto quoted = [](const std::string& text) {
-        const std::size_t open = text.find('"');
-        const std::size_t close = text.rfind('"');
-        return open < close ? text.substr(open + 1, close - open - 1) : std::string();
-    };
-    while (std::getline(stream, line)) {
-        if (line.starts_with("[[case]]")) {
-            cases.emplace_back();
-        } else if (!cases.empty() && line.starts_with("file")) {
-            cases.back().file = quoted(line);
-        } else if (!cases.empty() && line.starts_with("code")) {
-            cases.back().code = quoted(line);
-        }
-    }
-    return cases;
-}
-
 bool is_syntax_code(const std::string& code) {
     return code.starts_with("E10") || code.starts_with("E11");
 }
@@ -52,10 +25,10 @@ bool is_syntax_code(const std::string& code) {
 
 TEST("spec: syntax conformance") {
     const std::string root = LINNET_SPEC_TESTS_DIR;
-    const std::vector<Case> cases = read_manifest(root + "/manifest.toml");
+    const std::vector<SpecCase> cases = read_spec_manifest(root + "/manifest.toml").value();
     CHECK(cases.size() >= 25);
 
-    for (const Case& spec_case : cases) {
+    for (const SpecCase& spec_case : cases) {
         SourceManager sources;
         DiagnosticSink sink;
         const auto file = sources.load_file(root + "/" + spec_case.file);
@@ -96,7 +69,8 @@ TEST("spec: fixtures parse") {
 // The executable specification doubles as the reference for canonical style.
 TEST("spec: cases are formatter-clean") {
     const std::string root = LINNET_SPEC_TESTS_DIR;
-    for (const Case& spec_case : read_manifest(root + "/manifest.toml")) {
+    const std::vector<SpecCase> cases = read_spec_manifest(root + "/manifest.toml").value();
+    for (const SpecCase& spec_case : cases) {
         SourceManager sources;
         DiagnosticSink sink;
         const auto file = sources.load_file(root + "/" + spec_case.file);
@@ -118,7 +92,8 @@ TEST("spec: cases are formatter-clean") {
 // or flooding diagnostics.
 TEST("spec: truncated inputs are handled gracefully") {
     const std::string root = LINNET_SPEC_TESTS_DIR;
-    for (const Case& spec_case : read_manifest(root + "/manifest.toml")) {
+    const std::vector<SpecCase> cases = read_spec_manifest(root + "/manifest.toml").value();
+    for (const SpecCase& spec_case : cases) {
         std::ifstream stream(root + "/" + spec_case.file, std::ios::binary);
         const std::string text{std::istreambuf_iterator<char>(stream),
                                std::istreambuf_iterator<char>()};

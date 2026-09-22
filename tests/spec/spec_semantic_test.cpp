@@ -4,6 +4,7 @@
 // rendered text of selected errors.
 
 #include "linnet/diagnostic/render.hpp"
+#include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/syntax/parser.hpp"
 
@@ -17,34 +18,6 @@
 using namespace linnet;
 
 namespace {
-
-struct Case {
-    std::string file;
-    std::string code; // empty when the case expects success
-};
-
-// Reads the `file` and `code` keys of each [[case]] table. The manifest is a
-// flat list of string keys, so no general TOML support is needed here.
-std::vector<Case> read_manifest(const std::string& path) {
-    std::vector<Case> cases;
-    std::ifstream stream(path);
-    std::string line;
-    const auto quoted = [](const std::string& text) {
-        const std::size_t open = text.find('"');
-        const std::size_t close = text.rfind('"');
-        return open < close ? text.substr(open + 1, close - open - 1) : std::string();
-    };
-    while (std::getline(stream, line)) {
-        if (line.starts_with("[[case]]")) {
-            cases.emplace_back();
-        } else if (!cases.empty() && line.starts_with("file")) {
-            cases.back().file = quoted(line);
-        } else if (!cases.empty() && line.starts_with("code")) {
-            cases.back().code = quoted(line);
-        }
-    }
-    return cases;
-}
 
 std::string read_file(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
@@ -78,13 +51,13 @@ std::string check_and_render(const std::string& display_path,
 
 TEST("spec: every case is accepted or rejected with its code") {
     const std::string root = LINNET_SPEC_TESTS_DIR;
-    const std::vector<Case> cases = read_manifest(root + "/manifest.toml");
+    const std::vector<SpecCase> cases = read_spec_manifest(root + "/manifest.toml").value();
     CHECK(cases.size() >= 28);
-    for (const Case& spec_case : cases) {
+    for (const SpecCase& spec_case : cases) {
         std::vector<std::string> codes;
         const std::string rendered =
             check_and_render(spec_case.file, read_file(root + "/" + spec_case.file), codes);
-        if (spec_case.code.empty()) {
+        if (!spec_case.expects_error) {
             if (!codes.empty()) {
                 linnet::test::report_failure(
                     spec_case.file.c_str(), 0, "expected no diagnostics, got:\n" + rendered);
