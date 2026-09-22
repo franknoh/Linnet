@@ -30,6 +30,7 @@ dev = [
     "pytest>=8",
     "pyright>=1.1.380",
     "ruff>=0.6",
+    "jax>=0.4.35",
 ]
 
 [[tool.uv.index]]

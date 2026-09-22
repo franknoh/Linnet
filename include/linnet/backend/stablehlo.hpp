@@ -1,0 +1,36 @@
+#pragma once
+
+#include "linnet/ir/ir.hpp"
+
+#include <cstdint>
+#include <expected>
+#include <map>
+#include <string>
+
+namespace linnet::backend {
+
+// Exports one entry of a root block as a StableHLO module in MLIR text.
+//
+// The module has a single `func.func` whose arguments are the entry's inputs
+// followed by every parameter and buffer of the block hierarchy, in manifest
+// order, each annotated with `linnet.path` so a runtime can bind weights by
+// name. Shapes are static: every generic parameter of the root block and of
+// the entry must be bound to a constant (`bindings`), and optional parameters
+// are either all present or all absent (`optionals_present`). Calls are
+// inlined, `static for` is unrolled, and index notation becomes broadcasts,
+// gathers, and reductions over the output grid.
+//
+// Everything StableHLO cannot express as captured is a capability failure
+// reported in the error string, never a silent approximation.
+struct StableHloOptions {
+    std::string root;  // root block; empty selects the only block with entries
+    std::string entry; // entry to export; empty selects the block's only entry
+    std::uint32_t root_module = 0;
+    std::map<std::string, std::string> bindings; // generic name -> integer or dtype
+    bool optionals_present = false;
+};
+
+std::expected<std::string, std::string> export_stablehlo(ir::Module& module,
+                                                         const StableHloOptions& options);
+
+} // namespace linnet::backend

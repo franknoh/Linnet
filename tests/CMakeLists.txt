@@ -119,6 +119,16 @@ if(NOT WIN32)
                 ${CMAKE_CURRENT_BINARY_DIR}/emit_scratch ${PROJECT_SOURCE_DIR}/stdlib
                 ${linnet_round_trip_sources})
 endif()
+add_test(NAME cli_stablehlo_transformer
+    COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind Vocab=11 --bind H=8 --bind Heads=2
+            --bind Inner=16 --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5
+            ${PROJECT_SOURCE_DIR}/examples/09-tiny-transformer/src/lib.linnet)
+set_tests_properties(cli_stablehlo_transformer PROPERTIES
+    PASS_REGULAR_EXPRESSION "func.func @main\\(%tokens: tensor<2x5xi32>.*linnet.path = \"layers.1.mlp.down.weight\".*\"stablehlo.reduce\"")
+add_test(NAME cli_stablehlo_unbound
+    COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
+            ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
+set_tests_properties(cli_stablehlo_unbound PROPERTIES WILL_FAIL TRUE)
 add_test(NAME cli_explain
     COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
 set_tests_properties(cli_explain PROPERTIES PASS_REGULAR_EXPRESSION "examples.model::rms_norm\n.*\n.*\n.*canonical decomposition")
