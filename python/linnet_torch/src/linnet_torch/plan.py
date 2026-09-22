@@ -175,13 +175,18 @@ def compile_plan(
     root: str | None = None,
     std_root: str | Path | None = None,
     optimize: bool = True,
+    numerics: str = "exact",
 ) -> Plan:
     """Runs `linnet plan` on a source file. Checking never executes the model.
 
     With `optimize`, the compiler's exact canonicalization passes run first;
-    they never change results.
+    they never change results. `numerics` is `"exact"` (every semantic
+    operation runs its canonical decomposition) or `"equivalent"` (PyTorch
+    library calls replace the decompositions they agree with up to rounding).
     """
-    command = [find_compiler(), "plan"]
+    if numerics not in ("exact", "equivalent"):
+        raise PlanError('numerics must be "exact" or "equivalent"')
+    command = [find_compiler(), "plan", "--numerics", numerics]
     if not optimize:
         command.append("--no-optimize")
     if root is not None:

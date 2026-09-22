@@ -102,10 +102,12 @@ linnet explain [--std <dir>] file.linnet
 
 Lists every semantic operation the program calls, where it is called from,
 the implementations a backend could use for it, which one is selected, and
-why. Today the only registered implementation is each operation's canonical
-decomposition — its own `.linnet` body — so that is what every call reports;
-backends that claim operations will add their candidates here. Optimization is
-meant to be inspectable, and this is where it is inspected.
+why. `--numerics exact` (the default) selects each operation's canonical
+decomposition — its own `.linnet` body — for every call. `--numerics
+equivalent` also allows PyTorch library calls that agree with the
+decomposition up to floating-point rounding, and reports the strongest one
+allowed. The same policy switch exists on `linnet plan`. Optimization is meant
+to be inspectable, and this is where it is inspected.
 
 ## Optimization
 

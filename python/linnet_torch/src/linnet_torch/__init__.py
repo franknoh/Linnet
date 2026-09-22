@@ -24,6 +24,7 @@ def load(
     device: str | torch.device = "cpu",
     strict: bool = True,
     optimize: bool = True,
+    numerics: str = "exact",
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
 
@@ -31,8 +32,12 @@ def load(
     `weights`, the parameters are loaded from SafeTensors and every name,
     shape, and dtype is checked before anything runs; otherwise they stay
     zero. Compilation runs `linnet plan`, which never executes the model.
+
+    `numerics="equivalent"` lets PyTorch library calls stand in for the
+    standard library's semantic operations; results then agree with the
+    canonical definitions up to floating-point rounding.
     """
-    plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize)
+    plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
     module = LinnetModule(plan, generics, torch.device(device))
     if weights is not None:
         bind_weights(module, weights, bindings, strict=strict)
