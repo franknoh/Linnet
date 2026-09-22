@@ -128,7 +128,8 @@ set_tests_properties(cli_stablehlo_transformer PROPERTIES
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
-set_tests_properties(cli_stablehlo_unbound PROPERTIES WILL_FAIL TRUE)
+set_tests_properties(cli_stablehlo_unbound PROPERTIES
+    PASS_REGULAR_EXPRESSION "generic `Inner` needs a value: pass --bind Inner=")
 add_test(NAME cli_explain
     COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/05-block-and-weights/model.linnet)
 set_tests_properties(cli_explain PROPERTIES PASS_REGULAR_EXPRESSION "examples.model::rms_norm\n.*\n.*\n.*canonical decomposition")
