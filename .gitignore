@@ -26,3 +26,4 @@ node_modules/
 
 # Copied from editors/textmate when packaging the extension
 /editors/vscode/syntaxes/
+/editors/vscode/out/

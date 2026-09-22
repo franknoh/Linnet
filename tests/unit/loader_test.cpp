@@ -22,7 +22,7 @@ struct Loaded {
 
     Loaded(const std::filesystem::path& file, const std::filesystem::path& std_root) {
         const std::vector<std::filesystem::path> files{file};
-        program = load_program(sources, files, LoaderOptions{std_root}, sink);
+        program = load_program(sources, files, LoaderOptions{std_root, {}}, sink);
         if (!sink.has_errors()) {
             const std::vector<const ast::Ast*> modules = program.module_pointers();
             sema::analyze(sources, modules, sink, &program.imports);

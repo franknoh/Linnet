@@ -80,6 +80,21 @@ jobs:
           build/fuzz/fuzz/fuzz_frontend -max_total_time=120 -max_len=2048 -timeout=10 \
             -dict=fuzz/linnet.dict corpus
 
+  vscode:
+    name: VS Code extension
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+        working-directory: editors/vscode
+      - run: npm run check
+        working-directory: editors/vscode
+
   windows:
     name: Windows MSVC
     runs-on: windows-2022

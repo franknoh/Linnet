@@ -1,1 +1,6 @@
 scripts/
+src/
+tsconfig.json
+eslint.config.js
+.prettierrc.json
+node_modules/

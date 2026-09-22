@@ -3,6 +3,7 @@
 #include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/format/formatter.hpp"
+#include "linnet/lsp/server.hpp"
 #include "linnet/module/loader.hpp"
 #include "linnet/package/manifest.hpp"
 #include "linnet/package/spec_manifest.hpp"
@@ -60,6 +61,7 @@ void print_usage(std::FILE* out) {
                "      --std <dir>                      Standard library directory\n"
                "  fmt [--check] <path>...              Format files, or directories recursively;\n"
                "                                       `-` formats stdin to stdout\n"
+               "  lsp --stdio [--std <dir>]            Run the language server\n"
                "  spec-test [--std <dir>] <dir>        Run the executable specification in <dir>\n"
                "  inspect --tokens <file>              Show the tokens of a file\n"
                "  inspect --ast <file>                 Show the syntax tree of a file\n"
@@ -163,7 +165,7 @@ int run_check(std::span<const std::string_view> args, Options options, const cha
 
     SourceManager sources;
     DiagnosticSink sink;
-    const LoaderOptions loader_options{find_std_root(std_option, program)};
+    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
     const Program program_modules = load_program(sources, paths, loader_options, sink);
     // Semantic analysis assumes well-formed trees.
     if (!sink.has_errors()) {
@@ -251,7 +253,7 @@ int run_spec_test(std::span<const std::string_view> args,
         return exit_failure;
     }
 
-    const LoaderOptions loader_options{find_std_root(std_option, program)};
+    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
     std::size_t failures = 0;
     for (const SpecCase& spec_case : *cases) {
         SourceManager sources;
@@ -412,7 +414,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
     if (view == "--parameters") {
         DiagnosticSink sink;
         const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
-        const LoaderOptions loader_options{find_std_root(std_option, program)};
+        const LoaderOptions loader_options{find_std_root(std_option, program), {}};
         const Program program_modules = load_program(sources, paths, loader_options, sink);
         if (sink.has_errors()) {
             return report(sources, sink, options);
@@ -629,6 +631,24 @@ int main(int argc, char** argv) {
     if (command == "lint") {
         options.strict = true;
         return run_check(rest, options, argv[0]);
+    }
+    if (command == "lsp") {
+        std::string std_option;
+        bool is_stdio = false;
+        for (std::size_t i = 0; i < rest.size(); ++i) {
+            if (rest[i] == "--stdio") {
+                is_stdio = true;
+            } else if (rest[i] == "--std" && i + 1 < rest.size()) {
+                std_option = rest[++i];
+            } else {
+                return usage_error("unknown lsp option '" + std::string(rest[i]) + "'");
+            }
+        }
+        if (!is_stdio) {
+            return usage_error("lsp requires --stdio");
+        }
+        lsp::Server server(lsp::ServerOptions{find_std_root(std_option, argv[0])});
+        return server.run(std::cin, std::cout);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

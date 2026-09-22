@@ -19,6 +19,7 @@ struct BindingInfo {
     std::string owner; // enclosing function, qualified by its block if any
     std::string name;
     std::string type;
+    bool is_inferred = true; // false when the source spells the type
 };
 
 // One externally bound tensor of a block, or a nested block. Paths use `.`
@@ -42,9 +43,45 @@ struct ManifestBlock {
     std::vector<ManifestEntry> entries;
 };
 
+enum class SymbolKind : std::uint8_t {
+    Module,
+    Const,
+    TypeAlias,
+    Struct,
+    Enum,
+    Function,
+    Op,
+    Entry,
+    Block,
+    Param,
+    Buffer,
+    Sub,
+    GenericDim,
+    GenericPack,
+    GenericDType,
+    Parameter,
+    Local,
+};
+
+// A declared name and its rendered description, for editors.
+struct SymbolInfo {
+    SymbolKind kind = SymbolKind::Local;
+    std::string name;
+    SourceSpan span;    // the declared name
+    std::string detail; // one-line description: `op linear<...>(...) -> ...`, `let x: T`
+};
+
+// One use of a declared name: the source span of the use and the symbol.
+struct Reference {
+    SourceSpan span;
+    std::uint32_t symbol; // index into AnalysisResult::symbols
+};
+
 struct AnalysisResult {
     std::vector<BindingInfo> bindings;
     std::vector<ManifestBlock> manifests;
+    std::vector<SymbolInfo> symbols;
+    std::vector<Reference> references;
 };
 
 // Where each `use` declaration leads, as decided by the module loader: the key

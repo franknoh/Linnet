@@ -498,7 +498,7 @@ TypeId Checker::check_name(const ast::Expr& node, const ast::NameExpr& name) {
                   "]` for its position");
         return types_.error();
     }
-    const EntityId entity = lookup(name.name.text);
+    const EntityId entity = lookup(name.name);
     if (entity == no_entity) {
         auto report = error(codes::unknown_symbol,
                             node.span,
@@ -672,7 +672,7 @@ TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& membe
     // `module.item` and `Enum.Variant` are paths rather than value accesses.
     if (const auto* base = std::get_if<ast::NameExpr>(&ast().expr(member.base).data)) {
         const EntityId entity =
-            find_index(base->name.text) == nullptr ? lookup(base->name.text) : no_entity;
+            find_index(base->name.text) == nullptr ? lookup(base->name) : no_entity;
         if (entity != no_entity && entities_[entity].kind == EntityKind::Module) {
             const EntityId item = lookup_in_module(entities_[entity].module_ref, member.member);
             return item == no_entity ? types_.error() : value_of_entity(item, node.span);
@@ -713,6 +713,7 @@ TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& membe
         const auto found = scope.find(member.member.text);
         if (found != scope.end() && entities_[found->second].kind == EntityKind::Member) {
             entities_[found->second].is_used = true;
+            record_ref(member.member.span, found->second);
             resolve(found->second);
             return types_.substitute(entities_[found->second].type, substitution_of(data));
         }
@@ -1013,7 +1014,7 @@ TypeId Checker::check_element_access(const ast::Expr& node,
             bind_index_domain(*var, {unit}, component.span, tensor_text);
             continue;
         }
-        if (name != nullptr && lookup(name->name.text) == no_entity) {
+        if (name != nullptr && lookup(name->name) == no_entity) {
             auto& reported = env_->unbound_reported;
             if (std::find(reported.begin(), reported.end(), name->name.text) == reported.end()) {
                 reported.push_back(name->name.text);
@@ -1229,7 +1230,8 @@ TypeId Checker::check_index(const ast::Expr& node, const ast::IndexExpr& index) 
 
 void Checker::record_binding(const ast::Name& name, TypeId type) {
     if (!name.text.empty()) {
-        result_.bindings.push_back({name.span, env_->owner, std::string(name.text), str(type)});
+        result_.bindings.push_back(
+            {name.span, env_->owner, std::string(name.text), str(type), !binding_is_annotated_});
     }
 }
 
@@ -1322,11 +1324,16 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
         Overloaded{
             [&](const ast::ErrorStmt&) {},
             [&](const ast::LetStmt& let) {
-                bind_pattern(let.pattern, checked_value(let.value, let.type), false);
+                const TypeId type = checked_value(let.value, let.type);
+                binding_is_annotated_ = let.type != ast::no_id;
+                bind_pattern(let.pattern, type, false);
+                binding_is_annotated_ = false;
             },
             [&](const ast::VarStmt& var) {
                 const TypeId type = checked_value(var.value, var.type);
+                binding_is_annotated_ = var.type != ast::no_id;
                 record_binding(var.name, type);
+                binding_is_annotated_ = false;
                 declare_local(var.name, type, true);
             },
             [&](const ast::ComprehensionStmt& comprehension) {
@@ -1385,7 +1392,7 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                 declare_local(comprehension.target, type, false);
             },
             [&](const ast::AssignStmt& assign) {
-                const EntityId entity = lookup(assign.target.text);
+                const EntityId entity = lookup(assign.target);
                 if (entity == no_entity) {
                     error(codes::unknown_symbol,
                           assign.target.span,

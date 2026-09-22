@@ -132,10 +132,14 @@ private:
         if (const auto found = loaded_.find(key); found != loaded_.end()) {
             return found->second;
         }
-        if (!is_requested && !fs::is_regular_file(file, error)) {
+        const auto overlay = options_.overlays.find(key);
+        if (overlay == options_.overlays.end() && !is_requested &&
+            !fs::is_regular_file(file, error)) {
             return std::nullopt; // reported as an unknown module by the analysis
         }
-        const auto id = sources_.load_file(file);
+        const auto id = overlay != options_.overlays.end()
+                            ? sources_.add_file(file.generic_string(), overlay->second)
+                            : sources_.load_file(file);
         if (!id) {
             Diagnostic diagnostic;
             diagnostic.message = id.error();
