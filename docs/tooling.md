@@ -110,6 +110,26 @@ module that checks against the libraries it uses. Emitting the plan of a
 file prints the same text as `linnet inspect --emit` on that file. The
 command reads JSON only; it never executes anything.
 
+## `linnet stablehlo`
+
+```bash
+linnet stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...
+                 [--optionals present|absent] [--std <dir>] file.linnet
+```
+
+Prints one entry of the root block as a StableHLO module (MLIR text) on
+standard output. The function is `@main`; its arguments are the entry's
+inputs followed by every parameter and buffer of the block hierarchy in
+manifest order, each carrying a `linnet.path` attribute with its parameter
+path, so a runtime binds weights by name and the module itself holds no
+tensor data. Shapes are static: every generic of the root block and of the
+entry needs `--bind` (defaults apply), and optional parameters are all absent
+unless `--optionals present`. Calls are inlined, `static for` is unrolled, and
+index notation becomes broadcasts, gathers, and reductions over the output
+grid. What StableHLO cannot express as captured is reported as an error, never
+approximated. `python/linnet_torch/tests/test_stablehlo.py` compiles the output
+with XLA and checks it against the PyTorch materializer.
+
 ## `linnet explain`
 
 ```bash

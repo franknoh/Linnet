@@ -1,6 +1,7 @@
 #include "linnet/ast/dump.hpp"
 #include "linnet/backend/plan.hpp"
 #include "linnet/backend/plan_reader.hpp"
+#include "linnet/backend/stablehlo.hpp"
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/diagnostic/json.hpp"
 #include "linnet/diagnostic/render.hpp"
@@ -63,6 +64,10 @@ void print_usage(std::FILE* out) {
         "       [--no-optimize] <file>\n"
         "                                       Print the materializer plan (JSON) of a\n"
         "                                       root block and everything it uses\n"
+        "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
+        "            [--optionals present|absent] [--std <dir>] <file>\n"
+        "                                       Print an entry as a StableHLO module with\n"
+        "                                       static shapes; parameters are arguments\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent] <file>\n"
@@ -287,6 +292,76 @@ int run_explain(std::span<const std::string_view> args,
         opt::render_explanations(opt::explain(core, opt::torch_candidates(), *allowed), sources)
             .c_str(),
         stdout);
+    return report(sources, sink, options);
+}
+
+// `linnet stablehlo`: one entry of a root block as MLIR text.
+int run_stablehlo(std::span<const std::string_view> args,
+                  const Options& options,
+                  const char* program) {
+    backend::StableHloOptions export_options;
+    std::string std_option;
+    std::string_view path;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
+            arg == "--optionals") {
+            if (i + 1 == args.size()) {
+                return usage_error(std::string(arg) + " requires a value");
+            }
+            const std::string_view value = args[++i];
+            if (arg == "--std") {
+                std_option = value;
+            } else if (arg == "--root") {
+                export_options.root = value;
+            } else if (arg == "--entry") {
+                export_options.entry = value;
+            } else if (arg == "--optionals") {
+                if (value != "present" && value != "absent") {
+                    return usage_error("--optionals must be `present` or `absent`");
+                }
+                export_options.optionals_present = value == "present";
+            } else {
+                const std::size_t equals = value.find('=');
+                if (equals == std::string_view::npos || equals == 0) {
+                    return usage_error("--bind takes <generic>=<value>");
+                }
+                export_options.bindings[std::string(value.substr(0, equals))] =
+                    std::string(value.substr(equals + 1));
+            }
+        } else if (arg.starts_with("-")) {
+            return usage_error("unknown stablehlo option '" + std::string(arg) + "'");
+        } else if (!path.empty()) {
+            return usage_error("stablehlo takes exactly one file");
+        } else {
+            path = arg;
+        }
+    }
+    if (path.empty()) {
+        return usage_error("stablehlo requires a file");
+    }
+    SourceManager sources;
+    DiagnosticSink sink;
+    const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
+    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
+    const Program program_modules = load_program(sources, paths, loader_options, sink);
+    if (sink.has_errors()) {
+        return report(sources, sink, options);
+    }
+    const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
+    const sema::AnalysisResult analysis =
+        sema::analyze(sources, modules, sink, &program_modules.imports);
+    if (sink.has_errors()) {
+        return report(sources, sink, options);
+    }
+    ir::Module core = ir::lower(sources, modules, analysis.model);
+    opt::run_pipeline(core, opt::canonical_passes());
+    const auto text = backend::export_stablehlo(core, export_options);
+    if (!text) {
+        std::fprintf(stderr, "linnet: cannot export StableHLO: %s\n", text.error().c_str());
+        return exit_failure;
+    }
+    std::fputs(text->c_str(), stdout);
     return report(sources, sink, options);
 }
 
@@ -873,6 +948,9 @@ int main(int argc, char** argv) {
     }
     if (command == "emit") {
         return run_emit(rest, options);
+    }
+    if (command == "stablehlo") {
+        return run_stablehlo(rest, options, argv[0]);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

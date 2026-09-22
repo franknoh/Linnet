@@ -51,6 +51,7 @@ add_library(linnet_core STATIC
     src/ast/dump.cpp
     src/backend/plan.cpp
     src/backend/plan_reader.cpp
+    src/backend/stablehlo.cpp
     src/diagnostic/diagnostic.cpp
     src/diagnostic/json.cpp
     src/diagnostic/render.cpp
