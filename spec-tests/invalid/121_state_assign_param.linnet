@@ -1,0 +1,10 @@
+module m
+
+block Model<N: Dim> {
+    param w: Tensor[N; f32]
+
+    pub entry step(x: Tensor[N; f32]) -> Tensor[N; f32] {
+        w = x
+        return w
+    }
+}

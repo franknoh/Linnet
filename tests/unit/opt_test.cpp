@@ -87,3 +87,14 @@ TEST("opt: reductions and calls are untouched by CSE across regions") {
         "    let s = sum[i] a[i] * b[i]\n    let t = sum[i] a[i] * a[i]\n    return s + t\n}\n");
     CHECK_EQ(count(text, "reduce sum"), 2U);
 }
+
+TEST("opt: state reads and writes survive DCE and CSE in order") {
+    const std::string text =
+        optimized("module m\nblock B<N: Dim> {\n    state s: Tensor[N; f32]\n"
+                  "    pub entry step(x: Tensor[N; f32]) -> Tensor[N; f32] {\n"
+                  "        let before = s\n        s = x\n        let after = s\n"
+                  "        s = after + before\n        return after - before\n    }\n}\n");
+    CHECK_EQ(count(text, "state.write"), 2U);
+    CHECK_EQ(count(text, "state.read"), 2U); // the two reads are not merged
+    CHECK(text.find("state.read") < text.find("state.write"));
+}

@@ -546,6 +546,7 @@ private:
             break;
         case K::KwParam:
         case K::KwBuffer:
+        case K::KwState:
         case K::KwSub:
             if (!in_block) {
                 error_here("`" + std::string(text(peek())) +
@@ -554,10 +555,6 @@ private:
                 error_here("`" + std::string(text(peek())) + "` declarations cannot be `pub`");
             }
             data = parse_member();
-            break;
-        case K::KwState:
-            unsupported(peek().span, "`state` declarations are reserved for a future version");
-            advance();
             break;
         case K::KwExtern:
             unsupported(peek().span, "`extern` declarations are reserved for a future version");
@@ -693,6 +690,7 @@ private:
         const K keyword = peek().kind;
         const MemberKind kind = keyword == K::KwParam    ? MemberKind::Param
                                 : keyword == K::KwBuffer ? MemberKind::Buffer
+                                : keyword == K::KwState  ? MemberKind::State
                                                          : MemberKind::Sub;
         advance();
         MemberDecl decl{kind, expect_identifier("member name"), no_id, no_id};

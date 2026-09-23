@@ -797,9 +797,7 @@ private:
                     return b_.concat(parts);
                 },
                 [&](const MemberDecl& decl) {
-                    const std::string_view keyword = decl.kind == MemberKind::Param    ? "param "
-                                                     : decl.kind == MemberKind::Buffer ? "buffer "
-                                                                                       : "sub ";
+                    const std::string keyword = std::string(member_keyword(decl.kind)) + " ";
                     const DocId head = b_.concat(
                         {b_.text(keyword), name(decl.name), b_.text(": "), type(decl.type)});
                     if (decl.default_value == no_id) {

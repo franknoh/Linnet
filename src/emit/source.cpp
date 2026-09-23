@@ -75,6 +75,13 @@ public:
                 }
             }
         }
+        for (const ir::BlockId block : module_.all_blocks()) {
+            for (const ir::OpId id : module_.block(block).ops) {
+                if (module_.op(id).kind == ir::OpKind::StateWrite) {
+                    written_states_.insert({body_of(block), module_.op(id).attributes.name});
+                }
+            }
+        }
         for (const ir::Function& function : module_.functions()) {
             functions_by_name_[function.name] = &function;
             functions_by_entity_[function.entity] = &function;
@@ -384,6 +391,7 @@ private:
             out += std::string("    ") +
                    (is_sub               ? "sub "
                     : declared.is_buffer ? "buffer "
+                    : declared.is_state  ? "state "
                                          : "param ") +
                    name + ": " + type(declared.type) + (is_optional ? " = none" : "") + "\n";
         }
@@ -404,6 +412,17 @@ private:
 
     // The block whose statements a value in `block` belongs to: a folded
     // match arm counts as its parent.
+    // The function (or constant) body block a nested block belongs to.
+    ir::BlockId body_of(ir::BlockId block) const {
+        for (;;) {
+            const ir::Region& region = module_.region(module_.block(block).region);
+            if (region.parent == ir::no_id) {
+                return block;
+            }
+            block = module_.op(region.parent).block;
+        }
+    }
+
     ir::BlockId enclosing(ir::BlockId block) const {
         for (auto found = folded_into_.find(block); found != folded_into_.end();
              found = folded_into_.find(block)) {
@@ -449,6 +468,12 @@ private:
         if (op.kind == ir::OpKind::Comprehension) {
             return true;
         }
+        if (op.kind == ir::OpKind::StateRead) {
+            // A read is a name unless the state is assigned somewhere, when
+            // its value at this point must be kept.
+            return written_states_.contains({body_of(op.block), op.attributes.name}) &&
+                   statement_blocks_.contains(op.block);
+        }
         if (is_constant(op.kind) || is_member_path(op.kind) || op.results.size() != 1 ||
             !statement_blocks_.contains(op.block)) {
             return false;
@@ -468,7 +493,7 @@ private:
     // Nesting depth of the expression an inlined operation produces: leaves
     // (arguments, bound values, constants) count 0, each operation adds 1.
     int inline_depth(const ir::Operation& op) {
-        if (is_member_path(op.kind)) {
+        if (is_member_path(op.kind) || op.kind == ir::OpKind::StateRead) {
             return 0;
         }
         int depth = op.regions.empty() ? 0 : 1;
@@ -521,6 +546,9 @@ private:
                 break;
             case ir::OpKind::Yield:
                 break; // handled by the enclosing loop
+            case ir::OpKind::StateWrite:
+                out += pad + op.attributes.name + " = " + expr(op.operands[1]) + "\n";
+                break;
             case ir::OpKind::TupleGet:
                 if (!names_.contains(op.results.front())) {
                     out += pad + destructure(block, op.operands.front()) + "\n";
@@ -854,7 +882,8 @@ private:
             return name + generic_arguments(a) + "(" + operand_list(op) + ")";
         }
         case ir::OpKind::BlockParam:
-        case ir::OpKind::BlockSub: {
+        case ir::OpKind::BlockSub:
+        case ir::OpKind::StateRead: {
             const std::string base = expr(op.operands[0]);
             return base == "self" ? a.name : base + "." + a.name;
         }
@@ -906,6 +935,8 @@ private:
     std::map<std::string, std::set<std::string>> imports_;
     std::map<ir::ValueId, std::string> names_;
     std::set<std::string> used_names_;
+    // (function body, state member) pairs assigned in that function.
+    std::set<std::pair<ir::BlockId, std::string>> written_states_;
     std::map<ir::ValueId, std::size_t> uses_;
     std::set<ir::BlockId> statement_blocks_;
     std::set<ir::ValueId> used_across_blocks_;

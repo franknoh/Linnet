@@ -165,3 +165,22 @@ expect = "ok"
 file = "invalid/118_block_constraint_unproven.linnet"
 expect = "error"
 code = "E2206"
+
+[[case]]
+file = "valid/020_state.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/119_state_assign_type.linnet"
+expect = "error"
+code = "E2109"
+
+[[case]]
+file = "invalid/120_state_optional.linnet"
+expect = "error"
+code = "E4101"
+
+[[case]]
+file = "invalid/121_state_assign_param.linnet"
+expect = "error"
+code = "E2108"

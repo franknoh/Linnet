@@ -36,9 +36,10 @@ entry_decl         = "entry", identifier, [ generic_params ], parameter_list,
 
 block_decl         = "block", identifier, [ generic_params ], [ where_clause ],
                      "{", { block_item }, "}" ;
-block_item         = param_decl | buffer_decl | sub_decl | item ;
+block_item         = param_decl | buffer_decl | state_decl | sub_decl | item ;
 param_decl         = "param", identifier, ":", type, [ "=", expr ] ;
 buffer_decl        = "buffer", identifier, ":", type ;
+state_decl         = "state", identifier, ":", type ;
 sub_decl           = "sub", identifier, ":", type ;
 
 generic_params     = "<", generic_param, { ",", generic_param }, [ "," ], ">" ;
@@ -60,7 +61,7 @@ statement          = let_stmt
 
 let_stmt           = "let", ( pattern, [ ":", type ], "=", expr | comprehension_lhs, "=", expr ) ;
 var_stmt           = "var", identifier, [ ":", type ], "=", expr ;
-assign_stmt        = identifier, "=", expr ;
+assign_stmt        = identifier, "=", expr ;   (* a `var` local or a `state` member *)
 return_stmt        = "return", [ expr ] ;
 static_for_stmt    = "static", "for", pattern, "in", expr, block_body ;
 

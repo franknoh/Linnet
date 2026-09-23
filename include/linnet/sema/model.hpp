@@ -56,6 +56,7 @@ struct Entity {
     bool is_mutable = false;      // Local declared with `var`
     bool is_parameter = false;    // Local that is a function parameter
     bool is_buffer = false;       // Member declared with `buffer`
+    bool is_state = false;        // Member declared with `state`
     bool is_used = false;         // referenced at least once
     shape::SymbolId symbol = 0;   // GenericDim, GenericPack
     DTypeVarId dtype_var = 0;     // GenericDType
@@ -142,7 +143,8 @@ struct ExprFacts {
 struct StmtFacts {
     TypeId type = no_type;             // the bound value's type
     std::vector<Shape> output_domains; // ComprehensionStmt: domain of each output index
-    EntityId entity = no_entity;       // VarStmt / ComprehensionStmt: the local created
+    EntityId entity = no_entity;       // VarStmt / ComprehensionStmt: the local created;
+                                       // AssignStmt: the state member assigned
 };
 
 struct Model {

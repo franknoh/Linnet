@@ -209,6 +209,9 @@ private:
             if (is_terminator != (i + 1 == block.ops.size())) {
                 problems_.push_back(at + ": terminator must be the last operation");
             }
+            if (op.kind == OpKind::StateWrite && !op.results.empty()) {
+                problems_.push_back(at + ": a state write has no result");
+            }
             if (op.kind == OpKind::Return && function == nullptr) {
                 problems_.push_back(at + ": return inside a nested region");
             }
@@ -361,6 +364,8 @@ private:
         case OpKind::EnumConst:
         case OpKind::BlockParam:
         case OpKind::BlockSub:
+        case OpKind::StateRead:
+        case OpKind::StateWrite:
             return " \"" + a.name + "\"";
         case OpKind::Compare:
             return " " + std::string(compare_spelling(a.compare));

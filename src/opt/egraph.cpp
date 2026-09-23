@@ -241,7 +241,7 @@ public:
         for (const OpId id : block.ops) {
             const Operation& op = module_.op(id);
             if (op.regions.empty() && op.results.size() == 1 && op.kind != OpKind::Return &&
-                op.kind != OpKind::Yield) {
+                op.kind != OpKind::Yield && op.kind != OpKind::StateRead) {
                 Node node;
                 node.kind = op.kind;
                 node.attrs = op.attributes;
@@ -653,10 +653,19 @@ private:
             }
         }
         std::map<OpId, std::set<OpId>> dependencies;
+        OpId last_effect = no_id;
         for (const OpId id : block.ops) {
             std::set<OpId>& deps = dependencies[id];
             collect_dependencies(module_.op(id), producers, deps);
             deps.erase(id);
+            // State reads and writes keep their relative order.
+            const OpKind kind = module_.op(id).kind;
+            if (kind == OpKind::StateRead || kind == OpKind::StateWrite) {
+                if (last_effect != no_id) {
+                    deps.insert(last_effect);
+                }
+                last_effect = id;
+            }
         }
         std::vector<OpId> order;
         std::set<OpId> placed;

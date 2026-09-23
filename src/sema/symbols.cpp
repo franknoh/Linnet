@@ -80,9 +80,7 @@ std::string Checker::describe(EntityId id) {
     case EntityKind::Member: {
         const auto& decl =
             std::get<ast::MemberDecl>(modules_[entity.module]->item(entity.item).data);
-        const std::string_view keyword = decl.kind == ast::MemberKind::Param    ? "param"
-                                         : decl.kind == ast::MemberKind::Buffer ? "buffer"
-                                                                                : "sub";
+        const std::string_view keyword = ast::member_keyword(decl.kind);
         return std::string(keyword) + " " + name + ": " + type_text(entity.type);
     }
     case EntityKind::GenericDim:
@@ -149,6 +147,7 @@ void Checker::collect_symbols() {
                 std::get<ast::MemberDecl>(modules_[entity.module]->item(entity.item).data);
             symbol.kind = decl.kind == ast::MemberKind::Param    ? SymbolKind::Param
                           : decl.kind == ast::MemberKind::Buffer ? SymbolKind::Buffer
+                          : decl.kind == ast::MemberKind::State  ? SymbolKind::State
                                                                  : SymbolKind::Sub;
             break;
         }

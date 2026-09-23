@@ -28,7 +28,7 @@ struct BindingInfo {
 // lists the array lengths along the path, outermost first.
 struct ManifestEntry {
     std::string path;
-    std::string kind; // "param" or "buffer"
+    std::string kind; // "param", "buffer", or "state"
     std::string dtype;
     std::vector<std::string> shape; // one dimension expression per axis
     std::vector<std::string> repeat;
@@ -56,6 +56,7 @@ enum class SymbolKind : std::uint8_t {
     Block,
     Param,
     Buffer,
+    State,
     Sub,
     GenericDim,
     GenericPack,

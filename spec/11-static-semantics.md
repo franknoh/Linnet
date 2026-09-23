@@ -40,7 +40,7 @@ For a tensor comprehension:
 
 ## 11.7 Purity and effects
 
-Initial `fn`, `op`, and `entry` bodies have no hidden effects. Structural composition and local SSA-style reassignment do not count as runtime effects.
+Initial `fn`, `op`, and `entry` bodies have no hidden effects. Structural composition and local SSA-style reassignment do not count as runtime effects. Reading and assigning `state` members (§9.3) are effects, and they are explicit: every function's state footprint is known statically.
 
 ## 11.8 Recursive cycles
 

@@ -29,7 +29,7 @@ What `load` does:
    Checking never executes anything from the package.
 2. Builds the module hierarchy from the block structure: each `sub` is a child
    module (a `ModuleList` for arrays), each `param` an `nn.Parameter`, each
-   `buffer` a buffer. `state_dict()` therefore uses the Linnet parameter paths
+   `buffer` a buffer, each `state` a non-persistent buffer starting at zero. `state_dict()` therefore uses the Linnet parameter paths
    (`layers.0.attention.q_proj.weight`).
 3. With `weights`, reads the SafeTensors metadata, checks every required
    tensor's presence, shape, and dtype against the plan, and only then copies

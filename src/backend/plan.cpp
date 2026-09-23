@@ -352,9 +352,7 @@ private:
                 const auto& decl = std::get<ast::MemberDecl>(module_ast_item(member));
                 out += i == 0 ? "" : ",";
                 out += "{\"name\":" + json_string(members[i].second) + ",\"kind\":\"" +
-                       (decl.kind == ast::MemberKind::Param    ? "param"
-                        : decl.kind == ast::MemberKind::Buffer ? "buffer"
-                                                               : "sub") +
+                       std::string(ast::member_keyword(decl.kind)) +
                        "\",\"type\":" + type_json(member.type) + "}";
             }
             out += "]}";
@@ -450,7 +448,7 @@ private:
             out += is_first ? "" : ",";
             is_first = false;
             out += "{\"path\":" + json_string(path) + ",\"kind\":\"" +
-                   (decl.kind == ast::MemberKind::Param ? "param" : "buffer") +
+                   std::string(ast::member_keyword(decl.kind)) +
                    "\",\"dtype\":" + dtype_json(tensor.dtype) +
                    ",\"shape\":" + shape_json(tensor.shape) + ",\"repeat\":[";
             for (std::size_t i = 0; i < repeat.size(); ++i) {
@@ -484,8 +482,92 @@ private:
         for (std::size_t i = 0; i < function.results.size(); ++i) {
             out += (i == 0 ? "" : ",") + type_json(function.results[i]);
         }
+        out += "],\"states\":[";
+        const std::vector<std::string> states = state_footprint(function);
+        for (std::size_t i = 0; i < states.size(); ++i) {
+            out += (i == 0 ? "" : ",") + json_string(states[i]);
+        }
         out += "],\"body\":" + region_json(function.body) + "}";
         return out;
+    }
+
+    // ---------------------------------------------------------- state footprint
+    //
+    // The state members a function reads or writes, directly or through the
+    // methods it calls, as paths relative to its block (`[*]` for every
+    // element of a sub array), so consumers know which state an entry touches
+    // without walking its body.
+
+    std::vector<std::string> state_footprint(const ir::Function& function) const {
+        std::set<std::string> paths;
+        collect_states(function.body, "", paths);
+        return {paths.begin(), paths.end()};
+    }
+
+    void collect_states(ir::RegionId region,
+                        const std::string& prefix,
+                        std::set<std::string>& out) const {
+        for (const ir::BlockId block_id : module_.region(region).blocks) {
+            for (const ir::OpId id : module_.block(block_id).ops) {
+                const ir::Operation& op = module_.op(id);
+                if (op.kind == ir::OpKind::StateRead || op.kind == ir::OpKind::StateWrite) {
+                    out.insert(prefix + block_path(op.operands.front()) + op.attributes.name);
+                } else if (op.kind == ir::OpKind::Call || op.kind == ir::OpKind::SemanticCall) {
+                    const ir::Function* callee = nullptr;
+                    for (const ir::Function& candidate : module_.functions()) {
+                        if (candidate.name == op.attributes.name) {
+                            callee = &candidate;
+                        }
+                    }
+                    if (callee != nullptr && model_.entities[callee->entity].parent != no_entity &&
+                        !op.operands.empty()) {
+                        const std::string receiver = prefix + block_path(op.operands.front());
+                        for (const std::string& path : state_footprint(*callee)) {
+                            out.insert(receiver + path);
+                        }
+                    }
+                }
+                for (const ir::RegionId inner : op.regions) {
+                    collect_states(inner, prefix, out);
+                }
+            }
+        }
+    }
+
+    // The member path (with a trailing `.`) of a block value derived from
+    // `self`; empty for `self` itself.
+    std::string block_path(ir::ValueId value) const {
+        const ir::OpId producer = module_.value(value).producer;
+        if (producer == ir::no_id) {
+            // The element of a `static for` over a sub array stands for every
+            // element.
+            const ir::Block& block = module_.block(module_.value(value).block);
+            const ir::Region& region = module_.region(block.region);
+            if (region.parent != ir::no_id && !block.arguments.empty() &&
+                block.arguments.front() == value) {
+                const ir::Operation& loop = module_.op(region.parent);
+                if (loop.kind == ir::OpKind::StaticFor && !loop.operands.empty()) {
+                    std::string base = block_path(loop.operands.front());
+                    if (!base.empty() && base.back() == '.') {
+                        base.pop_back();
+                    }
+                    return base.empty() ? "" : base + "[*].";
+                }
+            }
+            return "";
+        }
+        const ir::Operation& op = module_.op(producer);
+        if (op.kind == ir::OpKind::BlockSub) {
+            return block_path(op.operands.front()) + op.attributes.name + ".";
+        }
+        if (op.kind == ir::OpKind::ArrayGet) {
+            std::string base = block_path(op.operands.front());
+            if (!base.empty() && base.back() == '.') {
+                base.pop_back();
+            }
+            return base + "[*].";
+        }
+        return "";
     }
 
     std::string value_json(ir::ValueId id) const {
@@ -538,6 +620,8 @@ private:
         case ir::OpKind::EnumConst:
         case ir::OpKind::BlockParam:
         case ir::OpKind::BlockSub:
+        case ir::OpKind::StateRead:
+        case ir::OpKind::StateWrite:
             attrs.push_back("\"name\":" + json_string(a.name));
             break;
         case ir::OpKind::Compare:

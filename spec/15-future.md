@@ -4,18 +4,7 @@ This chapter is informative except where it reserves keywords or explicitly cons
 
 ## 15.1 Runtime state and KV caches
 
-Future `state` semantics should model mutable runtime resources through explicit SSA-like state threading rather than hidden mutation.
-
-Candidate direction:
-
-```text
-state cache: KVCache<...>
-
-pub entry decode(..., cache: state KVCache<...>)
-    -> (..., state KVCache<...>)
-```
-
-Exact syntax is not frozen.
+`state` members (§9.3) cover block-owned tensors updated by assignment. Structured state (a `struct` of tensors), state carried by runtime loops, and state passed explicitly through entry signatures are open; any of them must keep state flow explicit in the IR rather than hidden mutation.
 
 ## 15.2 Explicit RNG
 

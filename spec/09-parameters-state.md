@@ -32,11 +32,25 @@ Backends may map buffers to framework-specific non-trainable state.
 
 ## 9.3 `state`
 
-`state` is reserved for mutable execution state such as KV caches or RNG streams.
+`state` declares mutable execution state owned by a block instance, such as a KV cache:
 
-The initial language version reserves the keyword but does not define state mutation semantics.
+```text
+state cache: Tensor[Batch, KvHeads, MaxSeq, Head; T]
+```
 
-A future design MUST make state flow explicit in IR. Hidden global mutation is not permitted.
+A state member has a tensor type whose shape is fixed by the block's generics, like a `param`. It carries no payload: the runtime supplies the initial value (backends default to zeros) and keeps the latest value between entry calls.
+
+Inside the block's functions and entries, the member name reads the current value, and an assignment statement replaces it:
+
+```text
+cache = updated
+```
+
+The assigned value MUST have the declared type. Reads after an assignment observe it, in program order. A function may assign only state members of its own block; a parent block reads a child's state through its path (`layers[0].attention.cache`) but cannot assign it.
+
+State flow is explicit. In Core IR every read and write is an operation on the block instance, ordered within its region, and each function records the state members it touches directly or through the functions it calls. The optimizer MUST NOT merge, remove, or reorder these operations relative to one another. Backends thread the values: a graph export takes the initial values as extra inputs and returns the final values as extra results, and a framework materializer keeps them as the module's non-trainable state, reset on request. Hidden global mutation is not permitted.
+
+State members appear in the parameter manifest with kind `state`; weight files never contain them.
 
 ## 9.4 `sub`
 
@@ -64,7 +78,7 @@ These paths form the canonical parameter-manifest names unless a binding manifes
 Semantic analysis of a fully instantiated root block can produce a parameter manifest containing at least:
 
 - canonical path;
-- kind (`param` or `buffer`);
+- kind (`param`, `buffer`, or `state`);
 - tensor shape expression after known substitutions;
 - dtype;
 - optional/required status.

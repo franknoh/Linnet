@@ -120,6 +120,7 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
     file(GLOB_RECURSE linnet_round_trip_sources
         ${PROJECT_SOURCE_DIR}/stdlib/*.linnet ${PROJECT_SOURCE_DIR}/examples/*.linnet)
+    list(APPEND linnet_round_trip_sources ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet)
     add_test(NAME cli_emit_round_trip
         COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/emit_round_trip.sh

@@ -33,7 +33,7 @@ x = layer.forward(x)
 
 Only locals declared with `var` may be reassigned. Reassignment MUST preserve the statically inferred or declared type of the variable.
 
-Parameters, buffers, sub-blocks, function arguments, and `let` bindings cannot be reassigned.
+Parameters, buffers, sub-blocks, function arguments, and `let` bindings cannot be reassigned. A block's `state` members (§9.3) are assigned with the same statement; that assignment is the one observable effect in the language.
 
 ## 5.4 Arithmetic
 

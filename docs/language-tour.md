@@ -153,6 +153,10 @@ pub block Model<H: Dim, Layers: Dim> {
 ```
 
 - A `param` never has data in source; `= none` only marks it optional.
+- A `state` member is execution state the block owns, such as a KV cache:
+  `state keys: Tensor[B, Max, D; T]`. Its name reads the current value and
+  `keys = updated` replaces it; backends keep the value between calls
+  (zeros at first) and graph exports thread it as an extra input and output.
 - `sub` arrays give repeated layers; `static for` iterates them at compile time.
 - `entry` marks the callables a backend exposes.
 - Parameter paths follow the structure: `layers.0.attention.q_proj.weight`.
@@ -178,6 +182,6 @@ fill<f32>([B, S], 0.0)
 ## What is not in the language
 
 No expression statements, no runtime loops, no recursion, no mutation of
-anything but local `var`s, no host-language escape hatches, and no tensor
-payloads in source. That is what makes a `.linnet` file safe to inspect and
+anything but local `var`s and a block's own `state`, no host-language escape
+hatches, and no tensor payloads in source. That is what makes a `.linnet` file safe to inspect and
 load.

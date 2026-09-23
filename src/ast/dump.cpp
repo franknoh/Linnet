@@ -366,85 +366,84 @@ private:
     void item(ItemId id) {
         const Item& node = ast_.item(id);
         const std::string visibility = node.is_pub ? "pub " : "";
-        std::visit(
-            Overloaded{
-                [&](const ErrorItem&) { line(visibility + "error"); },
-                [&](const ConstDecl& decl) {
-                    nested(annotation(
-                               visibility + "const " + name(decl.name), type(decl.type), decl.type),
-                           [&] { expr(decl.value); });
-                },
-                [&](const TypeAliasDecl& decl) {
-                    nested(visibility + "type " + name(decl.name), [&] {
-                        generics(decl.generics);
-                        line("= " + type(decl.type));
-                    });
-                },
-                [&](const StructDecl& decl) {
-                    nested(visibility + "struct " + name(decl.name), [&] {
-                        generics(decl.generics);
-                        for (const FieldDecl& field : decl.fields) {
-                            line("field " + name(field.name) + ": " + type(field.type));
-                        }
-                    });
-                },
-                [&](const EnumDecl& decl) {
-                    nested(visibility + "enum " + name(decl.name), [&] {
-                        generics(decl.generics);
-                        for (const Name& variant : decl.variants) {
-                            line("variant " + name(variant));
-                        }
-                    });
-                },
-                [&](const FunctionDecl& decl) {
-                    const std::string_view keyword = decl.kind == FunctionKind::Fn   ? "fn "
-                                                     : decl.kind == FunctionKind::Op ? "op "
-                                                                                     : "entry ";
-                    nested(visibility + std::string(keyword) + name(decl.name), [&] {
-                        generics(decl.generics);
-                        for (const Parameter& param : decl.parameters) {
-                            const std::string header =
-                                "param " + name(param.name) + ": " + type(param.type);
-                            if (param.default_value == no_id) {
-                                line(header);
-                            } else {
-                                nested(header + " =", [&] { expr(param.default_value); });
-                            }
-                        }
-                        if (decl.return_type != no_id) {
-                            line("returns " + type(decl.return_type));
-                        }
-                        for (const ExprId constraint : decl.constraints) {
-                            nested("where", [&] { expr(constraint); });
-                        }
-                        body(decl.body);
-                    });
-                },
-                [&](const BlockDecl& decl) {
-                    nested(visibility + "block " + name(decl.name), [&] {
-                        generics(decl.generics);
-                        for (const ExprId constraint : decl.constraints) {
-                            nested("where", [&] { expr(constraint); });
-                        }
-                        for (const ItemId member : decl.members) {
-                            item(member);
-                        }
-                    });
-                },
-                [&](const MemberDecl& decl) {
-                    const std::string_view keyword = decl.kind == MemberKind::Param    ? "param "
-                                                     : decl.kind == MemberKind::Buffer ? "buffer "
-                                                                                       : "sub ";
-                    const std::string header = visibility + std::string(keyword) + name(decl.name) +
-                                               ": " + type(decl.type);
-                    if (decl.default_value == no_id) {
-                        line(header);
-                    } else {
-                        nested(header + " =", [&] { expr(decl.default_value); });
-                    }
-                },
-            },
-            node.data);
+        std::visit(Overloaded{
+                       [&](const ErrorItem&) { line(visibility + "error"); },
+                       [&](const ConstDecl& decl) {
+                           nested(annotation(visibility + "const " + name(decl.name),
+                                             type(decl.type),
+                                             decl.type),
+                                  [&] { expr(decl.value); });
+                       },
+                       [&](const TypeAliasDecl& decl) {
+                           nested(visibility + "type " + name(decl.name), [&] {
+                               generics(decl.generics);
+                               line("= " + type(decl.type));
+                           });
+                       },
+                       [&](const StructDecl& decl) {
+                           nested(visibility + "struct " + name(decl.name), [&] {
+                               generics(decl.generics);
+                               for (const FieldDecl& field : decl.fields) {
+                                   line("field " + name(field.name) + ": " + type(field.type));
+                               }
+                           });
+                       },
+                       [&](const EnumDecl& decl) {
+                           nested(visibility + "enum " + name(decl.name), [&] {
+                               generics(decl.generics);
+                               for (const Name& variant : decl.variants) {
+                                   line("variant " + name(variant));
+                               }
+                           });
+                       },
+                       [&](const FunctionDecl& decl) {
+                           const std::string_view keyword = decl.kind == FunctionKind::Fn ? "fn "
+                                                            : decl.kind == FunctionKind::Op
+                                                                ? "op "
+                                                                : "entry ";
+                           nested(visibility + std::string(keyword) + name(decl.name), [&] {
+                               generics(decl.generics);
+                               for (const Parameter& param : decl.parameters) {
+                                   const std::string header =
+                                       "param " + name(param.name) + ": " + type(param.type);
+                                   if (param.default_value == no_id) {
+                                       line(header);
+                                   } else {
+                                       nested(header + " =", [&] { expr(param.default_value); });
+                                   }
+                               }
+                               if (decl.return_type != no_id) {
+                                   line("returns " + type(decl.return_type));
+                               }
+                               for (const ExprId constraint : decl.constraints) {
+                                   nested("where", [&] { expr(constraint); });
+                               }
+                               body(decl.body);
+                           });
+                       },
+                       [&](const BlockDecl& decl) {
+                           nested(visibility + "block " + name(decl.name), [&] {
+                               generics(decl.generics);
+                               for (const ExprId constraint : decl.constraints) {
+                                   nested("where", [&] { expr(constraint); });
+                               }
+                               for (const ItemId member : decl.members) {
+                                   item(member);
+                               }
+                           });
+                       },
+                       [&](const MemberDecl& decl) {
+                           const std::string keyword = std::string(member_keyword(decl.kind)) + " ";
+                           const std::string header = visibility + std::string(keyword) +
+                                                      name(decl.name) + ": " + type(decl.type);
+                           if (decl.default_value == no_id) {
+                               line(header);
+                           } else {
+                               nested(header + " =", [&] { expr(decl.default_value); });
+                           }
+                       },
+                   },
+                   node.data);
     }
 
     const Ast& ast_;

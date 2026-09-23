@@ -1434,14 +1434,31 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                     return;
                 }
                 const Entity& target = entities_[entity];
-                if (target.kind != EntityKind::Local || !target.is_mutable) {
+                const bool is_own_state = target.kind == EntityKind::Member && target.is_state &&
+                                          target.parent == env_->block;
+                if (target.kind == EntityKind::Member && target.is_state && !is_own_state) {
+                    error(codes::assign_immutable,
+                          assign.target.span,
+                          "cannot assign to `" + std::string(target.name) +
+                              "` from outside its block")
+                        .label(target.span, "declared here")
+                        .help("only the functions of a block assign its `state` members");
+                    check_expr(assign.value);
+                    return;
+                }
+                if (!is_own_state && (target.kind != EntityKind::Local || !target.is_mutable)) {
                     error(codes::assign_immutable,
                           assign.target.span,
                           "cannot assign to `" + std::string(target.name) + "`")
                         .label(target.span, "not declared with `var`")
-                        .help("only locals declared with `var` can be reassigned");
+                        .help("only locals declared with `var` and `state` members can be "
+                              "assigned");
                     check_expr(assign.value);
                     return;
+                }
+                if (is_own_state) {
+                    entities_[entity].is_used = true;
+                    facts_of_stmt(id).entity = entity;
                 }
                 const TypeId value = check_expr(assign.value, target.type);
                 if (!types_.is_error(value) && !assignable(value, target.type)) {
