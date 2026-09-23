@@ -139,6 +139,8 @@ def test_llama_next_token_matches_torch(tmp_path: Path) -> None:
         "KvHeads": 2,
         "Inner": 16,
         "Layers": 2,
+        "Batch": 2,
+        "MaxSeq": 8,
         "T": "f32",
     }
     source = EXAMPLES / "05-llama/src/lib.linnet"

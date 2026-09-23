@@ -1,7 +1,9 @@
 // A Llama-style decoder: RMSNorm, grouped-query attention with rotary
 // positions, SwiGLU, and an untied output head. Widths, head counts, and
 // depth are generic parameters; the dtype defaults to bf16 and every
-// intermediate accumulation is spelled out in the standard library.
+// intermediate accumulation is spelled out in the standard library. The
+// `decode` entry generates one token at a time from the KV caches the
+// attention blocks own, sized by `Batch` and `MaxSeq`.
 module llama
 
 use crate.attention::{GroupedQueryAttention}
@@ -10,21 +12,35 @@ use std.nn.linear::{Linear}
 use std.nn.mlp::{SwiGlu}
 use std.nn.norm::{RmsNorm}
 
-pub block DecoderLayer<H: Dim, Heads: Dim, KvHeads: Dim, Inner: Dim, T: Float>
+pub block DecoderLayer<
+    H: Dim,
+    Heads: Dim,
+    KvHeads: Dim,
+    Inner: Dim,
+    Batch: Dim,
+    MaxSeq: Dim,
+    T: Float,
+>
 where
     Heads > 0,
     KvHeads > 0,
     H % Heads == 0,
     Heads % KvHeads == 0,
-    (H / Heads) % 2 == 0
+    (H / Heads) % 2 == 0,
+    MaxSeq > 0
 {
     sub attention_norm: RmsNorm<H, T>
-    sub attention: GroupedQueryAttention<H, Heads, KvHeads, T>
+    sub attention: GroupedQueryAttention<H, Heads, KvHeads, Batch, MaxSeq, T>
     sub mlp_norm: RmsNorm<H, T>
     sub mlp: SwiGlu<H, Inner, T>
 
     pub fn forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
         let attended = x + attention.forward(attention_norm.forward(x))
+        return attended + mlp.forward(mlp_norm.forward(attended))
+    }
+
+    pub fn decode(x: Tensor[Batch, 1, H; T], pos: i32) -> Tensor[Batch, 1, H; T] {
+        let attended = x + attention.decode(attention_norm.forward(x), pos)
         return attended + mlp.forward(mlp_norm.forward(attended))
     }
 }
@@ -36,6 +52,8 @@ pub block Model<
     KvHeads: Dim,
     Inner: Dim,
     Layers: Dim,
+    Batch: Dim,
+    MaxSeq: Dim,
     T: Float = bf16,
 >
 where
@@ -43,10 +61,11 @@ where
     KvHeads > 0,
     H % Heads == 0,
     Heads % KvHeads == 0,
-    (H / Heads) % 2 == 0
+    (H / Heads) % 2 == 0,
+    MaxSeq > 0
 {
     sub embedding: Embedding<Vocab, H, T>
-    sub layers: [DecoderLayer<H, Heads, KvHeads, Inner, T>; Layers]
+    sub layers: [DecoderLayer<H, Heads, KvHeads, Inner, Batch, MaxSeq, T>; Layers]
     sub norm: RmsNorm<H, T>
     sub lm_head: Linear<H, Vocab, T>
 
@@ -61,6 +80,17 @@ where
     where S > 0 {
         let last = hidden_states(tokens)[:, S - 1, :]
         return lm_head.forward(norm.forward(last))
+    }
+
+    // Logits for one new token per sequence at position `pos`, attending
+    // over the positions decoded before it through the layers' KV caches.
+    // Feed a prompt token by token, then the tokens the model produces.
+    pub entry decode(token: Tensor[Batch, 1; i32], pos: i32) -> Tensor[Batch, Vocab; T] {
+        var x = embedding.forward(token)
+        static for layer in layers {
+            x = layer.decode(x, pos)
+        }
+        return lm_head.forward(norm.forward(x[:, 0, :]))
     }
 
     fn hidden<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, S, H; T] {
