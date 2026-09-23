@@ -43,6 +43,7 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 | Enum-typed constants and `match` | ✓ | ✓ (folded) | ✓ (folded) |
 | Tuple results | ✓ | ✓ | ✓ (one output per element) |
 | `state` members | ✓ buffers, `reset_state()` | ✓ threaded in/out | ✓ threaded in/out |
+| `std.random` (keyed Threefry PRNG) | ✓ | ✓ | ✓ (right shifts are logical) |
 | dtypes | f16, bf16, f32, f64, i8–i64, u8, bool | as the backend supports | as opset 20 supports |
 
 ## Not supported (yet)
@@ -50,7 +51,9 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 - Runtime loops (`while`, `scan`) and data-dependent shapes; `static for`
   over a compile-time range covers fixed-length generation (the Llama
   example's `generate<Steps>`).
-- Random numbers (dropout, sampling): no RNG primitive; sample on the host.
+- Randomness is a library, not a primitive: `std.random` (Threefry-2x32,
+  matching `jax.random` bit for bit) runs on every backend; there is no
+  hidden generator state.
 - Training: no autodiff. JAX materialization has no VJP; the PyTorch module
   holds parameters with `requires_grad=False`.
 - Quantized storage types.

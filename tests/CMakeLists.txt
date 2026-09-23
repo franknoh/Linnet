@@ -163,6 +163,12 @@ add_test(NAME cli_stablehlo_generate
             --bind T=f32 --bind Steps=3 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
 set_tests_properties(cli_stablehlo_generate PROPERTIES
     PASS_REGULAR_EXPRESSION "-> \\(tensor<2x3xi32>, tensor<2x2x8x2xf32>.*linnet.states = \\[\"layers.0.attention.cache_k\"")
+add_test(NAME cli_stablehlo_sample
+    COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --entry sample --bind Vocab=11 --bind H=8
+            --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=8
+            --bind T=f32 --bind Steps=2 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
+set_tests_properties(cli_stablehlo_sample PROPERTIES
+    PASS_REGULAR_EXPRESSION "%key: tensor<2xi64>.*\"stablehlo.xor\".*\"stablehlo.shift_left\"")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)

@@ -54,7 +54,7 @@ The following words are reserved for future syntax and MUST NOT be accepted as u
 
 ```text
 async await effect unsafe macro trait impl derive
-random rng mut ref yield kernel device
+rng mut ref yield kernel device
 ```
 
 ## 1.5 Comments

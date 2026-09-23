@@ -355,3 +355,37 @@ def test_llama_generate_matches_stepwise_decoding(tmp_path: Path) -> None:
         current = logits.argmax(-1, keepdim=True).to(torch.int32)
         expected.append(current)
     torch.testing.assert_close(generated, torch.cat(expected, dim=1))
+
+
+def test_llama_sample_is_deterministic_and_greedy_at_low_temperature(tmp_path: Path) -> None:
+    """`sample` draws with an explicit key: the same key reproduces the tokens,
+    and at a tiny temperature it agrees with greedy `generate`."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "Batch": 2,
+        "MaxSeq": 8,
+        "T": "f32",
+    }
+    source = EXAMPLES / "05-llama/src/lib.linnet"
+    model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
+    prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
+    start = torch.tensor(0, dtype=torch.int32)
+    key = torch.tensor([0, 7], dtype=torch.int64)
+
+    def sample(temperature: float) -> torch.Tensor:
+        model.reset_state()
+        return model.run_entry(
+            "sample", [prompt, start, key, torch.tensor(temperature)], generics={"Steps": 4}
+        )
+
+    first = sample(1.0)
+    assert first.shape == (2, 4) and first.dtype == torch.int32
+    torch.testing.assert_close(sample(1.0), first)
+    model.reset_state()
+    greedy = model.run_entry("generate", [prompt, start], generics={"Steps": 4})
+    torch.testing.assert_close(sample(1e-3), greedy)

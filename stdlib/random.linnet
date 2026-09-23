@@ -1,0 +1,118 @@
+module std.random
+
+// Counter-based randomness with explicit keys, written in Linnet so every
+// backend draws the same numbers: a key is `Tensor[2; i64]` holding two
+// 32-bit words, and Threefry-2x32 (20 rounds, the JAX layout) turns a key
+// and counters into bits. Nothing here is a primitive; the arithmetic is
+// 64-bit integers masked to 32 bits, so it runs wherever integer tensors do.
+//
+// `split` and `uniform` reproduce `jax.random.split` and
+// `jax.random.uniform` bit for bit for a key made with `jax.random.key`.
+
+pub const MASK: i64 = 4294967295
+
+// One Threefry round: add, rotate the second word by `R`, mix.
+fn round<N: Dim, R: Dim>(x0: Tensor[N; i64], x1: Tensor[N; i64]) -> (Tensor[N; i64], Tensor[N; i64])
+where
+    R > 0,
+    R < 32
+{
+    let sum = (x0 + x1) & MASK
+    let rotated = (shl(x1, R) | shr(x1, 32 - R)) & MASK
+    return (sum, rotated ^ sum)
+}
+
+// Four rounds with the first rotation schedule.
+fn rounds_a<N: Dim>(x0: Tensor[N; i64], x1: Tensor[N; i64]) -> (Tensor[N; i64], Tensor[N; i64]) {
+    let (a0, a1) = round<N, 13>(x0, x1)
+    let (b0, b1) = round<N, 15>(a0, a1)
+    let (c0, c1) = round<N, 26>(b0, b1)
+    return round<N, 6>(c0, c1)
+}
+
+// Four rounds with the second rotation schedule.
+fn rounds_b<N: Dim>(x0: Tensor[N; i64], x1: Tensor[N; i64]) -> (Tensor[N; i64], Tensor[N; i64]) {
+    let (a0, a1) = round<N, 17>(x0, x1)
+    let (b0, b1) = round<N, 29>(a0, a1)
+    let (c0, c1) = round<N, 16>(b0, b1)
+    return round<N, 24>(c0, c1)
+}
+
+// Threefry-2x32 of `N` counter pairs under `key`: `[N, 2]` words in, `[N, 2]`
+// words out.
+pub fn threefry2x32<N: Dim>(key: Tensor[2; i64], counter: Tensor[N, 2; i64]) -> Tensor[N, 2; i64] {
+    let spread = broadcast_to(reshape(key, [1, 2]), [N, 2])
+    let k0 = spread[:, 0]
+    let k1 = spread[:, 1]
+    let k2 = (k0 ^ k1 ^ 466688986) & MASK
+    let x0 = (counter[:, 0] + k0) & MASK
+    let x1 = (counter[:, 1] + k1) & MASK
+    let (a0, a1) = rounds_a(x0, x1)
+    let (b0, b1) = rounds_b((a0 + k1) & MASK, (a1 + k2 + 1) & MASK)
+    let (c0, c1) = rounds_a((b0 + k2) & MASK, (b1 + k0 + 2) & MASK)
+    let (d0, d1) = rounds_b((c0 + k0) & MASK, (c1 + k1 + 3) & MASK)
+    let (e0, e1) = rounds_a((d0 + k1) & MASK, (d1 + k2 + 4) & MASK)
+    let y0 = (e0 + k2) & MASK
+    let y1 = (e1 + k0 + 5) & MASK
+    return concat(reshape(y0, [N, 1]), reshape(y1, [N, 1]), axis = -1)
+}
+
+// `N` random 32-bit words from `key`: counter `i` is the pair `(0, i)` and
+// the word is the xor of the two outputs, JAX's partitionable layout
+// (`jax_threefry_partitionable`, the default), so results match
+// `jax.random.bits`.
+pub fn bits<N: Dim>(key: Tensor[2; i64]) -> Tensor[N; i64] {
+    let words = threefry2x32(key, counters<N>())
+    return words[:, 0] ^ words[:, 1]
+}
+
+// `N` new keys derived from `key`, matching `jax.random.split(key, N)`: key
+// `i` is the output pair of counter `(0, i)`.
+pub fn split<N: Dim>(key: Tensor[2; i64]) -> Tensor[N, 2; i64] {
+    return threefry2x32(key, counters<N>())
+}
+
+// The counter pairs `(0, i)` for `i` in `0..N`.
+fn counters<N: Dim>() -> Tensor[N, 2; i64] {
+    let positions = iota<i64>(N)
+    return concat(fill<i64>([N, 1], 0), reshape(positions, [N, 1]), axis = -1)
+}
+
+// A key derived from `key` and an integer, matching `jax.random.fold_in`.
+pub fn fold_in(key: Tensor[2; i64], data: i32) -> Tensor[2; i64] {
+    let counter = reshape(
+        concat(fill<i64>([1], 0), fill<i64>([1], cast<i64>(data)), axis = 0),
+        [1, 2],
+    )
+    return threefry2x32(key, counter)[0, :]
+}
+
+// `N` uniform numbers in `[0, 1)`, matching `jax.random.uniform(key, (N,))`
+// for `f32`: the top 23 bits of each word become the mantissa.
+pub fn uniform<N: Dim, T: Float>(key: Tensor[2; i64]) -> Tensor[N; T] {
+    let words = bits<N>(key)
+    return cast<T>(cast<f32>(shr(words, 9)) * 1.1920928955078125e-07)
+}
+
+// `N` standard normal numbers by Box–Muller from two uniform draws.
+pub fn normal<N: Dim, T: Float>(key: Tensor[2; i64]) -> Tensor[N; T] {
+    let u = uniform<2 * N, f32>(key)
+    let radius = sqrt(-2.0 * log(1.0 - u[0:N]))
+    let angle = 6.283185307179586 * u[N:2 * N]
+    return cast<T>(radius * cos(angle))
+}
+
+// One category per row of `logits`, drawn in proportion to `exp(logits)`
+// (Gumbel-max: the argmax of the logits plus Gumbel noise).
+pub fn categorical<B: Dim, V: Dim, T: Float>(
+    key: Tensor[2; i64],
+    logits: Tensor[B, V; T],
+) -> Tensor[B; i32] {
+    let u = uniform<B * V, f32>(key)
+    let gumbel = -log(-log(1.0 - u))
+    let noisy = cast<f32>(logits) + reshape(gumbel, [B, V])
+    let peak[b] = max[v] noisy[b, v]
+    let positions = iota<i32>(V)
+    let first[b] = min[v] select(noisy[b, v] == peak[b], positions[v], V)
+    return first
+}
