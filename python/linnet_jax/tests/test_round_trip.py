@@ -100,6 +100,10 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
     source = result.source.read_text()
     assert "sub layers: [Layer; 2]" in source
     assert "param embedding: Tensor[11, 8; f32]" in source
+    # Decompositions JAX produced are recognized as the library operations.
+    assert "softmax<" in source and "rms_norm<" in source and "silu<" in source
+    assert "recovered softmax from its decomposition" in result.notes
+    assert "sigmoid<" not in source  # subsumed by silu
     assert result.bindings is None
     _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
     _compiler_ok("fmt", "--check", str(result.source))
@@ -113,6 +117,37 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
         forward, params, (tokens,), output=tmp_path / "again/model.linnet", std_root=STDLIB
     )
     assert again.source.read_text() == source
+
+
+def test_activation_recovery(tmp_path: Path) -> None:
+    """Decomposed activations come back as the library operations, and only
+    when the decomposition is exact."""
+
+    def mlp(params: dict[str, Any], x: Any) -> Any:
+        h = jax.nn.gelu(x @ params["up"])
+        g = jax.nn.sigmoid(x @ params["gate"])
+        # Not gelu: a different constant, so it must stay spelled out.
+        almost = 0.5 * x * (1.0 + jnp.tanh(0.8 * (x + 0.044715 * x * x * x)))
+        return h * g + almost
+
+    params = {"up": jnp.eye(4, dtype=jnp.float32), "gate": jnp.eye(4, dtype=jnp.float32) * 2}
+    x = jnp.arange(8, dtype=jnp.float32).reshape(2, 4) / 4 - 1
+    result = export_linnet(
+        mlp,
+        params,
+        (x,),
+        output=tmp_path / "mlp.linnet",
+        weights=tmp_path / "weights",
+        std_root=STDLIB,
+    )
+    source = result.source.read_text()
+    assert "gelu<" in source and "sigmoid<" in source
+    assert source.count("tanh(") == 1
+    _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
+    model = load(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
+    np.testing.assert_allclose(
+        np.asarray(model(x)), np.asarray(mlp(params, x)), atol=1e-5, rtol=1e-5
+    )
 
 
 def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:

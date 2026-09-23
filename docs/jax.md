@@ -72,6 +72,18 @@ Linnet indices are checked — it is dropped and the fact is reported in
 `ExportResult.notes`. Non-splat constants folded into the graph become
 `buffer` members saved with the weights.
 
+JAX lowers its library functions to primitives, and the translation
+recognizes the decompositions it knows and emits the standard-library
+operation instead: `jax.nn.softmax` (the exp-sub-max over a sum, over the
+last axis) becomes `std.nn.softmax::softmax`, `jax.nn.sigmoid`, `jax.nn.silu`
+and the tanh `jax.nn.gelu` become their `std.nn.activations` operations, and
+`x * rsqrt(mean(x * x) + eps) * w` becomes `std.nn.norm::rms_norm`. The
+match is structural — the same operations, the same operands, the axis and
+the constants the decomposition uses — so a variant with a different
+constant stays spelled out, and every recovery is listed in
+`ExportResult.notes`. The primitives it replaces are dropped by `linnet
+emit` as dead code.
+
 ## Round trip
 
 `tests/test_round_trip.py` exports a small transformer written with `jnp`,

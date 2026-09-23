@@ -18,6 +18,7 @@ names every one of them; custom calls are never mapped.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from collections.abc import Callable, Sequence
@@ -792,8 +793,235 @@ _ELEMENTWISE = {
 }
 
 
+# ---- exact pattern recovery
+#
+# JAX lowers `jax.nn.softmax`, `jax.nn.sigmoid`, `jax.nn.silu`, the tanh
+# `jax.nn.gelu`, and an RMS norm written in `jnp` to fixed shapes of
+# primitive operations. When a node completes one of those shapes over the
+# same operand, the translation emits the standard-library operation
+# instead; the primitives already emitted become dead and are dropped, and
+# every recovery is recorded in the notes. The check is structural: the
+# operation names, operands, axes, and constants must all be the ones the
+# decomposition uses, so nothing is recovered by name or by approximation.
+#
+# A pattern is a variable name (binds the value on first sight, must be the
+# same value afterwards), a `_Const` (a splat constant with that value, or
+# any constant bound under `name`), a `("reduce", combine, operand)` over
+# the last axis, or `("<stablehlo op>", *operand patterns)`; commutative
+# operations match in either operand order.
+
+
+@dataclass(frozen=True)
+class _Const:
+    value: float | None = None
+    name: str | None = None
+
+
+_Pattern = str | _Const | tuple[Any, ...]
+_COMMUTATIVE = {"add", "multiply", "maximum", "minimum"}
+
+
+def _owner(value: Any) -> Any:
+    """The operation producing an MLIR value, or None for block arguments."""
+    owner = value.owner
+    return owner if hasattr(owner, "operands") else None
+
+
+def _strip_broadcasts(t: _Translator, value: Any) -> Any:
+    """Skips `broadcast_in_dim` chains that keep the axis order (adding
+    size-one axes or broadcasting them), returning the source value."""
+    while True:
+        owner = _owner(value)
+        if owner is None or str(owner.name) != "stablehlo.broadcast_in_dim":
+            return value
+        dims = t.int_array(owner, "broadcast_dimensions")
+        if dims != sorted(dims):
+            return value
+        value = owner.operands[0]
+
+
+def _reduce_over_last(t: _Translator, value: Any, combine: str) -> Any | None:
+    """The operand of a `reduce` with the given body over the last axis, or None."""
+    owner = _owner(value)
+    if owner is None:
+        return None
+    if str(owner.name) == "stablehlo.maximum":
+        # The `maximum(-inf, reduce)` guard of an empty reduction.
+        for i in range(2):
+            candidate = _owner(_strip_broadcasts(t, owner.operands[i]))
+            if candidate is not None and str(candidate.name) == "stablehlo.constant":
+                return _reduce_over_last(t, owner.operands[1 - i], combine)
+        return None
+    if str(owner.name) != "stablehlo.reduce" or len(owner.operands) != 2:
+        return None
+    body = [str(o.operation.name) for o in owner.regions[0].blocks[0].operations]
+    if body[:1] != [f"stablehlo.{combine}"]:
+        return None
+    rank = len(_parse_type(str(owner.operands[0].type)).shape)
+    if t.int_array(owner, "dimensions") != [rank - 1]:
+        return None
+    return owner.operands[0]
+
+
+class _Matcher:
+    def __init__(self, t: _Translator) -> None:
+        self.t = t
+        self.bound: dict[str, Any] = {}
+
+    def value(self, name: str) -> _Value | None:
+        return self.t.values.get(_key(self.bound[name]))
+
+    def splat(self, name: str) -> float | int | bool | None:
+        value = self.value(name)
+        return None if value is None else value.splat
+
+    def match(self, value: Any, pattern: _Pattern) -> bool:
+        value = _strip_broadcasts(self.t, value)
+        if isinstance(pattern, str):
+            if pattern in self.bound:
+                return bool(self.bound[pattern] == value)
+            self.bound[pattern] = value
+            return True
+        if isinstance(pattern, _Const):
+            owner = _owner(value)
+            if owner is None or str(owner.name) != "stablehlo.constant":
+                return False
+            translated = self.t.values.get(_key(value))
+            if translated is None or translated.splat is None:
+                return False
+            if pattern.value is not None and not math.isclose(
+                float(translated.splat), pattern.value, rel_tol=1e-6, abs_tol=1e-12
+            ):
+                return False
+            if pattern.name is not None:
+                self.bound[pattern.name] = value
+            return True
+        name, *operands = pattern
+        if name == "reduce":
+            source = _reduce_over_last(self.t, value, operands[0])
+            return source is not None and self.match(source, operands[1])
+        owner = _owner(value)
+        if owner is None or str(owner.name) != f"stablehlo.{name}":
+            return False
+        if len(owner.operands) != len(operands):
+            return False
+        if name in _COMMUTATIVE and len(operands) == 2:
+            saved = dict(self.bound)
+            if self.match(owner.operands[0], operands[0]) and self.match(
+                owner.operands[1], operands[1]
+            ):
+                return True
+            self.bound = saved
+            return self.match(owner.operands[0], operands[1]) and self.match(
+                owner.operands[1], operands[0]
+            )
+        return all(self.match(o, p) for o, p in zip(owner.operands, operands, strict=True))
+
+
+_SIGMOID: _Pattern = ("divide", _Const(1.0), ("add", _Const(1.0), ("exponential", ("negate", "x"))))
+_SILU: _Pattern = ("multiply", "x", _SIGMOID)
+_GELU_TANH: _Pattern = (
+    "multiply",
+    "x",
+    (
+        "multiply",
+        _Const(0.5),
+        (
+            "add",
+            _Const(1.0),
+            (
+                "tanh",
+                (
+                    "multiply",
+                    _Const(0.7978845608),
+                    (
+                        "add",
+                        "x",
+                        ("multiply", _Const(0.044715), ("multiply", ("multiply", "x", "x"), "x")),
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+_SOFTMAX: _Pattern = ("divide", "e", ("reduce", "add", "e"))
+_SOFTMAX_NUMERATOR: _Pattern = ("exponential", ("subtract", "x", ("reduce", "maximum", "x")))
+_RMS_NORM: _Pattern = (
+    "multiply",
+    (
+        "multiply",
+        "x",
+        (
+            "rsqrt",
+            (
+                "add",
+                ("divide", ("reduce", "add", ("multiply", "x", "x")), _Const(name="count")),
+                _Const(name="eps"),
+            ),
+        ),
+    ),
+    "w",
+)
+
+# Shape-preserving library operations and their decompositions, by the
+# operation completing them.
+_ACTIVATIONS: dict[str, list[tuple[str, _Pattern]]] = {
+    "stablehlo.divide": [("sigmoid", _SIGMOID)],
+    "stablehlo.multiply": [("gelu", _GELU_TANH), ("silu", _SILU)],
+}
+
+
+def _recovered(
+    t: _Translator, name: str, generics: list[dict[str, Any]], operands: list[_Value], kind: _Type
+) -> _Value:
+    t.notes.append(f"recovered {name} from its decomposition")
+    module = {"softmax": "std.nn.softmax", "rms_norm": "std.nn.norm"}.get(
+        name, "std.nn.activations"
+    )
+    return t.call(f"{module}::{name}", generics, operands, kind)
+
+
+def _recover(t: _Translator, operation: Any) -> _Value | None:
+    """The library operation whose decomposition `operation` completes, if any."""
+    result = operation.results[0]
+    kind = t.result_type(operation)
+    shape = list(kind.shape)
+    for name, pattern in _ACTIVATIONS.get(str(operation.name), []):
+        m = _Matcher(t)
+        x = m.value("x") if m.match(result, pattern) else None
+        if x is not None and x.type.shape == kind.shape:
+            return _recovered(t, name, [{"shape": shape}, {"dtype": kind.dtype}], [x], kind)
+    if str(operation.name) == "stablehlo.divide":
+        m = _Matcher(t)
+        if m.match(result, _SOFTMAX) and m.match(m.bound["e"], _SOFTMAX_NUMERATOR):
+            x = m.value("x")
+            if x is not None and x.type.shape == kind.shape and shape:
+                generics = [{"shape": shape[:-1]}, {"dim": shape[-1]}, {"dtype": kind.dtype}]
+                return _recovered(t, "softmax", generics, [x], kind)
+    if str(operation.name) == "stablehlo.multiply":
+        m = _Matcher(t)
+        if m.match(result, _RMS_NORM):
+            x, w, eps = m.value("x"), m.value("w"), m.splat("eps")
+            if (
+                x is not None
+                and w is not None
+                and eps is not None
+                and shape
+                and x.type.shape == kind.shape
+                and w.type.shape == kind.shape[-1:]
+                and m.splat("count") == shape[-1]
+            ):
+                generics = [{"shape": shape[:-1]}, {"dim": shape[-1]}, {"dtype": kind.dtype}]
+                epsilon = t.builder.const(float(eps), "f32")
+                return _recovered(t, "rms_norm", generics, [x, w, epsilon], kind)
+    return None
+
+
 @_handles(*_ELEMENTWISE)
 def _elementwise(t: _Translator, operation: Any) -> _Value:
+    recovered = _recover(t, operation)
+    if recovered is not None:
+        return recovered
     operands = [t.operand(operation, i) for i in range(len(operation.operands))]
     kind = _ELEMENTWISE[str(operation.name)]
     # `maximum(-inf, x)` and `minimum(+inf, x)` guard empty reductions in
