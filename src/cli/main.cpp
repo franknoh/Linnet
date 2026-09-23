@@ -68,12 +68,12 @@ void print_usage(std::FILE* out) {
         "Usage: linnet <command> [options]\n"
         "\n"
         "Commands:\n"
-        "  plan [--root <Block>] [--std <dir>] [--numerics exact|equivalent]\n"
+        "  plan [--root <Block>] [--std <dir>] [--numerics exact|equivalent|fast]\n"
         "       [--no-optimize] <file>\n"
         "                                       Print the materializer plan (JSON) of a\n"
         "                                       root block and everything it uses\n"
         "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
-        "            [--numerics exact|equivalent]\n"
+        "            [--numerics exact|equivalent|fast]\n"
         "            [--optionals present|absent] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments\n"
@@ -83,7 +83,7 @@ void print_usage(std::FILE* out) {
         "                                       Print an entry as an ONNX model (text format)\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
-        "  explain [--std <dir>] [--numerics exact|equivalent] <file>\n"
+        "  explain [--std <dir>] [--numerics exact|equivalent|fast] <file>\n"
         "                                       Show how each semantic operation would be\n"
         "                                       implemented and why\n"
         "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
@@ -297,7 +297,7 @@ int run_explain(std::span<const std::string_view> args,
     }
     const auto allowed = opt::parse_legality(numerics);
     if (!allowed) {
-        return usage_error("--numerics must be `exact` or `equivalent`");
+        return usage_error("--numerics must be `exact`, `equivalent`, or `fast`");
     }
     ir::Module core = ir::lower(sources, modules, analysis.model);
     opt::run_pipeline(core, opt::optimizing_passes(*allowed));
@@ -380,7 +380,7 @@ int run_graph_export(std::span<const std::string_view> args,
     // allow; `--numerics exact` keeps every canonical body.
     const auto allowed = opt::parse_legality(numerics);
     if (!allowed) {
-        return usage_error("--numerics must be `exact` or `equivalent`");
+        return usage_error("--numerics must be `exact`, `equivalent`, or `fast`");
     }
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
     const auto text = format == "onnx"    ? backend::export_onnx(core, export_options)
@@ -508,7 +508,7 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     }
     const auto allowed = opt::parse_legality(numerics);
     if (!allowed) {
-        return usage_error("--numerics must be `exact` or `equivalent`");
+        return usage_error("--numerics must be `exact`, `equivalent`, or `fast`");
     }
     if (is_optimized) {
         opt::run_pipeline(core, opt::optimizing_passes(*allowed));

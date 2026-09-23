@@ -4,6 +4,10 @@ Each entry is keyed by the implementation name the compiler selects in a plan
 (`linnet explain` lists them). An implementation receives the operation's
 arguments in declaration order and must agree with the canonical `.linnet`
 body up to floating-point rounding; the differential tests hold it to that.
+
+Names ending in `(input dtype)` are the `numerics="fast"` tier: the same
+kernels without the f32 accumulation the canonical bodies specify, so
+low-precision inputs may round differently.
 """
 
 from __future__ import annotations
@@ -74,6 +78,32 @@ def _attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return out.to(query.dtype)
 
 
+def _softmax_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    return torch.softmax(args[0], dim=-1)
+
+
+def _rms_norm_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, weight, eps = args
+    return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
+
+
+def _layer_norm_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, weight, bias, eps = args
+    scaled = functional.layer_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
+    return scaled if bias is None else scaled + bias
+
+
+def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    query, key, value, scale, mask = args
+    return functional.scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask=None if mask is None else mask,
+        scale=float(scale.item()),
+    )
+
+
 NATIVE: dict[str, Native] = {
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
@@ -85,4 +115,8 @@ NATIVE: dict[str, Native] = {
     "torch.rms_norm": _rms_norm,
     "torch.nn.functional.layer_norm": _layer_norm,
     "torch.nn.functional.scaled_dot_product_attention": _attention,
+    "torch.softmax(input dtype)": _softmax_fast,
+    "torch.rms_norm(input dtype)": _rms_norm_fast,
+    "torch.nn.functional.layer_norm(input dtype)": _layer_norm_fast,
+    "torch.nn.functional.scaled_dot_product_attention(input dtype)": _attention_fast,
 }

@@ -419,6 +419,16 @@ public:
                                            ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
+        const std::string suffix = "(input dtype)";
+        const bool fast = implementation.ends_with(suffix);
+        const std::string implementation_base =
+            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
+        // `fast`: the kernel runs in the tensor's dtype; otherwise in f32 as
+        // the canonical body does.
+        const auto up = [&](const std::string& x) { return fast ? x : x + ".float()"; };
+        const auto down = [&](const std::string& expression, const std::string& like) {
+            return fast ? expression : expression + ".to(" + like + ".dtype)";
+        };
         const auto name = [&](std::size_t i) -> std::string {
             return i < operands.size() && operands[i] ? operands[i]->name : "None";
         };
@@ -434,26 +444,25 @@ public:
             }
             return "None";
         };
-        if (implementation == "torch.matmul" && operands.size() == 2) {
+        if (implementation_base == "torch.matmul" && operands.size() == 2) {
             return define("torch.matmul(" + name(0) + ", " + name(1) + ")");
         }
-        if (implementation == "torch.nn.functional.linear" && operands.size() == 3) {
+        if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
             return define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
         }
-        if (implementation == "torch.softmax" && operands.size() == 1) {
-            return define("torch.softmax(" + name(0) + ".float(), dim=-1).to(" + name(0) +
-                          ".dtype)");
+        if (implementation_base == "torch.softmax" && operands.size() == 1) {
+            return define(down("torch.softmax(" + up(name(0)) + ", dim=-1)", name(0)));
         }
-        if (implementation == "torch.relu" && operands.size() == 1) {
+        if (implementation_base == "torch.relu" && operands.size() == 1) {
             return define("torch.relu(" + name(0) + ")");
         }
-        if (implementation == "torch.sigmoid" && operands.size() == 1) {
+        if (implementation_base == "torch.sigmoid" && operands.size() == 1) {
             return define("torch.sigmoid(" + name(0) + ")");
         }
-        if (implementation == "torch.nn.functional.silu" && operands.size() == 1) {
+        if (implementation_base == "torch.nn.functional.silu" && operands.size() == 1) {
             return define("F.silu(" + name(0) + ")");
         }
-        if (implementation == "torch.nn.functional.gelu(tanh)" && operands.size() == 1) {
+        if (implementation_base == "torch.nn.functional.gelu(tanh)" && operands.size() == 1) {
             return define("F.gelu(" + name(0) + ", approximate=\"tanh\")");
         }
         // The normalized width is the operand's last axis.
@@ -463,24 +472,28 @@ public:
                        ? std::to_string(operand->shape.back())
                        : "1";
         };
-        if (implementation == "torch.rms_norm" && operands.size() == 3 && operands[0]) {
+        if (implementation_base == "torch.rms_norm" && operands.size() == 3 && operands[0]) {
             const std::string width = width_of(0);
-            return define("torch.rms_norm(" + name(0) + ".float(), [" + width +
-                          "], eps=" + scalar(2) + ").to(" + name(0) + ".dtype) * " + name(1));
+            return define(
+                down("torch.rms_norm(" + up(name(0)) + ", [" + width + "], eps=" + scalar(2) + ")",
+                     name(0)) +
+                " * " + name(1));
         }
-        if (implementation == "torch.nn.functional.layer_norm" && operands.size() == 4 &&
+        if (implementation_base == "torch.nn.functional.layer_norm" && operands.size() == 4 &&
             operands[0]) {
             const std::string width = width_of(0);
-            const std::string scaled =
-                define("F.layer_norm(" + name(0) + ".float(), [" + width + "], eps=" + scalar(3) +
-                       ").to(" + name(0) + ".dtype) * " + name(1));
+            const std::string scaled = define(
+                down("F.layer_norm(" + up(name(0)) + ", [" + width + "], eps=" + scalar(3) + ")",
+                     name(0)) +
+                " * " + name(1));
             return operands[2] ? define(scaled + " + " + name(2)) : scaled;
         }
-        if (implementation == "torch.nn.functional.scaled_dot_product_attention" &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5) {
-            return define("F.scaled_dot_product_attention(" + name(0) + ".float(), " + name(1) +
-                          ".float(), " + name(2) + ".float(), attn_mask=" + name(4) +
-                          ", scale=" + scalar(3) + ").to(" + name(0) + ".dtype)");
+            return define(down("F.scaled_dot_product_attention(" + up(name(0)) + ", " +
+                                   up(name(1)) + ", " + up(name(2)) + ", attn_mask=" + name(4) +
+                                   ", scale=" + scalar(3) + ")",
+                               name(0)));
         }
         return std::nullopt;
     }

@@ -2,9 +2,10 @@
 
 For each model configuration the harness times a PyTorch reference (eager and
 `torch.compile`d), the Linnet source materialized as a `torch.nn.Module` with
-native kernels (`numerics="equivalent"`), and the same source compiled through
-StableHLO and run by XLA via `linnet_jax`. Outputs are compared against the
-reference so every row carries a `max |Δ|`. The result is a JSON document the
+native kernels (`numerics="equivalent"`, and the `"fast"` tier that skips f32
+accumulation), and the same source compiled through StableHLO and run by XLA
+via `linnet_jax`. Outputs are compared against the reference so every row
+carries a `max |Δ|`. The result is a JSON document the
 documentation site renders (`site/benchmarks.md`).
 
     LINNET_BIN=build/release/linnet python bench/run.py --device cuda \\
@@ -35,6 +36,15 @@ import torch.nn.functional as F
 REPO = Path(__file__).resolve().parents[1]
 STDLIB = REPO / "stdlib"
 LLAMA = REPO / "examples/05-llama/src/lib.linnet"
+
+# Generated-source rows: `torch.compile` backend (None runs the source as is),
+# numerics tier, and the label. The fast tier runs softmax, normalization,
+# and attention in the input dtype, as the PyTorch reference does.
+GENERATED_VARIANTS: tuple[tuple[str | None, str, str], ...] = (
+    (None, "equivalent", "generated source"),
+    ("inductor", "equivalent", "generated source + torch.compile"),
+    ("inductor", "fast", "generated source + torch.compile, numerics=fast"),
+)
 
 # Llama-shaped configurations: hidden width, query heads, key/value heads,
 # MLP width, depth, vocabulary, and the sequence the forward pass runs over.
@@ -248,10 +258,7 @@ def bench_config(
         )
     )
 
-    for backend, label_suffix in (
-        (None, "generated source"),
-        ("inductor", "generated source + torch.compile"),
-    ):
+    for backend, numerics, label_suffix in GENERATED_VARIANTS:
         try:
             start = time.perf_counter()
             generated = load(
@@ -259,7 +266,7 @@ def bench_config(
                 generics=generics,
                 std_root=STDLIB,
                 device=device,
-                numerics="equivalent",
+                numerics=numerics,
                 compile=backend or True,
             )
             generated.load_state_dict(state, strict=False)
@@ -289,7 +296,7 @@ def bench_config(
             forward.variants.append(
                 Variant(f"Linnet → PyTorch ({label_suffix})", None, None, None, str(error)[:120])
             )
-    if with_xla:
+    for numerics in ("equivalent", "fast") if with_xla else ():
         forward.variants.append(
             xla_variant(
                 generics,
@@ -297,6 +304,7 @@ def bench_config(
                 [tokens],
                 expected,
                 "forward",
+                numerics,
                 device,
                 warmup,
                 iters,
@@ -348,17 +356,14 @@ def bench_config(
             f"KV cache at position {half} of {S}",
         )
     )
-    for backend, label_suffix in (
-        (None, "generated source"),
-        ("inductor", "generated source + torch.compile"),
-    ):
+    for backend, numerics, label_suffix in GENERATED_VARIANTS:
         try:
             generated = load(
                 LLAMA,
                 generics=generics,
                 std_root=STDLIB,
                 device=device,
-                numerics="equivalent",
+                numerics=numerics,
                 compile=backend or True,
             )
             generated.load_state_dict(state, strict=False)
@@ -399,10 +404,20 @@ def bench_config(
             decode.variants.append(
                 Variant(f"Linnet → PyTorch ({label_suffix})", None, None, None, str(error)[:120])
             )
-    if with_xla:
+    for numerics in ("equivalent", "fast") if with_xla else ():
         decode.variants.append(
             xla_decode_variant(
-                generics, weights, tokens, half, expected_step, device, warmup, iters, timings, name
+                generics,
+                weights,
+                tokens,
+                half,
+                expected_step,
+                numerics,
+                device,
+                warmup,
+                iters,
+                timings,
+                name,
             )
         )
     runs.append(decode)
@@ -429,6 +444,7 @@ def xla_variant(
     inputs: list[torch.Tensor],
     expected: torch.Tensor,
     entry: str,
+    numerics: str,
     device: torch.device,
     warmup: int,
     iters: int,
@@ -443,7 +459,12 @@ def xla_variant(
         from linnet_jax import load as load_jax
 
         function = load_jax(
-            LLAMA, generics=generics, weights=jax_weights(weights), entry=entry, std_root=STDLIB
+            LLAMA,
+            generics=generics,
+            weights=jax_weights(weights),
+            entry=entry,
+            std_root=STDLIB,
+            numerics=numerics,
         )
         arrays = [jnp.asarray(tensor.cpu().numpy()) for tensor in inputs]
         start = time.perf_counter()
@@ -451,7 +472,7 @@ def xla_variant(
         jax.block_until_ready(out)
         timings.append(
             {
-                "name": f"linnet stablehlo + XLA compile ({name}, {entry})",
+                "name": f"linnet stablehlo + XLA compile ({name}, {entry}, numerics={numerics})",
                 "seconds": time.perf_counter() - start,
             }
         )
@@ -462,8 +483,9 @@ def xla_variant(
         ms = time_call(call, torch.device("cpu"), warmup, iters)
         result = torch.tensor(jax.device_get(out).astype("float32"))
         backend = jax.default_backend()
+        tier = "" if numerics == "equivalent" else f", numerics={numerics}"
         return Variant(
-            f"Linnet → XLA (jax, {backend})",
+            f"Linnet → XLA (jax, {backend}{tier})",
             ms,
             tokens_per_call / ms * 1e3,
             diff(result, expected),
@@ -479,6 +501,7 @@ def xla_decode_variant(
     tokens: torch.Tensor,
     half: int,
     expected: torch.Tensor,
+    numerics: str,
     device: torch.device,
     warmup: int,
     iters: int,
@@ -492,7 +515,12 @@ def xla_decode_variant(
         from linnet_jax import load as load_jax
 
         function = load_jax(
-            LLAMA, generics=generics, weights=jax_weights(weights), entry="decode", std_root=STDLIB
+            LLAMA,
+            generics=generics,
+            weights=jax_weights(weights),
+            entry="decode",
+            std_root=STDLIB,
+            numerics=numerics,
         )
         ids = jnp.asarray(tokens.cpu().numpy())
         start = time.perf_counter()
@@ -502,7 +530,8 @@ def xla_decode_variant(
         jax.block_until_ready(state)
         timings.append(
             {
-                "name": f"linnet stablehlo + XLA compile ({name}, decode) incl. {half} steps",
+                "name": f"linnet stablehlo + XLA compile ({name}, decode, numerics={numerics})"
+                f" incl. {half} steps",
                 "seconds": time.perf_counter() - start,
             }
         )
@@ -513,8 +542,9 @@ def xla_decode_variant(
 
         ms = time_call(step, torch.device("cpu"), warmup, iters)
         result = torch.tensor(jax.device_get(out).astype("float32"))
+        tier = "" if numerics == "equivalent" else f", numerics={numerics}"
         return Variant(
-            f"Linnet → XLA (jax, {jax.default_backend()})",
+            f"Linnet → XLA (jax, {jax.default_backend()}{tier})",
             ms,
             1e3 / ms,
             diff(result, expected),

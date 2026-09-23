@@ -181,11 +181,13 @@ def compile_plan(
 
     With `optimize`, the compiler's exact canonicalization passes run first;
     they never change results. `numerics` is `"exact"` (every semantic
-    operation runs its canonical decomposition) or `"equivalent"` (PyTorch
-    library calls replace the decompositions they agree with up to rounding).
+    operation runs its canonical decomposition), `"equivalent"` (PyTorch
+    library calls replace the decompositions they agree with up to rounding),
+    or `"fast"` (the same calls in the input dtype, without the f32
+    accumulation the canonical bodies specify).
     """
-    if numerics not in ("exact", "equivalent"):
-        raise PlanError('numerics must be "exact" or "equivalent"')
+    if numerics not in ("exact", "equivalent", "fast"):
+        raise PlanError('numerics must be "exact", "equivalent", or "fast"')
     command = [find_compiler(), "plan", "--numerics", numerics]
     if not optimize:
         command.append("--no-optimize")

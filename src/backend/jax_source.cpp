@@ -278,6 +278,10 @@ public:
         for (const std::optional<TensorInfo>& operand : operands) {
             at.push_back(operand.has_value() ? &*operand : nullptr);
         }
+        const std::string suffix = "(input dtype)";
+        const bool fast = implementation.ends_with(suffix);
+        const std::string implementation_base =
+            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
         const auto name = [&](std::size_t i) -> std::string {
             return i < at.size() && at[i] != nullptr ? at[i]->name : "None";
         };
@@ -290,37 +294,42 @@ public:
         };
         // Casts to f32 and back around a library call, as the canonical
         // bodies compute.
-        const auto f32 = [&](std::size_t i) { return name(i) + ".astype(jnp.float32)"; };
-        if (implementation == "torch.matmul" && at.size() == 2) {
+        const auto f32 = [&](std::size_t i) {
+            return fast ? name(i) : name(i) + ".astype(jnp.float32)";
+        };
+        const auto back = [&](const std::string& expression, std::size_t like) {
+            return fast ? expression : expression + ".astype(" + name(like) + ".dtype)";
+        };
+        if (implementation_base == "torch.matmul" && at.size() == 2) {
             return define("jnp.matmul(" + name(0) + ", " + name(1) + ")");
         }
-        if (implementation == "torch.nn.functional.linear" && at.size() == 3 && at[0] != nullptr &&
-            at[1] != nullptr) {
+        if (implementation_base == "torch.nn.functional.linear" && at.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr) {
             const std::string product = define(name(0) + " @ " + name(1) + ".T");
             return at[2] != nullptr ? define(product + " + " + name(2)) : product;
         }
-        if (implementation == "torch.softmax" && at.size() == 1 && at[0] != nullptr) {
-            return define("jax.nn.softmax(" + f32(0) + ", axis=-1).astype(" + name(0) + ".dtype)");
+        if (implementation_base == "torch.softmax" && at.size() == 1 && at[0] != nullptr) {
+            return define(back("jax.nn.softmax(" + f32(0) + ", axis=-1)", 0));
         }
-        if (implementation == "torch.relu" && at.size() == 1) {
+        if (implementation_base == "torch.relu" && at.size() == 1) {
             return define("jax.nn.relu(" + name(0) + ")");
         }
-        if (implementation == "torch.sigmoid" && at.size() == 1) {
+        if (implementation_base == "torch.sigmoid" && at.size() == 1) {
             return define("jax.nn.sigmoid(" + name(0) + ")");
         }
-        if (implementation == "torch.nn.functional.silu" && at.size() == 1) {
+        if (implementation_base == "torch.nn.functional.silu" && at.size() == 1) {
             return define("jax.nn.silu(" + name(0) + ")");
         }
-        if (implementation == "torch.nn.functional.gelu(tanh)" && at.size() == 1) {
+        if (implementation_base == "torch.nn.functional.gelu(tanh)" && at.size() == 1) {
             return define("jax.nn.gelu(" + name(0) + ", approximate=True)");
         }
-        if (implementation == "torch.rms_norm" && at.size() == 3 && at[0] != nullptr) {
+        if (implementation_base == "torch.rms_norm" && at.size() == 3 && at[0] != nullptr) {
             const std::string x = define(f32(0));
             const std::string scale = define("jax.lax.rsqrt(jnp.mean(" + x + " * " + x +
                                              ", axis=-1, keepdims=True) + " + scalar(2) + ")");
-            return define("(" + x + " * " + scale + ").astype(" + name(0) + ".dtype) * " + name(1));
+            return define(back("(" + x + " * " + scale + ")", 0) + " * " + name(1));
         }
-        if (implementation == "torch.nn.functional.layer_norm" && at.size() == 4 &&
+        if (implementation_base == "torch.nn.functional.layer_norm" && at.size() == 4 &&
             at[0] != nullptr) {
             const std::string x = define(f32(0));
             const std::string centered =
@@ -328,11 +337,11 @@ public:
             const std::string scale =
                 define("jax.lax.rsqrt(jnp.mean(" + centered + " * " + centered +
                        ", axis=-1, keepdims=True) + " + scalar(3) + ")");
-            const std::string scaled = define("(" + centered + " * " + scale + ").astype(" +
-                                              name(0) + ".dtype) * " + name(1));
+            const std::string scaled =
+                define(back("(" + centered + " * " + scale + ")", 0) + " * " + name(1));
             return at[2] != nullptr ? define(scaled + " + " + name(2)) : scaled;
         }
-        if (implementation == "torch.nn.functional.scaled_dot_product_attention" &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             at.size() == 5 && at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {
             const std::string scores = define("jnp.einsum(\"bhqd,bhkd->bhqk\", " + f32(0) + ", " +
                                               f32(1) + ") * " + scalar(3));
@@ -340,8 +349,8 @@ public:
                 at[4] != nullptr ? define("jnp.where(" + name(4) + ", " + scores + ", -1e30)")
                                  : scores;
             const std::string weights = define("jax.nn.softmax(" + masked + ", axis=-1)");
-            return define("jnp.einsum(\"bhqk,bhkd->bhqd\", " + weights + ", " + f32(2) +
-                          ").astype(" + name(0) + ".dtype)");
+            return define(
+                back("jnp.einsum(\"bhqk,bhkd->bhqd\", " + weights + ", " + f32(2) + ")", 0));
         }
         return std::nullopt;
     }

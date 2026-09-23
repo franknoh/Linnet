@@ -55,7 +55,8 @@ void select_candidates(ir::Module& module,
 std::vector<Explanation>
 explain(ir::Module& module, const std::vector<NativeCandidate>& registry, Legality allowed);
 
-// Parses "exact" or "equivalent" (numerically equivalent).
+// Parses "exact", "equivalent" (numerically equivalent), or "fast"
+// (approximate: kernels in the input dtype).
 std::optional<Legality> parse_legality(std::string_view text);
 
 // Text rendering for `linnet explain`.

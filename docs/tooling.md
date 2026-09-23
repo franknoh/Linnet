@@ -114,7 +114,7 @@ format is not stable. `-O` runs the optimizer first.
 ## plan and emit
 
 ```bash
-linnet plan [--root <Block>] [--numerics exact|equivalent] file.linnet
+linnet plan [--root <Block>] [--numerics exact|equivalent|fast] file.linnet
 linnet emit plan.json        # or `linnet emit -` from stdin
 ```
 
@@ -128,7 +128,7 @@ other modules into `use` lines. Both read and write text only.
 
 ```bash
 linnet stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...
-                 [--optionals present|absent] [--numerics exact|equivalent] file.linnet
+                 [--optionals present|absent] [--numerics exact|equivalent|fast] file.linnet
 linnet onnx  ...same options...
 linnet torch ...same options...
 linnet jax   ...same options...
@@ -150,19 +150,28 @@ Anything the format cannot express is an error, never an approximation.
 format's own operator when one exists: contractions as `dot_general` or
 `MatMul`, attention as two contractions around a softmax, `torch.softmax`,
 `F.scaled_dot_product_attention`, `jax.nn.silu`, and so on. `exact` keeps
-every canonical body. Optional parameters are absent unless `--optionals
-present`.
+every canonical body. `fast` additionally lets softmax, normalization, and
+attention accumulate in the input dtype instead of the f32 the canonical
+bodies specify; for `bf16` and `f16` this is what framework reference models
+do, and results differ by rounding only. Optional parameters are absent
+unless `--optionals present`.
+
+| Tier | Selected implementations | Agreement with the canonical body |
+| --- | --- | --- |
+| `exact` | the canonical `.linnet` bodies | bit-exact |
+| `equivalent` | library kernels with f32 accumulation | up to floating-point rounding |
+| `fast` | the same kernels in the input dtype | rounding of the input dtype |
 
 ## explain
 
 ```bash
-linnet explain [--numerics exact|equivalent] file.linnet
+linnet explain [--numerics exact|equivalent|fast] file.linnet
 ```
 
 Lists every library operation the program calls, the implementations a
 backend could use, which one is selected, and why. `exact` (the default here)
 selects each operation's own body; `equivalent` allows kernels that agree up
-to floating-point rounding.
+to floating-point rounding; `fast` also allows the input-dtype variants.
 
 ## Optimization
 

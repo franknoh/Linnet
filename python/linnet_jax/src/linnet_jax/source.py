@@ -40,6 +40,7 @@ class SourceFunction(LinnetFunction):
         # the JAX source supplies the function that runs.
         compiled = super()._compile(bindings)
         arguments = ["jax", "--root", self.root, "--entry", self.entry]
+        arguments += ["--numerics", self.numerics]
         arguments += ["--optionals", "present" if self.optionals_present else "absent"]
         for name, value in bindings.items():
             arguments += ["--bind", f"{name}={value}"]
@@ -89,6 +90,7 @@ def load_source(
     entry: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
+    numerics: str = "equivalent",
 ) -> SourceFunction:
     """`load`, with entries running as generated JAX source (differentiable)."""
     function = load(
@@ -99,6 +101,7 @@ def load_source(
         entry=entry,
         bindings=bindings,
         std_root=std_root,
+        numerics=numerics,
     )
     return SourceFunction(
         function._source,  # pyright: ignore[reportPrivateUsage]
@@ -108,4 +111,5 @@ def load_source(
         function._std_root,  # pyright: ignore[reportPrivateUsage]
         function.root,
         function.entry,
+        function.numerics,
     )

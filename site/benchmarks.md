@@ -33,6 +33,7 @@ at position 256, in bf16, as:
 | Linnet, generated source | `load(..., compile=True)` |
 | Linnet, generated and compiled | `load(..., compile="inductor")` |
 | Linnet, XLA | `linnet_jax.load` under `jax.jit` |
+| `numerics=fast` rows | the same, with softmax, normalization, and attention in bf16 rather than f32, as the reference computes them |
 
 Latency is the median of timed calls after warm-up with the device
 synchronized; throughput is tokens per second for `forward` and steps per

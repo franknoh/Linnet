@@ -5,6 +5,7 @@ differentiates under `jax.grad`."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -101,3 +102,60 @@ def test_jax_grad_trains_a_linnet_mlp(tmp_path: Path) -> None:
         params = {name: value - 0.05 * grads[name] for name, value in params.items()}
     last = float(loss(params))
     assert last < first * 0.05, (first, last)
+
+
+def test_fast_numerics_skips_f32_accumulation() -> None:
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 1,
+        "Batch": 2,
+        "MaxSeq": 6,
+        "T": "bf16",
+    }
+    llama = REPO / "examples/05-llama/src/lib.linnet"
+    shapes = {"embedding.weight": (11, 8), "norm.weight": (8,), "lm_head.weight": (11, 8)}
+    for name, shape in (
+        ("q_proj", (8, 8)),
+        ("k_proj", (4, 8)),
+        ("v_proj", (4, 8)),
+        ("o_proj", (8, 8)),
+    ):
+        shapes[f"layers.0.attention.{name}.weight"] = shape
+    shapes["layers.0.attention_norm.weight"] = (8,)
+    shapes["layers.0.mlp_norm.weight"] = (8,)
+    shapes["layers.0.mlp.gate.weight"] = (16, 8)
+    shapes["layers.0.mlp.up.weight"] = (16, 8)
+    shapes["layers.0.mlp.down.weight"] = (8, 16)
+    key = jax.random.PRNGKey(0)
+    weights = {
+        name: (jax.random.normal(jax.random.fold_in(key, i), shape) * 0.3).astype(jnp.bfloat16)
+        for i, (name, shape) in enumerate(shapes.items())
+    }
+    tokens = jnp.array([[1, 4, 7, 2, 9], [3, 3, 0, 10, 5]], dtype=jnp.int32)
+
+    def make(loader: Any, numerics: str) -> Any:
+        return loader(
+            llama,
+            generics=generics,
+            weights=weights,
+            std_root=STDLIB,
+            entry="forward",
+            numerics=numerics,
+        )
+
+    exact = make(load_source, "exact")
+    fast = make(load_source, "fast")
+    compiled = make(load, "fast")
+    reference = np.asarray(exact(tokens), np.float32)
+    np.testing.assert_allclose(np.asarray(fast(tokens), np.float32), reference, atol=0.1, rtol=0.1)
+    np.testing.assert_allclose(
+        np.asarray(compiled(tokens), np.float32), reference, atol=0.1, rtol=0.1
+    )
+    source = fast.generated_source()
+    assert "jax.nn.softmax(" in source
+    # Only the RoPE index arithmetic casts to f32; attention and the norms do not.
+    assert ".astype(jnp.float32)" not in source.split("jnp.einsum(", 1)[1]
