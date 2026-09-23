@@ -51,10 +51,16 @@ export_linnet(
 ```
 
 `export_linnet` captures `forward` with `jax.export`, which produces StableHLO
-with static shapes, and translates that module operation by operation into a
-Core IR plan: the parameter pytree becomes the block hierarchy (`param`
-leaves, `sub` members for nested dicts, a sub array for a list of identical
-subtrees, so parameter paths such as `layers.0.q` are the pytree paths),
+with static shapes, and hands the module to `import_stablehlo`, which is also
+public: it takes StableHLO text whose `@main` takes the flattened parameter
+leaves followed by the inputs (what `jax.export` prints for
+`forward(params, *inputs)`) and a parameter tree of arrays or
+`jax.ShapeDtypeStruct`s, so a module produced elsewhere imports without
+running JAX. The translation goes operation by operation into a Core IR
+plan: the parameter pytree becomes the block hierarchy (`param` leaves,
+`sub` members for nested dicts in sorted key order, a sub array for a list —
+or a dict keyed `0..n-1` — of identical subtrees, so parameter paths such as
+`layers.0.q` are the pytree paths),
 `forward` becomes the root block's `entry`, and each StableHLO operation
 becomes the Linnet primitive with the same meaning — elementwise arithmetic,
 `reshape`/`permute`/`broadcast_to`, slices and concatenation — or index

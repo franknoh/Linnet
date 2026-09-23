@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .compiler import LinnetError, find_compiler
-from .export import ExportError, ExportResult, export_linnet
+from .export import ExportError, ExportResult, export_linnet, import_stablehlo
 from .load import LinnetFunction, load
 
 __all__ = [
@@ -13,5 +13,6 @@ __all__ = [
     "LinnetFunction",
     "export_linnet",
     "find_compiler",
+    "import_stablehlo",
     "load",
 ]
