@@ -3,6 +3,7 @@
 #include "linnet/backend/graph_export.hpp"
 
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -383,6 +384,50 @@ public:
                     region);
     }
 
+    std::optional<std::string> native_call(const std::string& implementation,
+                                           const std::vector<std::optional<TensorInfo>>& operands,
+                                           const Dims& shape,
+                                           ScalarKind dtype) override {
+        // Contractions become `dot_general`; everything else keeps its
+        // canonical body, which XLA fuses well on its own.
+        std::vector<const TensorInfo*> at;
+        at.reserve(operands.size());
+        for (const std::optional<TensorInfo>& operand : operands) {
+            at.push_back(operand.has_value() ? &*operand : nullptr);
+        }
+        if (implementation == "torch.matmul" && operands.size() == 2 && at[0] != nullptr &&
+            at[1] != nullptr) {
+            const TensorInfo& a = *at[0];
+            const TensorInfo& b = *at[1];
+            const std::int64_t rank = static_cast<std::int64_t>(a.shape.size());
+            Dims batch;
+            for (std::int64_t i = 0; i + 2 < rank; ++i) {
+                batch.push_back(i);
+            }
+            return dot_general(a, b, batch, batch, {rank - 1}, {rank - 2}, shape, dtype);
+        }
+        if (implementation == "torch.nn.functional.linear" && operands.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            const TensorInfo& x = *at[0];
+            const TensorInfo& weight = *at[1];
+            const std::int64_t last = static_cast<std::int64_t>(x.shape.size()) - 1;
+            std::string out = dot_general(x, weight, {}, {}, {last}, {1}, shape, dtype);
+            if (at[2] != nullptr) {
+                const TensorInfo bias = *at[2];
+                const std::string spread = broadcast(bias, {last}, shape);
+                out = elementwise(
+                    Elementwise::Add, {{out, shape, dtype}, {spread, shape, dtype}}, shape, dtype);
+            }
+            return out;
+        }
+        if (implementation == "torch.nn.functional.scaled_dot_product_attention" &&
+            operands.size() == 5 && at[0] != nullptr && at[1] != nullptr && at[2] != nullptr &&
+            at[3] != nullptr) {
+            return attention(*at[0], *at[1], *at[2], *at[3], at[4], shape, dtype);
+        }
+        return std::nullopt;
+    }
+
     std::string finish(const std::vector<TensorInfo>& results,
                        const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
@@ -431,6 +476,85 @@ public:
 
 private:
     std::string fresh() { return "%" + std::to_string(next_++); }
+
+    std::string dot_general(const TensorInfo& lhs,
+                            const TensorInfo& rhs,
+                            const Dims& lhs_batch,
+                            const Dims& rhs_batch,
+                            const Dims& lhs_contract,
+                            const Dims& rhs_contract,
+                            const Dims& shape,
+                            ScalarKind dtype) {
+        const std::string numbers =
+            "dot_dimension_numbers = #stablehlo.dot<lhs_batching_dimensions = " +
+            i64_list(lhs_batch) + ", rhs_batching_dimensions = " + i64_list(rhs_batch) +
+            ", lhs_contracting_dimensions = " + i64_list(lhs_contract) +
+            ", rhs_contracting_dimensions = " + i64_list(rhs_contract) + ">";
+        return emit("dot_general", {lhs, rhs}, numbers, shape, dtype);
+    }
+
+    static std::string i64_list(const Dims& dims) {
+        std::string out = "[";
+        for (std::size_t i = 0; i < dims.size(); ++i) {
+            out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
+        }
+        return out + "]";
+    }
+
+    // `std.nn.attention::attention` as two `dot_general`s around a softmax
+    // in f32, exactly the canonical body's arithmetic.
+    std::string attention(const TensorInfo& query,
+                          const TensorInfo& key,
+                          const TensorInfo& value,
+                          const TensorInfo& scale,
+                          const TensorInfo* mask,
+                          const Dims& shape,
+                          ScalarKind dtype) {
+        const ScalarKind f32 = ScalarKind::F32;
+        const auto as_f32 = [&](const TensorInfo& t) -> TensorInfo {
+            return t.dtype == f32 ? t : TensorInfo{convert(t, f32), t.shape, f32};
+        };
+        const TensorInfo q = as_f32(query);
+        const TensorInfo k = as_f32(key);
+        const TensorInfo v = as_f32(value);
+        const Dims batch{0, 1};
+        const Dims scores_shape{q.shape[0], q.shape[1], q.shape[2], k.shape[2]};
+        TensorInfo scores{
+            dot_general(q, k, batch, batch, {3}, {3}, scores_shape, f32), scores_shape, f32};
+        const TensorInfo spread_scale{
+            broadcast(as_f32(scale), {}, scores_shape), scores_shape, f32};
+        scores = {elementwise(Elementwise::Mul, {scores, spread_scale}, scores_shape, f32),
+                  scores_shape,
+                  f32};
+        if (mask != nullptr) {
+            Literal lowest;
+            lowest.kind = Literal::Kind::Real;
+            lowest.real = -1e30;
+            const TensorInfo fill{constant(lowest, f32), {}, f32};
+            const TensorInfo spread_mask{
+                broadcast(*mask, {2, 3}, scores_shape), scores_shape, ScalarKind::Bool};
+            const TensorInfo spread_fill{broadcast(fill, {}, scores_shape), scores_shape, f32};
+            scores = {
+                select(spread_mask, scores, spread_fill, scores_shape, f32), scores_shape, f32};
+        }
+        const Dims rows{q.shape[0], q.shape[1], q.shape[2]};
+        const TensorInfo peak{reduce(Reduction::Max, scores, {3}, rows), rows, f32};
+        const TensorInfo spread_peak{broadcast(peak, {0, 1, 2}, scores_shape), scores_shape, f32};
+        const TensorInfo shifted{
+            elementwise(Elementwise::Sub, {scores, spread_peak}, scores_shape, f32),
+            scores_shape,
+            f32};
+        const TensorInfo exps{
+            elementwise(Elementwise::Exp, {shifted}, scores_shape, f32), scores_shape, f32};
+        const TensorInfo total{reduce(Reduction::Sum, exps, {3}, rows), rows, f32};
+        const TensorInfo spread_total{broadcast(total, {0, 1, 2}, scores_shape), scores_shape, f32};
+        const TensorInfo weights{
+            elementwise(Elementwise::Div, {exps, spread_total}, scores_shape, f32),
+            scores_shape,
+            f32};
+        const std::string mixed = dot_general(weights, v, batch, batch, {3}, {2}, shape, f32);
+        return dtype == f32 ? mixed : convert({mixed, shape, f32}, dtype);
+    }
 
     std::string emit(const std::string& op,
                      const std::vector<TensorInfo>& operands,

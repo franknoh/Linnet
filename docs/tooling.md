@@ -131,6 +131,14 @@ grid. What StableHLO cannot express as captured is reported as an error, never
 approximated. `python/linnet_torch/tests/test_stablehlo.py` compiles the output
 with XLA and checks it against the PyTorch materializer.
 
+Both exporters take `--numerics exact|equivalent` (default `equivalent`):
+library operations whose selected implementation the format has an operator
+for are spelled with it — contractions (`std.linalg::matmul`, `linear`) as
+`dot_general` / `MatMul`, attention as two contractions around a softmax,
+and in ONNX `Softmax`, `LayerNormalization`, `Gelu`, `Sigmoid`, `Relu` —
+while `exact` keeps every canonical body. `linnet explain` lists the
+choices.
+
 ## `linnet onnx`
 
 ```bash
