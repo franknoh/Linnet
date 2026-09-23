@@ -19,6 +19,7 @@ mapping stop the import with a diagnostic naming every one of them.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from collections.abc import Callable, Sequence
@@ -493,6 +494,7 @@ class _Translator:
         self.constants: dict[str, Any] = {}  # values known at import time
         self.unsupported: list[str] = []
         self.notes: list[str] = []
+        self.producers: dict[str, Any] = {}  # ONNX value name -> the node computing it
 
     # ---- driver
 
@@ -555,6 +557,9 @@ class _Translator:
             inputs.append((_identifier(info.name), value))
             self.values[info.name] = value
 
+        for node in self.graph.node:
+            for output in node.output:
+                self.producers[output] = node
         for node in self.graph.node:
             self._translate(node)
         if self.unsupported:
@@ -1167,6 +1172,10 @@ def _binary(t: _Translator, node: Any) -> None:
         }[node.op_type](arrays[0], arrays[1])  # fmt: skip
         _fold_constant(t, node, np.asarray(folded, dtype=arrays[0].dtype))
         return
+    recovered = _recover(t, node)
+    if recovered is not None:
+        t.define(node, recovered)
+        return
     left, right = t.operand(node, 0), t.operand(node, 1)
     t.define(
         node,
@@ -1445,6 +1454,175 @@ def _slice(t: _Translator, node: Any) -> None:
         node,
         t.builder.op("slice", [source], t.result(node), {"axes": per_axis}, name=node.output[0]),
     )
+
+
+# ---- exact pattern recovery
+#
+# Exporters spell library operations out: PyTorch writes an RMS norm as
+# `Mul(Mul(x, Reciprocal(Sqrt(Add(ReduceMean(Pow(x, 2)), eps)))), w)`, SiLU
+# as `Mul(x, Sigmoid(x))`, and a softmax written by hand as
+# `Div(Exp(Sub(x, ReduceMax(x))), ReduceSum(Exp(...)))`. When a node
+# completes one of those shapes over the same operand, the import emits the
+# standard-library operation instead; the nodes it replaces become dead and
+# are dropped, and every recovery is recorded in the notes. The check is
+# structural — operation types, shared operands, the axis, the constants —
+# so nothing is recovered by name or by approximation.
+#
+# A pattern is a variable name (binds the ONNX value on first sight, must be
+# the same value afterwards), a `_Const` (a splat constant with that value,
+# or any splat constant bound under `name`), `("reduce", op_type, operand)`
+# for a keepdims reduction over the last axis, `("any", *patterns)` for
+# alternatives, or `("<OpType>", *operand patterns)`; commutative operations
+# match in either operand order.
+
+
+@dataclass(frozen=True)
+class _Const:
+    value: float | None = None
+    name: str | None = None
+
+
+_Pattern = str | _Const | tuple[Any, ...]
+_COMMUTATIVE = {"Add", "Mul", "Max", "Min"}
+
+
+class _Matcher:
+    def __init__(self, t: _Translator) -> None:
+        self.t = t
+        self.bound: dict[str, str] = {}
+
+    def splat(self, name: str) -> float | None:
+        array = self.t.constants.get(self.bound[name])
+        if array is None or array.size == 0 or not np.all(array == array.flat[0]):
+            return None
+        return float(array.flat[0])
+
+    def match(self, name: str, pattern: _Pattern) -> bool:
+        if isinstance(pattern, str):
+            if pattern in self.bound:
+                return self.bound[pattern] == name
+            self.bound[pattern] = name
+            return True
+        if isinstance(pattern, _Const):
+            if name not in self.t.constants or name in self.t.parameters:
+                return False
+            if pattern.name is not None:
+                self.bound[pattern.name] = name
+            splat = self.splat(pattern.name) if pattern.name is not None else None
+            if pattern.value is not None:
+                array = self.t.constants[name]
+                if not np.all(array == array.flat[0]):
+                    return False
+                splat = float(array.flat[0])
+                return math.isclose(splat, pattern.value, rel_tol=1e-6, abs_tol=1e-12)
+            return splat is not None
+        kind, *operands = pattern
+        if kind == "any":
+            for alternative in operands:
+                saved = dict(self.bound)
+                if self.match(name, alternative):
+                    return True
+                self.bound = saved
+            return False
+        node = self.t.producers.get(name)
+        if node is None:
+            return False
+        if kind == "reduce":
+            return (
+                node.op_type == operands[0]
+                and self._last_axis(node)
+                and self.match(node.input[0], operands[1])
+            )
+        if node.op_type != kind:
+            return False
+        inputs = [n for n in node.input if n]
+        if len(inputs) != len(operands):
+            return False
+        if kind in _COMMUTATIVE and len(operands) == 2:
+            saved = dict(self.bound)
+            if self.match(inputs[0], operands[0]) and self.match(inputs[1], operands[1]):
+                return True
+            self.bound = saved
+            return self.match(inputs[0], operands[1]) and self.match(inputs[1], operands[0])
+        return all(self.match(n, p) for n, p in zip(inputs, operands, strict=True))
+
+    def _last_axis(self, node: Any) -> bool:
+        """A keepdims reduction over exactly the last axis of its operand."""
+        try:
+            rank = len(self.t.type_of(node.input[0]).shape)
+            axes = self.t.attr(node, "axes")
+            if axes is None:
+                if len(node.input) < 2 or not node.input[1]:
+                    return False
+                axes = self.t.dims_of(node.input[1])
+        except OnnxImportError:
+            return False
+        normalized = sorted(int(a) % rank for a in axes)
+        return normalized == [rank - 1] and int(self.t.attr(node, "keepdims", 1)) == 1
+
+
+_SQUARE: _Pattern = ("any", ("Mul", "x", "x"), ("Pow", "x", _Const(2.0)))
+_VARIANCE: _Pattern = ("Add", ("reduce", "ReduceMean", _SQUARE), _Const(name="eps"))
+_RSQRT: _Pattern = (
+    "any",
+    ("Reciprocal", ("Sqrt", _VARIANCE)),
+    ("Div", _Const(1.0), ("Sqrt", _VARIANCE)),
+    ("Pow", _VARIANCE, _Const(-0.5)),
+)
+_RMS_NORM: _Pattern = (
+    "Mul",
+    ("any", ("Mul", "x", _RSQRT), ("Div", "x", ("Sqrt", _VARIANCE))),
+    "w",
+)
+_SILU: _Pattern = ("Mul", "x", ("Sigmoid", "x"))
+_SOFTMAX: _Pattern = ("Div", "e", ("reduce", "ReduceSum", "e"))
+_SOFTMAX_NUMERATOR: _Pattern = ("Exp", ("Sub", "x", ("reduce", "ReduceMax", "x")))
+
+
+def _recover(t: _Translator, node: Any) -> _Value | None:
+    """The library operation whose decomposition `node` completes, if any."""
+    result = node.output[0]
+    kind = t.result(node)
+    dims = [t.symbols.json(d) for d in kind.shape]
+
+    def recovered(name: str, generics: list[dict[str, Any]], operands: list[_Value]) -> _Value:
+        t.notes.append(f"recovered {name} from its decomposition")
+        module = {"softmax": "std.nn.softmax", "rms_norm": "std.nn.norm"}.get(
+            name, "std.nn.activations"
+        )
+        return t.builder.call(f"{module}::{name}", generics, operands, kind)
+
+    def source(m: _Matcher, name: str) -> _Value | None:
+        value = t.values.get(m.bound[name])
+        return value if value is not None and value.type.shape == kind.shape else None
+
+    if node.op_type == "Mul":
+        m = _Matcher(t)
+        if m.match(result, _SILU):
+            x = source(m, "x")
+            if x is not None:
+                return recovered("silu", [{"shape": dims}, {"dtype": kind.dtype}], [x])
+        m = _Matcher(t)
+        if m.match(result, _RMS_NORM) and kind.shape:
+            x, eps = source(m, "x"), m.splat("eps")
+            w = t.values.get(m.bound["w"])
+            if (
+                x is not None
+                and eps is not None
+                and w is not None
+                and w.type.shape == kind.shape[-1:]
+            ):
+                generics = [{"shape": dims[:-1]}, {"dim": dims[-1]}, {"dtype": kind.dtype}]
+                epsilon = t.builder.const(eps, "f32")
+                return recovered("rms_norm", generics, [x, w, epsilon])
+    if node.op_type == "Div":
+        m = _Matcher(t)
+        if m.match(result, _SOFTMAX) and m.match(m.bound["e"], _SOFTMAX_NUMERATOR) and kind.shape:
+            x = source(m, "x")
+            if x is not None:
+                generics = [{"shape": dims[:-1]}, {"dim": dims[-1]}, {"dtype": kind.dtype}]
+                return recovered("softmax", generics, [x])
+    return None
 
 
 # ---- contractions and reductions

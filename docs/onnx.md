@@ -40,6 +40,16 @@ formatted source; the result is checked before it is written.
   operand is a matrix); `Softmax`, `LayerNormalization`, `Gelu` (tanh),
   `Sigmoid`, and `Relu` as their standard-library operations; `Gather` along
   axis 0 as an element lookup; the `Reduce*` family as comprehensions.
+- **Recovered decompositions.** Exporters spell some library operations out
+  as primitives. The importer recognizes the shapes it knows and emits the
+  library operation instead: PyTorch's RMS norm (`Mul(Mul(x,
+  Reciprocal(Sqrt(Add(ReduceMean(Pow(x, 2)), eps)))), w)` and its `Div`,
+  `Mul(x, x)`, and `Pow(-0.5)` spellings) becomes `std.nn.norm::rms_norm`,
+  `Mul(x, Sigmoid(x))` becomes `silu`, and `Div(Exp(Sub(x, ReduceMax(x))),
+  ReduceSum(Exp(...)))` over the last axis becomes `softmax`. The match is
+  structural — the same operation types, the same operands, the axis, and
+  the constants — so a variant is left as written, and every recovery is
+  listed in `result.notes`; the replaced nodes are dropped as dead code.
 
 Anything else — `Erf`, custom domains, `Gather` on other axes, symbolic
 broadcasting the checker cannot prove — stops the import with a message
