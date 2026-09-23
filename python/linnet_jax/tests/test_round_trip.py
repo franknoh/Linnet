@@ -4,7 +4,6 @@ in JAX through the same `load`."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -19,15 +18,6 @@ from linnet_jax import ExportError, export_linnet, find_compiler, import_stableh
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
 EXAMPLES = REPO / "examples"
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _compiler_ok(*args: str) -> None:
@@ -65,7 +55,7 @@ def forward(params: dict[str, Any], tokens: Any) -> Any:
     return jax.nn.silu(x @ params["head"])
 
 
-def _init(key: Any) -> dict[str, Any]:
+def init_params(key: Any) -> dict[str, Any]:
     keys = jax.random.split(key, 8)
     scale = 0.3
 
@@ -90,7 +80,7 @@ def _init(key: Any) -> dict[str, Any]:
 
 
 def test_transformer_round_trip(tmp_path: Path) -> None:
-    params = _init(jax.random.PRNGKey(0))
+    params = init_params(jax.random.PRNGKey(0))
     tokens = jnp.array([[1, 4, 7, 2, 9], [3, 3, 0, 10, 5]], dtype=jnp.int32)
     result = export_linnet(
         forward,
@@ -126,7 +116,7 @@ def test_import_stablehlo_text(tmp_path: Path) -> None:
     """A StableHLO module from `jax.export`, with only the parameter tree's
     shapes, imports to the same source `export_linnet` writes; a layer stack
     keyed 0..n-1 is a sub array like a list."""
-    params = _init(jax.random.PRNGKey(0))
+    params = init_params(jax.random.PRNGKey(0))
     params["layers"] = {str(i): layer for i, layer in enumerate(params["layers"])}
     tokens = jnp.array([[1, 4, 7, 2, 9]], dtype=jnp.int32)
     text = jax.export.export(jax.jit(forward))(params, tokens).mlir_module()

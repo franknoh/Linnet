@@ -11,9 +11,10 @@ has no VJP.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -89,8 +90,11 @@ class LinnetFunction:
         entry: str,
     ) -> None:
         self._source = source
-        self._generics = dict(generics)
-        self._weights = weights
+        self.plan = plan
+        self.generics = dict(generics)
+        self._generics = self.generics
+        self.weights = weights
+        self._weights = self.weights
         self._std_root = std_root
         self.root = root
         self.entry = entry
@@ -102,7 +106,7 @@ class LinnetFunction:
         manifest = cast(list[dict[str, Any]], plan["manifest"])
         self.parameter_paths: list[str] = [entry["path"] for entry in manifest]
         self.optional_paths: set[str] = {e["path"] for e in manifest if e["optional"]}
-        self._cache: dict[tuple[Any, ...], Callable[..., Any]] = {}
+        self._cache: dict[tuple[Any, ...], tuple[list[str], Any]] = {}
         self._check_weights(manifest)
 
     def _check_weights(self, manifest: list[dict[str, Any]]) -> None:
@@ -155,7 +159,8 @@ class LinnetFunction:
                     )
         return bindings
 
-    def _compile(self, bindings: Mapping[str, int | str]) -> Callable[..., Any]:
+    def _compile(self, bindings: Mapping[str, int | str]) -> tuple[list[str], Any]:
+        """The compiled entry and the parameter paths it takes after the inputs."""
         arguments = ["stablehlo", "--root", self.root, "--entry", self.entry]
         arguments += ["--optionals", "present" if self.optionals_present else "absent"]
         for name, value in bindings.items():
@@ -165,20 +170,23 @@ class LinnetFunction:
         missing = [path for path in paths if path not in self._weights]
         if missing:
             raise LinnetError("missing weights: " + ", ".join(missing))
-        exported = _wrap_module(text)
-        parameters = [jnp.asarray(self._weights[path]) for path in paths]
+        return paths, _wrap_module(text)
 
-        def call(*inputs: Any) -> Any:
-            return exported.call(*inputs, *parameters)
-
-        return call
-
-    def __call__(self, *inputs: Any) -> Any:
+    def apply(self, parameters: Mapping[str, Any], *inputs: Any) -> Any:
+        """Runs the entry with `parameters` (path -> array) in place of the
+        loaded weights, so a framework module can own the arrays."""
         bindings = self._bindings_for(inputs)
         key = tuple(sorted(bindings.items()))
         if key not in self._cache:
             self._cache[key] = self._compile(bindings)
-        return self._cache[key](*inputs)
+        paths, exported = self._cache[key]
+        missing = [path for path in paths if path not in parameters]
+        if missing:
+            raise LinnetError("missing parameters: " + ", ".join(missing))
+        return exported.call(*inputs, *[jnp.asarray(parameters[path]) for path in paths])
+
+    def __call__(self, *inputs: Any) -> Any:
+        return self.apply(self._weights, *inputs)
 
 
 def _wrap_module(text: str) -> Any:
@@ -212,27 +220,33 @@ def _wrap_module(text: str) -> Any:
     in_tree = tree_flatten((tuple(0 for _ in in_avals), {}))[1]
     out_tree = tree_flatten(0 if len(out_avals) == 1 else tuple(0 for _ in out_avals))[1]
     exported_type: Any = export.Exported
-    return exported_type(
-        fun_name="main",
-        in_tree=in_tree,
-        in_avals=in_avals,
-        out_tree=out_tree,
-        out_avals=out_avals,
-        _in_named_shardings=(None,) * len(in_avals),
-        _out_named_shardings=(None,) * len(out_avals),
-        in_shardings_hlo=(None,) * len(in_avals),
-        out_shardings_hlo=(None,) * len(out_avals),
-        nr_devices=1,
-        platforms=(jax.default_backend(),),
-        ordered_effects=(),
-        unordered_effects=(),
-        disabled_safety_checks=(),
-        mlir_module_serialized=serialized,
-        calling_convention_version=cast(Any, export).maximum_supported_calling_convention_version,
-        module_kept_var_idx=tuple(range(len(in_avals))),
-        uses_global_constants=False,
-        _get_vjp=None,
-    )
+    fields = {
+        "fun_name": "main",
+        "in_tree": in_tree,
+        "in_avals": in_avals,
+        "out_tree": out_tree,
+        "out_avals": out_avals,
+        "_has_named_shardings": False,  # older jax only
+        "_in_named_shardings": (None,) * len(in_avals),
+        "_out_named_shardings": (None,) * len(out_avals),
+        "in_shardings_hlo": (None,) * len(in_avals),
+        "out_shardings_hlo": (None,) * len(out_avals),
+        "nr_devices": 1,
+        "platforms": (jax.default_backend(),),
+        "ordered_effects": (),
+        "unordered_effects": (),
+        "disabled_safety_checks": (),
+        "mlir_module_serialized": serialized,
+        "calling_convention_version": cast(
+            Any, export
+        ).maximum_supported_calling_convention_version,
+        "module_kept_var_idx": tuple(range(len(in_avals))),
+        "uses_global_constants": False,
+        "_get_vjp": None,
+    }
+    # The dataclass gained and lost private fields across jax releases.
+    names = {f.name for f in dataclasses.fields(exported_type)}
+    return exported_type(**{k: v for k, v in fields.items() if k in names})
 
 
 def load(

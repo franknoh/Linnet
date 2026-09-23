@@ -90,6 +90,27 @@ constant stays spelled out, and every recovery is listed in
 `ExportResult.notes`. The primitives it replaces are dropped by `linnet
 emit` as dead code.
 
+## Flax NNX
+
+```python
+from linnet_jax import load_nnx
+
+model = load_nnx("src/model.linnet", generics={...}, weights="weights/", std_root="stdlib")
+logits = model(tokens)
+graphdef, state = nnx.split(model)   # state paths are the parameter paths
+```
+
+`to_nnx(function)` (and `load_nnx`, which is `load` followed by it) mirrors
+the block hierarchy as nested `nnx.Module`s: each `param` is an `nnx.Param`,
+each `buffer` an `nnx.Variable`, a `sub` member a child module, and a sub
+array an `nnx.List`, so `layers.0.attn.q` in the source is `layers/0/attn/q`
+in the module's state. Calling the module gathers the arrays it holds and
+runs the compiled entry on them (`LinnetFunction.apply(parameters,
+*inputs)` does the same from a plain mapping), so state that went through
+`nnx.split`/`nnx.merge`, a checkpoint, or sharding is what the call uses.
+Absent optional parameters are `None`. The entry has no VJP, so the module
+is for inference.
+
 ## Round trip
 
 `tests/test_round_trip.py` exports a small transformer written with `jnp`,
