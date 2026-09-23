@@ -6,7 +6,18 @@ std::vector<NativeCandidate> torch_candidates() {
     // Each library call reorders or fuses floating-point arithmetic relative
     // to the `.linnet` body, so results agree only up to rounding.
     const Legality equivalent = Legality::NumericallyEquivalent;
+    // `(input dtype)` variants skip the canonical f32 accumulation and run
+    // the kernel in the tensor's own dtype: faster in bf16, within rounding
+    // of the body only approximately.
+    const Legality fast = Legality::Approximate;
     return {
+        {"std.nn.softmax::softmax", "torch.softmax(input dtype)", fast, {}},
+        {"std.nn.norm::rms_norm", "torch.rms_norm(input dtype)", fast, {}},
+        {"std.nn.norm::layer_norm", "torch.nn.functional.layer_norm(input dtype)", fast, {}},
+        {"std.nn.attention::attention",
+         "torch.nn.functional.scaled_dot_product_attention(input dtype)",
+         fast,
+         {"mask is boolean with true meaning attend"}},
         {"std.linalg::matmul", "torch.matmul", equivalent, {}},
         {"std.linalg::batched_matmul", "torch.matmul", equivalent, {}},
         {"std.nn.linear::linear", "torch.nn.functional.linear", equivalent, {}},
@@ -28,14 +39,14 @@ namespace {
 
 const char* canonical_name = "canonical decomposition";
 
-// The candidate of highest allowed strength; null for the decomposition.
+// The most permissive candidate the policy allows; null for the decomposition.
 const NativeCandidate* choose(const std::string& semantic_op,
                               const std::vector<NativeCandidate>& registry,
                               Legality allowed) {
     const NativeCandidate* best = nullptr;
     for (const NativeCandidate& candidate : registry) {
         if (candidate.semantic_op == semantic_op && candidate.legality <= allowed &&
-            (best == nullptr || candidate.legality < best->legality)) {
+            (best == nullptr || candidate.legality > best->legality)) {
             best = &candidate;
         }
     }
@@ -81,6 +92,9 @@ std::optional<Legality> parse_legality(std::string_view text) {
     }
     if (text == "equivalent") {
         return Legality::NumericallyEquivalent;
+    }
+    if (text == "fast") {
+        return Legality::Approximate;
     }
     return std::nullopt;
 }

@@ -88,8 +88,10 @@ class LinnetFunction:
         std_root: str | Path | None,
         root: str,
         entry: str,
+        numerics: str = "equivalent",
     ) -> None:
         self._source = source
+        self.numerics = numerics
         self.plan = plan
         self.generics = dict(generics)
         self._generics = self.generics
@@ -161,6 +163,7 @@ class LinnetFunction:
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
         arguments = ["stablehlo", "--root", self.root, "--entry", self.entry]
+        arguments += ["--numerics", self.numerics]
         arguments += ["--optionals", "present" if self.optionals_present else "absent"]
         for name, value in bindings.items():
             arguments += ["--bind", f"{name}={value}"]
@@ -325,6 +328,7 @@ def load(
     entry: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
+    numerics: str = "equivalent",
 ) -> LinnetFunction:
     """Materializes the entry of a root block as a JAX callable.
 
@@ -333,7 +337,14 @@ def load(
     parameter path to array, a `.safetensors` file, or a directory of them;
     `bindings` is an optional JSON file mapping parameter paths to tensor
     names in the weights.
+
+    `numerics` is `"exact"` (every library operation is its canonical
+    decomposition), `"equivalent"` (the default: StableHLO spellings that
+    agree with it up to rounding), or `"fast"` (softmax, normalization, and
+    attention accumulate in the input dtype instead of f32).
     """
+    if numerics not in ("exact", "equivalent", "fast"):
+        raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
     source_path = Path(source)
     plan_arguments = ["plan", "--no-optimize"]
     if root is not None:
@@ -360,7 +371,9 @@ def load(
             **loaded,
             **{path: loaded[name] for path, name in mapping.items() if name in loaded},
         }
-    return LinnetFunction(source_path, plan, generics, loaded, std_root, root_name, entry_name)
+    return LinnetFunction(
+        source_path, plan, generics, loaded, std_root, root_name, entry_name, numerics
+    )
 
 
 __all__ = ["LinnetFunction", "load"]

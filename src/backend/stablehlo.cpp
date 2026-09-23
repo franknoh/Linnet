@@ -401,7 +401,12 @@ public:
                                            const Dims& shape,
                                            ScalarKind dtype) override {
         // Contractions become `dot_general`; everything else keeps its
-        // canonical body, which XLA fuses well on its own.
+        // canonical body, which XLA fuses well on its own. `(input dtype)`
+        // attention skips the f32 accumulation.
+        const std::string suffix = "(input dtype)";
+        const bool fast = implementation.ends_with(suffix);
+        const std::string implementation_base =
+            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
         std::vector<const TensorInfo*> at;
         at.reserve(operands.size());
         for (const std::optional<TensorInfo>& operand : operands) {
@@ -432,10 +437,10 @@ public:
             }
             return out;
         }
-        if (implementation == "torch.nn.functional.scaled_dot_product_attention" &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5 && at[0] != nullptr && at[1] != nullptr && at[2] != nullptr &&
             at[3] != nullptr) {
-            return attention(*at[0], *at[1], *at[2], *at[3], at[4], shape, dtype);
+            return attention(*at[0], *at[1], *at[2], *at[3], at[4], shape, dtype, fast);
         }
         return std::nullopt;
     }
@@ -597,15 +602,17 @@ private:
     }
 
     // `std.nn.attention::attention` as two `dot_general`s around a softmax
-    // in f32, exactly the canonical body's arithmetic.
+    // in f32, exactly the canonical body's arithmetic; `fast` keeps the
+    // input dtype throughout instead.
     std::string attention(const TensorInfo& query,
                           const TensorInfo& key,
                           const TensorInfo& value,
                           const TensorInfo& scale,
                           const TensorInfo* mask,
                           const Dims& shape,
-                          ScalarKind dtype) {
-        const ScalarKind f32 = ScalarKind::F32;
+                          ScalarKind dtype,
+                          bool fast) {
+        const ScalarKind f32 = fast ? dtype : ScalarKind::F32;
         const auto as_f32 = [&](const TensorInfo& t) -> TensorInfo {
             return t.dtype == f32 ? t : TensorInfo{convert(t, f32), t.shape, f32};
         };

@@ -35,6 +35,11 @@ An entry that touches `state` is called with `state=` and returns the new
 state: `out, state = f(x, state=state)`, both mappings by parameter path,
 missing inputs starting at zeros.
 
+`numerics` defaults to `"equivalent"`: library operations become the
+StableHLO spellings XLA fuses well. `"exact"` keeps every canonical body;
+`"fast"` lets softmax, normalization, and attention accumulate in the input
+dtype, as Flax reference models do on `bf16`. All three loaders take it.
+
 ## load_source and training
 
 ```python

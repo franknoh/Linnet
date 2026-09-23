@@ -160,25 +160,29 @@ public:
                                            const std::vector<std::optional<TensorInfo>>& operands,
                                            const Dims& shape,
                                            ScalarKind dtype) override {
-        // Library operations with an ONNX operator of the same meaning.
+        // Library operations with an ONNX operator of the same meaning;
+        // `(input dtype)` variants skip the f32 casts.
+        const std::string suffix = "(input dtype)";
+        const bool fast = implementation.ends_with(suffix);
+        const std::string implementation_base =
+            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
+        const ScalarKind acc = fast ? dtype : ScalarKind::F32;
         std::vector<const TensorInfo*> at;
         at.reserve(operands.size());
         for (const std::optional<TensorInfo>& operand : operands) {
             at.push_back(operand.has_value() ? &*operand : nullptr);
         }
         const auto f32 = [&](const TensorInfo& t) -> TensorInfo {
-            return t.dtype == ScalarKind::F32
-                       ? t
-                       : TensorInfo{convert(t, ScalarKind::F32), t.shape, ScalarKind::F32};
+            return t.dtype == acc ? t : TensorInfo{convert(t, acc), t.shape, acc};
         };
         const auto back = [&](const std::string& name, const Dims& s) -> std::string {
-            return dtype == ScalarKind::F32 ? name : convert({name, s, ScalarKind::F32}, dtype);
+            return dtype == acc ? name : convert({name, s, acc}, dtype);
         };
-        if (implementation == "torch.matmul" && operands.size() == 2 && at[0] != nullptr &&
+        if (implementation_base == "torch.matmul" && operands.size() == 2 && at[0] != nullptr &&
             at[1] != nullptr) {
             return node("MatMul", {*at[0], *at[1]}, "", shape, dtype);
         }
-        if (implementation == "torch.nn.functional.linear" && operands.size() == 3 &&
+        if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
             const TensorInfo& weight = *at[1];
             const Dims transposed{weight.shape[1], weight.shape[0]};
@@ -189,11 +193,11 @@ public:
             }
             return out;
         }
-        if (implementation == "torch.softmax" && operands.size() == 1 && at[0] != nullptr) {
+        if (implementation_base == "torch.softmax" && operands.size() == 1 && at[0] != nullptr) {
             const TensorInfo x = f32(*at[0]);
-            return back(node("Softmax", {x}, "axis = -1", shape, ScalarKind::F32), shape);
+            return back(node("Softmax", {x}, "axis = -1", shape, acc), shape);
         }
-        if (implementation == "torch.nn.functional.layer_norm" && operands.size() == 4 &&
+        if (implementation_base == "torch.nn.functional.layer_norm" && operands.size() == 4 &&
             at[0] != nullptr && at[1] != nullptr) {
             const TensorInfo x = f32(*at[0]);
             const TensorInfo weight = f32(*at[1]);
@@ -205,24 +209,21 @@ public:
             if (at[2] != nullptr) {
                 inputs.push_back(f32(*at[2]));
             }
-            const std::string normalized = node("LayerNormalization",
-                                                inputs,
-                                                "axis = -1, epsilon = " + epsilon,
-                                                shape,
-                                                ScalarKind::F32);
+            const std::string normalized =
+                node("LayerNormalization", inputs, "axis = -1, epsilon = " + epsilon, shape, acc);
             return back(normalized, shape);
         }
-        if (implementation == "torch.nn.functional.gelu(tanh)" && operands.size() == 1 &&
+        if (implementation_base == "torch.nn.functional.gelu(tanh)" && operands.size() == 1 &&
             at[0] != nullptr) {
             return node("Gelu", {*at[0]}, "approximate = \"tanh\"", shape, dtype);
         }
-        if (implementation == "torch.sigmoid" && operands.size() == 1 && at[0] != nullptr) {
+        if (implementation_base == "torch.sigmoid" && operands.size() == 1 && at[0] != nullptr) {
             return node("Sigmoid", {*at[0]}, "", shape, dtype);
         }
-        if (implementation == "torch.relu" && operands.size() == 1 && at[0] != nullptr) {
+        if (implementation_base == "torch.relu" && operands.size() == 1 && at[0] != nullptr) {
             return node("Relu", {*at[0]}, "", shape, dtype);
         }
-        if (implementation == "torch.nn.functional.scaled_dot_product_attention" &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5) {
             const TensorInfo* query = at[0];
             const TensorInfo* key = at[1];
@@ -237,28 +238,21 @@ public:
             const TensorInfo k = f32(*key);
             const TensorInfo v = f32(*value);
             const Dims kt_shape{k.shape[0], k.shape[1], k.shape[3], k.shape[2]};
-            const TensorInfo kt{transpose(k, {0, 1, 3, 2}, kt_shape), kt_shape, ScalarKind::F32};
+            const TensorInfo kt{transpose(k, {0, 1, 3, 2}, kt_shape), kt_shape, acc};
             const Dims scores_shape{q.shape[0], q.shape[1], q.shape[2], k.shape[2]};
-            TensorInfo scores{node("MatMul", {q, kt}, "", scores_shape, ScalarKind::F32),
-                              scores_shape,
-                              ScalarKind::F32};
-            scores = {node("Mul", {scores, f32(*scale)}, "", scores_shape, ScalarKind::F32),
-                      scores_shape,
-                      ScalarKind::F32};
+            TensorInfo scores{node("MatMul", {q, kt}, "", scores_shape, acc), scores_shape, acc};
+            scores = {node("Mul", {scores, f32(*scale)}, "", scores_shape, acc), scores_shape, acc};
             if (mask != nullptr) {
                 Literal lowest;
                 lowest.kind = Literal::Kind::Real;
                 lowest.real = -1e30;
-                const TensorInfo fill{constant(lowest, ScalarKind::F32), {}, ScalarKind::F32};
-                scores = {node("Where", {*mask, scores, fill}, "", scores_shape, ScalarKind::F32),
-                          scores_shape,
-                          ScalarKind::F32};
+                const TensorInfo fill{constant(lowest, acc), {}, acc};
+                scores = {
+                    node("Where", {*mask, scores, fill}, "", scores_shape, acc), scores_shape, acc};
             }
             const TensorInfo weights{
-                node("Softmax", {scores}, "axis = -1", scores_shape, ScalarKind::F32),
-                scores_shape,
-                ScalarKind::F32};
-            return back(node("MatMul", {weights, v}, "", shape, ScalarKind::F32), shape);
+                node("Softmax", {scores}, "axis = -1", scores_shape, acc), scores_shape, acc};
+            return back(node("MatMul", {weights, v}, "", shape, acc), shape);
         }
         return std::nullopt;
     }

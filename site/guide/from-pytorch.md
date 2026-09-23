@@ -71,6 +71,10 @@ model = load("src/block.linnet",
              compile="inductor")               # generated source under torch.compile
 ```
 
+`numerics="fast"` goes one step further and runs softmax, normalization, and
+attention in the input dtype, as PyTorch reference models do on `bf16`;
+`"equivalent"` accumulates them in f32 like the canonical definitions.
+
 `print(model)` shows a module tree with the Linnet block names and shapes;
 `model.state_dict()` uses the Linnet paths, so checkpoints move in both
 directions. `trainable=True` turns on gradients and any `torch.optim`

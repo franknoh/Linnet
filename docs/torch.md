@@ -75,6 +75,7 @@ What `load` does:
 | --- | --- |
 | `numerics="exact"` (default) | library operations run as their canonical `.linnet` bodies |
 | `numerics="equivalent"` | library operations dispatch to PyTorch kernels (`F.linear`, `scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`) that agree up to rounding |
+| `numerics="fast"` | the same kernels run in the input dtype; softmax, normalization, and attention no longer accumulate in f32, matching PyTorch reference models on `bf16` |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape |
 | `compile="inductor"` | the same, passed through `torch.compile` |
 | `trainable=True` | parameters require gradients |

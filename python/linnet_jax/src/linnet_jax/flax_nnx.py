@@ -134,6 +134,7 @@ def load_nnx(
     entry: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
+    numerics: str = "equivalent",
 ) -> Any:
     """`load` followed by `to_nnx`."""
     return to_nnx(
@@ -145,5 +146,6 @@ def load_nnx(
             entry=entry,
             bindings=bindings,
             std_root=std_root,
+            numerics=numerics,
         )
     )

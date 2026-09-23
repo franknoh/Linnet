@@ -192,3 +192,14 @@ set_tests_properties(cli_explain PROPERTIES PASS_REGULAR_EXPRESSION "examples.mo
 add_test(NAME cli_explain_equivalent
     COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib --numerics equivalent ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_explain_equivalent PROPERTIES PASS_REGULAR_EXPRESSION "selected: torch.nn.functional.scaled_dot_product_attention")
+add_test(NAME cli_explain_fast
+    COMMAND linnet explain --std ${PROJECT_SOURCE_DIR}/stdlib --numerics fast ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
+set_tests_properties(cli_explain_fast PROPERTIES
+    PASS_REGULAR_EXPRESSION "selected: torch.nn.functional.scaled_dot_product_attention\\(input dtype\\)")
+add_test(NAME cli_torch_source_fast
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --numerics fast --entry forward --bind Vocab=11
+            --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=1 --bind Batch=2
+            --bind MaxSeq=6 --bind T=bf16 --bind B=2 --bind S=5 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
+set_tests_properties(cli_torch_source_fast PROPERTIES
+    PASS_REGULAR_EXPRESSION "F.scaled_dot_product_attention\\("
+    FAIL_REGULAR_EXPRESSION "\\.float\\(\\)")

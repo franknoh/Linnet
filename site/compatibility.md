@@ -7,7 +7,7 @@ of it is exercised by the test suites under `python/` and `tests/`.
 
 | Target | Call | Notes |
 | --- | --- | --- |
-| PyTorch | `linnet_torch.load` | interpreted Core IR, or generated source with `compile=True`; `numerics="equivalent"` selects native kernels; `trainable=True` for autograd |
+| PyTorch | `linnet_torch.load` | interpreted Core IR, or generated source with `compile=True`; `numerics="equivalent"` selects native kernels, `"fast"` the input-dtype variants; `trainable=True` for autograd |
 | JAX | `linnet_jax.load`, `load_source`, `load_nnx` | `load` compiles StableHLO with XLA (no VJP); `load_source` runs generated `jnp` code and differentiates; `load_nnx` wraps either as a Flax NNX module |
 | StableHLO | `linnet stablehlo --bind ...` | static shapes; parameters by `linnet.path`, state by `linnet.state` and `linnet.states` |
 | ONNX | `linnet onnx --bind ...` | opset 20 text format; parameters as `param<N>` with metadata, state as `state<N>` and `next_state<N>` |
