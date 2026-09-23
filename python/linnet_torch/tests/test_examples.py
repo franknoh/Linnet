@@ -75,6 +75,8 @@ def test_llama_matches_reference(tmp_path: Path) -> None:
         "KvHeads": kv_heads,
         "Inner": inner,
         "Layers": layers,
+        "Batch": 2,
+        "MaxSeq": 8,
         "T": "f32",
     }
     source = EXAMPLES / "05-llama/src/lib.linnet"
@@ -288,3 +290,36 @@ def test_clip_matches_reference(tmp_path: Path) -> None:
     torch.testing.assert_close(
         model.run_entry("embed_image", [image]), normalize(v), atol=1e-4, rtol=1e-4
     )
+
+
+def test_llama_decode_matches_full_prefix(tmp_path: Path) -> None:
+    """Decoding token by token through the KV caches gives, at every step,
+    the logits `next_token` computes over the whole prefix."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "Batch": 2,
+        "MaxSeq": 6,
+        "T": "f32",
+    }
+    source = EXAMPLES / "05-llama/src/lib.linnet"
+    model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
+    assert model.state_paths() == [
+        "layers[*].attention.cache_k",
+        "layers[*].attention.cache_v",
+    ]
+    tokens = torch.randint(0, 11, (2, 5), dtype=torch.int32)
+    for pos in range(5):
+        step = model.run_entry(
+            "decode", [tokens[:, pos : pos + 1], torch.tensor(pos, dtype=torch.int32)]
+        )
+        full = model.run_entry("next_token", [tokens[:, : pos + 1]])
+        torch.testing.assert_close(step, full, atol=1e-4, rtol=1e-4)
+    # A fresh cache restarts the sequence.
+    model.reset_state()
+    first = model.run_entry("decode", [tokens[:, :1], torch.tensor(0, dtype=torch.int32)])
+    torch.testing.assert_close(first, model.run_entry("next_token", [tokens[:, :1]]))
