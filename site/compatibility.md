@@ -37,14 +37,14 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 | Feature | PyTorch | JAX / StableHLO | ONNX |
 | --- | --- | --- | --- |
 | Symbolic shapes | bound at load, entry generics from inputs | bound per compile (`--bind`, or from inputs at call) | bound per export |
-| `static for` over sub arrays and integer ranges | ✓ | ✓ (unrolled) | ✓ (unrolled) |
-| `while` (runtime loop, scalar `bool` condition) | ✓ (also in generated source) | ✓ `stablehlo.while` | ✓ `Loop` |
-| Index notation, reductions | ✓ | ✓ | ✓ |
-| Optional parameters (`= none`) | ✓ | ✓ (`--optionals`) | ✓ |
-| Enum-typed constants and `match` | ✓ | ✓ (folded) | ✓ (folded) |
-| Tuple results | ✓ | ✓ | ✓ (one output per element) |
-| `state` members | ✓ buffers, `reset_state()` | ✓ threaded in/out | ✓ threaded in/out |
-| `std.random` (keyed Threefry PRNG) | ✓ | ✓ | ✓ (right shifts are logical) |
+| `static for` over sub arrays and integer ranges | yes | unrolled | unrolled |
+| `while` (runtime loop, scalar `bool` condition) | yes (also generated source) | `stablehlo.while` | `Loop` |
+| Index notation, reductions | yes | yes | yes |
+| Optional parameters (`= none`) | yes | `--optionals` | yes |
+| Enum-typed constants and `match` | yes | folded | folded |
+| Tuple results | yes | yes | one output per element |
+| `state` members | buffers, `reset_state()` | threaded in and out | threaded in and out |
+| `std.random` (keyed Threefry PRNG) | yes | yes | yes (right shifts are logical) |
 | dtypes | f16, bf16, f32, f64, i8–i64, u8, bool | as the backend supports | as opset 20 supports |
 
 ## Not supported (yet)
