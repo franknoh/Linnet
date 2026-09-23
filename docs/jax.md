@@ -101,6 +101,31 @@ an entry is called as `function(*inputs, state=mapping)` and returns
 missing input state starts at zeros. Entries without state keep the plain
 `function(*inputs)` shape.
 
+## Generated JAX source and training
+
+```python
+from linnet_jax import load_source
+
+f = load_source("src/model.linnet", generics={...}, weights="weights/", std_root="stdlib")
+logits = f(tokens)                                   # same call as `load`
+
+def loss(params):
+    return cross_entropy(f.apply(params, tokens), labels)
+
+grads = jax.grad(loss)(f.parameters)                 # ordinary JAX autodiff
+params = optax.apply_updates(f.parameters, updates)  # any optimizer over the dict
+```
+
+`load_source` compiles each entry with `linnet jax` instead of
+`linnet stablehlo`: a Python module of straight-line `jax.numpy` code (see
+`f.generated_source()`), executed under `jax.jit`. Since it is ordinary JAX,
+`jax.grad` differentiates it, which is how a Linnet model trains in JAX:
+`f.apply(params, *inputs)` takes the parameters as a mapping by path and
+`f.parameters` holds the loaded weights. `while` loops become
+`jax.lax.while_loop`, library operations become `jax.nn` calls, and `state`
+is threaded exactly as with `load`. The generated module enables 64-bit
+integers (`jax_enable_x64`), which Linnet's `i64` needs.
+
 ## Flax NNX
 
 ```python

@@ -168,6 +168,17 @@ and everything else is the static-shape lowering the other exporters use.
 `linnet_torch.load(..., compile=True)` runs this per input shape and
 executes the result, which `torch.compile` can then trace whole.
 
+## `linnet jax`
+
+The same options as `linnet torch`, printing the entry as a module of
+straight-line `jax.numpy` code with the same `main`/`PARAMETERS`/`STATES`/
+`NEXT_STATES`/`RESULTS` contract. The result is ordinary JAX: `jax.jit`,
+`jax.grad`, and `jax.vmap` apply, `while` becomes `jax.lax.while_loop`, and
+library operations with a selected candidate become `jax.nn` calls or
+`jnp.matmul`. `linnet_jax.load_source(...)` runs it per input shape and is
+the way to train a Linnet model in JAX. The generated module enables 64-bit
+integers (`jax_enable_x64`) because Linnet's `i64` needs them.
+
 ## `linnet explain`
 
 ```bash

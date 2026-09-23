@@ -18,7 +18,9 @@ module = load_nnx("src/model.linnet", generics={...}, weights="weights/")  # a F
 with the input shapes it is called with, binds SafeTensors weights by
 parameter path, and wraps the module as a `jax.export.Exported` so it runs
 under XLA like any exported JAX function. `load_nnx` mirrors the block
-hierarchy as a Flax NNX module whose state paths are the parameter paths.
+hierarchy as a Flax NNX module whose state paths are the parameter paths;
+`load_source` runs entries as generated `jax.numpy` code that `jax.grad`
+differentiates, for training.
 `export_linnet` captures a function with `jax.export`, translates the
 StableHLO it produces into a Core IR plan (recognizing the decompositions of
 `softmax`, `rms_norm`, and the activations along the way), and has

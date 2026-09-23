@@ -177,6 +177,10 @@ set_tests_properties(cli_stablehlo_while PROPERTIES
 add_test(NAME cli_onnx_while
     COMMAND linnet onnx --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
 set_tests_properties(cli_onnx_while PROPERTIES PASS_REGULAR_EXPRESSION "= Loop <body = loop_body")
+add_test(NAME cli_jax_source_while
+    COMMAND linnet jax --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
+set_tests_properties(cli_jax_source_while PROPERTIES
+    PASS_REGULAR_EXPRESSION "def main\\(in_x, in_limit, p0\\):.*def _cond0\\(carried\\):.*w0 = jax.lax.while_loop\\(_cond0, _body0,")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
