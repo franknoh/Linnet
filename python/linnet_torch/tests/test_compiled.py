@@ -91,3 +91,5 @@ def test_native_kernels_and_torch_compile() -> None:
     torch.testing.assert_close(compiled(tokens), reference(tokens), atol=1e-4, rtol=1e-4)
     source = compiled.generated_source("forward")
     assert "torch.rms_norm(" in source and "F.scaled_dot_product_attention(" in source
+    # `rsqrt(cast<f32>(H / Heads))` reaches the kernel as a literal, not a tensor.
+    assert "scale=0.7071067" in source and "scale=float(" not in source

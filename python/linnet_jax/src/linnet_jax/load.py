@@ -175,6 +175,10 @@ class LinnetFunction:
         listed = re.search(r"linnet\.states = \[([^\]]*)\]", text)
         state_outputs = re.findall(r'"([^"]+)"', listed.group(1)) if listed else []
         exported = _wrap_module(text)
+        # The compiled program under `jit`, so a call is one dispatch; the
+        # loaded weights go to the device once rather than per call.
+        call = jax.jit(exported.call)
+        arrays = [_device_array(self._weights[path]) for path in paths]
         state_avals = dict(
             zip(
                 state_inputs,
@@ -182,7 +186,7 @@ class LinnetFunction:
                 strict=True,
             )
         )
-        return _Compiled(paths, state_inputs, state_outputs, state_avals, exported)
+        return _Compiled(paths, state_inputs, state_outputs, state_avals, exported, call, arrays)
 
     def apply(self, parameters: Mapping[str, Any], *inputs: Any, state: Any = None) -> Any:
         """Runs the entry with `parameters` (path -> array) in place of the
@@ -195,17 +199,20 @@ class LinnetFunction:
         if key not in self._cache:
             self._cache[key] = self._compile(bindings)
         compiled = self._cache[key]
-        missing = [path for path in compiled.parameters if path not in parameters]
-        if missing:
-            raise LinnetError("missing parameters: " + ", ".join(missing))
-        arrays = [jnp.asarray(parameters[path]) for path in compiled.parameters]
+        if parameters is self._weights:
+            arrays = list(compiled.arrays)
+        else:
+            missing = [path for path in compiled.parameters if path not in parameters]
+            if missing:
+                raise LinnetError("missing parameters: " + ", ".join(missing))
+            arrays = [_device_array(parameters[path]) for path in compiled.parameters]
         given: Mapping[str, Any] = state or {}
         for path in compiled.state_inputs:
             aval = compiled.state_avals[path]
             arrays.append(
-                jnp.asarray(given[path]) if path in given else jnp.zeros(aval.shape, aval.dtype)
+                _device_array(given[path]) if path in given else jnp.zeros(aval.shape, aval.dtype)
             )
-        outputs = compiled.exported.call(*inputs, *arrays)
+        outputs = compiled.call(*inputs, *arrays)
         if not compiled.state_inputs and not compiled.state_outputs:
             return outputs
         outputs = list(outputs) if isinstance(outputs, tuple) else [outputs]
@@ -237,6 +244,13 @@ class _Compiled:
     state_outputs: list[str]  # state paths assigned, as results after the entry's own
     state_avals: dict[str, Any]
     exported: Any
+    call: Any  # `exported.call` under `jax.jit`
+    arrays: list[Any]  # the loaded weights as device arrays, in `parameters` order
+
+
+def _device_array(value: Any) -> Any:
+    """`value` as a JAX array; arrays already on a device pass through."""
+    return value if isinstance(value, jax.Array) else jnp.asarray(value)
 
 
 def _wrap_module(text: str) -> Any:

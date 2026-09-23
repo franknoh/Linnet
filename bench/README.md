@@ -18,10 +18,11 @@ random weights, at these widths:
 | `large` | 4096 | 32 / 8 | 14336 | 32 | 32000 | ≈ 8 B (Llama-3-8B shape) |
 
 For each: the `forward` entry over `B=1, S=512` and the `decode` entry (one
-token through the KV caches at position `S/2`), in four variants — PyTorch
+token through the KV caches at position `S/2`), in six variants — PyTorch
 eager, `torch.compile`, Linnet materialized in PyTorch with native kernels
-(`numerics="equivalent"`), and Linnet compiled through StableHLO and run by
-XLA (`linnet_jax`). Every variant's output is compared against the eager
+(`numerics="equivalent"`: interpreted, as generated source from `linnet
+torch`, and that source under `torch.compile`), and Linnet compiled through
+StableHLO and run by XLA (`linnet_jax`). Every variant's output is compared against the eager
 reference; the table shows the maximum absolute difference.
 
 Latency is the median of `--iters` timed calls after `--warmup` calls, with

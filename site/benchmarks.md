@@ -16,11 +16,15 @@ widths: the Llama-style decoder (`examples/05-llama`) and GPT-2
 - **PyTorch reference** — the hand-written `torch` implementation from the
   test suite, eager, the baseline everything is compared against.
 - **PyTorch reference, compiled** — the same code under `torch.compile`.
-- **Linnet → PyTorch** — `linnet_torch.load(..., numerics="equivalent")`: the
-  checked source materialized as an `nn.Module`, library operations dispatched
-  to native PyTorch kernels.
+- **Linnet → PyTorch (interpreted)** — `linnet_torch.load(...,
+  numerics="equivalent")`: the checked source materialized as an `nn.Module`
+  whose Core IR is interpreted per call, library operations dispatched to
+  native PyTorch kernels.
+- **Linnet → PyTorch (generated source)** — `load(..., compile=True)`: the
+  entry as straight-line PyTorch code from `linnet torch`, and with
+  `compile="inductor"` that code under `torch.compile`.
 - **Linnet → XLA** — `linnet_jax.load` under `jax.jit`: the source compiled
-  through `linnet stablehlo` and run by XLA.
+  through `linnet stablehlo` (contractions as `dot_general`) and run by XLA.
 
 Latency is the median of timed iterations after warm-up, with CUDA
 synchronized around each call; throughput is tokens per second for the
@@ -35,13 +39,13 @@ first XLA compile.
 
 ## Reading the numbers
 
-- Where Linnet → PyTorch matches the reference, the interpreter's overhead
-  is paid once per call in Python and the arithmetic is the same kernels; the
-  gap that remains is the dispatch cost of the interpreted Core IR, which
-  shrinks as the model grows.
+- The interpreted PyTorch path pays a Python dispatch per Core IR operation
+  on every call; the arithmetic is the same kernels as the reference, so the
+  gap is overhead that shrinks as the model grows. The generated-source path
+  removes it: the same kernels in straight-line code, and under
+  `torch.compile` the number to compare with the compiled reference.
 - Linnet → XLA is a whole-program compile: no Python in the loop, fused
-  elementwise chains, and static shapes per binding. It is the number to
-  compare with `torch.compile`.
+  elementwise chains, and static shapes per binding.
 - `linnet check` is milliseconds; it never runs the model.
 
 ## Reproducing
