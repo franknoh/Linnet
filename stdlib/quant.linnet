@@ -1,0 +1,62 @@
+module std.quant
+
+use std.nn.linear::{linear}
+
+// Weight quantization as ordinary source: a quantized parameter is an
+// integer tensor plus its scales, and dequantization is arithmetic the
+// checker sees like any other. Nothing here asks a backend for a special
+// kernel; a backend that has one may select it as a candidate.
+
+// Symmetric per-row int8: `weight[o, i] = q[o, i] * scale[o]`.
+pub op dequantize_int8<*S: Shape, N: Dim, T: Float>(
+    q: Tensor[*S, N; i8],
+    scale: Tensor[*S; f32],
+) -> Tensor[*S, N; T] {
+    let scaled[*s, n] = cast<f32>(q[*s, n]) * scale[*s]
+    return cast<T>(scaled)
+}
+
+// Two signed 4-bit values per byte of a `[Rows, Half]` matrix: the low nibble
+// is element `2k` of the row, the high nibble element `2k + 1`, both in
+// `-8..7`.
+pub op unpack_int4<R: Dim, H: Dim>(packed: Tensor[R, H; i8]) -> Tensor[R, 2 * H; i8] {
+    let wide = cast<i32>(packed)
+    let low = wide & 15
+    let high = shr(wide, 4) & 15
+    let low_signed = select(low >= 8, low - 16, low)
+    let high_signed = select(high >= 8, high - 16, high)
+    let pairs = concat(reshape(low_signed, [R, H, 1]), reshape(high_signed, [R, H, 1]), axis = -1)
+    return cast<i8>(reshape(pairs, [R, 2 * H]))
+}
+
+// Symmetric per-row int4 packed two per byte: `Half` bytes hold `2 * Half`
+// weights of each row.
+pub op dequantize_int4<R: Dim, H: Dim, T: Float>(
+    packed: Tensor[R, H; i8],
+    scale: Tensor[R; f32],
+) -> Tensor[R, 2 * H; T] {
+    return dequantize_int8<[R], 2 * H, T>(unpack_int4(packed), scale)
+}
+
+// A linear layer whose weight is stored as per-row int8.
+pub block Int8Linear<In: Dim, Out: Dim, T: Float = bf16> {
+    param weight: Tensor[Out, In; i8]
+    param scale: Tensor[Out; f32]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear(x, dequantize_int8<[Out], In, T>(weight, scale), bias)
+    }
+}
+
+// A linear layer whose weight is stored as per-row int4, two per byte.
+pub block Int4Linear<In: Dim, Out: Dim, T: Float = bf16>
+where In % 2 == 0 {
+    param weight: Tensor[Out, In / 2; i8]
+    param scale: Tensor[Out; f32]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear(x, dequantize_int4<Out, In / 2, T>(weight, scale), bias)
+    }
+}

@@ -27,7 +27,7 @@ Training support must not require model-specific Python classes.
 
 ## 15.5 Quantization
 
-Future types/metadata should represent logical dtype separately from storage/quantization encoding. Quantization must remain semantically explicit enough for backends to choose dequantization/fused-kernel placement.
+Logical dtype and storage are separate today by construction: `std.quant` stores weights as integer parameters with scale parameters and dequantizes in ordinary source (`Int8Linear`, `Int4Linear` with nibbles unpacked by `shr` and `&`), so a backend sees the dequantize-and-multiply explicitly and may select a fused kernel for it. Quantized dtypes or storage annotations in the type system remain future work and must keep that explicitness.
 
 ## 15.6 Sparse and structured tensors
 
