@@ -31,6 +31,8 @@ dev = [
     "pyright>=1.1.380",
     "ruff>=0.6",
     "jax>=0.4.35",
+    "transformers>=5.17.0",
+    "huggingface-hub>=1.32.0",
 ]
 
 [[tool.uv.index]]
