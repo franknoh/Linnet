@@ -1,5 +1,10 @@
 # Linnet
 
+**Documentation: [linnet.franknoh.dev](https://linnet.franknoh.dev)** — installation,
+a guide for PyTorch users, the language tour, examples, benchmarks, and the
+specification (the site is built from `docs/`, `spec/`, and `examples/` by
+`site/`).
+
 Linnet is a typed tensor language. Models are written as `.linnet` source files,
 checked statically for shape and dtype correctness, and kept separate from their
 weights. Inspecting or checking a Linnet package never executes package code.

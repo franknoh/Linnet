@@ -1,0 +1,146 @@
+# Coming from PyTorch
+
+If you write models as `nn.Module`s, Linnet changes three things: shapes are
+checked before anything runs, source never carries weights, and the same
+source runs in PyTorch, JAX/XLA, and ONNX Runtime. Everything else — the
+operations, the parameter names, the weights on disk — carries over.
+
+## The same model, side by side
+
+::: code-group
+
+```python [PyTorch]
+class Block(nn.Module):
+    def __init__(self, h, heads):
+        super().__init__()
+        self.norm = RMSNorm(h)
+        self.qkv = nn.Linear(h, 3 * h, bias=False)
+        self.out = nn.Linear(h, h, bias=False)
+        self.heads = heads
+
+    def forward(self, x):
+        b, s, h = x.shape
+        q, k, v = self.qkv(self.norm(x)).split(h, dim=-1)
+        q = q.view(b, s, self.heads, -1).transpose(1, 2)   # hope -1 works out
+        k = k.view(b, s, self.heads, -1).transpose(1, 2)
+        v = v.view(b, s, self.heads, -1).transpose(1, 2)
+        mixed = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        return x + self.out(mixed.transpose(1, 2).reshape(b, s, h))
+```
+
+```linnet [Linnet]
+pub block Block<H: Dim, Heads: Dim, T: Float = bf16>
+where
+    Heads > 0,
+    H % Heads == 0
+{
+    sub norm: RmsNorm<H, T>
+    sub qkv: Linear<H, 3 * H, T>
+    sub out: Linear<H, H, T>
+
+    pub entry forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
+        let projected = qkv.forward(norm.forward(x))
+        let q = heads<B, S, Heads, H / Heads, T>(projected[:, :, 0:H])
+        let k = heads<B, S, Heads, H / Heads, T>(projected[:, :, H:2 * H])
+        let v = heads<B, S, Heads, H / Heads, T>(projected[:, :, 2 * H:3 * H])
+        let mixed = attention(q, k, v, rsqrt(cast<f32>(H / Heads)), some(causal_mask<S, S>()))
+        return x + out.forward(reshape(permute(mixed, [0, 2, 1, 3]), [B, S, H]))
+    }
+}
+```
+
+:::
+
+What changed:
+
+- **Dimensions are names, not numbers.** `H`, `Heads`, `B`, `S` are generic
+  parameters. `H / Heads` is a dimension the checker can reason about because
+  the `where` clause says `H % Heads == 0`; without it, the `reshape` is
+  rejected.
+- **No `-1`, no `.shape` at runtime.** Every tensor type is spelled out and
+  every operation's result shape is derived and compared against it.
+- **Parameters are declared, not created.** `sub norm: RmsNorm<H, T>` says the
+  block has a child with a `weight: Tensor[H; T]`; nothing allocates or
+  initializes. The parameter paths — `norm.weight`, `qkv.weight`, `out.weight`
+  — are the `state_dict()` keys you already have.
+- **The library is source.** `attention`, `causal_mask`, `RmsNorm`, `Linear`
+  come from `stdlib/`, written in Linnet and checked the same way. Read them
+  like you would read a reference implementation.
+
+## Running it in PyTorch
+
+```python
+from linnet_torch import load
+
+model = load(
+    "src/block.linnet",
+    generics={"H": 1024, "Heads": 16, "T": "bf16"},
+    weights="checkpoints/block/",        # SafeTensors named by parameter path
+    device="cuda",
+    numerics="equivalent",               # let PyTorch kernels stand in for std ops
+)
+y = model(torch.randn(2, 128, 1024, dtype=torch.bfloat16, device="cuda"))
+```
+
+`load` runs `linnet plan` (which checks the program and never executes it),
+builds an `nn.Module` hierarchy mirroring the blocks, and binds the weights,
+checking every name, shape, and dtype first. With `numerics="equivalent"`,
+`std.nn.softmax::softmax`, `layer_norm`, `matmul`, and the like dispatch to
+the corresponding PyTorch kernels; with `"exact"` the library definitions are
+evaluated as written. `model.state_dict()` uses the Linnet paths, so a
+checkpoint from the PyTorch version loads into the Linnet version and back.
+
+## Bringing an existing model over
+
+`export_linnet` traces a module with `torch.export` and writes Linnet source:
+
+```python
+from linnet_torch import export_linnet
+
+export_linnet(module, (example_input,), output="src/model.linnet", weights="weights/")
+```
+
+The block hierarchy follows the module hierarchy (children become `sub`s,
+`ModuleList`s become sub arrays), parameters keep their names, and the
+decompositions PyTorch produces — softmax, layer norm, RMS norm, GELU, SiLU —
+come back as calls to the standard library, not as the primitive soup a trace
+usually is. The result is formatted, checked, and lints clean, or the export
+fails naming the operation it could not express. ONNX models import the same
+way with `linnet_onnx.import_onnx`, and JAX functions with
+`linnet_jax.export_linnet`.
+
+## Why bother
+
+| | `nn.Module` | Linnet |
+| --- | --- | --- |
+| Shape errors | at runtime, on the first batch that hits the path | at check time, with the two shapes named |
+| Head split `H / Heads` | `view(..., -1)`; wrong divisor silently reshapes | proved from `H % Heads == 0` or rejected |
+| Loading a model | executes the model's Python; `pickle` in `.pt` files | `linnet check` executes nothing; weights are SafeTensors bound by path |
+| Weights vs code | entangled (`torch.save(model)`) or by convention | separate by construction — source has no payload |
+| Reuse in JAX / XLA / ONNX | rewrite, or export a frozen graph per framework | same source; `linnet stablehlo`, `linnet onnx`, `linnet_jax.load` |
+| Library code | opaque kernels | ordinary source in `stdlib/`, checked like yours |
+| Performance | native kernels | native kernels through `numerics="equivalent"`, XLA through StableHLO — see [Benchmarks](/benchmarks) |
+| Refactoring | grep and pray | rename through the language server; every use is typed |
+
+The trade: Linnet has no data-dependent control flow, no runtime loops, and no
+Python inside the model. Models are compositions of tensor operations over
+symbolic shapes — which is what inference and most training graphs already
+are, and what makes them checkable and portable.
+
+## Where things live
+
+| PyTorch | Linnet |
+| --- | --- |
+| `nn.Module` subclass | `block` |
+| `__init__` creating submodules | `sub name: Block<...>` |
+| `nn.Parameter` | `param name: Tensor[...; T]` |
+| `register_buffer` | `buffer` (persistent) or `state` (KV caches, updated by the block) |
+| `forward` | `pub entry forward<...>(...)`; any number of entries |
+| `nn.ModuleList` | `sub layers: [Layer<...>; N]` and `static for layer in layers` |
+| `x @ w.T`, `einsum` | `matmul` / index notation `sum[k] x[i, k] * w[j, k]` |
+| `F.softmax`, `F.layer_norm`, ... | `std.nn.softmax::softmax`, `std.nn.norm::layer_norm`, ... |
+| `state_dict()` keys | parameter paths (`linnet inspect --parameters`) |
+| `torch.export` / ONNX export | `linnet stablehlo`, `linnet onnx`, `linnet plan` |
+
+Next: [Getting started](/docs/getting-started) writes and runs a first model;
+the [language tour](/docs/language-tour) covers the rest of the language.
