@@ -16,6 +16,7 @@ pip install "linnet-lang[onnx]"      # linnet.onnx
 | `linnet` | `load_program`, `Program`, `compile_plan`, checkpoint reading (`read_arrays`, `read_bindings`), the compiler subprocess |
 | `linnet.ir` | the typed program: blocks, members, functions, regions, operations, symbolic dimensions and types |
 | `linnet.diagram` | architecture diagrams as SVG, TikZ, or Graphviz |
+| `linnet.nest` | [Nest](nest.md), the model zoo: cards, checks, `nest.load` |
 | `linnet.torch` | [PyTorch](torch.md): `load`, `bind_weights`, `export_linnet` |
 | `linnet.jax` | [JAX and Flax](jax.md): `load`, `load_source`, `load_nnx`, `export_linnet`, `import_stablehlo` |
 | `linnet.onnx` | [ONNX](onnx.md): `import_onnx` |

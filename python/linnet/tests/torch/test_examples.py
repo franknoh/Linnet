@@ -142,7 +142,8 @@ def test_gpt2_matches_reference(tmp_path: Path) -> None:
     out = model(tokens)
 
     def linear(x: torch.Tensor, prefix: str) -> torch.Tensor:
-        return x @ w[prefix + ".weight"].T + w[prefix + ".bias"]
+        # GPT-2's projections are stored as [in, out].
+        return x @ w[prefix + ".weight"] + w[prefix + ".bias"]
 
     x = w["wte"][tokens.long()] + w["wpe"][:S]
     for i in range(layers):

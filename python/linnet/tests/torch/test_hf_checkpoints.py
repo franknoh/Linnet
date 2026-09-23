@@ -122,37 +122,28 @@ def test_tinyllama_logits_match_transformers(tmp_path: Path) -> None:
 
 def test_gpt2_logits_match_transformers(tmp_path: Path) -> None:
     from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
-    from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
     from transformers import AutoModelForCausalLM  # pyright: ignore[reportUnknownVariableType]
 
     repo = "openai-community/gpt2"
     config = json.loads(Path(hf_hub_download(repo, "config.json")).read_text())
-    hf = load_file(str(hf_hub_download(repo, "model.safetensors")))
+    checkpoint = Path(hf_hub_download(repo, "model.safetensors"))
 
-    # GPT-2's `Conv1D` stores weights as [in, out]; Linnet's `Linear` as [Out, In].
-    tensors: dict[str, torch.Tensor] = {
-        "wte": hf["wte.weight"].float(),
-        "wpe": hf["wpe.weight"].float(),
-        "ln_f.weight": hf["ln_f.weight"].float(),
-        "ln_f.bias": hf["ln_f.bias"].float(),
-    }
+    # The example keeps GPT-2's [in, out] projection layout, so the published
+    # file binds as it is; only the names differ.
+    bindings = {"wte": "wte.weight", "wpe": "wpe.weight"}
     for i in range(config["n_layer"]):
         ours, theirs = f"blocks.{i}.", f"h.{i}."
-        for norm in ("ln_1", "ln_2"):
-            tensors[f"{ours}{norm}.weight"] = hf[f"{theirs}{norm}.weight"].float()
-            tensors[f"{ours}{norm}.bias"] = hf[f"{theirs}{norm}.bias"].float()
         for ours_name, theirs_name in (
+            ("ln_1", "ln_1"),
+            ("ln_2", "ln_2"),
             ("attn.qkv", "attn.c_attn"),
             ("attn.out", "attn.c_proj"),
             ("mlp.up", "mlp.c_fc"),
             ("mlp.down", "mlp.c_proj"),
         ):
-            tensors[f"{ours}{ours_name}.weight"] = (
-                hf[f"{theirs}{theirs_name}.weight"].float().T.contiguous()
-            )
-            tensors[f"{ours}{ours_name}.bias"] = hf[f"{theirs}{theirs_name}.bias"].float()
-    weights = tmp_path / "gpt2.safetensors"
-    save_file(tensors, str(weights))
+            for leaf in ("weight", "bias"):
+                bindings[f"{ours}{ours_name}.{leaf}"] = f"{theirs}{theirs_name}.{leaf}"
+    (tmp_path / "bindings.json").write_text(json.dumps(bindings))
 
     generics: dict[str, int | str] = {
         "Vocab": config["vocab_size"],
@@ -169,7 +160,7 @@ def test_gpt2_logits_match_transformers(tmp_path: Path) -> None:
         numerics="equivalent",
         compile=True,
     )
-    bind_weights(model, weights)
+    bind_weights(model, checkpoint, tmp_path / "bindings.json")
 
     reference = AutoModelForCausalLM.from_pretrained(  # pyright: ignore[reportUnknownMemberType]
         repo, torch_dtype=torch.float32

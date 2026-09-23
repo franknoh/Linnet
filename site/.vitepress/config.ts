@@ -56,6 +56,7 @@ function guideSidebar() {
         { text: "PyTorch", link: "/docs/torch" },
         { text: "JAX and Flax", link: "/docs/jax" },
         { text: "ONNX", link: "/docs/onnx" },
+        { text: "Nest", link: "/docs/nest" },
         { text: "Compatibility", link: "/compatibility" },
         { text: "Benchmarks", link: "/benchmarks" },
       ],
@@ -122,9 +123,10 @@ export default defineConfig({
   themeConfig: {
     logo: "/logo.svg",
     nav: [
-      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|python|torch|jax|onnx))|^/compatibility" },
+      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|python|torch|jax|onnx|nest))|^/compatibility" },
       { text: "Reference", link: "/docs/tooling", activeMatch: "^/(spec|docs/(tooling|plan-format|diagnostics))" },
       { text: "Examples", link: "/examples/", activeMatch: "^/examples/" },
+      { text: "Nest", link: "/nest/", activeMatch: "^/nest/" },
       { text: "Benchmarks", link: "/benchmarks" },
     ],
     sidebar: {
@@ -137,6 +139,12 @@ export default defineConfig({
         {
           text: "Examples",
           items: [{ text: "Overview", link: "/examples/" }, ...pages("examples", "/examples")],
+        },
+      ],
+      "/nest/": [
+        {
+          text: "Nest",
+          items: [{ text: "Models", link: "/nest/" }, ...pages("nest", "/nest")],
         },
       ],
     },
