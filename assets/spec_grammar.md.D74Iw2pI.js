@@ -63,7 +63,7 @@ import{_ as s,o as a,c as p,a2 as t}from"./chunks/framework.D66Xq0Kv.js";const _
 <span class="line"><span>var_stmt           = &quot;var&quot;, identifier, [ &quot;:&quot;, type ], &quot;=&quot;, expr ;</span></span>
 <span class="line"><span>assign_stmt        = identifier, &quot;=&quot;, expr ;   (* a \`var\` local or a \`state\` member *)</span></span>
 <span class="line"><span>return_stmt        = &quot;return&quot;, [ expr ] ;</span></span>
-<span class="line"><span>static_for_stmt    = &quot;static&quot;, &quot;for&quot;, pattern, &quot;in&quot;, expr, block_body ;</span></span>
+<span class="line"><span>static_for_stmt    = &quot;static&quot;, &quot;for&quot;, pattern, &quot;in&quot;, expr, [ &quot;..&quot;, expr ], block_body ;</span></span>
 <span class="line"><span></span></span>
 <span class="line"><span>pattern            = identifier</span></span>
 <span class="line"><span>                   | &quot;(&quot;, pattern, { &quot;,&quot;, pattern }, [ &quot;,&quot; ], &quot;)&quot;</span></span>
