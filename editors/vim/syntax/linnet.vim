@@ -18,7 +18,7 @@ syn keyword linnetConstraint Dim Shape DType Numeric Integer Float
 
 syn match linnetTypeName "\<[A-Z][A-Za-z0-9_]*\>"
 syn match linnetFunction "\<[a-z_][A-Za-z0-9_]*\ze\s*\(<[^<>()]*>\)\?\s*("
-syn match linnetBuiltin "\<\(cast\|reshape\|permute\|broadcast_to\|concat\|pad\|iota\|fill\|gather\|scatter\|exp\|log\|sqrt\|rsqrt\|sin\|cos\|tanh\|abs\|select\|min\|max\)\ze\s*\(<[^<>()]*>\)\?\s*("
+syn match linnetBuiltin "\<\(cast\|reshape\|permute\|broadcast_to\|concat\|pad\|iota shl shr\|fill\|gather\|scatter\|exp\|log\|sqrt\|rsqrt\|sin\|cos\|tanh\|abs\|select\|min\|max\)\ze\s*\(<[^<>()]*>\)\?\s*("
 syn match linnetReduction "\<\(sum\|prod\|max\|min\|any\|all\)\ze\s*\(<[^<>\[\]]*>\)\?\s*\["
 syn match linnetDeclName "\(\<\(fn\|op\|entry\)\s\+\)\@<=[A-Za-z_][A-Za-z0-9_]*"
 

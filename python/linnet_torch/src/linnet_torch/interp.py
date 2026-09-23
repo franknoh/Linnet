@@ -182,6 +182,11 @@ class Interpreter:
             "max": torch.maximum,
             "and": torch.logical_and,
             "or": torch.logical_or,
+            "bitand": torch.bitwise_and,
+            "bitor": torch.bitwise_or,
+            "bitxor": torch.bitwise_xor,
+            "shl": torch.bitwise_left_shift,
+            "shr": torch.bitwise_right_shift,
         }
         if kind in binary:
             return [binary[kind](tensor(0), tensor(1))]

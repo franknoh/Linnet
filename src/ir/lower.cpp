@@ -735,6 +735,9 @@ private:
     }
 
     ValueId lower_binary(const ast::Expr& node, const ast::BinaryExpr& binary, TypeId type) {
+        if (types().kind(type) == TypeKind::CompileInt) {
+            return const_dim(types().get(type).value); // folded by the checker
+        }
         const ValueId lhs = lower_expr(binary.lhs, operand_context(binary.rhs, type));
         const ValueId rhs = lower_expr(binary.rhs, operand_context(binary.lhs, type));
         Attributes attributes;
@@ -760,6 +763,15 @@ private:
             break;
         case ast::BinaryOp::Remainder:
             kind = OpKind::Rem;
+            break;
+        case ast::BinaryOp::BitAnd:
+            kind = OpKind::BitAnd;
+            break;
+        case ast::BinaryOp::BitOr:
+            kind = OpKind::BitOr;
+            break;
+        case ast::BinaryOp::BitXor:
+            kind = OpKind::BitXor;
             break;
         default:
             kind = OpKind::Compare;
@@ -1081,6 +1093,17 @@ private:
         }
         if (name == "cast") {
             return emit(OpKind::Cast, {arg(0, no_type)}, type, {}, node.span);
+        }
+        if (name == "shl" || name == "shr") {
+            if (types().kind(type) == TypeKind::CompileInt) {
+                return const_dim(types().get(type).value);
+            }
+            const TypeId context = types().scalar(types().get(type).dtype);
+            return emit(name == "shl" ? OpKind::Shl : OpKind::Shr,
+                        {arg(0, context), arg(1, context)},
+                        type,
+                        {},
+                        node.span);
         }
         if (name == "min" || name == "max") {
             if (types().kind(type) == TypeKind::CompileInt) {

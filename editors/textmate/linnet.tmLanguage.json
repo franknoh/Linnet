@@ -178,7 +178,7 @@
                 },
                 {
                     "name": "support.function.builtin.linnet",
-                    "match": "\\b(?:cast|reshape|permute|broadcast_to|concat|pad|iota|fill|gather|scatter|exp|log|sqrt|rsqrt|sin|cos|tanh|abs|select|min|max)(?=\\s*(?:<[^<>()]*>)?\\s*\\()"
+                    "match": "\\b(?:cast|reshape|permute|broadcast_to|concat|pad|iota|shl|shr|fill|gather|scatter|exp|log|sqrt|rsqrt|sin|cos|tanh|abs|select|min|max)(?=\\s*(?:<[^<>()]*>)?\\s*\\()"
                 },
                 {
                     "name": "entity.name.function.call.linnet",

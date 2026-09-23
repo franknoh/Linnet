@@ -205,7 +205,7 @@ TEST("lexer: invalid characters are grouped and skipped") {
     CHECK_EQ(lexed.texts(), "a b");
     CHECK(lexed.sink.diagnostics()[0].primary.span == SourceSpan{lexed.file, 2, 5});
 
-    CHECK_EQ(Lexed("a & b | c").codes(), "E1001 E1001");
+    CHECK_EQ(Lexed("a $ b @ c").codes(), "E1001 E1001");
     CHECK_EQ(Lexed("let caf\xC3\xA9 = 1").codes(), "E1001");
     CHECK_EQ(Lexed("\xFF\xFE").codes(), "E1001");
     CHECK_EQ(Lexed(std::string("a\0b", 3)).codes(), "E1001");

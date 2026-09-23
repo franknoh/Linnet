@@ -19,10 +19,10 @@ template <typename... Visitors>
 Overloaded(Visitors...) -> Overloaded<Visitors...>;
 
 constexpr auto prelude_names = std::to_array<std::string_view>({
-    "Tensor", "Dim",     "Shape",   "DType",        "Numeric", "Integer", "Float",
-    "cast",   "reshape", "permute", "broadcast_to", "concat",  "pad",     "iota",
-    "fill",   "gather",  "scatter", "exp",          "log",     "sqrt",    "rsqrt",
-    "sin",    "cos",     "tanh",    "abs",          "select",  "min",     "max",
+    "Tensor",  "Dim",     "Shape",        "DType",  "Numeric", "Integer", "Float", "cast",
+    "reshape", "permute", "broadcast_to", "concat", "pad",     "iota",    "fill",  "gather",
+    "scatter", "exp",     "log",          "sqrt",   "rsqrt",   "sin",     "cos",   "tanh",
+    "abs",     "select",  "min",          "max",    "shl",     "shr",
 });
 
 std::string join_path(const std::vector<ast::Name>& path, std::size_t from = 0) {

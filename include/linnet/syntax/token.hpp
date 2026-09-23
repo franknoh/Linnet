@@ -81,6 +81,9 @@ namespace linnet {
     X(Bang, "!")                                                                                   \
     X(AmpAmp, "&&")                                                                                \
     X(PipePipe, "||")                                                                              \
+    X(Amp, "&")                                                                                    \
+    X(Pipe, "|")                                                                                   \
+    X(Caret, "^")                                                                                  \
     X(Question, "?")
 
 enum class TokenKind : std::uint8_t {

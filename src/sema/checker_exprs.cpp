@@ -342,6 +342,50 @@ std::optional<DType> Checker::numeric_dtype(TypeId type) const {
     return std::nullopt;
 }
 
+// `&`, `|`, `^`, `shl`, `shr`: elementwise on integers (and, for the three
+// operators, on booleans); constants fold.
+TypeId Checker::check_bitwise(SourceSpan span,
+                              std::string_view spelling,
+                              TypeId lhs,
+                              TypeId rhs,
+                              const std::function<std::int64_t(std::int64_t, std::int64_t)>& fold) {
+    const TypeData& left = types_.get(lhs);
+    const TypeData& right = types_.get(rhs);
+    if (left.kind == TypeKind::CompileInt && right.kind == TypeKind::CompileInt) {
+        const auto a = left.value.constant();
+        const auto b = right.value.constant();
+        if (!a || !b) {
+            error(codes::not_compile_time,
+                  span,
+                  "`" + std::string(spelling) + "` on compile-time integers needs constants");
+            return types_.error();
+        }
+        return types_.compile_int(shape::Poly(fold(*a, *b)));
+    }
+    const bool is_shift = spelling == "shl" || spelling == "shr";
+    const TypeId result = elementwise(lhs, rhs, span, false, false);
+    if (types_.is_error(result)) {
+        return result;
+    }
+    const auto dtype = numeric_dtype(result);
+    const bool is_ok =
+        dtype && (dtype->is_var ? types_.class_of(*dtype) == DTypeClass::Integer
+                                : !sema::is_float(dtype->scalar) &&
+                                      (!is_shift || dtype->scalar != ScalarKind::Bool));
+    if (!is_ok) {
+        error(codes::invalid_operand,
+              span,
+              "`" + std::string(spelling) + "` needs integer" +
+                  (is_shift ? std::string("") : std::string(" or boolean")) +
+                  " operands, found dtype `" + (dtype ? types_.to_string(*dtype) : "?") + "`")
+            .help(dtype && dtype->is_var
+                      ? "constrain `" + types_.to_string(*dtype) + "` with `Integer`"
+                      : "cast to an integer dtype first");
+        return types_.error();
+    }
+    return result;
+}
+
 TypeId Checker::elementwise(
     TypeId lhs, TypeId rhs, SourceSpan span, bool needs_numeric, bool for_comparison) {
     const TypeData& left = types_.get(lhs);
@@ -576,6 +620,20 @@ TypeId Checker::check_binary(const ast::Expr& node, const ast::BinaryExpr& binar
             report.help("combine boolean tensors elementwise with `select`");
         }
         return types_.error();
+    }
+
+    const bool is_bitwise = binary.op == ast::BinaryOp::BitAnd ||
+                            binary.op == ast::BinaryOp::BitOr || binary.op == ast::BinaryOp::BitXor;
+    if (is_bitwise) {
+        return check_bitwise(node.span,
+                             ast::binary_op_spelling(binary.op),
+                             lhs,
+                             rhs,
+                             [&](std::int64_t a, std::int64_t b) {
+                                 return binary.op == ast::BinaryOp::BitAnd  ? (a & b)
+                                        : binary.op == ast::BinaryOp::BitOr ? (a | b)
+                                                                            : (a ^ b);
+                             });
     }
 
     const bool compares = is_comparison(binary.op);

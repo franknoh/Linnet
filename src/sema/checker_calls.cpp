@@ -666,6 +666,20 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
         return elementwise(args[0], args[1], node.span, true, false);
     }
 
+    if (name == "shl" || name == "shr") {
+        if (!is_valid || !expect_count(2, callee + "(x, bits)")) {
+            return types_.error();
+        }
+        return check_bitwise(
+            node.span, name, args[0], args[1], [&](std::int64_t a, std::int64_t b) {
+                if (b < 0 || b >= 64) {
+                    return std::int64_t{0};
+                }
+                return name == "shl" ? static_cast<std::int64_t>(static_cast<std::uint64_t>(a) << b)
+                                     : (a >> b);
+            });
+    }
+
     if (name == "select") {
         if (!is_valid || !expect_count(3, "select(condition, a, b)")) {
             return types_.error();

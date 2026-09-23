@@ -47,6 +47,11 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(Compare, "compare", 2, 0)                                                                    \
     X(And, "and", 2, 0)                                                                            \
     X(Or, "or", 2, 0)                                                                              \
+    X(BitAnd, "bitand", 2, 0)                                                                      \
+    X(BitOr, "bitor", 2, 0)                                                                        \
+    X(BitXor, "bitxor", 2, 0)                                                                      \
+    X(Shl, "shl", 2, 0)                                                                            \
+    X(Shr, "shr", 2, 0)                                                                            \
     X(Not, "not", 1, 0)                                                                            \
     X(Neg, "neg", 1, 0)                                                                            \
     X(Exp, "exp", 1, 0)                                                                            \

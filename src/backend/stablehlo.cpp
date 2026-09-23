@@ -160,9 +160,17 @@ const char* elementwise_name(Elementwise kind) {
     case Elementwise::Max:
         return "maximum";
     case Elementwise::And:
+    case Elementwise::BitAnd:
         return "and";
     case Elementwise::Or:
+    case Elementwise::BitOr:
         return "or";
+    case Elementwise::BitXor:
+        return "xor";
+    case Elementwise::Shl:
+        return "shift_left";
+    case Elementwise::Shr:
+        return "shift_right_arithmetic"; // unsigned dtypes use the logical form
     case Elementwise::Not:
         return "not";
     case Elementwise::Neg:
@@ -237,7 +245,11 @@ public:
                             const std::vector<TensorInfo>& operands,
                             const Dims& shape,
                             ScalarKind dtype) override {
-        return emit(elementwise_name(kind), operands, "", shape, dtype);
+        const bool is_unsigned = dtype == ScalarKind::U8 || dtype == ScalarKind::U16 ||
+                                 dtype == ScalarKind::U32 || dtype == ScalarKind::U64;
+        const char* name = kind == Elementwise::Shr && is_unsigned ? "shift_right_logical"
+                                                                   : elementwise_name(kind);
+        return emit(name, operands, "", shape, dtype);
     }
 
     std::string compare(ir::CompareKind kind,

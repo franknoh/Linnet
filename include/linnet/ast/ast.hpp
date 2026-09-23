@@ -54,7 +54,10 @@ enum class BinaryOp : std::uint8_t {
     Subtract,
     Multiply,
     Divide,
-    Remainder
+    Remainder,
+    BitAnd,
+    BitOr,
+    BitXor
 };
 enum class ReductionKind : std::uint8_t { Sum, Prod, Max, Min, Any, All };
 

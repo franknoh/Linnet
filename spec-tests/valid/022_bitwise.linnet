@@ -1,0 +1,11 @@
+module bitwise
+
+// `&`, `|`, `^` on integers and booleans, `shl`/`shr` on integers, and their
+// folding on compile-time constants.
+pub fn mix<N: Dim>(x: Tensor[N; i64], mask: Tensor[N; bool]) -> Tensor[N; i64] {
+    let low = x & 4294967295
+    let rotated = shl(low, 13) | shr(low, 32 - 13)
+    let flipped = rotated ^ x
+    let keep = mask & (x > 0) | mask ^ (x < 0)
+    return select(keep, flipped, x) + (6 & 3) + shl(1, 4)
+}

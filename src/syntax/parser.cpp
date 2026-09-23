@@ -33,14 +33,17 @@ constexpr auto binary_operators = std::to_array<BinaryOperator>({
     {K::LessEqual, BinaryOp::LessEqual, 4},
     {K::Greater, BinaryOp::Greater, 4},
     {K::GreaterEqual, BinaryOp::GreaterEqual, 4},
-    {K::Plus, BinaryOp::Add, 5},
-    {K::Minus, BinaryOp::Subtract, 5},
-    {K::Star, BinaryOp::Multiply, 6},
-    {K::Slash, BinaryOp::Divide, 6},
-    {K::Percent, BinaryOp::Remainder, 6},
+    {K::Pipe, BinaryOp::BitOr, 5},
+    {K::Caret, BinaryOp::BitXor, 6},
+    {K::Amp, BinaryOp::BitAnd, 7},
+    {K::Plus, BinaryOp::Add, 8},
+    {K::Minus, BinaryOp::Subtract, 8},
+    {K::Star, BinaryOp::Multiply, 9},
+    {K::Slash, BinaryOp::Divide, 9},
+    {K::Percent, BinaryOp::Remainder, 9},
 });
 
-constexpr int additive_precedence = 5;
+constexpr int additive_precedence = 8;
 
 constexpr bool is_comparison(BinaryOp op) {
     return op >= BinaryOp::Equal && op <= BinaryOp::GreaterEqual;
