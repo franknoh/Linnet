@@ -1,22 +1,18 @@
 # Modules and packages
 
-## Modules
+How files find each other. A module is a file; a package is a directory with
+a `linnet.toml`; imports are logical paths that map to files without ever
+leaving their root.
 
-Every source file declares one module and may import others by logical path:
+## Imports
 
-```text
+```linnet
 module models.llama.attention
 
-use std.nn::{linear, rms_norm as norm}
-use crate.layers.decoder::{DecoderLayer}
-use my_dependency.ops
+use std.nn::{linear, rms_norm as norm}     // items, optionally renamed
+use crate.layers.decoder::{DecoderLayer}   // from this package
+use shared_layers.ops                      // a dependency's module, used as `ops.x`
 ```
-
-`use a.b::{x, y as z}` imports items; `use a.b` imports the module itself, so
-that its items are written `b.x`. Items are private unless declared `pub`.
-Modules must not import each other in a cycle.
-
-A logical path maps to one file:
 
 | Path | File |
 | --- | --- |
@@ -26,22 +22,21 @@ A logical path maps to one file:
 | `dep.a.b` | `<dependency dep>/src/a/b.linnet` |
 
 `<package>` is the nearest directory above the importing file that contains
-`linnet.toml`. The standard library directory comes from `--std <dir>` or the
-`LINNET_STD` environment variable. Because path segments are identifiers, an
-import can never leave its root directory.
+`linnet.toml`. The standard library directory is `--std <dir>` or
+`LINNET_STD`. Items are private unless `pub`, and modules may not import each
+other in a cycle.
 
 ## Packages
 
-`linnet init [dir]` creates a package:
+```bash
+linnet init my-model
+```
 
 ```text
 my-model/
-├── linnet.toml
-└── src/
-    └── lib.linnet
+  linnet.toml
+  src/lib.linnet
 ```
-
-`linnet.toml`:
 
 ```toml
 [package]
@@ -53,15 +48,14 @@ language = "0.1"
 shared_layers = { path = "../shared-layers" }
 ```
 
-- `language` is the language version the package is written for; this
-  toolchain accepts `0.1`.
-- A dependency key is an identifier (letters, digits, `_`), not `std` or
-  `crate`; it is the first segment of imports from that package.
-- Path dependencies are relative to the manifest's directory and must point at
-  a directory with its own `linnet.toml`. Their own dependencies resolve
-  relative to their own manifest.
-- Only path dependencies exist. Git and registry sources, and the `linnet.lock`
-  file that pins them, come later.
+- `language` is the language version the package targets; this toolchain
+  accepts `0.1`.
+- A dependency key is an identifier and becomes the first segment of imports
+  from that package. `std` and `crate` are reserved.
+- Only path dependencies exist. They are relative to the manifest and must
+  point at a directory with its own `linnet.toml`; their own dependencies
+  resolve relative to that manifest. Git and registry sources, and a lock
+  file, are future work.
 
-Reading a manifest or resolving a package only reads files. Nothing in a
-package is ever executed by `linnet check`.
+Resolving a package only reads files. `linnet check` never executes anything
+in it.

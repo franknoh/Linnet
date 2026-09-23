@@ -59,6 +59,21 @@ class BlockModule(nn.Module):
             else:
                 self.register_buffer(member["name"], tensor)
 
+    def _get_name(self) -> str:
+        return self.block_name  # `print(model)` shows the Linnet block names
+
+    def extra_repr(self) -> str:
+        """The block's own tensors, as `name=dtype[shape]`; `?` marks an
+        optional parameter and `state` an execution-state member."""
+        parts: list[str] = []
+        for name, parameter in self.named_parameters(recurse=False):
+            optional = "?" if name in self.optional_params else ""
+            parts.append(f"{name}={_tensor_repr(parameter)}{optional}")
+        for name, buffer in self.named_buffers(recurse=False):
+            kind = " state" if name in self.state_names else ""
+            parts.append(f"{name}={_tensor_repr(buffer)}{kind}")
+        return ", ".join(parts)
+
     def instance(self) -> BlockInstance:
         """The interpreter's view of this module, sharing its tensors."""
         params: dict[str, torch.Tensor | None] = {}
@@ -93,6 +108,11 @@ class BlockModule(nn.Module):
             if child is not self and isinstance(child, BlockModule):
                 for name in child.state_names:
                     setattr(child, name, torch.zeros_like(getattr(child, name)))
+
+
+def _tensor_repr(tensor: torch.Tensor) -> str:
+    dtype = str(tensor.dtype).removeprefix("torch.")
+    return f"{dtype}{list(tensor.shape)}"
 
 
 def _block_env(plan: Plan, block_type: dict[str, Any], env: Env) -> Env:

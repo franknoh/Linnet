@@ -1,59 +1,51 @@
 # Benchmarks
 
-Linnet adds a compiler in front of the frameworks; these numbers show what
-that costs and what it does not. Every row is produced by `bench/run.py` in
-the repository, and the JSON it writes (`bench/results/latest.json`) is what
-this page renders — nothing here is typed in by hand.
+What the compiler costs and what it saves, measured. Every row comes from
+`bench/run.py`; this page renders the JSON it writes
+(`bench/results/latest.json`).
 
-On an H100, the Llama-shaped models below run through `linnet_jax` (XLA) in
-**0.66 ms** (small) and **5.8 ms** (medium) per forward pass against 3.5 ms
-and 9.0 ms for the hand-written eager PyTorch reference, and the generated
-PyTorch source under `torch.compile` comes in at 2.1 ms and 6.6 ms; one
-decode step through the KV caches takes 1.0 / 2.5 ms in XLA. Every variant
-agrees with the reference within bf16 rounding.
+On an H100 the small Llama forward runs in 0.66 ms through XLA and 2.1 ms as
+generated PyTorch under `torch.compile`, against 3.5 ms for eager PyTorch and
+2.7 ms for the compiled reference; the medium model (TinyLlama shape) takes
+5.8 ms, 6.6 ms, 9.0 ms, and 4.0 ms respectively. One decode step through the
+KV caches takes 1.0 ms and 2.5 ms in XLA. Every variant agrees with the
+reference within bf16 rounding.
 
 <BenchTable />
 
-## What is measured
+## Setup
 
-The models are the repository's examples with random weights at realistic
-widths: the Llama-style decoder (`examples/05-llama`) and GPT-2
-(`examples/06-gpt2`). For each configuration the harness times:
+The model is the Llama example (`examples/05-llama`) with random weights:
 
-- **PyTorch reference** — the hand-written `torch` implementation from the
-  test suite, eager, the baseline everything is compared against.
-- **PyTorch reference, compiled** — the same code under `torch.compile`.
-- **Linnet → PyTorch (interpreted)** — `linnet_torch.load(...,
-  numerics="equivalent")`: the checked source materialized as an `nn.Module`
-  whose Core IR is interpreted per call, library operations dispatched to
-  native PyTorch kernels.
-- **Linnet → PyTorch (generated source)** — `load(..., compile=True)`: the
-  entry as straight-line PyTorch code from `linnet torch`, and with
-  `compile="inductor"` that code under `torch.compile`.
-- **Linnet → XLA** — `linnet_jax.load` under `jax.jit`: the source compiled
-  through `linnet stablehlo` (contractions as `dot_general`) and run by XLA.
+| Config | H | Heads / KV | Inner | Layers | Vocab | Parameters |
+| --- | --- | --- | --- | --- | --- | --- |
+| small | 512 | 8 / 8 | 1376 | 8 | 32000 | about 60 M |
+| medium | 2048 | 32 / 8 | 5632 | 22 | 32000 | about 1.1 B |
 
-Latency is the median of timed iterations after warm-up, with CUDA
-synchronized around each call; throughput is tokens per second for the
-`forward` entry over a full sequence and steps per second for the Llama
-`decode` entry (one token per step through the KV caches). Outputs of every
-variant are compared against the reference (`max |Δ|`) so a fast wrong
-number cannot appear in the table.
+Each configuration times `forward` over `B=1, S=512` and one `decode` step
+at position 256, in bf16, as:
 
-Compile and load times are reported separately: `linnet check` on the
-package, `load` (which runs `linnet plan` and builds the module), and the
-first XLA compile.
+| Variant | |
+| --- | --- |
+| PyTorch reference | the hand-written implementation from the test suite, eager |
+| PyTorch reference, compiled | the same under `torch.compile` |
+| Linnet, interpreted | `load(..., numerics="equivalent")` |
+| Linnet, generated source | `load(..., compile=True)` |
+| Linnet, generated and compiled | `load(..., compile="inductor")` |
+| Linnet, XLA | `linnet_jax.load` under `jax.jit` |
 
-## Reading the numbers
+Latency is the median of timed calls after warm-up with the device
+synchronized; throughput is tokens per second for `forward` and steps per
+second for `decode`. Outputs are compared against the eager reference and the
+largest difference is shown. Compile and load times are listed separately.
 
-- The interpreted PyTorch path pays a Python dispatch per Core IR operation
-  on every call; the arithmetic is the same kernels as the reference, so the
-  gap is overhead that shrinks as the model grows. The generated-source path
-  removes it: the same kernels in straight-line code, and under
-  `torch.compile` the number to compare with the compiled reference.
-- Linnet → XLA is a whole-program compile: no Python in the loop, fused
-  elementwise chains, and static shapes per binding.
-- `linnet check` is milliseconds; it never runs the model.
+## Reading the table
+
+The interpreted path pays a Python dispatch per Core IR operation on every
+call; the arithmetic is the same kernels, so the gap shrinks as the model
+grows. Generated source removes that overhead and gives `torch.compile` a
+whole function to trace. The XLA path is one compiled program with static
+shapes and fused elementwise chains.
 
 ## Reproducing
 
@@ -64,5 +56,5 @@ cd ../..
 LINNET_BIN=build/release/linnet python bench/run.py --device cuda --out bench/results/latest.json
 ```
 
-`bench/README.md` describes the configurations and the environment the
-published numbers came from.
+`bench/README.md` lists the configurations and the environment the published
+numbers came from; `bench/setup-pod.sh` prepares a fresh GPU machine.

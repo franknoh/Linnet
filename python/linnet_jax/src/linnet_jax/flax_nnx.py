@@ -58,6 +58,15 @@ def to_nnx(function: LinnetFunction) -> Any:
                 else:
                     setattr(self, name, None)  # an optional parameter that is absent
 
+    # One class per Linnet block, so `nnx.display(model)` and `repr` show the
+    # block names (`Linear`, `RmsNorm`, ...) like a hand-written module.
+    classes: dict[str, type] = {}
+
+    def block_class(block: str) -> type:
+        if block not in classes:
+            classes[block] = type(block, (LinnetBlock,), {})
+        return classes[block]
+
     def _child(kind: dict[str, Any], path: str) -> Any:
         if kind["kind"] == "array":
             element = cast(dict[str, Any], kind["element"])
@@ -66,7 +75,7 @@ def to_nnx(function: LinnetFunction) -> Any:
             )
         if kind["kind"] != "block":
             raise LinnetError(f"member `{path}` has an unexpected type {kind['kind']}")
-        return LinnetBlock(str(kind["name"]), f"{path}.")
+        return block_class(str(kind["name"]))(str(kind["name"]), f"{path}.")
 
     class LinnetModule(LinnetBlock):
         """The root block; calling it runs the entry on the module's arrays."""
