@@ -202,6 +202,13 @@ public:
         return tensor;
     }
 
+    std::string state(const std::string& path, const Dims& shape, ScalarKind dtype) override {
+        const std::string tensor = "%state" + std::to_string(states_++);
+        arguments_.push_back(tensor + ": " + tensor_type(shape, dtype) + " {linnet.state = \"" +
+                             path + "\"}");
+        return tensor;
+    }
+
     std::string constant(const Literal& literal, ScalarKind dtype) override {
         std::string text;
         switch (literal.kind) {
@@ -376,15 +383,29 @@ public:
                     region);
     }
 
-    std::string finish(const TensorInfo& result,
+    std::string finish(const std::vector<TensorInfo>& results,
+                       const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
                        const std::string& block_name,
                        const std::string& entry_name) override {
-        body_ += indent_ + "\"func.return\"(" + result.name + ") : (" + tensor_type(result) +
-                 ") -> ()\n";
-        std::string out = "// " + block_name + "." + entry_name + " from module " + module_path +
-                          ". Arguments after the inputs are the\n"
-                          "// parameters of the block hierarchy, named by `linnet.path`.\n";
+        std::vector<TensorInfo> outputs = results;
+        for (const auto& [path, value] : states) {
+            outputs.push_back(value);
+        }
+        std::string names;
+        std::string types;
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            names += (i == 0 ? "" : ", ") + outputs[i].name;
+            types += (i == 0 ? "" : ", ") + tensor_type(outputs[i]);
+        }
+        body_ += indent_ + "\"func.return\"(" + names + ") : (" + types + ") -> ()\n";
+        std::string out =
+            "// " + block_name + "." + entry_name + " from module " + module_path +
+            ". Arguments after the inputs are the\n"
+            "// parameters of the block hierarchy, named by `linnet.path`, then the\n"
+            "// state members read before the call, named by `linnet.state`. Results\n"
+            "// after the entry's own are the assigned state members, listed in\n"
+            "// `linnet.states`.\n";
         std::string module_name;
         for (const char c : module_path) {
             module_name += c == '.' ? '_' : c;
@@ -394,7 +415,15 @@ public:
         for (std::size_t i = 0; i < arguments_.size(); ++i) {
             out += (i == 0 ? "" : ", ") + arguments_[i];
         }
-        out += ") -> " + tensor_type(result) + " {\n";
+        out += ") -> " + (outputs.size() == 1 ? types : "(" + types + ")");
+        if (!states.empty()) {
+            out += " attributes {linnet.states = [";
+            for (std::size_t i = 0; i < states.size(); ++i) {
+                out += (i == 0 ? "\"" : ", \"") + states[i].first + "\"";
+            }
+            out += "]}";
+        }
+        out += " {\n";
         out += body_;
         out += "  }\n}\n";
         return out;
@@ -433,6 +462,7 @@ private:
     std::string indent_ = "    ";
     std::size_t next_ = 0;
     std::size_t parameters_ = 0;
+    std::size_t states_ = 0;
 };
 
 } // namespace

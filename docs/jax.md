@@ -90,6 +90,17 @@ constant stays spelled out, and every recovery is listed in
 `ExportResult.notes`. The primitives it replaces are dropped by `linnet
 emit` as dead code.
 
+### State
+
+An entry that touches `state` members compiles with the state threaded
+explicitly: the members it reads are extra inputs (`linnet.state` arguments
+after the parameters) and the members it assigns are extra results after the
+entry's own (`linnet.states` on `@main`). `load` follows that contract: such
+an entry is called as `function(*inputs, state=mapping)` and returns
+`(result, new_state)`, where both mappings go by parameter path and a
+missing input state starts at zeros. Entries without state keep the plain
+`function(*inputs)` shape.
+
 ## Flax NNX
 
 ```python

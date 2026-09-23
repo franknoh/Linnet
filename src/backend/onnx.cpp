@@ -141,6 +141,13 @@ public:
         return name;
     }
 
+    std::string state(const std::string& path, const Dims& shape, ScalarKind dtype) override {
+        const std::string name = "state" + std::to_string(states_++);
+        inputs_.push_back(tensor_type(shape, dtype) + " " + name);
+        metadata_.push_back("\"linnet.state." + name + "\": \"" + path + "\"");
+        return name;
+    }
+
     std::string constant(const Literal& literal, ScalarKind dtype) override {
         return constant_text(literal_text(literal, dtype), {}, dtype);
     }
@@ -341,10 +348,27 @@ public:
         return reduced;
     }
 
-    std::string finish(const TensorInfo& result,
+    std::string finish(const std::vector<TensorInfo>& results,
+                       const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
                        const std::string& block_name,
                        const std::string& entry_name) override {
+        // Outputs need names of their own: `Identity` gives the results
+        // stable ones, and `next_state<N>` names each assigned state member,
+        // mapped to its path by `linnet.next_state.<name>`.
+        std::vector<std::string> outputs;
+        for (std::size_t i = 0; i < results.size(); ++i) {
+            const std::string name = "output" + std::to_string(i);
+            body_ += "    " + name + " = Identity(" + results[i].name + ")\n";
+            outputs.push_back(tensor_type(results[i].shape, results[i].dtype) + " " + name);
+        }
+        for (std::size_t i = 0; i < states.size(); ++i) {
+            const std::string name = "next_state" + std::to_string(i);
+            body_ += "    " + name + " = Identity(" + states[i].second.name + ")\n";
+            outputs.push_back(tensor_type(states[i].second.shape, states[i].second.dtype) + " " +
+                              name);
+            metadata_.push_back("\"linnet.next_state." + name + "\": \"" + states[i].first + "\"");
+        }
         std::string out = "<ir_version: 10, opset_import: [\"\" : 20], producer_name: \"linnet\", "
                           "doc_string: \"" +
                           block_name + "." + entry_name + " from module " + module_path + "\"";
@@ -359,7 +383,11 @@ public:
         for (std::size_t i = 0; i < inputs_.size(); ++i) {
             out += (i == 0 ? "" : ", ") + inputs_[i];
         }
-        out += ") => (" + tensor_type(result.shape, result.dtype) + " " + result.name + ") {\n";
+        out += ") => (";
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            out += (i == 0 ? "" : ", ") + outputs[i];
+        }
+        out += ") {\n";
         out += body_;
         out += "}\n";
         return out;
@@ -467,6 +495,7 @@ private:
     std::string indent_ = "  ";
     std::size_t next_ = 0;
     std::size_t parameters_ = 0;
+    std::size_t states_ = 0;
 };
 
 } // namespace

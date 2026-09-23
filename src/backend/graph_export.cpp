@@ -79,10 +79,25 @@ public:
         frames_.push_back(std::move(frame));
         const std::vector<Val> results = run_block(body);
         frames_.pop_back();
-        if (results.size() != 1 || results.front().kind != Val::Kind::Tensor) {
-            fail("the entry must return one tensor");
+        if (results.size() != 1) {
+            fail("the entry must return one value");
         }
-        return target_.finish(info(results.front()),
+        std::vector<TensorInfo> outputs;
+        const Val& result = results.front();
+        for (const Val& element :
+             result.kind == Val::Kind::Tuple ? result.elements : std::vector<Val>{result}) {
+            if (element.kind != Val::Kind::Tensor) {
+                fail("the entry must return a tensor or a tuple of tensors");
+            }
+            outputs.push_back(info(element));
+        }
+        std::vector<std::pair<std::string, TensorInfo>> final_states;
+        final_states.reserve(written_states_.size());
+        for (const std::string& path : written_states_) {
+            final_states.emplace_back(path, info(states_.at(path)));
+        }
+        return target_.finish(outputs,
+                              final_states,
                               model_.module_paths.at(options_.root_module),
                               std::string(model_.entities[root].name),
                               std::string(model_.entities[entry.entity].name));
@@ -235,6 +250,9 @@ private:
                                        block_substitution(element),
                                        path + "." + std::to_string(i) + ".");
                 }
+            } else if (model_.entities[entity].is_state) {
+                // Becomes an input only if the entry reads it before writing.
+                state_types_[path] = tensor_value(type, {});
             } else {
                 const bool is_optional = data.kind == TypeKind::Optional;
                 if (is_optional && !options_.optionals_present) {
@@ -772,6 +790,35 @@ private:
             define(op, sub_value(data, block.path + a.name));
             return;
         }
+        case ir::OpKind::StateRead: {
+            const std::string path = operand(0).path + a.name;
+            auto found = states_.find(path);
+            if (found == states_.end()) {
+                // First read before any write: the value before the call.
+                const auto declared = state_types_.find(path);
+                if (declared == state_types_.end()) {
+                    fail("internal: state `" + path + "` was not collected");
+                }
+                Val value = declared->second;
+                value.name = target_.state(path, value.shape, value.dtype);
+                found = states_.emplace(path, value).first;
+            }
+            define(op, found->second);
+            return;
+        }
+        case ir::OpKind::StateWrite: {
+            const std::string path = operand(0).path + a.name;
+            const Val& value = operand(1);
+            if (value.kind != Val::Kind::Tensor || value.grid_rank != 0) {
+                fail("a state write needs a whole tensor");
+            }
+            if (std::find(written_states_.begin(), written_states_.end(), path) ==
+                written_states_.end()) {
+                written_states_.push_back(path);
+            }
+            states_[path] = value;
+            return;
+        }
         case ir::OpKind::ArrayGet: {
             const Val& array = operand(0);
             const std::int64_t position = constant_of(op.operands[1]);
@@ -1078,6 +1125,9 @@ private:
     GraphTarget& target_;
     std::map<std::string, const ir::Function*> functions_;
     std::map<std::string, Val> parameters_;
+    std::map<std::string, Val> state_types_;  // state members by path, unnamed
+    std::map<std::string, Val> states_;       // current state values by path
+    std::vector<std::string> written_states_; // assigned states in first-write order
     std::deque<Frame> frames_;
     Dims grid_;
 };
