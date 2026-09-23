@@ -24,7 +24,7 @@ token through the KV caches at position `S/2`), as PyTorch eager,
 torch`, and that source under `torch.compile`), the generated source under
 `torch.compile` with `numerics="fast"` (softmax, normalization, and attention
 in the input dtype, as the reference computes them), and Linnet compiled
-through StableHLO and run by XLA (`linnet_jax`) in both tiers. Every
+through StableHLO and run by XLA (`linnet.jax`) in both tiers. Every
 variant's output is compared against the eager reference; the table shows
 the maximum absolute difference.
 
@@ -34,13 +34,13 @@ the device synchronized around each call. `bf16` on CUDA, `f32` on CPU unless
 
 ## Running
 
-An environment with `linnet_torch` and (for the XLA rows) `linnet_jax`
+An environment with `linnet-lang[torch]` and (for the XLA rows) the `jax` extra
 installed, a `jax` that sees the same accelerator as `torch`, and the
 compiler on `PATH` or in `LINNET_BIN`:
 
 ```bash
 uv venv .bench && source .bench/bin/activate
-uv pip install -e python/linnet_torch -e python/linnet_jax torch "jax[cuda12]"
+uv pip install -e "python/linnet[torch,jax]" torch "jax[cuda12]"
 LINNET_BIN=build/release/linnet python bench/run.py --device cuda --configs small,medium
 ```
 

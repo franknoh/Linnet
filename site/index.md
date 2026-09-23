@@ -71,10 +71,10 @@ The slice bounds, the `reshape`, and the head width `H / Heads` follow from
 slice that no longer fits.
 
 ```python
-from linnet_torch import load          # PyTorch
+from linnet.torch import load          # PyTorch
 model = load("tiny.linnet", generics={"H": 512, "Heads": 8}, weights="weights/")
 
-from linnet_jax import load            # JAX / XLA
+from linnet.jax import load            # JAX / XLA
 step = load("tiny.linnet", generics={"H": 512, "Heads": 8}, weights="weights/")
 ```
 
@@ -92,8 +92,8 @@ linnet check model.linnet        # shapes, dtypes, index domains — nothing run
 
 | Path | Call | Use |
 | --- | --- | --- |
-| Interpreted | `linnet_torch.load(...)` | inspecting a model op by op |
-| Generated code | `load(..., compile="inductor")` or `linnet_jax.load_source(...)` | training and serving inside a framework |
+| Interpreted | `linnet.torch.load(...)` | inspecting a model op by op |
+| Generated code | `load(..., compile="inductor")` or `linnet.jax.load_source(...)` | training and serving inside a framework |
 | Compiled graph | `linnet stablehlo`, `linnet onnx` | XLA, ONNX Runtime, other consumers |
 
 Small Llama forward on an H100: generated PyTorch under `torch.compile` 2.1 ms,

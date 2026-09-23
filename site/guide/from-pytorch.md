@@ -61,7 +61,7 @@ where
 ## Running it
 
 ```python
-from linnet_torch import load
+from linnet.torch import load
 
 model = load("src/block.linnet",
              generics={"H": 1024, "Heads": 16, "T": "bf16"},
@@ -84,7 +84,7 @@ optimizer trains the model. The [PyTorch](/docs/torch) page has the details;
 ## Bringing a model over
 
 ```python
-from linnet_torch import export_linnet
+from linnet.torch import export_linnet
 
 export_linnet(module, (example_input,), output="src/model.linnet", weights="weights/")
 ```
@@ -94,7 +94,7 @@ export_linnet(module, (example_input,), output="src/model.linnet", weights="weig
 decompositions PyTorch produces (softmax, layer norm, RMS norm, GELU, SiLU)
 come back as library calls. The result is formatted and checked, or the
 export fails naming the operation it could not express. ONNX models import
-with `linnet_onnx.import_onnx`, JAX functions with `linnet_jax.export_linnet`.
+with `linnet.onnx.import_onnx`, JAX functions with `linnet.jax.export_linnet`.
 
 ## What you get
 
@@ -104,7 +104,7 @@ with `linnet_onnx.import_onnx`, JAX functions with `linnet_jax.export_linnet`.
 | Head split `H / Heads` | `view(..., -1)`, a wrong divisor reshapes silently | proved from `H % Heads == 0` or rejected |
 | Loading a model | runs the model's Python; `pickle` in `.pt` files | `linnet check` runs nothing; weights are SafeTensors by path |
 | Code and weights | entangled or by convention | separate by construction |
-| Other frameworks | rewrite or export a frozen graph | same source: `linnet stablehlo`, `linnet onnx`, `linnet_jax.load` |
+| Other frameworks | rewrite or export a frozen graph | same source: `linnet stablehlo`, `linnet onnx`, `linnet.jax.load` |
 | Library code | opaque kernels | source in `stdlib/`, checked like yours |
 | Performance | native kernels | the same kernels from generated source (2.1 ms vs 2.7 ms for the compiled reference, small Llama on an H100), or XLA (0.66 ms); see [Benchmarks](/benchmarks) |
 | Refactoring | search and hope | rename through the language server; every use is typed |

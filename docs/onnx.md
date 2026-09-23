@@ -1,17 +1,17 @@
 # ONNX
 
-`python/linnet_onnx` imports ONNX graphs as Linnet source; `linnet onnx`
+`linnet.onnx` imports ONNX graphs as Linnet source; `linnet onnx`
 exports an entry as an ONNX model. Together they round-trip: an exported
 model imports back with its parameters intact.
 
 ```bash
-cd python/linnet_onnx && uv sync --all-extras
+cd python/linnet && uv sync --extra onnx    # or: pip install "linnet-lang[onnx]"
 ```
 
 ## Importing
 
 ```python
-from linnet_onnx import import_onnx
+from linnet.onnx import import_onnx
 
 result = import_onnx("model.onnx", output="src/model.linnet", weights="weights/", std_root="stdlib")
 print(result.notes)      # anything the translation dropped or recovered

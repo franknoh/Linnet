@@ -1,11 +1,11 @@
 # JAX and Flax
 
-`python/linnet_jax` runs a Linnet entry in JAX three ways and exports JAX
+`linnet.jax` runs a Linnet entry in JAX three ways and exports JAX
 functions as Linnet. Like the PyTorch adapter, it has no model-specific
 code.
 
 ```bash
-cd python/linnet_jax && uv sync --all-extras
+cd python/linnet && uv sync --extra flax    # or: pip install "linnet-lang[flax]"
 ```
 
 | Function | Runs the entry as | Differentiable |
@@ -18,7 +18,7 @@ cd python/linnet_jax && uv sync --all-extras
 
 ```python
 import jax
-from linnet_jax import load
+from linnet.jax import load
 
 f = load("src/model.linnet", generics={...}, weights="weights/", std_root="stdlib")
 logits = jax.jit(f)(tokens)
@@ -43,7 +43,7 @@ dtype, as Flax reference models do on `bf16`. All three loaders take it.
 ## load_source and training
 
 ```python
-from linnet_jax import load_source
+from linnet.jax import load_source
 
 f = load_source("src/model.linnet", generics={...}, weights="weights/", std_root="stdlib")
 logits = f(tokens)                                   # same call as `load`
@@ -65,7 +65,7 @@ generated module turns on `jax_enable_x64`, which Linnet's `i64` needs.
 
 ```python
 from flax import nnx
-from linnet_jax import load_nnx
+from linnet.jax import load_nnx
 
 model = load_nnx("src/model.linnet", generics={...}, weights="weights/", std_root="stdlib")
 nnx.display(model)
@@ -106,7 +106,7 @@ the module runs the entry on the arrays it currently holds; built on
 ## Exporting a JAX function
 
 ```python
-from linnet_jax import export_linnet
+from linnet.jax import export_linnet
 
 export_linnet(
     forward,                 # forward(params, *inputs)

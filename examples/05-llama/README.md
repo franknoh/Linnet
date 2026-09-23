@@ -50,7 +50,7 @@ linnet stablehlo --std stdlib --entry decode --bind Vocab=32000 --bind H=512 --b
 ```
 
 ```python
-from linnet_torch import load
+from linnet.torch import load
 model = load("examples/05-llama/src/lib.linnet", generics={...}, weights="weights/",
              numerics="equivalent", compile="inductor")
 tokens = model.run_entry("generate", [prompt, torch.tensor(0, dtype=torch.int32)],
