@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Linnet</title>
+  <rect x="4" y="4" width="56" height="56" rx="12" fill="#3c6e71"/>
+  <g fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 16v32h28"/>
+    <path d="M26 30h14M33 23v14"/>
+  </g>
+</svg>

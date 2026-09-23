@@ -1,0 +1,16 @@
+{
+  "name": "linnet-site",
+  "private": true,
+  "type": "module",
+  "description": "Documentation site for the Linnet tensor language (linnet.franknoh.dev)",
+  "scripts": {
+    "sync": "node scripts/sync.mjs",
+    "dev": "npm run sync && vitepress dev",
+    "build": "npm run sync && vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3",
+    "vue": "^3.5.13"
+  }
+}
