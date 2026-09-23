@@ -106,7 +106,7 @@ class LinnetFunction:
         manifest = cast(list[dict[str, Any]], plan["manifest"])
         self.parameter_paths: list[str] = [entry["path"] for entry in manifest]
         self.optional_paths: set[str] = {e["path"] for e in manifest if e["optional"]}
-        self._cache: dict[tuple[Any, ...], tuple[list[str], Any]] = {}
+        self._cache: dict[tuple[Any, ...], _Compiled] = {}
         self._check_weights(manifest)
 
     def _check_weights(self, manifest: list[dict[str, Any]]) -> None:
@@ -115,7 +115,7 @@ class LinnetFunction:
             return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
         for entry in manifest:
-            if entry["optional"]:
+            if entry["optional"] or entry["kind"] == "state":  # state is never a weight
                 continue
             if not any(matches(entry["path"], path) for path in self._weights):
                 raise LinnetError(f"missing weights for `{entry['path']}`")
@@ -159,8 +159,7 @@ class LinnetFunction:
                     )
         return bindings
 
-    def _compile(self, bindings: Mapping[str, int | str]) -> tuple[list[str], Any]:
-        """The compiled entry and the parameter paths it takes after the inputs."""
+    def _compile(self, bindings: Mapping[str, int | str]) -> _Compiled:
         arguments = ["stablehlo", "--root", self.root, "--entry", self.entry]
         arguments += ["--optionals", "present" if self.optionals_present else "absent"]
         for name, value in bindings.items():
@@ -170,23 +169,64 @@ class LinnetFunction:
         missing = [path for path in paths if path not in self._weights]
         if missing:
             raise LinnetError("missing weights: " + ", ".join(missing))
-        return paths, _wrap_module(text)
+        # State threaded by the exporter: inputs read before the call and
+        # results assigned by it, both by path.
+        state_inputs = re.findall(r'linnet\.state = "([^"]+)"', text)
+        listed = re.search(r"linnet\.states = \[([^\]]*)\]", text)
+        state_outputs = re.findall(r'"([^"]+)"', listed.group(1)) if listed else []
+        exported = _wrap_module(text)
+        state_avals = dict(
+            zip(
+                state_inputs,
+                exported.in_avals[len(exported.in_avals) - len(state_inputs) :],
+                strict=True,
+            )
+        )
+        return _Compiled(paths, state_inputs, state_outputs, state_avals, exported)
 
-    def apply(self, parameters: Mapping[str, Any], *inputs: Any) -> Any:
+    def apply(self, parameters: Mapping[str, Any], *inputs: Any, state: Any = None) -> Any:
         """Runs the entry with `parameters` (path -> array) in place of the
-        loaded weights, so a framework module can own the arrays."""
+        loaded weights, so a framework module can own the arrays. An entry
+        that touches `state` members takes their values before the call in
+        `state` (path -> array; a missing one starts at zeros) and returns
+        `(result, new_state)`; other entries return the result alone."""
         bindings = self._bindings_for(inputs)
         key = tuple(sorted(bindings.items()))
         if key not in self._cache:
             self._cache[key] = self._compile(bindings)
-        paths, exported = self._cache[key]
-        missing = [path for path in paths if path not in parameters]
+        compiled = self._cache[key]
+        missing = [path for path in compiled.parameters if path not in parameters]
         if missing:
             raise LinnetError("missing parameters: " + ", ".join(missing))
-        return exported.call(*inputs, *[jnp.asarray(parameters[path]) for path in paths])
+        arrays = [jnp.asarray(parameters[path]) for path in compiled.parameters]
+        given: Mapping[str, Any] = state or {}
+        for path in compiled.state_inputs:
+            aval = compiled.state_avals[path]
+            arrays.append(
+                jnp.asarray(given[path]) if path in given else jnp.zeros(aval.shape, aval.dtype)
+            )
+        outputs = compiled.exported.call(*inputs, *arrays)
+        if not compiled.state_inputs and not compiled.state_outputs:
+            return outputs
+        outputs = list(outputs) if isinstance(outputs, tuple) else [outputs]
+        count = len(compiled.state_outputs)
+        results, new_states = outputs[: len(outputs) - count], outputs[len(outputs) - count :]
+        result = results[0] if len(results) == 1 else tuple(results)
+        new_state = dict(given)
+        new_state.update(zip(compiled.state_outputs, new_states, strict=True))
+        return result, new_state
 
-    def __call__(self, *inputs: Any) -> Any:
-        return self.apply(self._weights, *inputs)
+    def __call__(self, *inputs: Any, state: Any = None) -> Any:
+        return self.apply(self._weights, *inputs, state=state)
+
+
+@dataclasses.dataclass
+class _Compiled:
+    parameters: list[str]  # parameter paths, in argument order after the inputs
+    state_inputs: list[str]  # state paths read before the call, after the parameters
+    state_outputs: list[str]  # state paths assigned, as results after the entry's own
+    state_avals: dict[str, Any]
+    exported: Any
 
 
 def _wrap_module(text: str) -> Any:

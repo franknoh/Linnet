@@ -139,6 +139,16 @@ add_test(NAME cli_onnx_transformer
             ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_onnx_transformer PROPERTIES
     PASS_REGULAR_EXPRESSION "metadata_props: \\[\"linnet.path.param0\": \"embedding.weight\".*main \\(int32\\[2,5\\] tokens.*ReduceSum")
+add_test(NAME cli_stablehlo_state
+    COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind B=1 --bind Max=4 --bind D=3
+            ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet)
+set_tests_properties(cli_stablehlo_state PROPERTIES
+    PASS_REGULAR_EXPRESSION "%state0: tensor<1x4x3xf32> \\{linnet.state = \"cache.keys\"\\}.*attributes \\{linnet.states = \\[\"cache.keys\", \"caches.0.keys\", \"caches.1.keys\"\\]\\}")
+add_test(NAME cli_onnx_state
+    COMMAND linnet onnx --std ${PROJECT_SOURCE_DIR}/stdlib --bind B=1 --bind Max=4 --bind D=3
+            ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet)
+set_tests_properties(cli_onnx_state PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"linnet.next_state.next_state2\": \"caches.1.keys\".*=> \\(float\\[1,4,3\\] output0, float\\[1,4,3\\] next_state0")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)

@@ -6,6 +6,7 @@
 #include <expected>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace linnet::backend {
@@ -21,6 +22,11 @@ namespace linnet::backend {
 // document in its own format (StableHLO, ONNX). Anything the evaluator
 // cannot express is a capability failure reported in the error string,
 // never approximated.
+//
+// State is threaded functionally: a `state` member the entry reads becomes
+// an extra input (its value before the call), and every state member the
+// entry assigns becomes an extra result after the entry's own results (its
+// value after the call), both named by parameter path.
 
 using Dims = std::vector<std::int64_t>;
 
@@ -74,6 +80,9 @@ public:
     input(const std::string& name, const Dims& shape, sema::ScalarKind dtype) = 0;
     virtual std::string
     parameter(const std::string& path, const Dims& shape, sema::ScalarKind dtype) = 0;
+    // The value of a `state` member before the call.
+    virtual std::string
+    state(const std::string& path, const Dims& shape, sema::ScalarKind dtype) = 0;
 
     virtual std::string constant(const Literal& literal, sema::ScalarKind dtype) = 0;
     virtual std::string elementwise(Elementwise kind,
@@ -110,8 +119,11 @@ public:
     virtual std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) = 0;
 
-    // The whole document, once the entry's result is known.
-    virtual std::string finish(const TensorInfo& result,
+    // The whole document, once the entry's results are known: the entry's
+    // own results, then the final values of the state members it assigned,
+    // by path.
+    virtual std::string finish(const std::vector<TensorInfo>& results,
+                               const std::vector<std::pair<std::string, TensorInfo>>& states,
                                const std::string& module_path,
                                const std::string& block_name,
                                const std::string& entry_name) = 0;

@@ -6,7 +6,9 @@
 so the parameter paths of the model (`layers.0.attn.q`) are the paths of the
 module's state. Calling the module runs the compiled entry with the arrays
 the module currently holds, so state produced by `nnx.split`, checkpoints,
-or sharding flows into the call; the entry itself has no VJP.
+or sharding flows into the call; the entry itself has no VJP. Linnet `state`
+members are not held by the module: an entry that touches them is called
+with `state=` and returns `(result, new_state)`.
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ def to_nnx(function: LinnetFunction) -> Any:
                 kind = cast(dict[str, Any], member["type"])
                 if member["kind"] == "sub":
                     setattr(self, name, _child(kind, path))
+                elif member["kind"] == "state":
+                    continue  # threaded through the call as `state=`, not held here
                 elif path in weights:
                     variable = nnx.Param if member["kind"] == "param" else nnx.Variable
                     setattr(self, name, variable(jnp.asarray(weights[path])))
@@ -70,8 +74,8 @@ def to_nnx(function: LinnetFunction) -> Any:
         def __init__(self) -> None:
             super().__init__(root_name, "")
 
-        def __call__(self, *inputs: Any) -> Any:
-            return function.apply(_collect(self, ""), *inputs)
+        def __call__(self, *inputs: Any, state: Any = None) -> Any:
+            return function.apply(_collect(self, ""), *inputs, state=state)
 
     LinnetModule.__name__ = LinnetModule.__qualname__ = root_name
     return LinnetModule()

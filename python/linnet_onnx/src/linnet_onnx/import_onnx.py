@@ -788,7 +788,16 @@ class _Translator:
             return _Type(tuple(_broadcast(shapes)), dtype)
         if kind in _UNARY or (
             kind
-            in ("Reciprocal", "Pow", "Sigmoid", "Relu", "Gelu", "Softmax", "LayerNormalization")
+            in (
+                "Identity",
+                "Reciprocal",
+                "Pow",
+                "Sigmoid",
+                "Relu",
+                "Gelu",
+                "Softmax",
+                "LayerNormalization",
+            )
             and first is not None
         ):
             return first
@@ -1213,6 +1222,15 @@ def _unary(t: _Translator, node: Any) -> None:
             _UNARY[node.op_type], [t.operand(node, 0)], t.result(node), name=node.output[0]
         ),
     )
+
+
+@_handles("Identity")
+def _identity(t: _Translator, node: Any) -> None:
+    source = node.input[0]
+    if source in t.constants and source not in t.values:
+        _fold_constant(t, node, t.constants[source])
+        return
+    t.define(node, t.operand(node, 0))
 
 
 @_handles("Reciprocal")

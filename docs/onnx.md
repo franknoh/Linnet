@@ -34,7 +34,7 @@ formatted source; the result is checked before it is written.
   compile-time shapes. Where ONNX's own inference gives up after such a
   reshape, the importer propagates shapes itself.
 - **Operations.** Elementwise arithmetic, comparisons, `Where`, `Cast`,
-  `Transpose`, `Reshape`, `Slice`, `Concat`, `Expand`, `Pow` with constant
+  `Transpose`, `Reshape`, `Slice`, `Concat`, `Expand`, `Identity`, `Pow` with constant
   exponents, `Reciprocal`; `MatMul` and `Gemm` as `std.linalg::matmul` /
   `batched_matmul` (or a contraction in index notation when only the right
   operand is a matrix); `Softmax`, `LayerNormalization`, `Gelu` (tanh),
@@ -75,6 +75,14 @@ and index notation feeds a `GraphTarget` that spells the primitives in one
 format or the other — `GatherND` for element lookups, `Range` for `iota`,
 `Reshape`+`Expand` (after a `Transpose` when axes reorder) for broadcasts,
 `ReduceSum`/`ReduceMax`/... with an `axes` input for reductions.
+
+An entry that touches `state` members gets them threaded explicitly: the
+members it reads are inputs `state<N>` (mapped to their paths by
+`linnet.state.state<N>`), and the members it assigns are outputs
+`next_state<N>` after the entry's own `output<N>` results (mapped by
+`linnet.next_state.next_state<N>`), so a runtime feeds each call's outputs
+back as the next call's inputs. Entries returning a tuple have one output
+per element.
 
 `import_onnx` recognizes the metadata, so an exported model imports back into
 Linnet with its parameters intact.
