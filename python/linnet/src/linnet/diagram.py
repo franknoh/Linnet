@@ -210,6 +210,12 @@ class _Builder:
             index = self.constants.get(rest[0], "i") if rest else "i"
             self.members[op.results[0].id] = f"{self.members[array]}[{index}]"
             return
+        if kind == "option.some" and len(op.operands) == 1 and len(op.results) == 1:
+            # Wrapping a value in an optional changes its type, not the flow.
+            self.producer[op.results[0].id] = self.producer.get(op.operands[0])
+            if op.operands[0] in self.constants:
+                self.constants[op.results[0].id] = self.constants[op.operands[0]]
+            return
         if kind in ("static_for", "static_range", "while"):
             self.loop(op, group, expand)
             return
@@ -467,11 +473,17 @@ def layout(graph: Graph) -> Layout:
     order = _topological(ids, incoming, outgoing)
     for node_id in order:
         layer[node_id] = max((layer[p] + 1 for p in incoming[node_id]), default=0)
-    # Outputs sit on the last layer; inputs without consumers stay on the first.
+    # Outputs sit on the last layer. Nodes with no inputs other than the
+    # function's own inputs (constants, parameter reads, `iota`) move down
+    # to just above their first consumer, so they sit next to what uses them.
     last = max(layer.values(), default=0)
     for node in graph.nodes:
         if node.kind == "output":
             layer[node.id] = last if last > 0 else 0
+    for node_id in reversed(order):
+        node = graph.node(node_id)
+        if node.kind != "input" and not incoming[node_id] and outgoing[node_id]:
+            layer[node_id] = max(0, min(layer[c] for c in outgoing[node_id]) - 1)
     depth: dict[str, int] = {}
     parents = {g.id: g.parent for g in graph.groups}
     for node in graph.nodes:
