@@ -161,6 +161,10 @@ pub block Model<H: Dim, Layers: Dim> {
   `static for step in 0..Steps { ... }` iterates a compile-time integer range;
   `step` is an `i64` scalar of each iteration (cast it, compare it, add it to
   a position), and `var` locals carry values from one iteration to the next.
+- `while running && count < MaxNew { ... }` is a runtime loop over a scalar
+  `bool`; the `var`s it assigns are its carried values (shapes fixed), so a
+  decode loop can stop at an end-of-sequence token. It runs in the PyTorch
+  materializer; graph exports of `while` are not available yet.
 - `entry` marks the callables a backend exposes.
 - Parameter paths follow the structure: `layers.0.attention.q_proj.weight`.
   `linnet inspect --parameters` lists them.
@@ -187,7 +191,7 @@ integer tensors), and quantized weights (`std.quant`) — is library code in
 
 ## What is not in the language
 
-No expression statements, no runtime loops, no recursion, no mutation of
-anything but local `var`s and a block's own `state`, no host-language escape
-hatches, and no tensor payloads in source. That is what makes a `.linnet` file safe to inspect and
+No expression statements, no recursion, no data-dependent shapes, no
+mutation of anything but local `var`s and a block's own `state`, no
+host-language escape hatches, and no tensor payloads in source. That is what makes a `.linnet` file safe to inspect and
 load.

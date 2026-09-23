@@ -137,6 +137,33 @@ where
         return produced
     }
 
+    // Greedy generation that stops early: at most `MaxNew` tokens, or fewer
+    // once every sequence has produced `eos`. A runtime `while` loop over
+    // scalar state; the count of tokens produced is returned with them, and
+    // positions past it hold zeros.
+    pub entry generate_until<MaxNew: Dim>(
+        token: Tensor[Batch, 1; i32],
+        pos: i32,
+        eos: i32,
+    ) -> (Tensor[Batch, MaxNew; i32], i32)
+    where MaxNew > 0 {
+        var current = token
+        var produced = fill<i32>([Batch, MaxNew], 0)
+        var count: i32 = 0
+        var running = true
+        let slots = iota<i32>(MaxNew)
+        while running && count < MaxNew {
+            let next = argmax(step(current, pos + count))
+            let written[b, s] = select(slots[s] == count, next[b], produced[b, s])
+            produced = written
+            current = reshape(next, [Batch, 1])
+            count = count + 1
+            let finished = all[b] (next[b] == eos)
+            running = !finished
+        }
+        return (produced, count)
+    }
+
     fn step(token: Tensor[Batch, 1; i32], pos: i32) -> Tensor[Batch, Vocab; T] {
         var x = embedding.forward(token)
         static for layer in layers {

@@ -854,10 +854,15 @@ private:
             advance();
             assign.value = parse_expr();
             data = assign;
-        } else if (at(K::KwWhile) || at(K::KwFor)) {
+        } else if (at(K::KwWhile)) {
+            advance();
+            WhileStmt loop{parse_expr(), {}};
+            loop.body = parse_body();
+            data = loop;
+        } else if (at(K::KwFor)) {
             unsupported(peek().span,
-                        "runtime loops are reserved for a future version; use `static for` for "
-                        "structural iteration");
+                        "`for` loops are reserved; use `static for` for structural iteration or "
+                        "`while` for a runtime loop");
             advance();
         } else {
             Diagnostic* diagnostic =

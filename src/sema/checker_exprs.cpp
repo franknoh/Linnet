@@ -1532,9 +1532,8 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
             },
             [&](const ast::ReturnStmt& ret) {
                 if (in_static_for) {
-                    error(codes::missing_return,
-                          node.span,
-                          "`return` is not allowed inside `static for`");
+                    error(
+                        codes::missing_return, node.span, "`return` is not allowed inside a loop");
                 }
                 const TypeId expected = env_->result == no_type ? types_.error() : env_->result;
                 const bool returns_unit = types_.kind(expected) == TypeKind::Unit;
@@ -1557,6 +1556,23 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                        expected,
                        ast().expr(ret.value).span,
                        "returned value");
+            },
+            [&](const ast::WhileStmt& loop) {
+                const TypeId condition =
+                    check_expr(loop.condition, types_.scalar(ScalarKind::Bool));
+                const TypeData& data = types_.get(condition);
+                const bool is_bool =
+                    data.kind == TypeKind::Scalar && data.dtype == DType::of(ScalarKind::Bool);
+                if (!is_bool && data.kind != TypeKind::Error) {
+                    error(codes::condition_not_bool,
+                          ast().expr(loop.condition).span,
+                          "the condition of `while` must be a scalar `bool`, found `" +
+                              str(condition) + "`")
+                        .help("reduce a boolean tensor with `all[...]` or `any[...]` first");
+                }
+                env_->scopes.emplace_back();
+                check_body(loop.body, false);
+                env_->scopes.pop_back();
             },
             [&](const ast::StaticForStmt& loop) {
                 const TypeId iterable = check_expr(loop.iterable);

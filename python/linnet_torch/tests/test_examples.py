@@ -389,3 +389,44 @@ def test_llama_sample_is_deterministic_and_greedy_at_low_temperature(tmp_path: P
     model.reset_state()
     greedy = model.run_entry("generate", [prompt, start], generics={"Steps": 4})
     torch.testing.assert_close(sample(1e-3), greedy)
+
+
+def test_llama_generate_until_stops_at_eos(tmp_path: Path) -> None:
+    """The `while` entry produces what `generate` produces until every row has
+    emitted the end token, then stops and reports the count."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "Batch": 2,
+        "MaxSeq": 8,
+        "T": "f32",
+    }
+    source = EXAMPLES / "05-llama/src/lib.linnet"
+    model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
+    prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
+    start = torch.tensor(0, dtype=torch.int32)
+    greedy = model.run_entry("generate", [prompt, start], generics={"Steps": 5})
+
+    # An end token nobody produces: the full budget is used.
+    model.reset_state()
+    tokens, count = model.run_entry(
+        "generate_until",
+        [prompt, start, torch.tensor(99, dtype=torch.int32)],
+        generics={"MaxNew": 5},
+    )
+    assert int(count) == 5
+    torch.testing.assert_close(tokens, greedy)
+
+    # An end token taken from the greedy tokens: the loop stops after the
+    # first step at which every row has produced it.
+    eos = greedy[0, 2].to(torch.int32)
+    stop = next(s for s in range(5) if bool((greedy[:, s] == eos).all()))
+    model.reset_state()
+    tokens, count = model.run_entry("generate_until", [prompt, start, eos], generics={"MaxNew": 5})
+    assert int(count) == stop + 1
+    torch.testing.assert_close(tokens[:, : stop + 1], greedy[:, : stop + 1])
+    assert int(tokens[:, stop + 1 :].abs().sum()) == 0

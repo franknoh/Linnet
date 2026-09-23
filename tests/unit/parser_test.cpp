@@ -357,7 +357,8 @@ TEST("parser: reserved syntax is rejected, not reinterpreted") {
     CHECK_EQ(Parsed("module m\nblock B { state cache: Tensor[4; f32] }\n").codes(), "");
     CHECK_EQ(Parsed("module m\nextern op f() -> f32\n").codes(), "E1103");
     CHECK_EQ(Parsed("module m\nuse super.x\n").codes(), "E1103");
-    CHECK_EQ(Parsed("module m\nfn f() { while true { } return }\n").codes(), "E1103");
+    CHECK_EQ(Parsed("module m\nfn f() { while true { } return }\n").codes(), "");
+    CHECK_EQ(Parsed("module m\nfn f() { for i in xs { } return }\n").codes(), "E1103");
     CHECK_EQ(Parsed("module m\nfn f(x: Tensor[; f32]) { return }\n").codes(), "E1103");
     CHECK_EQ(Parsed("module m\nenum E { A(f32) }\n").codes().substr(0, 5), "E1103");
     CHECK_EQ(Parsed("module m\nfn f(mut: f32) { return }\n").codes(), "E1004");

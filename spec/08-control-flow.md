@@ -38,9 +38,19 @@ static for i in 0..Steps {
 
 ## 8.4 Runtime loops
 
-`while` is reserved for future runtime control flow and MUST NOT be accepted as a user identifier.
+```text
+var count = 0
+var running = true
+while running && count < MaxNew {
+    ...
+    count = count + 1
+    running = !done
+}
+```
 
-Runtime loops require explicit rules for state threading, shape invariance, termination-independent graph semantics, and backend export. They are intentionally excluded from the first implementation.
+`while` repeats its body while the condition, a scalar `bool` evaluated before each iteration, holds. The `var` locals assigned in the body are the loop's carried values: their types are fixed (§5.3), so every shape is invariant across iterations, and the body may assign `state` members (§9.3). `return` is not allowed inside a loop. Termination is the program's responsibility; a bound on a counter is the usual form.
+
+In Core IR a `while` is one operation carrying those values, with a condition region and a body region, so effects inside it are ordered like any other. Backends execute it as a loop; a graph export that cannot express a data-dependent loop reports it rather than unrolling. `for` remains reserved.
 
 ## 8.5 Recursion
 

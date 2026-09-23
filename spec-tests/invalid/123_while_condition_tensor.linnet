@@ -1,0 +1,11 @@
+module m
+
+block Counter<N: Dim> {
+    pub entry run(x: Tensor[N; f32]) -> Tensor[N; f32] {
+        var total = x
+        while total < 1000.0 {
+            total = total * 2.0
+        }
+        return total
+    }
+}

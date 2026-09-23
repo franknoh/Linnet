@@ -258,8 +258,21 @@ struct StaticForStmt {
     ExprId range_end = no_id;
 };
 
-using StmtData = std::
-    variant<ErrorStmt, LetStmt, ComprehensionStmt, VarStmt, AssignStmt, ReturnStmt, StaticForStmt>;
+// `while condition { ... }`: a runtime loop; `var` locals assigned in the
+// body carry from one iteration to the next.
+struct WhileStmt {
+    ExprId condition;
+    std::vector<StmtId> body;
+};
+
+using StmtData = std::variant<ErrorStmt,
+                              LetStmt,
+                              ComprehensionStmt,
+                              VarStmt,
+                              AssignStmt,
+                              ReturnStmt,
+                              StaticForStmt,
+                              WhileStmt>;
 
 struct Stmt {
     SourceSpan span;

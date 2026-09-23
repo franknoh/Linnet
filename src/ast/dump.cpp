@@ -337,6 +337,12 @@ private:
                                nested("return", [&] { expr(ret.value); });
                            }
                        },
+                       [&](const WhileStmt& loop) {
+                           nested("while", [&] {
+                               nested("condition", [&] { expr(loop.condition); });
+                               body(loop.body);
+                           });
+                       },
                        [&](const StaticForStmt& loop) {
                            nested("static for " + pattern(loop.pattern), [&] {
                                nested("in", [&] { expr(loop.iterable); });

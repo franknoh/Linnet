@@ -104,7 +104,8 @@ bool eliminate_dead_code(Module& module) {
             const std::vector<OpId> ops = module.block(block).ops;
             for (const OpId id : ops) {
                 const Operation& op = module.op(id);
-                if (is_terminator(op.kind) || op.kind == OpKind::StateWrite) {
+                if (is_terminator(op.kind) || op.kind == OpKind::StateWrite ||
+                    op.kind == OpKind::While) {
                     continue;
                 }
                 bool is_used = false;

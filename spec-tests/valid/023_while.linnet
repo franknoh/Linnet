@@ -1,0 +1,20 @@
+module while_loops
+
+// A runtime loop: the condition is a scalar bool checked before each
+// iteration and the assigned `var`s carry across iterations.
+pub block Counter<N: Dim> {
+    param scale: Tensor[N; f32]
+
+    pub entry run(x: Tensor[N; f32], limit: i32) -> Tensor[N; f32] {
+        var total = x
+        var count: i32 = 0
+        var growing = true
+        while growing && count < limit {
+            total = total * scale
+            count = count + 1
+            let small = all[n] (total[n] < 1000.0)
+            growing = small
+        }
+        return total
+    }
+}
