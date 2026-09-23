@@ -39,7 +39,7 @@ exports as `stablehlo.while`, an ONNX `Loop`, or a Python loop.
 and draws with `std.random::categorical`; the same key gives the same tokens
 in PyTorch and under XLA.
 
-## Run it
+## Commands
 
 ```bash
 linnet lint --std stdlib examples/05-llama

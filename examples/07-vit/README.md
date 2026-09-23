@@ -32,7 +32,7 @@ pub const POOLING: Pooling = Pooling.ClassToken
 `match POOLING { ... }` picks the pooled representation; because the value is
 a constant, the emitter and the exporters keep only the chosen arm.
 
-## Run it
+## Commands
 
 ```bash
 linnet check --std stdlib examples/07-vit/vit.linnet

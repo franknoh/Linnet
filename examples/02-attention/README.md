@@ -21,7 +21,7 @@ by the row sum; `*S` keeps it shape-generic. The standard library's
 `std.nn.softmax::softmax` is the same code, and a backend may replace it with
 a fused kernel (`linnet explain` shows when).
 
-## Run it
+## Commands
 
 ```bash
 linnet check examples/02-attention/attention.linnet

@@ -27,7 +27,7 @@ backend maps this to `matmul` when it has one.
 `bias: Tensor[Out; T]? = none` is a parameter a checkpoint may leave out;
 the body `match`es on it, and the checker insists both arms exist.
 
-## Run it
+## Commands
 
 ```bash
 linnet check examples/01-linear/linear.linnet

@@ -32,7 +32,7 @@ remove one and `linnet check` names the reshape that no longer follows.
 version leaves them to the caller. The Llama example computes them from
 `iota` inside the model instead.
 
-## Run it
+## Commands
 
 ```bash
 linnet check --std stdlib examples/04-tiny-transformer

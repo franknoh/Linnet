@@ -18,7 +18,7 @@ runs it without a mask (`none`) over patch tokens, `text.linnet` with
 a learned temperature stored as `Tensor[1; f32]`. A backend exposes each
 entry as a separate function over the same weights.
 
-## Run it
+## Commands
 
 ```bash
 linnet lint --std stdlib examples/08-clip

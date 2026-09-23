@@ -25,7 +25,7 @@ evaluates, so the result type is `Tensor[B, S, H; T]` exactly.
 The logits are `sum[i] h[b, s, i] * wte[v, i]` — the embedding matrix used
 as the output projection, in index notation rather than a transpose.
 
-## Run it
+## Commands
 
 ```bash
 linnet check --std stdlib examples/06-gpt2/gpt2.linnet
