@@ -132,7 +132,7 @@ add_test(NAME cli_stablehlo_transformer
             --bind Inner=16 --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5
             ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_stablehlo_transformer PROPERTIES
-    PASS_REGULAR_EXPRESSION "func.func @main\\(%tokens: tensor<2x5xi32>.*linnet.path = \"layers.1.mlp.down.weight\".*\"stablehlo.reduce\"")
+    PASS_REGULAR_EXPRESSION "func.func @main\\(%tokens: tensor<2x5xi32>.*linnet.path = \"layers.1.mlp.down.weight\".*\"stablehlo.dot_general\".*\"stablehlo.reduce\"")
 add_test(NAME cli_onnx_transformer
     COMMAND linnet onnx --std ${PROJECT_SOURCE_DIR}/stdlib --bind Vocab=11 --bind H=8 --bind Heads=2
             --bind Inner=16 --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5

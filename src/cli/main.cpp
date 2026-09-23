@@ -72,11 +72,12 @@ void print_usage(std::FILE* out) {
         "                                       Print the materializer plan (JSON) of a\n"
         "                                       root block and everything it uses\n"
         "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
+        "            [--numerics exact|equivalent]\n"
         "            [--optionals present|absent] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments\n"
         "  onnx [same options as stablehlo] <file>\n"
-        "  torch [same options as stablehlo] [--numerics exact|equivalent] <file>\n"
+        "  torch [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
@@ -318,7 +319,7 @@ int run_graph_export(std::span<const std::string_view> args,
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
-            arg == "--optionals" || (arg == "--numerics" && format == "torch")) {
+            arg == "--optionals" || arg == "--numerics") {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
             }
@@ -372,14 +373,14 @@ int run_graph_export(std::span<const std::string_view> args,
     }
     ir::Module core = ir::lower(sources, modules, analysis.model);
     opt::run_pipeline(core, opt::optimizing_passes(opt::Legality::Exact));
-    if (format == "torch") {
-        // Library calls become PyTorch kernels where the numerics allow.
-        const auto allowed = opt::parse_legality(numerics);
-        if (!allowed) {
-            return usage_error("--numerics must be `exact` or `equivalent`");
-        }
-        opt::select_candidates(core, opt::torch_candidates(), *allowed);
+    // Library calls the target has an operator for (contractions as
+    // `dot_general`/`MatMul`, attention, softmax, ...) where the numerics
+    // allow; `--numerics exact` keeps every canonical body.
+    const auto allowed = opt::parse_legality(numerics);
+    if (!allowed) {
+        return usage_error("--numerics must be `exact` or `equivalent`");
     }
+    opt::select_candidates(core, opt::torch_candidates(), *allowed);
     const auto text = format == "onnx"    ? backend::export_onnx(core, export_options)
                       : format == "torch" ? backend::export_torch_source(core, export_options)
                                           : backend::export_stablehlo(core, export_options);
