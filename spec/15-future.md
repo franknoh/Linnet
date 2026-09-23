@@ -8,7 +8,7 @@ This chapter is informative except where it reserves keywords or explicitly cons
 
 ## 15.2 Explicit RNG
 
-Randomness should use explicit RNG values or state tokens so graph transformations preserve reproducibility.
+Randomness is explicit data: `std.random` implements a counter-based PRNG (Threefry-2x32) in Linnet over integer tensors, with keys as `Tensor[2; i64]` values that programs split and pass. No primitive draws random numbers and no hidden generator exists, so graph transformations preserve reproducibility by construction. `rng` stays reserved should a language-level construct ever be needed.
 
 ## 15.3 Runtime loops and scan
 

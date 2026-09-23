@@ -22,6 +22,7 @@ STDLIB = REPO / "stdlib"
 EXAMPLES = REPO / "examples"
 
 jax = pytest.importorskip("jax")
+jax.config.update("jax_enable_x64", True)  # `i64` inputs (PRNG keys) stay 64-bit on device
 
 
 @pytest.fixture(autouse=True)
@@ -179,3 +180,45 @@ def test_unbound_generic_is_reported() -> None:
     )
     assert completed.returncode != 0
     assert "needs a value" in completed.stderr
+
+
+def test_llama_sample_draws_the_same_tokens_under_xla(tmp_path: Path) -> None:
+    """`std.random` is arithmetic, so the sampled tokens for a key are the
+    same in XLA as in the PyTorch interpreter."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "Batch": 2,
+        "MaxSeq": 8,
+        "T": "f32",
+    }
+    source = EXAMPLES / "05-llama/src/lib.linnet"
+    reference = load(source, generics=generics, std_root=STDLIB)
+    weights: dict[str, torch.Tensor] = {}
+    for name, parameter in reference.named_parameters():
+        path = name.removeprefix("root.")
+        if not path.endswith(".bias"):
+            weights[path] = torch.randn(parameter.shape) * 0.3
+    save_file(weights, str(tmp_path / "model.safetensors"))
+    reference = load(source, generics=generics, std_root=STDLIB, weights=tmp_path)
+    prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
+    key = torch.tensor([0, 7], dtype=torch.int64)
+    temperature = torch.tensor(0.8)
+    start = torch.tensor(0, dtype=torch.int32)
+    expected = reference.run_entry(
+        "sample", [prompt, start, key, temperature], generics={"Steps": 3}
+    )
+
+    text = _export(source, {**generics, "Steps": 3}, entry="sample")
+    paths = _parameter_paths(text)
+    arguments = [prompt.numpy(), start.numpy(), key.numpy(), temperature.numpy()]
+    arguments += [weights[path].numpy() for path in paths]
+    # The caches are read before written: zeros, as a fresh module holds.
+    for _ in re.findall(r'linnet\.state = "([^"]+)"', text):
+        arguments.append(np.zeros((2, 2, 8, 2), np.float32))
+    actual = _run_xla(text, arguments)
+    np.testing.assert_array_equal(np.asarray(actual), expected.numpy())

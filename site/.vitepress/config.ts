@@ -93,6 +93,7 @@ export default defineConfig({
             { text: "Language tour", link: "/docs/language-tour" },
             { text: "Modules and packages", link: "/docs/modules-and-packages" },
             { text: "Command-line tooling", link: "/docs/tooling" },
+            { text: "Randomness", link: "/docs/random" },
             { text: "Diagnostics", link: "/docs/diagnostics" },
           ],
         },

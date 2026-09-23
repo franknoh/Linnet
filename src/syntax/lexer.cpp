@@ -45,7 +45,6 @@ constexpr auto reserved_words = std::to_array<std::string_view>({
     "trait",
     "impl",
     "derive",
-    "random",
     "rng",
     "mut",
     "ref",

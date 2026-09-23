@@ -8,6 +8,7 @@ module llama
 
 use crate.attention::{GroupedQueryAttention}
 use std.nn.decoding::{argmax}
+use std.random::{categorical, split}
 use std.nn.embedding::{Embedding}
 use std.nn.linear::{Linear}
 use std.nn.mlp::{SwiGlu}
@@ -104,6 +105,31 @@ where
         let slots = iota<i32>(Steps)
         static for i in 0..Steps {
             let next = argmax(step(current, pos + cast<i32>(i)))
+            let written[b, s] = select(slots[s] == cast<i32>(i), next[b], produced[b, s])
+            produced = written
+            current = reshape(next, [Batch, 1])
+        }
+        return produced
+    }
+
+    // Sampling with an explicit key: `Steps` tokens drawn from the softmax
+    // of the logits divided by `temperature`, one derived key per step, so
+    // the same key gives the same text on every backend.
+    pub entry sample<Steps: Dim>(
+        token: Tensor[Batch, 1; i32],
+        pos: i32,
+        key: Tensor[2; i64],
+        temperature: f32,
+    ) -> Tensor[Batch, Steps; i32]
+    where Steps > 0 {
+        var current = token
+        var produced = fill<i32>([Batch, Steps], 0)
+        let slots = iota<i32>(Steps)
+        let keys = split<Steps>(key)
+        static for i in 0..Steps {
+            let logits = cast<f32>(step(current, pos + cast<i32>(i))) / temperature
+            let key_i[j] = keys[i, j]
+            let next = categorical(key_i, logits)
             let written[b, s] = select(slots[s] == cast<i32>(i), next[b], produced[b, s])
             produced = written
             current = reshape(next, [Batch, 1])

@@ -493,8 +493,18 @@ private:
 
     // Nesting depth of the expression an inlined operation produces: leaves
     // (arguments, bound values, constants) count 0, each operation adds 1.
+    // A negated constant spells as a literal (`-2.0`), so it nests like one.
+    bool is_negated_constant(const ir::Operation& op) const {
+        if (op.kind != ir::OpKind::Neg) {
+            return false;
+        }
+        const ir::OpId producer = module_.value(op.operands.front()).producer;
+        return producer != ir::no_id && is_constant(module_.op(producer).kind);
+    }
+
     int inline_depth(const ir::Operation& op) {
-        if (is_member_path(op.kind) || op.kind == ir::OpKind::StateRead) {
+        if (is_member_path(op.kind) || op.kind == ir::OpKind::StateRead ||
+            is_negated_constant(op)) {
             return 0;
         }
         int depth = op.regions.empty() ? 0 : 1;
@@ -504,7 +514,8 @@ private:
                 continue;
             }
             const ir::Operation& source = module_.op(producer);
-            const bool is_leaf = is_constant(source.kind) || source.results.size() != 1 ||
+            const bool is_leaf = is_constant(source.kind) || is_negated_constant(source) ||
+                                 source.results.size() != 1 ||
                                  source.kind == ir::OpKind::StaticFor ||
                                  source.kind == ir::OpKind::StaticRange ||
                                  source.kind == ir::OpKind::TupleGet || needs_binding(source);

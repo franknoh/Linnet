@@ -577,6 +577,24 @@ private:
     // ------------------------------------------------------------- expressions
 
     ValueId lower_expr(ast::ExprId id, TypeId expected) {
+        const ValueId value = lower_expr_untyped(id, expected);
+        // A compile-time integer used where a narrower integer scalar is
+        // expected (`select(mask, positions, V)` with `i32` positions) takes
+        // that dtype, so every backend sees matching operand types.
+        if (expected != no_type && types().kind(facts(id).type) == TypeKind::CompileInt &&
+            types().kind(expected) == TypeKind::Scalar) {
+            const DType dtype = types().get(expected).dtype;
+            const TypeId actual = module_.value(value).type;
+            if (!dtype.is_var && dtype.scalar != ScalarKind::I64 &&
+                sema::is_integer(dtype.scalar) && types().kind(actual) == TypeKind::Scalar &&
+                types().get(actual).dtype == DType::of(ScalarKind::I64)) {
+                return emit(OpKind::Cast, {value}, expected, {}, ast().expr(id).span);
+            }
+        }
+        return value;
+    }
+
+    ValueId lower_expr_untyped(ast::ExprId id, TypeId expected) {
         const ast::Expr& node = ast().expr(id);
         const TypeId type = value_type(id, expected);
         return std::visit(
