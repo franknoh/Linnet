@@ -11,6 +11,9 @@ of it is exercised by the test suites under `python/` and `tests/`.
 | JAX | `linnet.jax.load`, `load_source`, `load_nnx` | `load` compiles StableHLO with XLA (no VJP); `load_source` runs generated `jnp` code and differentiates; `load_nnx` wraps either as a Flax NNX module |
 | StableHLO | `linnet stablehlo --bind ...` | static shapes; parameters by `linnet.path`, state by `linnet.state` and `linnet.states` |
 | ONNX | `linnet onnx --bind ...` | opset 20 text format; parameters as `param<N>` with metadata, state as `state<N>` and `next_state<N>` |
+| ONNX, packaged | `linnet.onnx.export_model` | the same graph with the checkpoint embedded as initializers; runs in any ONNX runtime by itself |
+| Triton Inference Server | `linnet.triton.export` | a model repository entry: `config.pbtxt` from the entry's signature plus the packaged ONNX model, or a Python backend over `linnet.torch` for entries with state |
+| ComfyUI | [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) | node pack: load a model or a Nest entry, run entries on tensors, convert images |
 
 ## Importers
 

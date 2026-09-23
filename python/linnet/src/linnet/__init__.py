@@ -11,7 +11,14 @@ from __future__ import annotations
 from .compiler import LinnetError, find_compiler, run_compiler
 from .ir import Program, load_program
 from .plan import Env, Plan, PlanError, compile_plan
-from .weights import apply_bindings, read_arrays, read_bindings, safetensors_files
+from .weights import (
+    RawTensor,
+    apply_bindings,
+    iter_safetensors,
+    read_arrays,
+    read_bindings,
+    safetensors_files,
+)
 
 __all__ = [
     "Env",
@@ -19,9 +26,11 @@ __all__ = [
     "Plan",
     "PlanError",
     "Program",
+    "RawTensor",
     "apply_bindings",
     "compile_plan",
     "find_compiler",
+    "iter_safetensors",
     "load_program",
     "read_arrays",
     "read_bindings",
