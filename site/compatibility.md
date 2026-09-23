@@ -55,8 +55,9 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 - Randomness is a library, not a primitive: `std.random` (Threefry-2x32,
   matching `jax.random` bit for bit) runs on every backend; there is no
   hidden generator state.
-- Training: no autodiff. JAX materialization has no VJP; the PyTorch module
-  holds parameters with `requires_grad=False`.
+- Training in JAX: the materialized function has no VJP yet. In PyTorch,
+  `load(..., trainable=True)` trains through autograd (interpreted or as
+  generated source).
 - Quantized *dtypes*: quantization is library code (`std.quant`: per-row
   int8 and packed int4 weights with scales, `Int8Linear`/`Int4Linear`), not a
   storage type; per-group and asymmetric schemes are not written yet.
