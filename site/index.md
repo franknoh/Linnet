@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Linnet
   text: A typed tensor language
-  tagline: Write a model once as checked, weight-free source. Run it in PyTorch, JAX, XLA, or ONNX Runtime — and bring models back from all of them.
+  tagline: Models as checked, weight-free source that runs in PyTorch, JAX, XLA, and ONNX Runtime.
   image:
     src: /logo.svg
     alt: Linnet
@@ -20,21 +20,17 @@ hero:
       link: /examples/
 
 features:
-  - title: Shapes checked before anything runs
-    details: Every dimension is a symbol the compiler reasons about. A reshape that does not preserve the element count, an attention head split that does not divide, a mismatched dtype — all reported at check time with the shapes involved, never as a runtime error.
-  - title: Source without payload
-    details: A .linnet file declares parameters and never contains tensor data. Checking or inspecting a package executes nothing, and weights bind by path from SafeTensors — no pickle, no model classes to trust.
-  - title: One model, every framework
-    details: The same source materializes as a torch.nn.Module, a jax function or Flax NNX module, a StableHLO module for XLA, or an ONNX model. Exporters recover softmax, norms, and activations from framework graphs back into library calls.
-  - title: Index notation
-    details: Contractions and reductions are written as indexed expressions with compile-time domains — sum[k] a[i, k] * b[k, j] — and lowered to broadcasts, gathers, and reductions, or matched to native kernels.
-  - title: A standard library in Linnet
-    details: linear, embedding, softmax, rms_norm, layer_norm, rope, attention, swiglu are ordinary source the checker verifies like any other. The compiler knows no model names.
-  - title: Tooling from day one
-    details: Formatter, linter, language server (VS Code, Neovim), executable spec tests, an optimizer with an e-graph superoptimizer, and linnet explain to see what it did.
+  - title: Checked before it runs
+    details: Every dimension is a symbol. Reshapes, head splits, and dtypes are verified at check time, with the shapes named in the message.
+  - title: Source without weights
+    details: A .linnet file declares parameters and carries no data. Checking executes nothing; weights bind by path from SafeTensors.
+  - title: One source, every framework
+    details: The same file becomes a torch.nn.Module, a JAX function, a StableHLO module, or an ONNX model, and models come back the other way.
+  - title: A library you can read
+    details: linear, attention, softmax, rms_norm, rope, and the PRNG are ordinary Linnet in stdlib. The compiler knows no model names.
 ---
 
-## In one screen
+## A block
 
 ```linnet
 module tiny
@@ -70,8 +66,8 @@ fn heads<B: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
 }
 ```
 
-Every slice bound, every `reshape`, and the `H / Heads` head width are proved
-from `H % Heads == 0`; change `3 * H` to `2 * H` and `linnet check` names the
+The slice bounds, the `reshape`, and the head width `H / Heads` follow from
+`H % Heads == 0`. Change `3 * H` to `2 * H` and `linnet check` points at the
 slice that no longer fits.
 
 ```python
