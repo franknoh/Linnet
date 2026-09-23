@@ -39,6 +39,7 @@ def load(
     optimize: bool = True,
     numerics: str = "exact",
     compile: bool | str = False,
+    trainable: bool = False,
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
 
@@ -55,6 +56,12 @@ def load(
     `linnet torch` for the input shapes it is called with (no interpreter in
     the loop); a backend name such as `compile="inductor"` additionally
     passes that source through `torch.compile`.
+
+    `trainable=True` makes the parameters require gradients: every entry is
+    ordinary differentiable PyTorch arithmetic (interpreted or generated), so
+    `loss.backward()` and any `torch.optim` optimizer train the model without
+    a model-specific Python class. `state` members stay detached between
+    calls.
     """
     plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
     module: LinnetModule
@@ -72,4 +79,7 @@ def load(
         module = LinnetModule(plan, generics, torch.device(device))
     if weights is not None:
         bind_weights(module, weights, bindings, strict=strict)
+    if trainable:
+        for parameter in module.parameters():
+            parameter.requires_grad_(True)
     return module

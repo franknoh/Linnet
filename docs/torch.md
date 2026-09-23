@@ -82,6 +82,24 @@ name such as `"inductor"` passes each generated function through
 `reset_state()` are the same as without `compile`;
 `model.generated_source(entry)` shows the code that ran.
 
+## Training
+
+```python
+model = load("src/model.linnet", generics={...}, weights="init/", trainable=True)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+loss = criterion(model(tokens), labels)
+loss.backward()
+optimizer.step()
+```
+
+`trainable=True` makes every parameter require gradients. Nothing else is
+needed: an entry is ordinary PyTorch arithmetic whether interpreted or
+generated (`compile=True` too), so autograd differentiates through index
+notation, library operations, and the native kernels `numerics="equivalent"`
+selects. `state_dict()` saves the trained weights under the Linnet parameter
+paths, so they load back with `bind_weights`. `state` members (KV caches) are
+detached between calls: they carry values, not gradients.
+
 ## PyTorch to Linnet
 
 The other direction starts from a live `torch.nn.Module`:

@@ -125,8 +125,11 @@ way with `linnet_onnx.import_onnx`, and JAX functions with
 | Performance | native kernels | the same kernels from generated source (`compile="inductor"`: 2.1 ms vs 2.7 ms for the compiled reference on an H100, small Llama), or XLA through StableHLO (0.66 ms) — see [Benchmarks](/benchmarks) |
 | Refactoring | grep and pray | rename through the language server; every use is typed |
 
-The trade: Linnet has no data-dependent control flow, no runtime loops, and no
-Python inside the model. Models are compositions of tensor operations over
+Training works as it does for any module: `load(..., trainable=True)`, then
+your optimizer and loss over `model.parameters()`; autograd differentiates
+the interpreted or generated arithmetic. The trade: no Python inside the
+model and no data-dependent shapes — loops are `while` over scalars or
+compile-time `static for`. Models are compositions of tensor operations over
 symbolic shapes — which is what inference and most training graphs already
 are, and what makes them checkable and portable.
 
