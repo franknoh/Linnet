@@ -7,7 +7,7 @@ Everything here is exercised by the test suites under `python/` and `tests/`.
 
 | Target | How | Runs the model on | Notes |
 | --- | --- | --- | --- |
-| PyTorch | `linnet_torch.load` → `torch.nn.Module` | CPU, CUDA (any device PyTorch has) | Core IR interpreted on index grids; `numerics="equivalent"` selects native kernels for library ops (`matmul`, `softmax`, `layer_norm`, `rms_norm`, `attention`, activations). `state` members are non-persistent buffers. |
+| PyTorch | `linnet_torch.load` → `torch.nn.Module` | CPU, CUDA (any device PyTorch has) | Core IR interpreted on index grids, or with `compile=True` run as straight-line PyTorch source from `linnet torch` (`compile="inductor"` adds `torch.compile`); `numerics="equivalent"` selects native kernels for library ops (`matmul`, `softmax`, `layer_norm`, `rms_norm`, `attention`, activations). `state` members are non-persistent buffers. |
 | JAX | `linnet_jax.load` → callable, `load_nnx` → Flax NNX module | Any XLA backend (CPU, GPU, TPU) | Compiles through `linnet stablehlo`; composes with `jax.jit`. Inference only (no VJP). `state` is threaded: `f(*inputs, state=...) -> (out, new_state)`. |
 | XLA / StableHLO | `linnet stablehlo --bind ...` | Anything that consumes StableHLO | Static shapes per binding; `@main` with parameters named by `linnet.path`, state by `linnet.state` / `linnet.states`. |
 | ONNX | `linnet onnx --bind ...` → ONNX text format | ONNX Runtime and other ONNX consumers | opset 20; parameters as `param<N>` inputs with `linnet.path.*` metadata; state as `state<N>` / `next_state<N>`. |

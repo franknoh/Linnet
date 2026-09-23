@@ -142,6 +142,24 @@ entry's inputs followed by the parameters as `param<N>`, with `metadata_props`
 mapping each `linnet.path.param<N>` to its parameter path. `python/linnet_onnx`
 imports the result back (see [onnx.md](onnx.md)).
 
+## `linnet torch`
+
+```bash
+linnet torch --std stdlib --bind H=8 --bind Heads=2 --bind B=2 --bind S=5 --bind T=f32 model.linnet
+```
+
+The same options as `linnet stablehlo`, printing the entry as a Python module
+of straight-line PyTorch code: `main(*inputs, *parameters, *states)` returns
+the entry's results followed by the assigned `state` members, with the
+argument and result order given by the module's `PARAMETERS`, `STATES`, and
+`NEXT_STATES` lists (parameter paths) and `RESULTS`. Semantic calls whose
+selected candidate is a PyTorch kernel (`--numerics equivalent`, the
+default; `exact` keeps every canonical body) become that library call —
+`torch.softmax`, `F.scaled_dot_product_attention`, `torch.rms_norm`, ... —
+and everything else is the static-shape lowering the other exporters use.
+`linnet_torch.load(..., compile=True)` runs this per input shape and
+executes the result, which `torch.compile` can then trace whole.
+
 ## `linnet explain`
 
 ```bash

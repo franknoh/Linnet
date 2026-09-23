@@ -149,6 +149,12 @@ add_test(NAME cli_onnx_state
             ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet)
 set_tests_properties(cli_onnx_state PROPERTIES
     PASS_REGULAR_EXPRESSION "\"linnet.next_state.next_state2\": \"caches.1.keys\".*=> \\(float\\[1,4,3\\] output0, float\\[1,4,3\\] next_state0")
+add_test(NAME cli_torch_source_decode
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --entry decode --bind Vocab=11 --bind H=8
+            --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=6
+            --bind T=f32 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
+set_tests_properties(cli_torch_source_decode PROPERTIES
+    PASS_REGULAR_EXPRESSION "NEXT_STATES = \\[\"layers.0.attention.cache_k\".*def main\\(in_token, in_pos, p0,.*F.scaled_dot_product_attention\\(")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)

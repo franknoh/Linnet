@@ -220,6 +220,16 @@ class LinnetFunction:
         return self.apply(self._weights, *inputs, state=state)
 
 
+def _platform() -> str:
+    """The platform name `Exported` checks calls against: `cuda`/`rocm`
+    rather than the `gpu` backend name."""
+    backend = jax.default_backend()
+    if backend != "gpu":
+        return backend
+    kind = jax.devices()[0].device_kind.lower()
+    return "rocm" if "amd" in kind or kind.startswith("mi") else "cuda"
+
+
 @dataclasses.dataclass
 class _Compiled:
     parameters: list[str]  # parameter paths, in argument order after the inputs
@@ -272,7 +282,7 @@ def _wrap_module(text: str) -> Any:
         "in_shardings_hlo": (None,) * len(in_avals),
         "out_shardings_hlo": (None,) * len(out_avals),
         "nr_devices": 1,
-        "platforms": (jax.default_backend(),),
+        "platforms": (_platform(),),
         "ordered_effects": (),
         "unordered_effects": (),
         "disabled_safety_checks": (),

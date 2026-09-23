@@ -54,6 +54,7 @@ add_library(linnet_core STATIC
     src/backend/plan.cpp
     src/backend/plan_reader.cpp
     src/backend/stablehlo.cpp
+    src/backend/torch_source.cpp
     src/diagnostic/diagnostic.cpp
     src/diagnostic/json.cpp
     src/diagnostic/render.cpp

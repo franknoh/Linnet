@@ -59,6 +59,25 @@ shows what would be selected and why.
 Generic arguments of the root block with defaults (`T: Float = bf16`) may be
 omitted. Root blocks with shape-pack generics are not supported.
 
+## Generated PyTorch source
+
+```python
+model = load("src/model.linnet", generics={...}, weights="weights/", compile=True)
+fast = load("src/model.linnet", generics={...}, weights="weights/",
+            numerics="equivalent", compile="inductor")
+```
+
+With `compile`, every entry runs as PyTorch source that `linnet torch`
+generates for the input shapes of the first call (one compilation per entry
+and shape, cached): straight-line code with the parameters and `state`
+members as arguments, no interpreter in the loop. `numerics="equivalent"`
+turns library operations into their PyTorch kernels in that source
+(`torch.rms_norm`, `F.scaled_dot_product_attention`, ...), and a backend
+name such as `"inductor"` passes each generated function through
+`torch.compile`. The module hierarchy, weights, `state_dict()`, and
+`reset_state()` are the same as without `compile`;
+`model.generated_source(entry)` shows the code that ran.
+
 ## PyTorch to Linnet
 
 The other direction starts from a live `torch.nn.Module`:

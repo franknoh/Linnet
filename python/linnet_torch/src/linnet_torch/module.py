@@ -184,7 +184,7 @@ class LinnetModule(nn.Module):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
         env = Env(dict(self.root.env.dims), dict(self.root.env.packs), dict(self.root.env.dtypes))
         for param, value in zip(params, inputs, strict=True):
-            _bind_input(env, param, value)
+            bind_input(env, param, value)
         for generic in function["generics"]:
             key = int(generic.get("sym", generic.get("var", -1)))
             bound = (
@@ -214,7 +214,7 @@ class LinnetModule(nn.Module):
         return [entry["path"] for entry in self.plan.manifest if entry["kind"] == "state"]
 
 
-def _bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
+def bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
     """Binds the generic dimensions of an entry from an input's shape and
     checks the rest."""
     param_type = param["type"]
@@ -324,7 +324,7 @@ def bind_weights(
     assignments: list[tuple[str, str, Path]] = []
     for path, tensor in _all_tensors(module):
         source = mapping.get(path, path)
-        owner, leaf = _owner_of(module, path)
+        owner, leaf = owner_of(module, path)
         if source not in available:
             if leaf in owner.optional_params:
                 continue
@@ -346,7 +346,7 @@ def bind_weights(
         for path, source, file in assignments:
             with cast(Any, safe_open(str(file), framework="pt")) as handle:
                 loaded = cast(torch.Tensor, handle.get_tensor(source))
-            owner, leaf = _owner_of(module, path)
+            owner, leaf = owner_of(module, path)
             getattr(owner, leaf).copy_(loaded)
             owner.absent_params.discard(leaf)
 
@@ -358,13 +358,13 @@ def _all_tensors(module: LinnetModule) -> list[tuple[str, torch.Tensor]]:
         tensors.append((name.removeprefix(prefix), parameter))
     for name, buffer in module.named_buffers():
         path = name.removeprefix(prefix)
-        owner, leaf = _owner_of(module, path)
+        owner, leaf = owner_of(module, path)
         if leaf not in owner.state_names:  # state is never bound from weights
             tensors.append((path, buffer))
     return tensors
 
 
-def _owner_of(module: LinnetModule, path: str) -> tuple[BlockModule, str]:
+def owner_of(module: LinnetModule, path: str) -> tuple[BlockModule, str]:
     owner: nn.Module = module.root
     parts = path.split(".")
     for part in parts[:-1]:
