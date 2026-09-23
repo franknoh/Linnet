@@ -437,7 +437,8 @@ private:
         for (const ir::BlockId block : module_.region(region).blocks) {
             statement_blocks_.insert(block);
             for (const ir::OpId id : module_.block(block).ops) {
-                if (module_.op(id).kind == ir::OpKind::StaticFor) {
+                if (module_.op(id).kind == ir::OpKind::StaticFor ||
+                    module_.op(id).kind == ir::OpKind::StaticRange) {
                     collect_statement_blocks(module_.op(id).regions.front());
                 }
             }
@@ -505,6 +506,7 @@ private:
             const ir::Operation& source = module_.op(producer);
             const bool is_leaf = is_constant(source.kind) || source.results.size() != 1 ||
                                  source.kind == ir::OpKind::StaticFor ||
+                                 source.kind == ir::OpKind::StaticRange ||
                                  source.kind == ir::OpKind::TupleGet || needs_binding(source);
             if (!is_leaf) {
                 depth = std::max(depth, inline_depth(source));
@@ -564,17 +566,26 @@ private:
                 out += "let " + name_of(op.results.front()) + "[" + indices + "] = " + *body + "\n";
                 break;
             }
-            case ir::OpKind::StaticFor: {
+            case ir::OpKind::StaticFor:
+            case ir::OpKind::StaticRange: {
                 const ir::Block& body =
                     module_.block(module_.region(op.regions.front()).blocks.front());
-                for (std::size_t i = 1; i < op.operands.size(); ++i) {
-                    const std::string name = name_of(body.arguments[i]);
+                // Carried values follow the iterable (or the range's two bounds).
+                const std::size_t first = op.kind == ir::OpKind::StaticRange ? 2 : 1;
+                for (std::size_t i = first; i < op.operands.size(); ++i) {
+                    const std::string name = name_of(body.arguments[i - first + 1]);
                     out += pad;
                     out += "var " + name + " = " + expr(op.operands[i]) + "\n";
-                    bind_name(op.results[i - 1], name);
+                    bind_name(op.results[i - first], name);
                 }
-                out += pad + "static for " + name_of(body.arguments.front()) + " in " +
-                       expr(op.operands.front()) + " {\n";
+                const std::string iterable =
+                    op.kind == ir::OpKind::StaticRange
+                        ? expr(op.operands[0]) + ".." + expr(op.operands[1])
+                        : expr(op.operands.front());
+                out += pad;
+                out += "static for " + name_of(body.arguments.front()) + " in ";
+                out += iterable;
+                out += " {\n";
                 auto inner = emit_statements(body, indent + 1);
                 if (!inner) {
                     return inner;

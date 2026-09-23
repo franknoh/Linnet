@@ -323,3 +323,35 @@ def test_llama_decode_matches_full_prefix(tmp_path: Path) -> None:
     model.reset_state()
     first = model.run_entry("decode", [tokens[:, :1], torch.tensor(0, dtype=torch.int32)])
     torch.testing.assert_close(first, model.run_entry("next_token", [tokens[:, :1]]))
+
+
+def test_llama_generate_matches_stepwise_decoding(tmp_path: Path) -> None:
+    """`generate` inside the graph produces the tokens a host loop of `decode`
+    and argmax produces."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "Batch": 2,
+        "MaxSeq": 8,
+        "T": "f32",
+    }
+    source = EXAMPLES / "05-llama/src/lib.linnet"
+    model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
+    prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
+    generated = model.run_entry(
+        "generate", [prompt, torch.tensor(0, dtype=torch.int32)], generics={"Steps": 4}
+    )
+    assert generated.shape == (2, 4) and generated.dtype == torch.int32
+
+    model.reset_state()
+    current = prompt
+    expected: list[torch.Tensor] = []
+    for pos in range(4):
+        logits = model.run_entry("decode", [current, torch.tensor(pos, dtype=torch.int32)])
+        current = logits.argmax(-1, keepdim=True).to(torch.int32)
+        expected.append(current)
+    torch.testing.assert_close(generated, torch.cat(expected, dim=1))

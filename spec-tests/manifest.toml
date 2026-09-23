@@ -184,3 +184,12 @@ code = "E4101"
 file = "invalid/121_state_assign_param.linnet"
 expect = "error"
 code = "E2108"
+
+[[case]]
+file = "valid/021_static_range.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/122_static_range_runtime_bound.linnet"
+expect = "error"
+code = "E2121"

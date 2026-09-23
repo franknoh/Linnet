@@ -428,14 +428,20 @@ private:
     }
 
     void lower_static_for(const ast::StaticForStmt& loop, SourceSpan span) {
+        const bool is_range = loop.range_end != ast::no_id;
         const ValueId array = lower_expr(loop.iterable, no_type);
         const TypeData& array_type = types().get(module_.value(array).type);
-        const TypeId element =
-            array_type.elements.empty() ? types().error() : array_type.elements.front();
+        // A range's variable is the `i64` position; an array's is its element.
+        const TypeId element = is_range                      ? types().scalar(ScalarKind::I64)
+                               : array_type.elements.empty() ? types().error()
+                                                             : array_type.elements.front();
 
         std::vector<EntityId> carried;
         assigned_locals(loop.body, carried);
         std::vector<ValueId> operands{array};
+        if (is_range) {
+            operands.push_back(lower_expr(loop.range_end, no_type));
+        }
         std::vector<TypeId> results;
         // Named by the loop pattern when it is a plain binding.
         std::vector<std::pair<TypeId, std::string>> arguments{{element, ""}};
@@ -444,7 +450,8 @@ private:
             results.push_back(module_.value(frame_->locals.at(entity)).type);
             arguments.emplace_back(results.back(), std::string(model().entities[entity].name));
         }
-        const OpId op = region_op(OpKind::StaticFor, operands, results, {}, span);
+        const OpId op = region_op(
+            is_range ? OpKind::StaticRange : OpKind::StaticFor, operands, results, {}, span);
         const RegionId region = nested_region(op, arguments, [&](const std::vector<ValueId>& args) {
             bind_pattern(loop.pattern, args.front());
             for (std::size_t i = 0; i < carried.size(); ++i) {

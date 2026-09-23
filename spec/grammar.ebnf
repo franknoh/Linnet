@@ -63,7 +63,7 @@ let_stmt           = "let", ( pattern, [ ":", type ], "=", expr | comprehension_
 var_stmt           = "var", identifier, [ ":", type ], "=", expr ;
 assign_stmt        = identifier, "=", expr ;   (* a `var` local or a `state` member *)
 return_stmt        = "return", [ expr ] ;
-static_for_stmt    = "static", "for", pattern, "in", expr, block_body ;
+static_for_stmt    = "static", "for", pattern, "in", expr, [ "..", expr ], block_body ;
 
 pattern            = identifier
                    | "(", pattern, { ",", pattern }, [ "," ], ")"

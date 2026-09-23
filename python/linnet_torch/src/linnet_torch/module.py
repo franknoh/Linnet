@@ -177,12 +177,21 @@ class LinnetModule(nn.Module):
         run.__name__ = name
         return run
 
-    def run_entry(self, name: str, inputs: list[torch.Tensor]) -> Any:
+    def run_entry(
+        self,
+        name: str,
+        inputs: list[torch.Tensor],
+        generics: Mapping[str, int | str] | None = None,
+    ) -> Any:
+        """Runs the entry `name`. Its generic parameters are bound from the
+        input shapes, or from `generics` by name for those the inputs do not
+        determine (an output length such as `Steps`)."""
         function = self.entries[name]
         params = function["body"]["args"][1:]  # after `self`
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
         env = Env(dict(self.root.env.dims), dict(self.root.env.packs), dict(self.root.env.dtypes))
+        bind_generics(env, function["generics"], generics or {})
         for param, value in zip(params, inputs, strict=True):
             bind_input(env, param, value)
         for generic in function["generics"]:
@@ -212,6 +221,27 @@ class LinnetModule(nn.Module):
     def state_paths(self) -> list[str]:
         """The `state` members by parameter path, in manifest order."""
         return [entry["path"] for entry in self.plan.manifest if entry["kind"] == "state"]
+
+
+def bind_generics(env: Env, declared: list[dict[str, Any]], given: Mapping[str, int | str]) -> None:
+    """Binds an entry's generics that are given explicitly by name."""
+    names = {str(generic["name"]) for generic in declared}
+    for name in given:
+        if name not in names:
+            raise PlanError(f"the entry has no generic parameter `{name}`")
+    for generic in declared:
+        name = str(generic["name"])
+        if name not in given:
+            continue
+        value = given[name]
+        if generic["kind"] == "dim":
+            if not isinstance(value, int):
+                raise PlanError(f"`{name}` is a dimension; give an integer")
+            env.dims[int(generic["sym"])] = value
+        elif generic["kind"] == "dtype":
+            env.dtypes[int(generic["var"])] = str(value)
+        else:
+            raise PlanError(f"`{name}` is a shape pack and cannot be given by name")
 
 
 def bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:

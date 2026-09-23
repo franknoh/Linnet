@@ -225,6 +225,37 @@ private:
         return subst;
     }
 
+    // A bound of a `static for` range: a compile-time integer, possibly
+    // arithmetic on dimensions and literals.
+    std::int64_t range_bound(ir::ValueId value) {
+        const ir::OpId producer = module_.value(value).producer;
+        if (producer == ir::no_id) {
+            fail("a `static for` range bound must be a compile-time integer");
+        }
+        const ir::Operation& op = module_.op(producer);
+        switch (op.kind) {
+        case ir::OpKind::ConstInt:
+            return op.attributes.integer;
+        case ir::OpKind::ConstDim:
+            return constant(types_.substitute(op.attributes.dim, frame().subst), "range bound");
+        case ir::OpKind::Add:
+            return range_bound(op.operands[0]) + range_bound(op.operands[1]);
+        case ir::OpKind::Sub:
+            return range_bound(op.operands[0]) - range_bound(op.operands[1]);
+        case ir::OpKind::Mul:
+            return range_bound(op.operands[0]) * range_bound(op.operands[1]);
+        case ir::OpKind::Div: {
+            const std::int64_t divisor = range_bound(op.operands[1]);
+            if (divisor == 0) {
+                fail("a `static for` range bound divides by zero");
+            }
+            return range_bound(op.operands[0]) / divisor;
+        }
+        default:
+            fail("a `static for` range bound must be a compile-time integer");
+        }
+    }
+
     // A semantic call with a selected native implementation the target can
     // spell: whole tensors in, one tensor out, outside any grid.
     bool try_native(const ir::Operation& op) {
@@ -878,6 +909,23 @@ private:
             }
             for (const Val& element : array.elements) {
                 std::vector<Val> arguments{element};
+                arguments.insert(arguments.end(), carried.begin(), carried.end());
+                carried = run_region(op.regions.front(), arguments);
+            }
+            for (std::size_t i = 0; i < op.results.size(); ++i) {
+                frame().values[op.results[i]] = carried[i];
+            }
+            return;
+        }
+        case ir::OpKind::StaticRange: {
+            const std::int64_t start = range_bound(op.operands[0]);
+            const std::int64_t stop = range_bound(op.operands[1]);
+            std::vector<Val> carried;
+            for (std::size_t i = 2; i < op.operands.size(); ++i) {
+                carried.push_back(operand(i));
+            }
+            for (std::int64_t i = start; i < stop; ++i) {
+                std::vector<Val> arguments{constant_int(i, ScalarKind::I64)};
                 arguments.insert(arguments.end(), carried.begin(), carried.end());
                 carried = run_region(op.regions.front(), arguments);
             }

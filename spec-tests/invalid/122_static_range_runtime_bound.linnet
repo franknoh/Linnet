@@ -1,0 +1,11 @@
+module m
+
+block Counter<N: Dim> {
+    pub entry run(x: Tensor[N; f32], count: i32) -> Tensor[N; f32] {
+        var total = x
+        static for step in 0..count {
+            total = total + x
+        }
+        return total
+    }
+}

@@ -340,6 +340,9 @@ private:
                        [&](const StaticForStmt& loop) {
                            nested("static for " + pattern(loop.pattern), [&] {
                                nested("in", [&] { expr(loop.iterable); });
+                               if (loop.range_end != no_id) {
+                                   nested("to", [&] { expr(loop.range_end); });
+                               }
                                body(loop.body);
                            });
                        },

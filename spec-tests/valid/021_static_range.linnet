@@ -1,0 +1,18 @@
+module static_range
+
+// A compile-time integer range: the body is expanded `Steps` times and the
+// loop variable is the position as an `i64` scalar.
+pub block Counter<N: Dim, Steps: Dim> {
+    param scale: Tensor[N; f32]
+
+    pub entry run(x: Tensor[N; f32]) -> Tensor[N; f32] {
+        var total = x
+        static for step in 0..Steps {
+            total = total * scale + cast<f32>(step)
+        }
+        static for step in 1..Steps + 1 {
+            total = total - cast<f32>(step) / cast<f32>(Steps)
+        }
+        return total
+    }
+}

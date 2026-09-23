@@ -158,6 +158,9 @@ pub block Model<H: Dim, Layers: Dim> {
   `keys = updated` replaces it; backends keep the value between calls
   (zeros at first) and graph exports thread it as an extra input and output.
 - `sub` arrays give repeated layers; `static for` iterates them at compile time.
+  `static for step in 0..Steps { ... }` iterates a compile-time integer range;
+  `step` is an `i64` scalar of each iteration (cast it, compare it, add it to
+  a position), and `var` locals carry values from one iteration to the next.
 - `entry` marks the callables a backend exposes.
 - Parameter paths follow the structure: `layers.0.attention.q_proj.weight`.
   `linnet inspect --parameters` lists them.
