@@ -1,7 +1,8 @@
-# The plan format
+# Plan format
 
-`linnet plan [--root <Block>] <file>` prints one JSON document that a
-materializer consumes. Version 1:
+`linnet plan` prints the root block as one JSON document. A materializer
+reads it to build a module, bind weights, and run entries. The plan contains
+no tensor data. Version 1:
 
 ```text
 { "version": 1,
@@ -18,41 +19,37 @@ materializer consumes. Version 1:
   "constants": [ { "name", "pub", "type": type, "contextual", "body": region } ] }
 ```
 
-- `states` lists the `state` members a function reads or writes, directly or
-  through the methods it calls, as paths relative to its block (`[*]` stands
-  for every element of a sub array). In the body they are the operations
-  `state.read` (operand: the block value; attribute `name`) and `state.write`
-  (operands: the block value and the new value; no result), ordered within
-  their region.
-- `constants` are module-level `const` items with their initializer as a
-  region yielding one value; uses are already inlined into the functions.
-  `contextual` marks a constant declared without a type (a compile-time
-  integer or a float literal that adopts its dtype where it is used).
+| Field | Meaning |
+| --- | --- |
+| `module` | the root file's module path; function names are `module::name`, methods `module::Block.method` |
+| `manifest` | every parameter, buffer, and state member of the instantiated hierarchy; `[*]` in a path stands for each element of a sub array and `repeat` lists those lengths |
+| `states` | the state members a function reads or writes, directly or through calls, relative to its block |
+| `constants` | module-level `const` items as regions yielding one value; `contextual` marks one declared without a type |
 
-- `module` is the path of the root file's module; function names are
-  `module.path::name` (`module.path::Block.method` for methods).
-- `generic`: `{ "name", "kind": "dim" | "shape" | "dtype", "sym" | "var", "default"? }`;
-  a dtype generic also has `"class": "any" | "numeric" | "integer" | "float"`.
-  Symbols and dtype variables are numbered by the compiler; a call's
-  `substitution` maps the callee's numbers to expressions in the caller.
-- `dim`: an integer, `{ "sym", "name" }`, `{ "packsize", "name" }`, or
-  `{ "op": "add" | "mul" | "floordiv" | "mod" | "min" | "max", "args": [dim] }`.
-- `unit` (one element of a shape): a `dim`, or `{ "pack", "name" }` standing
-  for every axis of a shape pack.
-- `type`: `{ "kind": "scalar", "dtype" }`, `{ "kind": "tensor", "shape": [unit], "dtype" }`,
-  `tuple`, `optional`, `array`, `block` / `struct` / `enum` with `name`,
-  `module`, and `args`, `shape`, `unit`. A dtype is a name such as `"bf16"` or
-  `{ "var", "name" }`.
-- `region`: `{ "args": [value], "ops": [op] }` with one block per region;
-  `value` is `{ "id", "name", "type" }`.
-- `op`: `{ "kind", "operands": [id], "results": [value], "attrs": {...}, "regions": [region] }`.
-  Kinds and attributes follow the Core IR operations
-  (`include/linnet/ir/ir.hpp`); `comprehension` and `reduce` list their
-  `indices` with domains, `slice` lists per-axis `start`/`stop`/`step`/`squeeze`
-  or `whole` (a shape pack), and calls carry `callee`, `substitution`, and
-  `generics` (the same bindings as generic values, in the callee's declaration
-  order, so that a reader without the callee can still spell the call).
+## Dimensions and types
 
-Dimensions stay symbolic. The materializer binds the root block's generics,
-then each block instance's, then an entry's from its inputs, and evaluates the
-expressions. The plan contains no tensor data.
+| | |
+| --- | --- |
+| `generic` | `{ "name", "kind": "dim" \| "shape" \| "dtype", "sym" \| "var", "default"? }`; a dtype generic also has `"class"` |
+| `dim` | an integer, `{ "sym", "name" }`, `{ "packsize", "name" }`, or `{ "op": "add" \| "mul" \| "floordiv" \| "mod" \| "min" \| "max", "args": [dim] }` |
+| `unit` | a `dim`, or `{ "pack", "name" }` for every axis of a shape pack |
+| `type` | `{ "kind": "scalar", "dtype" }`, `{ "kind": "tensor", "shape": [unit], "dtype" }`, `tuple`, `optional`, `array`, or `block` / `struct` / `enum` with `name`, `module`, `args` |
+| dtype | a name such as `"bf16"`, or `{ "var", "name" }` |
+
+Dimensions stay symbolic. A materializer binds the root block's generics,
+then each block instance's, then an entry's from its inputs, and evaluates
+the expressions.
+
+## Regions and operations
+
+| | |
+| --- | --- |
+| `region` | `{ "args": [value], "ops": [op] }`; `value` is `{ "id", "name", "type" }` |
+| `op` | `{ "kind", "operands": [id], "results": [value], "attrs": {...}, "regions": [region] }` |
+
+Kinds and attributes follow the Core IR operations in
+`include/linnet/ir/ir.hpp`. `comprehension` and `reduce` list their `indices`
+with domains; `slice` lists per-axis `start`, `stop`, `step`, `squeeze` (or
+`whole` for a shape pack); calls carry `callee`, `substitution`, and
+`generics` in the callee's declaration order; `state.read` and `state.write`
+name their member; `while` has a condition region and a body region.

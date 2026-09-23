@@ -1,86 +1,89 @@
-# Running Linnet models in PyTorch
+# PyTorch
 
-`python/linnet_torch` materializes a Linnet root block as a `torch.nn.Module`.
+`python/linnet_torch` turns a Linnet root block into a `torch.nn.Module` and
+a `torch.nn.Module` into Linnet source. The adapter knows nothing about any
+model; everything comes from the compiler.
 
 ```bash
-cd python/linnet_torch
-uv sync
-export LINNET_BIN=/path/to/build/release/linnet   # or put `linnet` on PATH
+cd python/linnet_torch && uv sync
+export LINNET_BIN=/path/to/build/release/linnet     # or put `linnet` on PATH
 ```
+
+## Loading a model
 
 ```python
 from linnet_torch import load
 
 model = load(
-    "examples/04-tiny-transformer/src/lib.linnet",
-    root="Model",
-    generics={"Vocab": 32000, "H": 4096, "Heads": 32, "Inner": 11008, "Layers": 32, "T": "bf16"},
+    "examples/05-llama/src/lib.linnet",
+    generics={"Vocab": 32000, "H": 512, "Heads": 8, "KvHeads": 4, "Inner": 1376,
+              "Layers": 2, "Batch": 1, "MaxSeq": 128, "T": "bf16"},
     std_root="stdlib",
     weights="weights/",          # a .safetensors file or a directory of them
-    bindings="bindings.json",    # optional: Linnet path -> checkpoint tensor name
 )
-logits = model(tokens, cos_table, sin_table)
+logits = model(tokens)
 ```
+
+The result is an ordinary module. Printing it shows the block hierarchy with
+the Linnet names, shapes, and dtypes:
+
+```text
+LinnetModule(
+  (root): Model(
+    (embedding): Embedding(weight=bfloat16[32000, 512])
+    (layers): ModuleList(
+      (0-1): 2 x DecoderLayer(
+        (attention_norm): RmsNorm(weight=bfloat16[512])
+        (attention): GroupedQueryAttention(
+          cache_k=bfloat16[1, 4, 128, 64] state, cache_v=bfloat16[1, 4, 128, 64] state
+          (q_proj): Linear(weight=bfloat16[512, 512], bias=bfloat16[512]?)
+          (k_proj): Linear(weight=bfloat16[256, 512], bias=bfloat16[256]?)
+          (v_proj): Linear(weight=bfloat16[256, 512], bias=bfloat16[256]?)
+          (o_proj): Linear(weight=bfloat16[512, 512], bias=bfloat16[512]?)
+        )
+        (mlp_norm): RmsNorm(weight=bfloat16[512])
+        (mlp): SwiGlu(
+          (gate): Linear(weight=bfloat16[1376, 512], bias=bfloat16[1376]?)
+          (up): Linear(weight=bfloat16[1376, 512], bias=bfloat16[1376]?)
+          (down): Linear(weight=bfloat16[512, 1376], bias=bfloat16[512]?)
+        )
+      )
+    )
+    (norm): RmsNorm(weight=bfloat16[512])
+    (lm_head): Linear(weight=bfloat16[32000, 512], bias=bfloat16[32000]?)
+  )
+)
+```
+
+`?` marks an optional parameter, `state` a KV-cache member. `state_dict()`
+uses the Linnet parameter paths (`layers.0.attention.q_proj.weight`), so a
+checkpoint written from PyTorch loads here and back.
 
 What `load` does:
 
-1. Runs `linnet plan`, which checks the program and emits the plan: the root
-   block's structure, its parameter manifest, and the Core IR of every function.
-   Checking never executes anything from the package.
-2. Builds the module hierarchy from the block structure: each `sub` is a child
-   module (a `ModuleList` for arrays), each `param` an `nn.Parameter`, each
-   `buffer` a buffer, each `state` a non-persistent buffer starting at zero:
-   the block's assignments update it during a call, it is kept for the next
-   call, `model.reset_state()` zeroes it, and `model.state_paths()` lists it.
-   State is never read from or written to the weights. `state_dict()` therefore uses the Linnet parameter paths
-   (`layers.0.attention.q_proj.weight`).
-3. With `weights`, reads the SafeTensors metadata, checks every required
-   tensor's presence, shape, and dtype against the plan, and only then copies
-   the data. An optional parameter (`Tensor[...]? = none`) may be absent.
-4. Entries become methods; `forward` is the entry named `forward` or the only
-   one. Entry generics such as `B` and `S` are bound from the input shapes on
-   every call, and the inputs are checked against the declared types.
+1. Runs `linnet plan`, which checks the program and prints its structure,
+   parameter manifest, and Core IR. Nothing in the package is executed.
+2. Builds the module tree: `sub` becomes a child module (`ModuleList` for
+   arrays), `param` an `nn.Parameter`, `buffer` a buffer, `state` a
+   non-persistent buffer starting at zero.
+3. With `weights`, checks every tensor's name, shape, and dtype against the
+   manifest, then copies the data. Optional parameters may be absent.
+4. Exposes entries as methods. `forward` is the entry of that name or the
+   only one; entry generics such as `B` and `S` are bound from the inputs.
 
-Evaluation interprets Core IR with PyTorch operations. Index notation is
-evaluated on index grids exactly as specified. With the default
-`numerics="exact"`, semantic operations run through their canonical `.linnet`
-decompositions: this is the correctness path that everything else must agree
-with, not a fast implementation.
+| Option | |
+| --- | --- |
+| `numerics="exact"` (default) | library operations run as their canonical `.linnet` bodies |
+| `numerics="equivalent"` | library operations dispatch to PyTorch kernels (`F.linear`, `scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`) that agree up to rounding |
+| `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape |
+| `compile="inductor"` | the same, passed through `torch.compile` |
+| `trainable=True` | parameters require gradients |
+| `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 
-`numerics="equivalent"` lets the compiler select PyTorch library calls for the
-standard library's semantic operations — `torch.nn.functional.linear`,
-`scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`,
-`torch.nn.functional.layer_norm`, the
-activations, `torch.matmul`. Each one agrees with the canonical definition up
-to floating-point rounding, and the differential tests in `tests/test_native.py`
-check that against the decompositions. `linnet explain --numerics equivalent`
-shows what would be selected and why.
-
-Generic arguments of the root block with defaults (`T: Float = bf16`) may be
-omitted. Root blocks with shape-pack generics are not supported.
-
-An entry's own generics are bound from the input shapes; one the inputs do
-not determine — an output length such as `generate<Steps>` — is given by
-name: `model.run_entry("generate", [prompt, pos], generics={"Steps": 16})`.
-
-## Generated PyTorch source
-
-```python
-model = load("src/model.linnet", generics={...}, weights="weights/", compile=True)
-fast = load("src/model.linnet", generics={...}, weights="weights/",
-            numerics="equivalent", compile="inductor")
-```
-
-With `compile`, every entry runs as PyTorch source that `linnet torch`
-generates for the input shapes of the first call (one compilation per entry
-and shape, cached): straight-line code with the parameters and `state`
-members as arguments, no interpreter in the loop. `numerics="equivalent"`
-turns library operations into their PyTorch kernels in that source
-(`torch.rms_norm`, `F.scaled_dot_product_attention`, ...), and a backend
-name such as `"inductor"` passes each generated function through
-`torch.compile`. The module hierarchy, weights, `state_dict()`, and
-`reset_state()` are the same as without `compile`;
-`model.generated_source(entry)` shows the code that ran.
+Entries with generics the inputs do not determine take them by name:
+`model.run_entry("generate", [prompt, pos], generics={"Steps": 16})`.
+`model.reset_state()` zeroes every `state` member; `model.state_paths()`
+lists them; `model.generated_source(entry)` shows the code `compile` ran.
 
 ## Training
 
@@ -92,17 +95,11 @@ loss.backward()
 optimizer.step()
 ```
 
-`trainable=True` makes every parameter require gradients. Nothing else is
-needed: an entry is ordinary PyTorch arithmetic whether interpreted or
-generated (`compile=True` too), so autograd differentiates through index
-notation, library operations, and the native kernels `numerics="equivalent"`
-selects. `state_dict()` saves the trained weights under the Linnet parameter
-paths, so they load back with `bind_weights`. `state` members (KV caches) are
-detached between calls: they carry values, not gradients.
+Entries are ordinary differentiable PyTorch arithmetic, interpreted or
+generated, so autograd needs nothing else. `state` members are detached
+between calls: they carry values, not gradients.
 
-## PyTorch to Linnet
-
-The other direction starts from a live `torch.nn.Module`:
+## Exporting a PyTorch model
 
 ```python
 from torch.export import Dim
@@ -113,39 +110,30 @@ export_linnet(
     example_args=(tokens,),
     dynamic_shapes={"tokens": {0: Dim("batch"), 1: Dim("seq")}},
     output="src/model.linnet",
-    weights="weights/",   # optional: SafeTensors under the PyTorch names
+    weights="weights/",          # optional: SafeTensors under the PyTorch names
 )
 ```
 
-`export_linnet` captures the model with `torch.export`, decomposes the graph
-to core ATen operations, and translates it into a Core IR plan: the module
-tree becomes blocks (`param`, `buffer`, and `sub` members; a `ModuleList` or
-`Sequential` of identical children becomes a sub array), the forward graph
-becomes the root block's `entry`, dimensions marked dynamic become the entry's
-generic parameters named after their `Dim`s, and each ATen operation becomes
-the Linnet primitive or standard-library operation with the same meaning —
-`aten.mm` is `std.linalg::matmul`, `aten._softmax` is `std.nn.softmax::softmax`,
-`native_layer_norm` is `std.nn.norm::layer_norm`, reductions and `embedding`
-become index notation, views become `reshape` and `permute`. `linnet emit` then prints the plan as formatted source, and the
-result is checked before it is written.
+`export_linnet` captures the model with `torch.export`, decomposes it to core
+ATen, and translates it into a plan that `linnet emit` prints as source. The
+module tree becomes blocks (`ModuleList` and `Sequential` of alike children
+become sub arrays), the forward graph becomes the root `entry`, dynamic
+dimensions become generics named after their `Dim`s, and each ATen operation
+becomes the primitive or standard-library operation with the same meaning
+(`aten.mm` is `std.linalg::matmul`, `_softmax` is `softmax`,
+`native_layer_norm` is `layer_norm`). The result is checked before it is
+written.
 
-The translation never guesses: an operation without a mapping stops the export
-with a message naming every such operation. Recovering higher-level structure
-(recognizing an attention block, folding an unrolled `ModuleList` back into a
-`static for`) is not attempted; the output is the graph as captured, readable
-and deterministic.
-
-Parameter paths follow PyTorch's (`layers.0.q.weight`), so weights bind by
-name. When a path cannot be spelled in Linnet (a `Sequential` whose children
-differ, or an attribute named like a keyword), the member is renamed and
-`weights/bindings.json` maps the Linnet path back to the PyTorch name;
-`load(..., bindings=...)` reads it. Exporting requires a trusted Python process
-with the model loaded; `linnet check` on the result never runs Python.
+The translation never guesses: an unmapped operation stops the export with
+its name. Parameter paths follow PyTorch's; when one cannot be spelled in
+Linnet, the member is renamed and `weights/bindings.json` records the
+mapping. Exporting runs Python with the model loaded; checking the result
+never does.
 
 ## Tests
 
 ```bash
-uv run pytest      # round trips against hand-written PyTorch references
-uv run pyright     # strict
+uv run pytest        # references, round trips, state, training
+uv run pyright
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
