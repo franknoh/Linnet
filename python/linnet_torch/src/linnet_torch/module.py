@@ -31,6 +31,7 @@ class BlockModule(nn.Module):
         self.env = env
         self.optional_params: set[str] = set()
         self.absent_params: set[str] = set()
+        self.state_names: set[str] = set()
         definition = plan.blocks[name]
         for constraint in definition["constraints"]:
             if not env.relation_holds(constraint):
@@ -50,16 +51,25 @@ class BlockModule(nn.Module):
                 self.absent_params.add(member["name"])
             if member["kind"] == "param":
                 self.register_parameter(member["name"], nn.Parameter(tensor, requires_grad=False))
+            elif member["kind"] == "state":
+                # Execution state: starts at zero, kept between calls, never
+                # part of the weights.
+                self.state_names.add(member["name"])
+                self.register_buffer(member["name"], tensor, persistent=False)
             else:
                 self.register_buffer(member["name"], tensor)
 
     def instance(self) -> BlockInstance:
         """The interpreter's view of this module, sharing its tensors."""
         params: dict[str, torch.Tensor | None] = {}
+        states: dict[str, torch.Tensor] = {}
         for name, parameter in self.named_parameters(recurse=False):
             params[name] = None if name in self.absent_params else parameter
         for name, buffer in self.named_buffers(recurse=False):
-            params[name] = buffer
+            if name in self.state_names:
+                states[name] = buffer
+            else:
+                params[name] = buffer
         subs: dict[str, BlockInstance | list[BlockInstance]] = {}
         for name, child in self.named_children():
             if isinstance(child, BlockModule):
@@ -68,7 +78,21 @@ class BlockModule(nn.Module):
                 subs[name] = [
                     element.instance() for element in child if isinstance(element, BlockModule)
                 ]
-        return BlockInstance(self.block_name, self.env, params, subs)
+        return BlockInstance(self.block_name, self.env, params, subs, states, self._write_state)
+
+    def _write_state(self, name: str, value: torch.Tensor) -> None:
+        # Rebinding (not `copy_`) so values read earlier in the call keep
+        # their contents.
+        setattr(self, name, value.detach())
+
+    def reset_state(self) -> None:
+        """Zeroes this block's `state` members and those of its sub-blocks."""
+        for name in self.state_names:
+            setattr(self, name, torch.zeros_like(getattr(self, name)))
+        for child in self.modules():
+            if child is not self and isinstance(child, BlockModule):
+                for name in child.state_names:
+                    setattr(child, name, torch.zeros_like(getattr(child, name)))
 
 
 def _block_env(plan: Plan, block_type: dict[str, Any], env: Env) -> Env:
@@ -179,6 +203,15 @@ class LinnetModule(nn.Module):
     def forward(self, *inputs: torch.Tensor) -> Any:
         name = "forward" if "forward" in self.entries else next(iter(self.entries))
         return self.run_entry(name, list(inputs))
+
+    def reset_state(self) -> None:
+        """Zeroes every `state` member (a KV cache, for instance) so the next
+        entry call starts fresh."""
+        self.root.reset_state()
+
+    def state_paths(self) -> list[str]:
+        """The `state` members by parameter path, in manifest order."""
+        return [entry["path"] for entry in self.plan.manifest if entry["kind"] == "state"]
 
 
 def _bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
@@ -324,7 +357,10 @@ def _all_tensors(module: LinnetModule) -> list[tuple[str, torch.Tensor]]:
     for name, parameter in module.named_parameters():
         tensors.append((name.removeprefix(prefix), parameter))
     for name, buffer in module.named_buffers():
-        tensors.append((name.removeprefix(prefix), buffer))
+        path = name.removeprefix(prefix)
+        owner, leaf = _owner_of(module, path)
+        if leaf not in owner.state_names:  # state is never bound from weights
+            tensors.append((path, buffer))
     return tensors
 
 

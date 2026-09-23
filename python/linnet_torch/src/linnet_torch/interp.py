@@ -37,6 +37,10 @@ class BlockInstance:
     env: Env
     params: dict[str, torch.Tensor | None] = field(default_factory=dict)  # type: ignore[arg-type]
     subs: dict[str, BlockInstance | list[BlockInstance]] = field(default_factory=dict)  # type: ignore[arg-type]
+    # `state` members: the current values, and a hook that persists a write
+    # in the owning module so the next call starts from it.
+    states: dict[str, torch.Tensor] = field(default_factory=dict)  # type: ignore[arg-type]
+    on_write: Callable[[str, torch.Tensor], None] | None = None
 
 
 @dataclass
@@ -283,6 +287,14 @@ class Interpreter:
             return [cast(BlockInstance, operands[0]).params[attrs["name"]]]
         if kind == "block.sub":
             return [cast(BlockInstance, operands[0]).subs[attrs["name"]]]
+        if kind == "state.read":
+            return [cast(BlockInstance, operands[0]).states[attrs["name"]]]
+        if kind == "state.write":
+            instance = cast(BlockInstance, operands[0])
+            instance.states[attrs["name"]] = tensor(1)
+            if instance.on_write is not None:
+                instance.on_write(attrs["name"], tensor(1))
+            return []
         if kind == "array.get":
             return [cast(list[BlockInstance], operands[0])[int(tensor(1).item())]]
         if kind == "static_for":
