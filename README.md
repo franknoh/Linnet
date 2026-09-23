@@ -29,7 +29,8 @@ as Linnet source (see [docs/onnx.md](docs/onnx.md)).
   `std.nn` (`linear`, `embedding`, activations, `softmax`, `rms_norm`,
   `layer_norm`, `rope`, `attention`, `swiglu`, `argmax`) and `std.random`
   (Threefry-2x32 keys, `uniform`, `normal`, `categorical`, matching
-  `jax.random` bit for bit). Every high-level operation is
+  `jax.random` bit for bit) and `std.quant` (int8 and packed int4 weights
+  with per-row scales, `Int8Linear`/`Int4Linear`). Every high-level operation is
   ordinary source that `linnet check` verifies like any other.
 - `examples/` contains sample Linnet sources, from a linear layer to a small
   transformer built from the standard library (`04-tiny-transformer`) and
