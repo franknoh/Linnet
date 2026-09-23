@@ -122,7 +122,7 @@ way with `linnet_onnx.import_onnx`, and JAX functions with
 | Weights vs code | entangled (`torch.save(model)`) or by convention | separate by construction — source has no payload |
 | Reuse in JAX / XLA / ONNX | rewrite, or export a frozen graph per framework | same source; `linnet stablehlo`, `linnet onnx`, `linnet_jax.load` |
 | Library code | opaque kernels | ordinary source in `stdlib/`, checked like yours |
-| Performance | native kernels | native kernels through `numerics="equivalent"`, XLA through StableHLO — see [Benchmarks](/benchmarks) |
+| Performance | native kernels | the same kernels from generated source (`compile="inductor"`: 2.1 ms vs 2.7 ms for the compiled reference on an H100, small Llama), or XLA through StableHLO (0.66 ms) — see [Benchmarks](/benchmarks) |
 | Refactoring | grep and pray | rename through the language server; every use is typed |
 
 The trade: Linnet has no data-dependent control flow, no runtime loops, and no
