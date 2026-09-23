@@ -126,7 +126,7 @@ export default defineConfig({
       { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|python|torch|jax|onnx|nest))|^/compatibility" },
       { text: "Reference", link: "/docs/tooling", activeMatch: "^/(spec|docs/(tooling|plan-format|diagnostics))" },
       { text: "Examples", link: "/examples/", activeMatch: "^/examples/" },
-      { text: "Nest", link: "/nest/", activeMatch: "^/nest/" },
+      { text: "Nest", link: "https://nest.franknoh.dev" },
       { text: "Benchmarks", link: "/benchmarks" },
     ],
     sidebar: {
@@ -139,12 +139,6 @@ export default defineConfig({
         {
           text: "Examples",
           items: [{ text: "Overview", link: "/examples/" }, ...pages("examples", "/examples")],
-        },
-      ],
-      "/nest/": [
-        {
-          text: "Nest",
-          items: [{ text: "Models", link: "/nest/" }, ...pages("nest", "/nest")],
         },
       ],
     },
