@@ -30,6 +30,61 @@ function pages(dir: string, prefix: string): { text: string; link: string }[] {
     });
 }
 
+function guideSidebar() {
+  return [
+    {
+      text: "Get started",
+      items: [
+        { text: "Installation", link: "/guide/installation" },
+        { text: "Quickstart", link: "/docs/getting-started" },
+        { text: "Coming from PyTorch", link: "/guide/from-pytorch" },
+      ],
+    },
+    {
+      text: "Language",
+      items: [
+        { text: "Language tour", link: "/docs/language-tour" },
+        { text: "Modules and packages", link: "/docs/modules-and-packages" },
+        { text: "Randomness", link: "/docs/random" },
+        { text: "Quantization", link: "/docs/quantization" },
+      ],
+    },
+    {
+      text: "Frameworks",
+      items: [
+        { text: "PyTorch", link: "/docs/torch" },
+        { text: "JAX and Flax", link: "/docs/jax" },
+        { text: "ONNX", link: "/docs/onnx" },
+        { text: "Compatibility", link: "/compatibility" },
+        { text: "Benchmarks", link: "/benchmarks" },
+      ],
+    },
+    {
+      text: "Reference",
+      items: [
+        { text: "Command line", link: "/docs/tooling" },
+        { text: "Plan format", link: "/docs/plan-format" },
+        { text: "Diagnostics", link: "/docs/diagnostics" },
+        { text: "Specification", link: "/spec/00-overview" },
+      ],
+    },
+  ];
+}
+
+function referenceSidebar() {
+  return [
+    {
+      text: "Reference",
+      items: [
+        { text: "Command line", link: "/docs/tooling" },
+        { text: "Plan format", link: "/docs/plan-format" },
+        { text: "Diagnostics", link: "/docs/diagnostics" },
+      ],
+    },
+    { text: "Specification", items: pages("spec", "/spec") },
+  ];
+}
+
 export default defineConfig({
   title: "Linnet",
   description:
@@ -66,54 +121,23 @@ export default defineConfig({
   themeConfig: {
     logo: "/logo.svg",
     nav: [
-      { text: "Guide", link: "/guide/installation", activeMatch: "/guide/" },
-      { text: "Docs", link: "/docs/getting-started", activeMatch: "/docs/" },
-      { text: "Examples", link: "/examples/", activeMatch: "/examples/" },
+      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|torch|jax|onnx))|^/compatibility" },
+      { text: "Reference", link: "/docs/tooling", activeMatch: "^/(spec|docs/(tooling|plan-format|diagnostics))" },
+      { text: "Examples", link: "/examples/", activeMatch: "^/examples/" },
       { text: "Benchmarks", link: "/benchmarks" },
-      { text: "Spec", link: "/spec/00-overview", activeMatch: "/spec/" },
     ],
     sidebar: {
-      "/guide/": [
-        {
-          text: "Guide",
-          items: [
-            { text: "Installation", link: "/guide/installation" },
-            { text: "Coming from PyTorch", link: "/guide/from-pytorch" },
-            { text: "Getting started", link: "/docs/getting-started" },
-            { text: "Language tour", link: "/docs/language-tour" },
-            { text: "Compatibility", link: "/compatibility" },
-            { text: "Benchmarks", link: "/benchmarks" },
-          ],
-        },
-      ],
-      "/docs/": [
-        {
-          text: "Documentation",
-          items: [
-            { text: "Getting started", link: "/docs/getting-started" },
-            { text: "Language tour", link: "/docs/language-tour" },
-            { text: "Modules and packages", link: "/docs/modules-and-packages" },
-            { text: "Command-line tooling", link: "/docs/tooling" },
-            { text: "Randomness", link: "/docs/random" },
-            { text: "Quantization", link: "/docs/quantization" },
-            { text: "Diagnostics", link: "/docs/diagnostics" },
-          ],
-        },
-        {
-          text: "Backends",
-          items: [
-            { text: "PyTorch", link: "/docs/torch" },
-            { text: "JAX and Flax", link: "/docs/jax" },
-            { text: "ONNX", link: "/docs/onnx" },
-            { text: "Plan format", link: "/docs/plan-format" },
-          ],
-        },
-        { text: "Guide", items: [{ text: "Compatibility", link: "/compatibility" }] },
-      ],
+      "/guide/": guideSidebar(),
+      "/docs/": guideSidebar(),
+      "/compatibility": guideSidebar(),
+      "/benchmarks": guideSidebar(),
+      "/spec/": referenceSidebar(),
       "/examples/": [
-        { text: "Examples", items: [{ text: "Overview", link: "/examples/" }, ...pages("examples", "/examples")] },
+        {
+          text: "Examples",
+          items: [{ text: "Overview", link: "/examples/" }, ...pages("examples", "/examples")],
+        },
       ],
-      "/spec/": [{ text: "Specification", items: pages("spec", "/spec") }],
     },
     socialLinks: [{ icon: "github", link: "https://github.com/franknoh/Linnet" }],
     editLink: {
