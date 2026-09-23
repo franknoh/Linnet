@@ -1,124 +1,90 @@
 # Linnet
 
-**Documentation: [linnet.franknoh.dev](https://linnet.franknoh.dev)** — installation,
+A typed tensor language. A model is a `.linnet` file: its shapes and dtypes
+are checked before anything runs, it carries no weights, and the same file
+runs in PyTorch, JAX, XLA, and ONNX Runtime.
+
+Documentation: [linnet.franknoh.dev](https://linnet.franknoh.dev) — installation,
 a guide for PyTorch users, the language tour, examples, benchmarks, and the
-specification (the site is built from `docs/`, `spec/`, and `examples/` by
-`site/`).
+specification. The site is built from `docs/`, `spec/`, and `examples/`.
 
-Linnet is a typed tensor language. Models are written as `.linnet` source files,
-checked statically for shape and dtype correctness, and kept separate from their
-weights. Inspecting or checking a Linnet package never executes package code.
+```linnet
+pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
+    param weight: Tensor[Out, In; T]
+    param bias: Tensor[Out; T]? = none
 
-The project is in early development. The toolchain currently provides the
-frontend (parsing, formatting, static checking of names, dtypes, symbolic
-shapes, and tensor index notation, packages, a language server, Core Tensor
-IR, an optimizer) and two backends: `python/linnet_torch` materializes a
-checked model as a `torch.nn.Module` with SafeTensors weights and exports a
-`torch.nn.Module` back to Linnet source (see [docs/torch.md](docs/torch.md)),
-`linnet stablehlo` and `linnet onnx` print an entry as a StableHLO module or an
-ONNX model, and
-`python/linnet_jax` runs models in JAX (compiled StableHLO, or generated
-`jax.numpy` code that `jax.grad` trains) and exports JAX functions to Linnet
-(see [docs/jax.md](docs/jax.md)), and `python/linnet_onnx` imports ONNX graphs
-as Linnet source (see [docs/onnx.md](docs/onnx.md)).
-
-- `spec/` is the normative language specification; `spec/grammar.ebnf` is the
-  consolidated grammar.
-- `spec-tests/` is the executable specification: programs that must be accepted
-  or must be rejected with a specific diagnostic code.
-- `stdlib/` is the standard library, written in Linnet: `std.linalg` and
-  `std.nn` (`linear`, `embedding`, activations, `softmax`, `rms_norm`,
-  `layer_norm`, `rope`, `attention`, `swiglu`, `argmax`) and `std.random`
-  (Threefry-2x32 keys, `uniform`, `normal`, `categorical`, matching
-  `jax.random` bit for bit) and `std.quant` (int8 and packed int4 weights
-  with per-row scales, `Int8Linear`/`Int4Linear`). Every high-level operation is
-  ordinary source that `linnet check` verifies like any other.
-- `examples/` contains sample Linnet sources, from a linear layer to a small
-  transformer built from the standard library (`04-tiny-transformer`) and
-  models in the shape of Llama, GPT-2, a Vision Transformer, and CLIP (`05`–`08`);
-  see [examples/README.md](examples/README.md) for what each one shows.
-
-[docs/getting-started.md](docs/getting-started.md) builds the toolchain, writes
-a first model, and runs it in PyTorch; [docs/language-tour.md](docs/language-tour.md)
-walks through the language.
-
-## Usage
-
-```bash
-linnet check src/model.linnet   # check files and every module they import
-linnet check .                  # check every .linnet file below a directory
-linnet check --strict --json .  # for CI and editors; see docs/tooling.md
-linnet fmt src/                 # format files in place (directories recurse)
-linnet fmt --check .            # exit 1 if anything would change; for CI
-linnet fmt - < in.linnet        # format stdin to stdout; for editors
-linnet inspect --ast file.linnet
-linnet plan --root Model model.linnet   # JSON plan for a materializer
-linnet stablehlo --bind H=64 --bind B=1 --bind S=128 model.linnet   # StableHLO text
-linnet onnx --bind H=64 --bind B=1 --bind S=128 model.linnet        # ONNX (text format)
-linnet torch --bind H=64 --bind B=1 --bind S=128 model.linnet       # straight-line PyTorch source
-linnet jax --bind H=64 --bind B=1 --bind S=128 model.linnet         # straight-line JAX source
-linnet emit plan.json                   # Linnet source back from a plan
-linnet inspect --tokens file.linnet
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear(x, weight, bias)
+    }
+}
 ```
 
-`linnet init` creates a package (`linnet.toml` plus `src/lib.linnet`). Imports
-are logical paths: `crate.a.b` is `src/a/b.linnet` of the package, `std.a.b`
-lives in the standard library directory (`--std <dir>` or `LINNET_STD`), and
-`dep.a.b` is found through the `[dependencies]` table. See
-[docs/modules-and-packages.md](docs/modules-and-packages.md).
+```bash
+linnet check src/model.linnet              # shapes, dtypes, index notation; nothing executes
+linnet inspect --parameters src/model.linnet
+linnet stablehlo --bind H=64 --bind B=1 --bind S=128 src/model.linnet
+```
 
-Exit status is 0 on success, 1 when the input has errors (or `--check` finds
-unformatted files), and 2 for command-line mistakes. Files with syntax errors
-are never rewritten.
+```python
+from linnet_torch import load              # also linnet_jax.load / load_source / load_nnx
+model = load("src/model.linnet", generics={"H": 64}, weights="weights/")
+```
 
-The formatter has one style and no options: 4-space indentation, 100 columns,
-one statement per line. A list that ends with a trailing comma stays one element
-per line; otherwise lists are joined when they fit. Comments are always kept;
-a comment written in the middle of an expression moves to the nearest line
-boundary.
+## What is here
 
-## Editors
+| Directory | |
+| --- | --- |
+| `src/`, `include/` | the compiler: parser, checker, Core IR, optimizer, emitter, exporters, language server (C++23, no dependencies) |
+| `stdlib/` | the standard library in Linnet: `std.linalg`, `std.nn` (linear, embedding, activations, softmax, norms, rope, attention, swiglu, argmax), `std.random`, `std.quant` |
+| `spec/` | the normative specification and grammar; `spec-tests/` the executable cases |
+| `examples/` | a linear layer up to Llama, GPT-2, ViT, and CLIP, each with a guide |
+| `python/linnet_torch` | `load` (interpreted or generated source, training), `export_linnet` from `torch.export` |
+| `python/linnet_jax` | `load` (XLA), `load_source` (generated `jnp`, `jax.grad`), `load_nnx` (Flax), `export_linnet`, `import_stablehlo` |
+| `python/linnet_onnx` | `import_onnx` |
+| `editors/` | VS Code extension, Vim runtime files, TextMate grammar |
+| `bench/` | the benchmark harness and published results |
+| `site/` | the documentation site |
 
-`linnet lsp --stdio` is the language server. `editors/vscode` is a VS Code
-extension that launches it and ships the syntax highlighting; `editors/vim` has
-Vim and Neovim runtime files and the client setup; `editors/textmate` is the
-standalone grammar other tools can reuse.
+## Commands
+
+```bash
+linnet check [--strict] [--json] <path>...     # check files and their imports
+linnet fmt [--check] <path>...                 # one style, no options
+linnet inspect --parameters|--emit|--core-ir <file>
+linnet plan [--root <Block>] <file>            # JSON plan for a materializer
+linnet stablehlo|onnx|torch|jax --bind <G>=<v>... <file>
+linnet emit plan.json                          # Linnet source from a plan
+linnet explain <file>                          # which kernel each library operation gets
+linnet init <dir>                              # new package
+linnet lsp --stdio                             # language server
+```
+
+`--std <dir>` or `LINNET_STD` names the standard library directory. Exit
+status is 0 on success, 1 on errors, 2 for a bad command line. See
+[docs/tooling.md](docs/tooling.md).
 
 ## Building
 
-Requirements: CMake 3.25+, Ninja, and a C++23 compiler (GCC 13+, Clang 17+, or
-MSVC 2022).
+CMake 3.25, Ninja, and a C++23 compiler (GCC 13, Clang 19, MSVC 2022).
 
 ```bash
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug
+cmake --preset release && cmake --build --preset release && ctest --preset release
 ```
 
-Other presets: `release`, `sanitize` (ASan + UBSan), `tidy` (clang-tidy),
-`fuzz` (libFuzzer targets, Clang only), and `msvc` (Windows).
+Presets: `debug`, `release`, `sanitize`, `tidy`, `fuzz` (Clang), `msvc`.
+`scripts/check.sh [preset...]` runs the format check, build, and tests;
+`scripts/check-format.sh --fix` reformats.
 
-## Development
+## Conventions
 
-`scripts/check.sh [preset...]` runs the format check and then configures,
-builds, and tests each preset (default `debug`). `scripts/check-format.sh --fix`
-reformats the C++ sources.
-
-Conventions:
-
-- C++23, formatted with the repository `.clang-format`; warnings are errors in
-  all presets.
-- Public headers live under `include/linnet/<component>/`, implementations under
-  `src/<component>/`, tests under `tests/`.
-- Language changes update the relevant `spec/` chapter, `spec/grammar.ebnf`, and
-  at least one case in `spec-tests/` together with the implementation.
-- Every `.linnet` file in the repository that parses must be formatter-clean.
-- Diagnostic codes are stable; new ones are added to
-  `include/linnet/diagnostic/codes.hpp` and never reused.
-- The compiler core is framework-independent: it must not depend on tensor
-  frameworks, and it must not contain model-specific logic.
-- The CLI, language server, formatter, and backends all share the one frontend
-  library.
+- Language changes update the `spec/` chapter, `spec/grammar.ebnf`, and a
+  `spec-tests/` case together with the implementation.
+- Diagnostic codes are stable and never reused
+  (`include/linnet/diagnostic/codes.hpp`).
+- The compiler depends on no tensor framework and knows no model; high-level
+  operations live in `stdlib/`, and backends are consumers of the plan.
+- Every `.linnet` file in the repository is formatter-clean; C++ warnings are
+  errors in all presets.
 
 ## License
 
