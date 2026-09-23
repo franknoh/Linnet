@@ -87,3 +87,41 @@ linnet check tiny.linnet               # shapes, dtypes, index domains — nothi
 linnet stablehlo --bind H=512 --bind Heads=8 --bind B=1 --bind S=128 tiny.linnet
 linnet onnx      --bind H=512 --bind Heads=8 --bind B=1 --bind S=128 tiny.linnet
 ```
+
+## Three ways to run the same source
+
+```bash
+linnet check model.linnet                       # shapes, dtypes, index domains; nothing executes
+```
+
+| | How | When |
+| --- | --- | --- |
+| Interpret | `linnet_torch.load(...)` walks the Core IR on tensors | debugging, tiny models, every op visible |
+| Generate | `load(..., compile="inductor")`, `load_source(...)` in JAX | training and serving in a framework |
+| Compile | `linnet stablehlo`, `linnet onnx` | XLA, ONNX Runtime, or another consumer |
+
+On an H100 the generated path under `torch.compile` runs a small Llama forward
+in 2.1 ms against 2.7 ms for hand-written compiled PyTorch, and the XLA path
+in 0.66 ms — see [Benchmarks](/benchmarks).
+
+## By the numbers
+
+| | |
+| --- | --- |
+| Compiler | 25 k lines of C++23, no dependencies beyond the standard library |
+| Tests | 57 unit and CLI tests, 46 executable spec cases, 49 Python adapter tests across PyTorch, JAX, and ONNX |
+| Standard library | 12 modules, 42 operations and blocks — all Linnet source |
+| Backends | PyTorch (interpreted, generated), JAX (compiled, generated, Flax NNX), StableHLO, ONNX |
+| Importers | `torch.export`, `jax.export`, StableHLO text, ONNX |
+
+## What it is, and is not
+
+Linnet is a language for the tensor program itself: the shapes, the dtypes,
+the parameters, and the operations that connect them. It has blocks, generics
+over dimensions and dtypes, index notation, `static for` and `while`, `state`
+for caches, and a standard library written in itself.
+
+It has no Python inside the model, no data-dependent shapes, no hidden
+mutation, and no tensor payloads in source. Tokenizers, data loading,
+optimizers, and serving stay in the framework; the model becomes a file that
+`linnet check` can vouch for and any of the backends can run.
