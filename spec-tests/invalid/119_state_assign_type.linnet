@@ -1,0 +1,10 @@
+module m
+
+block Cache<N: Dim> {
+    state keys: Tensor[N; f32]
+
+    pub entry step(x: Tensor[N; f16]) -> Tensor[N; f32] {
+        keys = x
+        return keys
+    }
+}

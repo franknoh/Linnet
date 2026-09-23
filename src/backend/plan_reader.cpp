@@ -190,6 +190,7 @@ private:
                 Entity& entity = model().entities[member_id];
                 entity.parent = id;
                 entity.is_buffer = member["kind"].as_string() == "buffer";
+                entity.is_state = member["kind"].as_string() == "state";
                 entity.type = type(require(member, "type", "member"));
                 info.scope[entity.name] = member_id;
             }
@@ -553,6 +554,8 @@ private:
         case ir::OpKind::EnumConst:
         case ir::OpKind::BlockParam:
         case ir::OpKind::BlockSub:
+        case ir::OpKind::StateRead:
+        case ir::OpKind::StateWrite:
             a.name = attrs["name"].as_string();
             break;
         case ir::OpKind::Compare: {

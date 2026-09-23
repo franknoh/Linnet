@@ -331,8 +331,22 @@ struct BlockDecl {
     SourceSpan generics_span{};
 };
 
-// `param`, `buffer`, and `sub` declarations; valid only inside a block.
-enum class MemberKind : std::uint8_t { Param, Buffer, Sub };
+// `param`, `buffer`, `state`, and `sub` declarations; valid only inside a block.
+enum class MemberKind : std::uint8_t { Param, Buffer, State, Sub };
+constexpr std::string_view member_keyword(MemberKind kind) {
+    switch (kind) {
+    case MemberKind::Param:
+        return "param";
+    case MemberKind::Buffer:
+        return "buffer";
+    case MemberKind::State:
+        return "state";
+    case MemberKind::Sub:
+        return "sub";
+    }
+    return "param";
+}
+
 struct MemberDecl {
     MemberKind kind;
     Name name;

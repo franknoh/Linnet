@@ -1,0 +1,9 @@
+module m
+
+block Cache<N: Dim> {
+    state keys: Tensor[N; f32]?
+
+    pub entry peek() -> Tensor[N; f32]? {
+        return keys
+    }
+}

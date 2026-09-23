@@ -82,6 +82,8 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(SemanticCall, "semantic.call", -1, 0)                                                        \
     X(BlockParam, "block.param", 1, 0)                                                             \
     X(BlockSub, "block.sub", 1, 0)                                                                 \
+    X(StateRead, "state.read", 1, 0)                                                               \
+    X(StateWrite, "state.write", 2, 0)                                                             \
     X(ArrayGet, "array.get", 2, 0)                                                                 \
     X(StaticFor, "static_for", -1, 1)                                                              \
     X(Yield, "yield", -1, 0)                                                                       \
@@ -108,7 +110,7 @@ struct Attributes {
     std::int64_t integer = 0; // const.int, const.bool (0/1), tuple.get, struct.get, array index
     double number = 0.0;      // const.float
     shape::Poly dim;          // const.dim
-    std::string name;         // call/semantic.call callee id; block.param member;
+    std::string name;         // call/semantic.call callee id; block.param/state member;
                               // enum.const variant; comprehension/reduce index names
     std::vector<std::string> names; // enum.match variants; comprehension/reduce index names
     CompareKind compare = CompareKind::Eq;

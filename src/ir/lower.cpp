@@ -331,6 +331,21 @@ private:
                     frame_->locals[stmt_facts.entity] = value;
                 },
                 [&](const ast::AssignStmt& assign) {
+                    const EntityId state = stmt_facts.entity;
+                    if (state != no_entity && model().entities[state].is_state) {
+                        // A state write: an explicit effect on the block instance.
+                        const TypeId type = substituted(model().entities[state].type);
+                        const ValueId value = lower_expr(assign.value, type);
+                        Attributes attributes;
+                        attributes.name = std::string(assign.target.text);
+                        module_.add_op(block_,
+                                       OpKind::StateWrite,
+                                       {frame_->self, value},
+                                       {},
+                                       attributes,
+                                       node.span);
+                        return;
+                    }
                     const EntityId entity = local_named(assign.target.text);
                     const TypeId type = substituted(model().entities[entity].type);
                     frame_->locals[entity] = lower_expr(assign.value, type);
@@ -347,6 +362,13 @@ private:
                 [&](const ast::StaticForStmt& loop) { lower_static_for(loop, node.span); },
             },
             node.data);
+    }
+
+    // Reading a member: `state` values are read explicitly, the rest are paths.
+    static OpKind member_op(ast::MemberKind kind) {
+        return kind == ast::MemberKind::Sub     ? OpKind::BlockSub
+               : kind == ast::MemberKind::State ? OpKind::StateRead
+                                                : OpKind::BlockParam;
     }
 
     EntityId local_named(std::string_view name) {
@@ -651,11 +673,7 @@ private:
                 std::get<ast::MemberDecl>(modules_[target.module]->item(target.item).data);
             Attributes attributes;
             attributes.name = std::string(target.name);
-            return emit(decl.kind == ast::MemberKind::Sub ? OpKind::BlockSub : OpKind::BlockParam,
-                        {frame_->self},
-                        type,
-                        attributes,
-                        node.span);
+            return emit(member_op(decl.kind), {frame_->self}, type, attributes, node.span);
         }
         case EntityKind::GenericDim:
             return const_dim(model().dims.symbol(target.symbol));
@@ -768,12 +786,7 @@ private:
                     std::get<ast::MemberDecl>(modules_[target.module]->item(target.item).data);
                 Attributes attributes;
                 attributes.name = std::string(target.name);
-                return emit(decl.kind == ast::MemberKind::Sub ? OpKind::BlockSub
-                                                              : OpKind::BlockParam,
-                            {base},
-                            type,
-                            attributes,
-                            node.span);
+                return emit(member_op(decl.kind), {base}, type, attributes, node.span);
             }
             return lower_name(node, member_facts.entity, type);
         }

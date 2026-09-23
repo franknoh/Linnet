@@ -78,7 +78,7 @@ void Checker::collect_manifest(EntityId block,
 
         ManifestEntry entry;
         entry.path = path;
-        entry.kind = member->kind == ast::MemberKind::Param ? "param" : "buffer";
+        entry.kind = std::string(ast::member_keyword(member->kind));
         entry.repeat = repeat;
         entry.is_optional = data.kind == TypeKind::Optional;
         const TypeData& tensor = entry.is_optional ? types_.get(data.elements.front()) : data;

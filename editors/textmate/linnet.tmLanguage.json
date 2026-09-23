@@ -107,7 +107,7 @@
                     }
                 },
                 {
-                    "match": "\\b(param|buffer|sub)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "\\b(param|buffer|state|sub)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
                         "1": { "name": "storage.type.member.linnet" },
                         "2": { "name": "variable.other.member.linnet" }
@@ -130,7 +130,7 @@
                 },
                 {
                     "name": "storage.type.linnet",
-                    "match": "\\b(?:module|use|const|type|struct|enum|fn|op|block|entry|param|buffer|sub|let|var)\\b"
+                    "match": "\\b(?:module|use|const|type|struct|enum|fn|op|block|entry|param|buffer|state|sub|let|var)\\b"
                 },
                 {
                     "name": "storage.modifier.linnet",

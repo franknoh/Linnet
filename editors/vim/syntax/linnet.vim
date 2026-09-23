@@ -5,7 +5,7 @@ endif
 syn keyword linnetConditional if else match
 syn keyword linnetStatement return where
 syn keyword linnetRepeat static for in
-syn keyword linnetStructure module use const type struct enum fn op block entry param buffer sub let var
+syn keyword linnetStructure module use const type struct enum fn op block entry param buffer state sub let var
 syn keyword linnetModifier pub as
 syn keyword linnetSelf crate self super
 syn keyword linnetBoolean true false

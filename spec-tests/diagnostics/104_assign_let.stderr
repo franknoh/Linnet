@@ -7,4 +7,4 @@ error E2108: cannot assign to `y`
  5 |     y = y + 1.0
    |     ^
    |
-   = help: only locals declared with `var` can be reassigned
+   = help: only locals declared with `var` and `state` members can be assigned

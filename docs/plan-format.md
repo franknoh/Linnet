@@ -7,17 +7,23 @@ materializer consumes. Version 1:
 { "version": 1,
   "module":    "a.b.c",
   "root":      { "name", "generics": [generic], "constraints": [constraint] },
-  "manifest":  [ { "path", "kind": "param" | "buffer", "dtype", "shape": [unit],
+  "manifest":  [ { "path", "kind": "param" | "buffer" | "state", "dtype", "shape": [unit],
                    "repeat": [dim], "optional" } ],
   "blocks":    { <name>: { "module", "pub", "generics": [generic], "constraints": [constraint],
-                           "members": [ { "name", "kind": "param" | "buffer" | "sub",
+                           "members": [ { "name", "kind": "param" | "buffer" | "state" | "sub",
                                           "type": type } ] } },
   "functions": [ { "name", "kind": "fn" | "op" | "entry", "block": name | null, "pub",
                    "generics": [generic], "constraints": [constraint],
-                   "results": [type], "body": region } ],
+                   "results": [type], "states": [path], "body": region } ],
   "constants": [ { "name", "pub", "type": type, "contextual", "body": region } ] }
 ```
 
+- `states` lists the `state` members a function reads or writes, directly or
+  through the methods it calls, as paths relative to its block (`[*]` stands
+  for every element of a sub array). In the body they are the operations
+  `state.read` (operand: the block value; attribute `name`) and `state.write`
+  (operands: the block value and the new value; no result), ordered within
+  their region.
 - `constants` are module-level `const` items with their initializer as a
   region yielding one value; uses are already inlined into the functions.
   `contextual` marks a constant declared without a type (a compile-time

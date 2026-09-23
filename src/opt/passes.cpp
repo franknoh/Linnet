@@ -30,6 +30,12 @@ bool is_terminator(OpKind kind) {
     return kind == OpKind::Return || kind == OpKind::Yield;
 }
 
+// State reads and writes are ordered effects: never removed as dead, never
+// merged with one another, never moved past each other.
+bool has_effects(OpKind kind) {
+    return kind == OpKind::StateRead || kind == OpKind::StateWrite;
+}
+
 // Integer arithmetic that refuses to overflow, so that folding never changes
 // a result the program would have computed differently.
 std::optional<std::int64_t> fold_integers(OpKind kind, std::int64_t x, std::int64_t y) {
@@ -98,7 +104,7 @@ bool eliminate_dead_code(Module& module) {
             const std::vector<OpId> ops = module.block(block).ops;
             for (const OpId id : ops) {
                 const Operation& op = module.op(id);
-                if (is_terminator(op.kind)) {
+                if (is_terminator(op.kind) || op.kind == OpKind::StateWrite) {
                     continue;
                 }
                 bool is_used = false;
@@ -127,7 +133,8 @@ bool eliminate_common_subexpressions(Module& module) {
         const std::vector<OpId> ops = module.block(block).ops;
         for (const OpId id : ops) {
             const Operation& op = module.op(id);
-            if (is_terminator(op.kind) || !op.regions.empty() || op.results.size() != 1) {
+            if (is_terminator(op.kind) || has_effects(op.kind) || !op.regions.empty() ||
+                op.results.size() != 1) {
                 continue;
             }
             bool is_duplicate = false;

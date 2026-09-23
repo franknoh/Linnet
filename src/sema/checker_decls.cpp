@@ -250,6 +250,7 @@ void Checker::collect_module(std::uint32_t module) {
                                if (parent != no_entity) {
                                    entity.kind = EntityKind::Member;
                                    entity.is_buffer = decl.kind == ast::MemberKind::Buffer;
+                                   entity.is_state = decl.kind == ast::MemberKind::State;
                                    name = &decl.name;
                                }
                            },
@@ -589,8 +590,12 @@ void Checker::resolve_member(EntityId entity) {
     } else if (!types_.is_error(type) && !is_kind(inner, TypeKind::Tensor)) {
         error(codes::invalid_member_type,
               type_span,
-              "a `" + std::string(decl.kind == ast::MemberKind::Param ? "param" : "buffer") +
-                  "` must be a tensor, not `" + str(type) + "`");
+              "a `" + std::string(ast::member_keyword(decl.kind)) + "` must be a tensor, not `" +
+                  str(type) + "`");
+    } else if (decl.kind == ast::MemberKind::State && is_kind(type, TypeKind::Optional)) {
+        error(codes::invalid_member_type,
+              type_span,
+              "a `state` member cannot be optional; the runtime always holds a value for it");
     }
 
     if (decl.default_value != ast::no_id) {

@@ -31,14 +31,15 @@ constexpr int error_method_not_found = -32601;
 constexpr int error_invalid_params = -32602;
 
 constexpr auto keywords = std::to_array<std::string_view>({
-    "module", "use",   "pub",    "as",     "const",  "type",  "struct",  "enum",    "fn",
-    "op",     "block", "entry",  "param",  "buffer", "sub",   "let",     "var",     "return",
-    "if",     "else",  "match",  "static", "for",    "in",    "where",   "true",    "false",
-    "none",   "some",  "crate",  "Tensor", "Dim",    "Shape", "DType",   "Numeric", "Integer",
-    "Float",  "bool",  "i8",     "i16",    "i32",    "i64",   "u8",      "u16",     "u32",
-    "u64",    "f16",   "bf16",   "f32",    "f64",    "cast",  "reshape", "permute", "broadcast_to",
-    "concat", "iota",  "fill",   "exp",    "log",    "sqrt",  "rsqrt",   "sin",     "cos",
-    "tanh",   "abs",   "select", "min",    "max",    "sum",   "prod",    "any",     "all",
+    "module",       "use",    "pub",   "as",     "const",  "type",  "struct", "enum",    "fn",
+    "op",           "block",  "entry", "param",  "buffer", "state", "sub",    "let",     "var",
+    "return",       "if",     "else",  "match",  "static", "for",   "in",     "where",   "true",
+    "false",        "none",   "some",  "crate",  "Tensor", "Dim",   "Shape",  "DType",   "Numeric",
+    "Integer",      "Float",  "bool",  "i8",     "i16",    "i32",   "i64",    "u8",      "u16",
+    "u32",          "u64",    "f16",   "bf16",   "f32",    "f64",   "cast",   "reshape", "permute",
+    "broadcast_to", "concat", "iota",  "fill",   "exp",    "log",   "sqrt",   "rsqrt",   "sin",
+    "cos",          "tanh",   "abs",   "select", "min",    "max",   "sum",    "prod",    "any",
+    "all",
 });
 
 // Semantic token legend, in the order announced to the client.
@@ -80,6 +81,7 @@ std::uint32_t token_type_of(sema::SymbolKind kind) {
         return 7;
     case sema::SymbolKind::Param:
     case sema::SymbolKind::Buffer:
+    case sema::SymbolKind::State:
     case sema::SymbolKind::Sub:
         return 8;
     case sema::SymbolKind::GenericDim:
@@ -112,6 +114,7 @@ int lsp_symbol_kind(sema::SymbolKind kind) {
         return 5;
     case sema::SymbolKind::Param:
     case sema::SymbolKind::Buffer:
+    case sema::SymbolKind::State:
     case sema::SymbolKind::Sub:
         return 8;
     case sema::SymbolKind::GenericDim:
@@ -509,6 +512,7 @@ struct Server::State {
                                  : symbol.kind == sema::SymbolKind::TypeAlias ? 7
                                  : symbol.kind == sema::SymbolKind::Param ||
                                          symbol.kind == sema::SymbolKind::Buffer ||
+                                         symbol.kind == sema::SymbolKind::State ||
                                          symbol.kind == sema::SymbolKind::Sub
                                      ? 10
                                      : 3;

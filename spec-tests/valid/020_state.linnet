@@ -1,0 +1,27 @@
+module state_members
+
+// A block-owned cache: read by name, replaced by assignment, threaded by
+// backends. Only the block's own functions assign it.
+pub block Cache<B: Dim, Max: Dim, D: Dim, T: Float> {
+    state keys: Tensor[B, Max, D; T]
+
+    pub fn append(key: Tensor[B, 1, D; T], pos: i32) -> Tensor[B, Max, D; T] {
+        let positions = iota<i32>(Max)
+        let updated[b, s, d] = select(positions[s] == pos, key[b, 0, d], keys[b, s, d])
+        keys = updated
+        return keys
+    }
+}
+
+pub block Model<B: Dim, Max: Dim, D: Dim> {
+    sub cache: Cache<B, Max, D, f32>
+    sub caches: [Cache<B, Max, D, f32>; 2]
+
+    pub entry step(key: Tensor[B, 1, D; f32], pos: i32) -> Tensor[B, Max, D; f32] {
+        var total = cache.append(key, pos)
+        static for c in caches {
+            total = total + c.append(key, pos)
+        }
+        return total + cache.keys
+    }
+}
