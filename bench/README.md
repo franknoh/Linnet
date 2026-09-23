@@ -44,6 +44,10 @@ LINNET_BIN=build/release/linnet python bench/run.py --device cuda --configs smal
 `--no-xla` skips the JAX rows; `--configs tiny --device cpu` is a quick
 check of the harness itself.
 
+The `large` shape is not in the published run: the harness keeps several
+copies of the weights (reference, interpreted, two generated modules, and the
+JAX copy), which does not fit an 80 GB device at 8 B parameters in bf16.
+
 ## Published numbers
 
 `results/latest.json` records the date, device, and library versions it was
