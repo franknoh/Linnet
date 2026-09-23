@@ -301,6 +301,8 @@ private:
                 }
             } else if (const auto* loop = std::get_if<ast::StaticForStmt>(&node.data)) {
                 assigned_locals(loop->body, out);
+            } else if (const auto* while_loop = std::get_if<ast::WhileStmt>(&node.data)) {
+                assigned_locals(while_loop->body, out);
             }
         }
     }
@@ -360,6 +362,7 @@ private:
                     module_.add_op(block_, OpKind::Return, std::move(values), {}, {}, node.span);
                 },
                 [&](const ast::StaticForStmt& loop) { lower_static_for(loop, node.span); },
+                [&](const ast::WhileStmt& loop) { lower_while(loop, node.span); },
             },
             node.data);
     }
@@ -424,6 +427,47 @@ private:
                 bind_pattern(tuple->elements[i],
                              emit(OpKind::TupleGet, {value}, element, attributes, pattern.span));
             }
+        }
+    }
+
+    // `while`: a `while` op carrying the `var` locals the body assigns, with a
+    // condition region yielding a scalar bool and a body region yielding the
+    // next carried values.
+    void lower_while(const ast::WhileStmt& loop, SourceSpan span) {
+        std::vector<EntityId> carried;
+        assigned_locals(loop.body, carried);
+        std::vector<ValueId> operands;
+        std::vector<TypeId> results;
+        std::vector<std::pair<TypeId, std::string>> arguments;
+        for (const EntityId entity : carried) {
+            operands.push_back(frame_->locals.at(entity));
+            results.push_back(module_.value(frame_->locals.at(entity)).type);
+            arguments.emplace_back(results.back(), std::string(model().entities[entity].name));
+        }
+        const OpId op = region_op(OpKind::While, operands, results, {}, span);
+        const RegionId condition =
+            nested_region(op, arguments, [&](const std::vector<ValueId>& args) {
+                for (std::size_t i = 0; i < carried.size(); ++i) {
+                    frame_->locals[carried[i]] = args[i];
+                }
+                yield({lower_expr(loop.condition, types().scalar(ScalarKind::Bool))});
+            });
+        const RegionId body = nested_region(op, arguments, [&](const std::vector<ValueId>& args) {
+            for (std::size_t i = 0; i < carried.size(); ++i) {
+                frame_->locals[carried[i]] = args[i];
+            }
+            lower_body(loop.body);
+            std::vector<ValueId> yielded;
+            yielded.reserve(carried.size());
+            for (const EntityId entity : carried) {
+                yielded.push_back(frame_->locals.at(entity));
+            }
+            yield(std::move(yielded));
+        });
+        module_.op(op).regions.push_back(condition);
+        module_.op(op).regions.push_back(body);
+        for (std::size_t i = 0; i < carried.size(); ++i) {
+            frame_->locals[carried[i]] = module_.op(op).results[i];
         }
     }
 

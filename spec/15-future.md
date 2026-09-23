@@ -12,7 +12,7 @@ Randomness is explicit data: `std.random` implements a counter-based PRNG (Three
 
 ## 15.3 Runtime loops and scan
 
-`while` and a first-class `scan` primitive are expected for recurrent/state-space models and decoding loops. Shape invariants and state effects must be statically checked.
+`while` (§8.4) covers data-dependent loops with invariant shapes; a first-class `scan` that collects per-iteration outputs, and graph exports of `while` to StableHLO `while` and ONNX `Loop`, remain future work.
 
 ## 15.4 Custom gradients and training
 

@@ -412,6 +412,17 @@ private:
 
     // The block whose statements a value in `block` belongs to: a folded
     // match arm counts as its parent.
+    // `var name = value`, annotated with the type when the value is a literal
+    // (a bare `0` would re-check as `i64`).
+    std::string var_line(const std::string& name, ir::ValueId value) {
+        const ir::OpId producer = module_.value(value).producer;
+        const bool is_literal =
+            producer != ir::no_id &&
+            (is_constant(module_.op(producer).kind) || is_negated_constant(module_.op(producer)));
+        const std::string annotation = is_literal ? ": " + type(module_.value(value).type) : "";
+        return "var " + name + annotation + " = " + expr(value) + "\n";
+    }
+
     // The function (or constant) body block a nested block belongs to.
     ir::BlockId body_of(ir::BlockId block) const {
         for (;;) {
@@ -440,6 +451,8 @@ private:
                 if (module_.op(id).kind == ir::OpKind::StaticFor ||
                     module_.op(id).kind == ir::OpKind::StaticRange) {
                     collect_statement_blocks(module_.op(id).regions.front());
+                } else if (module_.op(id).kind == ir::OpKind::While) {
+                    collect_statement_blocks(module_.op(id).regions.back()); // the body
                 }
             }
         }
@@ -514,11 +527,11 @@ private:
                 continue;
             }
             const ir::Operation& source = module_.op(producer);
-            const bool is_leaf = is_constant(source.kind) || is_negated_constant(source) ||
-                                 source.results.size() != 1 ||
-                                 source.kind == ir::OpKind::StaticFor ||
-                                 source.kind == ir::OpKind::StaticRange ||
-                                 source.kind == ir::OpKind::TupleGet || needs_binding(source);
+            const bool is_leaf =
+                is_constant(source.kind) || is_negated_constant(source) ||
+                source.results.size() != 1 || source.kind == ir::OpKind::StaticFor ||
+                source.kind == ir::OpKind::StaticRange || source.kind == ir::OpKind::While ||
+                source.kind == ir::OpKind::TupleGet || needs_binding(source);
             if (!is_leaf) {
                 depth = std::max(depth, inline_depth(source));
             }
@@ -577,6 +590,37 @@ private:
                 out += "let " + name_of(op.results.front()) + "[" + indices + "] = " + *body + "\n";
                 break;
             }
+            case ir::OpKind::While: {
+                const ir::Block& condition =
+                    module_.block(module_.region(op.regions.front()).blocks.front());
+                const ir::Block& body =
+                    module_.block(module_.region(op.regions.back()).blocks.front());
+                for (std::size_t i = 0; i < op.operands.size(); ++i) {
+                    const std::string name = name_of(body.arguments[i]);
+                    out += pad;
+                    out += var_line(name, op.operands[i]);
+                    bind_name(condition.arguments[i], name);
+                    bind_name(op.results[i], name);
+                }
+                auto test = region_value(op.regions.front());
+                if (!test) {
+                    return test;
+                }
+                out += pad;
+                out += "while " + *test + " {\n";
+                auto inner = emit_statements(body, indent + 1);
+                if (!inner) {
+                    return inner;
+                }
+                out += *inner;
+                const ir::Operation& yield = module_.op(body.ops.back());
+                for (std::size_t i = 0; i < yield.operands.size(); ++i) {
+                    out += pad + "    " + name_of(op.results[i]) + " = " + expr(yield.operands[i]) +
+                           "\n";
+                }
+                out += pad + "}\n";
+                break;
+            }
             case ir::OpKind::StaticFor:
             case ir::OpKind::StaticRange: {
                 const ir::Block& body =
@@ -586,7 +630,7 @@ private:
                 for (std::size_t i = first; i < op.operands.size(); ++i) {
                     const std::string name = name_of(body.arguments[i - first + 1]);
                     out += pad;
-                    out += "var " + name + " = " + expr(op.operands[i]) + "\n";
+                    out += var_line(name, op.operands[i]);
                     bind_name(op.results[i - first], name);
                 }
                 const std::string iterable =

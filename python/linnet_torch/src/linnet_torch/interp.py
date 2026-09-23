@@ -312,6 +312,20 @@ class Interpreter:
                     inner[arg["id"]] = value
                 carried = self.run_region(region, env, inner, grid)
             return carried
+        if kind == "while":
+            carried = list(operands)
+            condition, body = op["regions"]
+            while True:
+                inner = dict(values)
+                for arg, value in zip(condition["args"], carried, strict=True):
+                    inner[arg["id"]] = value
+                if not bool(self.run_region(condition, env, inner, grid)[0].item()):
+                    break
+                inner = dict(values)
+                for arg, value in zip(body["args"], carried, strict=True):
+                    inner[arg["id"]] = value
+                carried = self.run_region(body, env, inner, grid)
+            return carried
         if kind == "static_range":
             start, stop = int(tensor(0).item()), int(tensor(1).item())
             carried = list(operands[2:])

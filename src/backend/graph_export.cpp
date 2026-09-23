@@ -927,6 +927,9 @@ private:
             }
             return;
         }
+        case ir::OpKind::While:
+            fail("runtime `while` loops are not exported to graphs yet; they run in the PyTorch "
+                 "interpreter");
         case ir::OpKind::StaticRange: {
             const std::int64_t start = range_bound(op.operands[0]);
             const std::int64_t stop = range_bound(op.operands[1]);

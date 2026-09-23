@@ -122,7 +122,8 @@ if(NOT WIN32)
         ${PROJECT_SOURCE_DIR}/stdlib/*.linnet ${PROJECT_SOURCE_DIR}/examples/*.linnet)
     list(APPEND linnet_round_trip_sources ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet
         ${PROJECT_SOURCE_DIR}/spec-tests/valid/021_static_range.linnet
-        ${PROJECT_SOURCE_DIR}/spec-tests/valid/022_bitwise.linnet)
+        ${PROJECT_SOURCE_DIR}/spec-tests/valid/022_bitwise.linnet
+        ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
     add_test(NAME cli_emit_round_trip
         COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/emit_round_trip.sh

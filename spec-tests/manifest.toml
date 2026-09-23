@@ -197,3 +197,12 @@ code = "E2121"
 [[case]]
 file = "valid/022_bitwise.linnet"
 expect = "ok"
+
+[[case]]
+file = "valid/023_while.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/123_while_condition_tensor.linnet"
+expect = "error"
+code = "E2114"

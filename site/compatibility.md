@@ -38,6 +38,7 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 | --- | --- | --- | --- |
 | Symbolic shapes | bound at load, entry generics from inputs | bound per compile (`--bind`, or from inputs at call) | bound per export |
 | `static for` over sub arrays and integer ranges | ✓ | ✓ (unrolled) | ✓ (unrolled) |
+| `while` (runtime loop, scalar `bool` condition) | ✓ | not yet | not yet |
 | Index notation, reductions | ✓ | ✓ | ✓ |
 | Optional parameters (`= none`) | ✓ | ✓ (`--optionals`) | ✓ |
 | Enum-typed constants and `match` | ✓ | ✓ (folded) | ✓ (folded) |
@@ -48,9 +49,11 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 
 ## Not supported (yet)
 
-- Runtime loops (`while`, `scan`) and data-dependent shapes; `static for`
-  over a compile-time range covers fixed-length generation (the Llama
-  example's `generate<Steps>`).
+- Graph exports of `while` (StableHLO `while`, ONNX `Loop`) and a `scan`
+  that collects per-iteration outputs; data-dependent shapes. `while` runs in
+  the PyTorch materializer today (the Llama example's `generate_until` stops
+  at an end token), and `static for` over a compile-time range covers
+  fixed-length generation everywhere.
 - Randomness is a library, not a primitive: `std.random` (Threefry-2x32,
   matching `jax.random` bit for bit) runs on every backend; there is no
   hidden generator state.

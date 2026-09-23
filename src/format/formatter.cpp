@@ -625,6 +625,12 @@ private:
                     // statement can never be read as a bare `return`.
                     return b_.concat({b_.text("return "), expr(ret.value)});
                 },
+                [&](const WhileStmt& loop) {
+                    const DocId head =
+                        b_.concat({b_.text("while "), expr(loop.condition), b_.text(" ")});
+                    return b_.concat(
+                        {head, braced(statement_elements(loop.body), node.span.end - 1)});
+                },
                 [&](const StaticForStmt& loop) {
                     DocId iterable = expr(loop.iterable);
                     if (loop.range_end != no_id) {
