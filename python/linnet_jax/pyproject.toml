@@ -23,6 +23,9 @@ dev = [
     "pytest>=8",
     "pyright>=1.1.380",
     "ruff>=0.6",
+    # The released flax needs an unreleased jax; the last pair that works.
+    "flax>=0.12,<0.12.7",
+    "jax<0.11",
 ]
 
 [tool.pyright]
