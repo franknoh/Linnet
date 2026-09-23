@@ -280,6 +280,49 @@ def test_torch_exported_mlp_imports(tmp_path: Path) -> None:
     torch.testing.assert_close(module(x), model(x), atol=1e-5, rtol=1e-5)
 
 
+class _Decomposed(torch.nn.Module):
+    """Operations PyTorch's exporter spells out as primitives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.linspace(0.5, 1.5, 8))
+        self.norm = torch.nn.RMSNorm(8)
+        with torch.no_grad():
+            self.norm.weight.copy_(torch.linspace(1.5, 0.5, 8))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * self.scale
+        h = torch.nn.functional.silu(self.norm(h))
+        e = torch.exp(h - h.max(-1, keepdim=True).values)
+        return e / e.sum(-1, keepdim=True)
+
+
+def test_torch_decompositions_recover(tmp_path: Path) -> None:
+    """RMS norms, SiLU, and a hand-written softmax come back as the library
+    operations, and the imported module still agrees with PyTorch."""
+    pytest.importorskip("onnxscript")
+    torch.manual_seed(2)  # pyright: ignore[reportUnknownMemberType]
+    model = _Decomposed()
+    x = torch.randn(2, 3, 8)
+    path = tmp_path / "decomposed.onnx"
+    torch.onnx.export(model, (x,), str(path), dynamo=True)  # pyright: ignore[reportUnknownMemberType]
+    result = import_onnx(
+        path, output=tmp_path / "decomposed.linnet", weights=tmp_path / "w", std_root=STDLIB
+    )
+    source = result.source.read_text()
+    assert source.count("rms_norm<") == 2 and "silu<" in source and "softmax<" in source
+    assert "rsqrt(" not in source and "exp(" not in source
+    assert "recovered rms_norm from its decomposition" in result.notes
+    module = load(
+        result.source,
+        generics={},
+        std_root=STDLIB,
+        weights=tmp_path / "w",
+        bindings=result.bindings,
+    )
+    torch.testing.assert_close(module(x), model(x), atol=1e-5, rtol=1e-5)
+
+
 def test_unsupported_operations_are_named(tmp_path: Path) -> None:
     graph = helper.make_graph(
         [
