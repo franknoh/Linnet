@@ -2,7 +2,7 @@
 // both: `docs/*.md` become `/docs/*`, `spec/*.md` become `/spec/*`, and every
 // example becomes a page showing its sources. Generated directories are
 // ignored by git; run before `vitepress dev` or `vitepress build`.
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -85,10 +85,17 @@ writeFileSync(
 
 for (const name of entries) {
   const dir = join(repo, "examples", name);
-  let page = `# ${name}\n\n`;
-  const row = readme.split("\n").find((line) => line.startsWith(`| \`${name}\``));
-  if (row) {
-    page += row.split("|")[2].trim() + "\n\n";
+  let page = "";
+  const guide = join(dir, "README.md");
+  if (existsSync(guide)) {
+    // The example's own guide: intro, what it shows, how to run it.
+    page += readFileSync(guide, "utf8").trimEnd() + "\n\n## Source\n\n";
+  } else {
+    page += `# ${name}\n\n`;
+    const row = readme.split("\n").find((line) => line.startsWith(`| \`${name}\``));
+    if (row) {
+      page += row.split("|")[2].trim() + "\n\n";
+    }
   }
   for (const file of sources(dir)) {
     const rel = relative(dir, file);
