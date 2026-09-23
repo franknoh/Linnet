@@ -3,8 +3,8 @@
 Nest is the Linnet model zoo: a registry of models whose architecture is a
 checked `.linnet` source and whose weights are a SafeTensors checkpoint on
 the Hugging Face Hub. The registry lives at
-[github.com/franknoh/nest](https://github.com/franknoh/nest); the models
-are listed at [/nest/](/nest/).
+[github.com/franknoh/nest](https://github.com/franknoh/nest); browse the
+models at [nest.franknoh.dev](https://nest.franknoh.dev).
 
 ```python
 from linnet import nest
