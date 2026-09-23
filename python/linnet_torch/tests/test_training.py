@@ -67,8 +67,8 @@ def test_sgd_fits_a_linnet_mlp(tmp_path: Path, compile: bool) -> None:
         optimizer.zero_grad()
         output: torch.Tensor = model(x)
         loss: torch.Tensor = torch.nn.functional.mse_loss(output, y)
-        loss.backward()
-        optimizer.step()
+        loss.backward()  # pyright: ignore[reportUnknownMemberType]
+        optimizer.step()  # pyright: ignore[reportUnknownMemberType]
         losses.append(float(loss))
     assert losses[-1] < losses[0] * 0.05, (losses[0], losses[-1])
     grads = [p.grad for p in model.parameters() if p.grad is not None]
