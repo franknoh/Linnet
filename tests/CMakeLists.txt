@@ -120,7 +120,8 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
     file(GLOB_RECURSE linnet_round_trip_sources
         ${PROJECT_SOURCE_DIR}/stdlib/*.linnet ${PROJECT_SOURCE_DIR}/examples/*.linnet)
-    list(APPEND linnet_round_trip_sources ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet)
+    list(APPEND linnet_round_trip_sources ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet
+        ${PROJECT_SOURCE_DIR}/spec-tests/valid/021_static_range.linnet)
     add_test(NAME cli_emit_round_trip
         COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/emit_round_trip.sh
@@ -155,6 +156,12 @@ add_test(NAME cli_torch_source_decode
             --bind T=f32 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
 set_tests_properties(cli_torch_source_decode PROPERTIES
     PASS_REGULAR_EXPRESSION "NEXT_STATES = \\[\"layers.0.attention.cache_k\".*def main\\(in_token, in_pos, p0,.*F.scaled_dot_product_attention\\(")
+add_test(NAME cli_stablehlo_generate
+    COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --entry generate --bind Vocab=11 --bind H=8
+            --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=8
+            --bind T=f32 --bind Steps=3 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
+set_tests_properties(cli_stablehlo_generate PROPERTIES
+    PASS_REGULAR_EXPRESSION "-> \\(tensor<2x3xi32>, tensor<2x2x8x2xf32>.*linnet.states = \\[\"layers.0.attention.cache_k\"")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)

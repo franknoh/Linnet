@@ -307,6 +307,19 @@ class Interpreter:
                     inner[arg["id"]] = value
                 carried = self.run_region(region, env, inner, grid)
             return carried
+        if kind == "static_range":
+            start, stop = int(tensor(0).item()), int(tensor(1).item())
+            carried = list(operands[2:])
+            region = op["regions"][0]
+            for position in range(start, stop):
+                inner = dict(values)
+                inner[region["args"][0]["id"]] = torch.tensor(
+                    position, dtype=torch.int64, device=self.device
+                )
+                for arg, value in zip(region["args"][1:], carried, strict=True):
+                    inner[arg["id"]] = value
+                carried = self.run_region(region, env, inner, grid)
+            return carried
 
         raise PlanError(f"unsupported Core IR operation `{kind}`")
 

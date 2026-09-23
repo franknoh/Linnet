@@ -246,10 +246,13 @@ struct AssignStmt {
 struct ReturnStmt {
     ExprId value; // optional
 };
+// `static for x in array { ... }`, or `static for i in start..stop { ... }`
+// when `range_end` is set (then `iterable` is the range's start).
 struct StaticForStmt {
     PatternId pattern;
     ExprId iterable;
     std::vector<StmtId> body;
+    ExprId range_end = no_id;
 };
 
 using StmtData = std::

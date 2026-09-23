@@ -28,15 +28,13 @@ The loop MUST NOT depend on runtime tensor values.
 
 ## 8.3 Static integer ranges
 
-Reserved syntax:
-
 ```text
-static for i in 0..Layers {
+static for i in 0..Steps {
     ...
 }
 ```
 
-An implementation MAY support this in the initial version. If unsupported, it MUST be rejected rather than parsed with different semantics.
+`start..stop` iterates over the compile-time integers `start <= i < stop`; both bounds MUST be compile-time integers (literals, generic dimensions, or arithmetic on them). The body is expanded at compile time exactly as the array form is. The loop variable is an `i64` scalar value holding the position of each iteration: it may be cast, compared, or used in arithmetic like any scalar, but it is not a compile-time integer, so it cannot index a sub array or appear in a shape — iterate the array itself for that.
 
 ## 8.4 Runtime loops
 

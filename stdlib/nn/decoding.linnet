@@ -1,0 +1,13 @@
+module std.nn.decoding
+
+// Greedy decoding helpers, written with the reductions the language has:
+// no index-returning primitive is needed.
+
+// The position of the largest element along the last axis, as an `i32`;
+// the first such position when several are equal.
+pub op argmax<*S: Shape, N: Dim, T: Numeric>(x: Tensor[*S, N; T]) -> Tensor[*S; i32] {
+    let peak[*s] = max[n] x[*s, n]
+    let positions = iota<i32>(N)
+    let first[*s] = min[n] select(x[*s, n] == peak[*s], positions[n], N)
+    return first
+}

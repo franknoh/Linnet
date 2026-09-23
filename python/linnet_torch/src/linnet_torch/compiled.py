@@ -22,7 +22,7 @@ from typing import Any
 
 import torch
 
-from .module import BlockModule, LinnetModule, bind_input, owner_of
+from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
 from .plan import Env, Plan, PlanError, find_compiler
 
 
@@ -49,12 +49,17 @@ class CompiledLinnetModule(LinnetModule):
         self._compiled: dict[tuple[Any, ...], _Generated] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
 
-    def run_entry(self, name: str, inputs: list[torch.Tensor]) -> Any:
+    def run_entry(
+        self,
+        name: str,
+        inputs: list[torch.Tensor],
+        generics: Mapping[str, int | str] | None = None,
+    ) -> Any:
         function = self.entries[name]
         params = function["body"]["args"][1:]
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
-        bindings = self._bindings(function, inputs)
+        bindings = self._bindings(function, inputs, generics or {})
         key = (name, tuple(sorted(bindings.items())), self._optionals_present())
         if key not in self._compiled:
             self._compiled[key] = self._compile(name, bindings)
@@ -73,11 +78,17 @@ class CompiledLinnetModule(LinnetModule):
 
     # ---- one compilation per entry and shape
 
-    def _bindings(self, function: dict[str, Any], inputs: list[torch.Tensor]) -> dict[str, str]:
+    def _bindings(
+        self,
+        function: dict[str, Any],
+        inputs: list[torch.Tensor],
+        given: Mapping[str, int | str],
+    ) -> dict[str, str]:
         """Every generic the export needs: the root's, then the entry's from
-        the input shapes, by name."""
+        `given` and the input shapes, by name."""
         bindings = {name: str(value) for name, value in self._generic_arguments.items()}
         env = Env(dict(self.root.env.dims), dict(self.root.env.packs), dict(self.root.env.dtypes))
+        bind_generics(env, function["generics"], given)
         for param, value in zip(function["body"]["args"][1:], inputs, strict=True):
             bind_input(env, param, value)
         for generic in function["generics"]:

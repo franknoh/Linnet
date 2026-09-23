@@ -620,10 +620,14 @@ private:
                     return b_.concat({b_.text("return "), expr(ret.value)});
                 },
                 [&](const StaticForStmt& loop) {
+                    DocId iterable = expr(loop.iterable);
+                    if (loop.range_end != no_id) {
+                        iterable = b_.concat({iterable, b_.text(".."), expr(loop.range_end)});
+                    }
                     const DocId head = b_.concat({b_.text("static for "),
                                                   pattern(loop.pattern),
                                                   b_.text(" in "),
-                                                  expr(loop.iterable),
+                                                  iterable,
                                                   b_.text(" ")});
                     return b_.concat(
                         {head, braced(statement_elements(loop.body), node.span.end - 1)});

@@ -1504,7 +1504,24 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                 const TypeId iterable = check_expr(loop.iterable);
                 const TypeData& data = types_.get(iterable);
                 TypeId element = types_.error();
-                if (data.kind == TypeKind::Array) {
+                if (loop.range_end != ast::no_id) {
+                    // `start..stop` over compile-time integers; the loop
+                    // variable is an `i64` scalar of each iteration.
+                    const TypeId stop = check_expr(loop.range_end);
+                    for (const auto& [type, span] :
+                         {std::pair{iterable, ast().expr(loop.iterable).span},
+                          std::pair{stop, ast().expr(loop.range_end).span}}) {
+                        const TypeKind kind = types_.kind(type);
+                        if (kind != TypeKind::CompileInt && kind != TypeKind::Error) {
+                            error(codes::invalid_static_for,
+                                  span,
+                                  "a `static for` range bound must be a compile-time integer, "
+                                  "found `" +
+                                      str(type) + "`");
+                        }
+                    }
+                    element = types_.scalar(ScalarKind::I64);
+                } else if (data.kind == TypeKind::Array) {
                     element = data.elements.front();
                 } else if (data.kind != TypeKind::Error) {
                     error(codes::invalid_static_for,

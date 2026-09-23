@@ -59,6 +59,10 @@ shows what would be selected and why.
 Generic arguments of the root block with defaults (`T: Float = bf16`) may be
 omitted. Root blocks with shape-pack generics are not supported.
 
+An entry's own generics are bound from the input shapes; one the inputs do
+not determine — an output length such as `generate<Steps>` — is given by
+name: `model.run_entry("generate", [prompt, pos], generics={"Steps": 16})`.
+
 ## Generated PyTorch source
 
 ```python

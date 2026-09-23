@@ -913,9 +913,8 @@ private:
         expect(K::KwIn);
         stmt.iterable = parse_expr();
         if (at(K::DotDot)) {
-            unsupported(peek().span, "static integer ranges are not supported yet");
             advance();
-            parse_expr();
+            stmt.range_end = parse_expr();
         }
         stmt.body = parse_body();
         return stmt;

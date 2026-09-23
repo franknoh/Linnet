@@ -86,6 +86,7 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(StateWrite, "state.write", 2, 0)                                                             \
     X(ArrayGet, "array.get", 2, 0)                                                                 \
     X(StaticFor, "static_for", -1, 1)                                                              \
+    X(StaticRange, "static_range", -1, 1)                                                          \
     X(Yield, "yield", -1, 0)                                                                       \
     X(Return, "return", -1, 0)
 
