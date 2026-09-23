@@ -93,3 +93,23 @@ def test_native_kernels_and_torch_compile() -> None:
     assert "torch.rms_norm(" in source and "F.scaled_dot_product_attention(" in source
     # `rsqrt(cast<f32>(H / Heads))` reaches the kernel as a literal, not a tensor.
     assert "scale=0.7071067" in source and "scale=float(" not in source
+
+
+def test_while_loop_in_generated_source() -> None:
+    """`while` becomes a Python loop in generated code, state included: the
+    stop-at-eos Llama entry runs compiled and agrees with the interpreter."""
+    reference = load(LLAMA, generics=GENERICS, std_root=STDLIB)
+    compiled = load(LLAMA, generics=GENERICS, std_root=STDLIB, compile=True)
+    assert isinstance(compiled, CompiledLinnetModule)
+    weights = _weights(reference)
+    reference.load_state_dict(weights, strict=False)
+    compiled.load_state_dict(weights, strict=False)
+    prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
+    arguments = [prompt, torch.tensor(0, dtype=torch.int32), torch.tensor(99, dtype=torch.int32)]
+    expected_tokens, expected_count = reference.run_entry(
+        "generate_until", arguments, generics={"MaxNew": 4}
+    )
+    tokens, count = compiled.run_entry("generate_until", arguments, generics={"MaxNew": 4})
+    torch.testing.assert_close(tokens, expected_tokens)
+    assert int(count) == int(expected_count) == 4
+    assert "while True:" in compiled.generated_source("generate_until")

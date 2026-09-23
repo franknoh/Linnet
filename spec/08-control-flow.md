@@ -50,7 +50,7 @@ while running && count < MaxNew {
 
 `while` repeats its body while the condition, a scalar `bool` evaluated before each iteration, holds. The `var` locals assigned in the body are the loop's carried values: their types are fixed (§5.3), so every shape is invariant across iterations, and the body may assign `state` members (§9.3). `return` is not allowed inside a loop. Termination is the program's responsibility; a bound on a counter is the usual form.
 
-In Core IR a `while` is one operation carrying those values, with a condition region and a body region, so effects inside it are ordered like any other. Backends execute it as a loop; a graph export that cannot express a data-dependent loop reports it rather than unrolling. `for` remains reserved.
+In Core IR a `while` is one operation carrying those values, with a condition region and a body region, so effects inside it are ordered like any other. Backends execute it as a loop (`stablehlo.while`, ONNX `Loop`, a Python loop in generated PyTorch), carrying every `state` member through it so writes in the body are visible after it. `for` remains reserved.
 
 ## 8.5 Recursion
 

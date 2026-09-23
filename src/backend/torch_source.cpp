@@ -533,10 +533,47 @@ public:
         return out;
     }
 
+    // A Python `while True:` over loop variables, broken out of when the
+    // condition fails.
+    bool supports_while() const override { return true; }
+
+    std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) override {
+        std::vector<std::string> names;
+        const std::string prefix = "w" + std::to_string(loops_++) + "_";
+        for (std::size_t i = 0; i < initial.size(); ++i) {
+            names.push_back(prefix + std::to_string(i));
+            body_ += indent_ + names.back() + " = " + initial[i].name + "\n";
+        }
+        body_ += indent_ + "while True:\n";
+        indent_ += "    ";
+        loop_names_.push_back(names);
+        return names;
+    }
+
+    std::vector<std::string> while_condition(const TensorInfo& predicate) override {
+        body_ += indent_ + "if not bool(" + predicate.name + "):\n" + indent_ + "    break\n";
+        return loop_names_.back();
+    }
+
+    std::vector<std::string> end_while(const std::vector<TensorInfo>& next) override {
+        const std::vector<std::string> names = std::move(loop_names_.back());
+        loop_names_.pop_back();
+        std::string targets;
+        std::string values;
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            targets += (i == 0 ? "" : ", ") + names[i];
+            values += (i == 0 ? "" : ", ") + next[i].name;
+        }
+        body_ += indent_ + targets + (next.size() == 1 ? "," : "") + " = " + values +
+                 (next.size() == 1 ? "," : "") + "\n";
+        indent_.resize(indent_.size() - 4);
+        return names;
+    }
+
 private:
     std::string define(const std::string& expression) {
         const std::string name = "v" + std::to_string(next_++);
-        body_ += "    " + name + " = " + expression + "\n";
+        body_ += indent_ + name + " = " + expression + "\n";
         return name;
     }
 
@@ -580,6 +617,9 @@ private:
     std::map<std::string, double> values_;        // constant name -> folded scalar value
     std::map<ScalarKind, std::string> zeros_;     // per-dtype zero constants
     std::string body_;
+    std::string indent_ = "    ";
+    std::vector<std::vector<std::string>> loop_names_;
+    std::size_t loops_ = 0;
     std::size_t next_ = 0;
 };
 

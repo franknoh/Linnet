@@ -104,3 +104,19 @@ def test_tiny_transformer_runs_under_onnxruntime(tmp_path: Path) -> None:
     torch.testing.assert_close(
         imported(tokens, cos_table, sin_table), expected, atol=1e-4, rtol=1e-4
     )
+
+
+def test_while_loop_runs_under_onnxruntime() -> None:
+    """A `while` exports as an ONNX `Loop` whose body recomputes the condition,
+    and iterates as the interpreter does."""
+    onnxruntime = pytest.importorskip("onnxruntime")
+    source = REPO / "spec-tests/valid/023_while.linnet"
+    model = _export_onnx(source, {"N": 3})
+    session = onnxruntime.InferenceSession(
+        model.SerializeToString(), providers=["CPUExecutionProvider"]
+    )
+    scale = np.array([2.0, 3.0, 1.5], np.float32)
+    for limit, expected in ((3, [8.0, 27.0, 3.375]), (100, [128.0, 2187.0, 17.0859375])):
+        feeds = {"x": np.ones(3, np.float32), "limit": np.array(limit, np.int32), "param0": scale}
+        (actual,) = session.run(None, feeds)
+        np.testing.assert_allclose(np.asarray(actual), np.array(expected, np.float32))

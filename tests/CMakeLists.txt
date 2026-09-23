@@ -170,6 +170,13 @@ add_test(NAME cli_stablehlo_sample
             --bind T=f32 --bind Steps=2 ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
 set_tests_properties(cli_stablehlo_sample PROPERTIES
     PASS_REGULAR_EXPRESSION "%key: tensor<2xi64>.*\"stablehlo.xor\".*\"stablehlo.shift_left\"")
+add_test(NAME cli_stablehlo_while
+    COMMAND linnet stablehlo --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
+set_tests_properties(cli_stablehlo_while PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"stablehlo.while\"\\(.*\\) \\(\\{.*\"stablehlo.return\".*\\}, \\{.*\\}\\) : \\(tensor<3xf32>, tensor<i32>, tensor<i1>\\) -> \\(tensor<3xf32>, tensor<i32>, tensor<i1>\\)")
+add_test(NAME cli_onnx_while
+    COMMAND linnet onnx --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
+set_tests_properties(cli_onnx_while PROPERTIES PASS_REGULAR_EXPRESSION "= Loop <body = loop_body")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)

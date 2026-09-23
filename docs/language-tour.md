@@ -163,8 +163,8 @@ pub block Model<H: Dim, Layers: Dim> {
   a position), and `var` locals carry values from one iteration to the next.
 - `while running && count < MaxNew { ... }` is a runtime loop over a scalar
   `bool`; the `var`s it assigns are its carried values (shapes fixed), so a
-  decode loop can stop at an end-of-sequence token. It runs in the PyTorch
-  materializer; graph exports of `while` are not available yet.
+  decode loop can stop at an end-of-sequence token. It exports as
+  `stablehlo.while`, an ONNX `Loop`, or a Python loop in generated PyTorch.
 - `entry` marks the callables a backend exposes.
 - Parameter paths follow the structure: `layers.0.attention.q_proj.weight`.
   `linnet inspect --parameters` lists them.

@@ -440,6 +440,58 @@ public:
         return std::nullopt;
     }
 
+    // `stablehlo.while` with the condition and body as regions: the outer
+    // body text is saved while each region is written into its own buffer.
+    bool supports_while() const override { return true; }
+
+    std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) override {
+        Loop loop;
+        loop.initial = initial;
+        loop.outer_body = std::move(body_);
+        loop.outer_indent = indent_;
+        loops_.push_back(std::move(loop));
+        return open_region(initial);
+    }
+
+    std::vector<std::string> while_condition(const TensorInfo& predicate) override {
+        body_ += indent_ + "\"stablehlo.return\"(" + predicate.name + ") : (" +
+                 tensor_type(predicate) + ") -> ()\n";
+        loops_.back().condition = close_region();
+        return open_region(loops_.back().initial);
+    }
+
+    std::vector<std::string> end_while(const std::vector<TensorInfo>& next) override {
+        std::string names;
+        std::string types;
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            names += (i == 0 ? "" : ", ") + next[i].name;
+            types += (i == 0 ? "" : ", ") + tensor_type(next[i]);
+        }
+        body_ += indent_ + "\"stablehlo.return\"(" + names + ") : (" + types + ") -> ()\n";
+        const std::string body_region = close_region();
+        Loop loop = std::move(loops_.back());
+        loops_.pop_back();
+        body_ = std::move(loop.outer_body);
+        indent_ = loop.outer_indent;
+        std::string inits;
+        std::string init_types;
+        for (std::size_t i = 0; i < loop.initial.size(); ++i) {
+            inits += (i == 0 ? "" : ", ") + loop.initial[i].name;
+            init_types += (i == 0 ? "" : ", ") + tensor_type(loop.initial[i]);
+        }
+        const std::string result = fresh();
+        const std::string count = std::to_string(next.size());
+        body_ += indent_ + result + (next.size() == 1 ? "" : ":" + count) +
+                 " = \"stablehlo.while\"(" + inits + ") (" + loop.condition + ", " + body_region +
+                 ") : (" + init_types + ") -> (" + types + ")\n";
+        std::vector<std::string> finals;
+        finals.reserve(next.size());
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            finals.push_back(next.size() == 1 ? result : result + "#" + std::to_string(i));
+        }
+        return finals;
+    }
+
     std::string finish(const std::vector<TensorInfo>& results,
                        const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
@@ -488,6 +540,37 @@ public:
 
 private:
     std::string fresh() { return "%" + std::to_string(next_++); }
+
+    struct Loop {
+        std::vector<TensorInfo> initial;
+        std::string outer_body;
+        std::string outer_indent;
+        std::string condition;
+    };
+
+    // Starts a region whose block takes `arguments`; ops now write into it.
+    std::vector<std::string> open_region(const std::vector<TensorInfo>& arguments) {
+        std::vector<std::string> names;
+        std::string header = "{\n" + indent_ + "  ^bb0(";
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            names.push_back(fresh());
+            header += (i == 0 ? "" : ", ") + names.back() + ": " + tensor_type(arguments[i]);
+        }
+        header += "):\n";
+        body_ = header;
+        indent_ += "    ";
+        return names;
+    }
+
+    // Ends the region opened last, returning its text.
+    std::string close_region() {
+        indent_.resize(indent_.size() - 4);
+        std::string text = std::move(body_) + indent_ + "}";
+        body_.clear();
+        return text;
+    }
+
+    std::vector<Loop> loops_;
 
     std::string dot_general(const TensorInfo& lhs,
                             const TensorInfo& rhs,
