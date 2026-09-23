@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -108,7 +109,83 @@ public:
         const std::string name =
             define("torch.tensor(" + text + ", dtype=" + torch_dtype(dtype) + ", device=_device)");
         literals_[name] = text;
+        if (literal.kind == Literal::Kind::Integer || literal.kind == Literal::Kind::Real) {
+            values_[name] = literal.kind == Literal::Kind::Real
+                                ? literal.real
+                                : static_cast<double>(literal.integer);
+        }
         return name;
+    }
+
+    // Scalar arithmetic on constants is folded to a Python literal as well,
+    // so a computed `rsqrt(cast<f32>(D))` reaches a kernel as `scale=...`
+    // rather than as a tensor `torch.compile` has to read back.
+    void fold(const std::string& name,
+              Elementwise kind,
+              const std::vector<TensorInfo>& operands,
+              ScalarKind dtype) {
+        if (dtype == ScalarKind::Bool || operands.empty() || !operands[0].shape.empty()) {
+            return;
+        }
+        std::vector<double> values;
+        for (const TensorInfo& operand : operands) {
+            const auto found = values_.find(operand.name);
+            if (found == values_.end()) {
+                return;
+            }
+            values.push_back(found->second);
+        }
+        double result = 0.0;
+        const double a = values[0];
+        const double b = values.size() > 1 ? values[1] : 0.0;
+        switch (kind) {
+        case Elementwise::Add:
+            result = a + b;
+            break;
+        case Elementwise::Sub:
+            result = a - b;
+            break;
+        case Elementwise::Mul:
+            result = a * b;
+            break;
+        case Elementwise::Div:
+            if (b == 0.0) {
+                return;
+            }
+            result = is_real(dtype) ? a / b : std::trunc(a / b);
+            break;
+        case Elementwise::Neg:
+            result = -a;
+            break;
+        case Elementwise::Sqrt:
+            result = std::sqrt(a);
+            break;
+        case Elementwise::Rsqrt:
+            result = 1.0 / std::sqrt(a);
+            break;
+        case Elementwise::Exp:
+            result = std::exp(a);
+            break;
+        case Elementwise::Log:
+            result = std::log(a);
+            break;
+        default:
+            return;
+        }
+        if (!is_real(dtype)) {
+            if (kind != Elementwise::Add && kind != Elementwise::Sub && kind != Elementwise::Mul &&
+                kind != Elementwise::Div && kind != Elementwise::Neg) {
+                return;
+            }
+            values_[name] = result;
+            literals_[name] = std::to_string(static_cast<long long>(result));
+            return;
+        }
+        if (dtype == ScalarKind::F32) {
+            result = static_cast<double>(static_cast<float>(result));
+        }
+        values_[name] = result;
+        literals_[name] = real_text(result);
     }
 
     std::string elementwise(Elementwise kind,
@@ -116,7 +193,12 @@ public:
                             const Dims& shape,
                             ScalarKind dtype) override {
         (void)shape;
-        (void)dtype;
+        const std::string name = spell(kind, operands);
+        fold(name, kind, operands, dtype);
+        return name;
+    }
+
+    std::string spell(Elementwise kind, const std::vector<TensorInfo>& operands) {
         const std::string& a = operands[0].name;
         const std::string b = operands.size() > 1 ? operands[1].name : "";
         switch (kind) {
@@ -190,7 +272,26 @@ public:
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
-        return define(value.name + ".to(" + torch_dtype(dtype) + ")");
+        const std::string name = define(value.name + ".to(" + torch_dtype(dtype) + ")");
+        const auto found = values_.find(value.name);
+        if (found != values_.end() && is_real(dtype)) {
+            fold(name,
+                 Elementwise::Add,
+                 {{value.name, {}, dtype}, {zero_name(dtype), {}, dtype}},
+                 dtype);
+        }
+        return name;
+    }
+
+    // A zero literal to fold conversions through (`x + 0` in the target dtype).
+    std::string zero_name(ScalarKind dtype) {
+        auto& cached = zeros_[dtype];
+        if (cached.empty()) {
+            Literal zero;
+            zero.kind = Literal::Kind::Real;
+            cached = constant(zero, dtype);
+        }
+        return cached;
     }
 
     std::string reshape(const TensorInfo& value, const Dims& shape) override {
@@ -468,6 +569,8 @@ private:
     std::vector<std::string> parameters_;         // paths, in argument order
     std::vector<std::string> states_;             // paths, in argument order
     std::map<std::string, std::string> literals_; // constant name -> Python literal
+    std::map<std::string, double> values_;        // constant name -> folded scalar value
+    std::map<ScalarKind, std::string> zeros_;     // per-dtype zero constants
     std::string body_;
     std::size_t next_ = 0;
 };
