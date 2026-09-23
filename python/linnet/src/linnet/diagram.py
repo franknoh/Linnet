@@ -16,6 +16,7 @@ import html
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal
 
@@ -544,6 +545,11 @@ def layout(graph: Graph) -> Layout:
     for p in placed.values():
         p.x += total_width / 2
     boxes = _group_boxes(graph, placed)
+    _evict_outsiders(graph, placed, boxes)
+    boxes = _group_boxes(graph, placed)
+    total_width = max(
+        total_width, max((p.x + p.width for p in placed.values()), default=0) + _MARGIN
+    )
     height = y - _LAYER_GAP + _MARGIN
     for box in boxes:
         height = max(height, box.y + box.height + _MARGIN)
@@ -556,6 +562,37 @@ def layout(graph: Graph) -> Layout:
                 b.x += shift
             total_width += shift
     return Layout(placed, boxes, total_width, height)
+
+
+def _evict_outsiders(graph: Graph, placed: dict[str, Placed], boxes: list[Box]) -> None:
+    """Moves nodes that are not in a group out of that group's box, then re-packs rows."""
+    parents = {g.id: g.parent for g in graph.groups}
+
+    def inside(node: Node, group: str) -> bool:
+        g = node.group
+        while g is not None:
+            if g == group:
+                return True
+            g = parents.get(g)
+        return False
+
+    for box in boxes:  # outer boxes first: what leaves an outer box leaves its inner ones
+        for p in placed.values():
+            if inside(p.node, box.group.id):
+                continue
+            overlaps_y = p.y < box.y + box.height and p.y + p.height > box.y
+            overlaps_x = p.x < box.x + box.width and p.x + p.width > box.x
+            if overlaps_y and overlaps_x:
+                p.x = box.x + box.width + _GROUP_PAD
+    rows: dict[float, list[Placed]] = {}
+    for p in placed.values():
+        rows.setdefault(p.y, []).append(p)
+    for row in rows.values():
+        row.sort(key=lambda p: p.x)
+        for previous, current in pairwise(row):
+            edge = previous.x + previous.width + _NODE_GAP
+            if current.x < edge:
+                current.x = edge
 
 
 def _topological(
@@ -716,6 +753,12 @@ def to_svg(graph: Graph, *, theme: Literal["light", "dark"] = "light", title: bo
             )
         )
         out.append(_text(box.group.label, class_="group", x=box.x + 8, y=box.y + top + 13))
+    # Labels sit in the gap right below their source, stacked when several
+    # edges leave one node, so long edges never carry a label across a row.
+    leaving: dict[str, int] = {}
+    count: dict[str, int] = {}
+    for edge in graph.edges:
+        count[edge.src] = count.get(edge.src, 0) + 1
     for edge in graph.edges:
         if edge.src not in lay.placed or edge.dst not in lay.placed:
             continue
@@ -724,6 +767,9 @@ def to_svg(graph: Graph, *, theme: Literal["light", "dark"] = "light", title: bo
         x0, y0 = a.x + a.width / 2, a.y + a.height + top
         x1, y1 = b.x + b.width / 2, b.y + top
         mid = (y0 + y1) / 2
+        nth = leaving.get(edge.src, 0)
+        leaving[edge.src] = nth + 1
+        label_y = y0 + _LAYER_GAP / 2 + (nth - (count[edge.src] - 1) / 2) * 15
         path = (
             f"M {x0:.1f} {y0:.1f} C {x0:.1f} {mid:.1f}, {x1:.1f} {mid:.1f}, {x1:.1f} {y1 - 1:.1f}"
         )
@@ -733,11 +779,11 @@ def to_svg(graph: Graph, *, theme: Literal["light", "dark"] = "light", title: bo
         )
         if edge.label:
             w = len(edge.label) * _SMALL + 8
-            lx = (x0 + x1) / 2
+            lx = x0
             out.append(
                 _rect(
                     x=lx - w / 2,
-                    y=mid - 8,
+                    y=label_y - 8,
                     width=w,
                     height=15,
                     rx=2,
@@ -745,7 +791,9 @@ def to_svg(graph: Graph, *, theme: Literal["light", "dark"] = "light", title: bo
                     opacity=0.92,
                 )
             )
-            out.append(_text(edge.label, class_="edge", x=lx, y=mid + 3.5, text_anchor="middle"))
+            out.append(
+                _text(edge.label, class_="edge", x=lx, y=label_y + 3.5, text_anchor="middle")
+            )
     for p in lay.placed.values():
         node = p.node
         border = colors["accent"] if node.kind == "call" else colors["node_border"]
