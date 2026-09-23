@@ -38,7 +38,7 @@ model = load("src/model.linnet", generics={"H": 64}, weights="weights/")
 | `stdlib/` | the standard library in Linnet: `std.linalg`, `std.nn` (linear, embedding, activations, softmax, norms, rope, attention, swiglu, argmax), `std.random`, `std.quant` |
 | `spec/` | the normative specification and grammar; `spec-tests/` the executable cases |
 | `examples/` | a linear layer up to Llama, GPT-2, ViT, and CLIP, each with a guide |
-| `python/linnet` | the `linnet-lang` package: `linnet` (plans, checkpoints), `linnet.torch` (`load` interpreted or generated, training, `export_linnet`), `linnet.jax` (`load` on XLA, `load_source`, `load_nnx`, `export_linnet`, `import_stablehlo`), `linnet.onnx` (`import_onnx`) |
+| `python/linnet` | the `linnet-lang` package: `linnet` (plans, checkpoints, the typed program, diagrams), `linnet.torch` (`load` interpreted or generated, training, `export_linnet`), `linnet.jax` (`load` on XLA, `load_source`, `load_nnx`, `export_linnet`, `import_stablehlo`), `linnet.onnx` (`import_onnx`) |
 | `editors/` | VS Code extension, Vim runtime files, TextMate grammar |
 | `bench/` | the benchmark harness and published results |
 | `site/` | the documentation site |

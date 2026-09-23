@@ -52,6 +52,7 @@ function guideSidebar() {
     {
       text: "Frameworks",
       items: [
+        { text: "Python package", link: "/docs/python" },
         { text: "PyTorch", link: "/docs/torch" },
         { text: "JAX and Flax", link: "/docs/jax" },
         { text: "ONNX", link: "/docs/onnx" },
@@ -121,7 +122,7 @@ export default defineConfig({
   themeConfig: {
     logo: "/logo.svg",
     nav: [
-      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|torch|jax|onnx))|^/compatibility" },
+      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|python|torch|jax|onnx))|^/compatibility" },
       { text: "Reference", link: "/docs/tooling", activeMatch: "^/(spec|docs/(tooling|plan-format|diagnostics))" },
       { text: "Examples", link: "/examples/", activeMatch: "^/examples/" },
       { text: "Benchmarks", link: "/benchmarks" },

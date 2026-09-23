@@ -120,10 +120,13 @@ class Env:
 
 @dataclass
 class Plan:
+    """The plan document as dictionaries; `linnet.ir.Program` is the typed view."""
+
     root: dict[str, Any]
     manifest: list[dict[str, Any]]
     blocks: dict[str, dict[str, Any]]
     functions: dict[str, dict[str, Any]]
+    text: str = field(default="", repr=False)
 
     @staticmethod
     def from_json(text: str) -> Plan:
@@ -135,6 +138,7 @@ class Plan:
             manifest=document["manifest"],
             blocks=document["blocks"],
             functions={function["name"]: function for function in document["functions"]},
+            text=text,
         )
 
     def entries_of(self, block: str) -> list[dict[str, Any]]:

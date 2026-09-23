@@ -10,7 +10,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope="session")
 def _compiler() -> None:
     if "LINNET_BIN" not in os.environ:
         for candidate in ("build/debug/linnet", "build/release/linnet"):
