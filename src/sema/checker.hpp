@@ -11,6 +11,7 @@
 #include "linnet/shape/solver.hpp"
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -169,6 +170,11 @@ private:
     // Elementwise combination of two operand types; `for_comparison` yields bool.
     TypeId
     elementwise(TypeId lhs, TypeId rhs, SourceSpan span, bool needs_numeric, bool for_comparison);
+    TypeId check_bitwise(SourceSpan span,
+                         std::string_view spelling,
+                         TypeId lhs,
+                         TypeId rhs,
+                         const std::function<std::int64_t(std::int64_t, std::int64_t)>& fold);
     Substitution substitution_of(const TypeData& nominal);
     std::optional<std::int64_t> constant_index(ast::ExprId id, std::string_view what);
     std::optional<Shape> broadcast(const Shape& a, const Shape& b, SourceSpan span);

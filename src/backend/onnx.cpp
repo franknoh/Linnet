@@ -287,6 +287,39 @@ public:
             return node("Min", operands, "", shape, dtype);
         case Elementwise::Max:
             return node("Max", operands, "", shape, dtype);
+        case Elementwise::BitAnd:
+            return node(
+                dtype == ScalarKind::Bool ? "And" : "BitwiseAnd", operands, "", shape, dtype);
+        case Elementwise::BitOr:
+            return node(dtype == ScalarKind::Bool ? "Or" : "BitwiseOr", operands, "", shape, dtype);
+        case Elementwise::BitXor:
+            return node(
+                dtype == ScalarKind::Bool ? "Xor" : "BitwiseXor", operands, "", shape, dtype);
+        case Elementwise::Shl:
+        case Elementwise::Shr: {
+            // `BitShift` takes unsigned operands: signed values go through
+            // the unsigned dtype of the same width, so a right shift is
+            // logical (it differs from the arithmetic one for negatives).
+            const ScalarKind wide = dtype == ScalarKind::I8    ? ScalarKind::U8
+                                    : dtype == ScalarKind::I16 ? ScalarKind::U16
+                                    : dtype == ScalarKind::I32 ? ScalarKind::U32
+                                    : dtype == ScalarKind::I64 ? ScalarKind::U64
+                                                               : dtype;
+            std::vector<TensorInfo> shifted;
+            shifted.reserve(operands.size());
+            for (const TensorInfo& operand : operands) {
+                shifted.push_back(wide == dtype
+                                      ? operand
+                                      : TensorInfo{convert(operand, wide), operand.shape, wide});
+            }
+            const std::string out =
+                node("BitShift",
+                     shifted,
+                     kind == Elementwise::Shl ? "direction = \"LEFT\"" : "direction = \"RIGHT\"",
+                     shape,
+                     wide);
+            return wide == dtype ? out : convert({out, shape, wide}, dtype);
+        }
         case Elementwise::And:
             return node("And", operands, "", shape, dtype);
         case Elementwise::Or:

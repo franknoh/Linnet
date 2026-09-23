@@ -178,8 +178,9 @@ iota(N)                      // 0, 1, ..., N - 1
 fill<f32>([B, S], 0.0)
 ```
 
-`exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, `abs`, `min`, `max`, and
-`cast<T>` are also built in. Everything else — `softmax`, `attention`,
+`exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, `abs`, `min`, `max`,
+`shl`/`shr` (shifts), and `cast<T>` are also built in; `&`, `|`, `^` are
+bitwise on integers and elementwise logical on booleans. Everything else — `softmax`, `attention`,
 `rms_norm`, `rope` — is library code in `stdlib/`.
 
 ## What is not in the language

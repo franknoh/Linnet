@@ -44,6 +44,12 @@ std::string_view binary_op_spelling(BinaryOp op) {
         return "/";
     case BinaryOp::Remainder:
         return "%";
+    case BinaryOp::BitAnd:
+        return "&";
+    case BinaryOp::BitOr:
+        return "|";
+    case BinaryOp::BitXor:
+        return "^";
     }
     return "?";
 }

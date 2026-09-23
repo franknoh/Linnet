@@ -33,13 +33,19 @@ int precedence(BinaryOp op) {
     case BinaryOp::Greater:
     case BinaryOp::GreaterEqual:
         return 4;
+    case BinaryOp::BitOr:
+        return 5;
+    case BinaryOp::BitXor:
+        return 6;
+    case BinaryOp::BitAnd:
+        return 7;
     case BinaryOp::Add:
     case BinaryOp::Subtract:
-        return 5;
+        return 8;
     case BinaryOp::Multiply:
     case BinaryOp::Divide:
     case BinaryOp::Remainder:
-        return 6;
+        return 9;
     }
     return 0;
 }

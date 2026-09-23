@@ -219,9 +219,17 @@ public:
         case Elementwise::Max:
             return define("torch.maximum(" + a + ", " + b + ")");
         case Elementwise::And:
+        case Elementwise::BitAnd:
             return define(a + " & " + b);
         case Elementwise::Or:
+        case Elementwise::BitOr:
             return define(a + " | " + b);
+        case Elementwise::BitXor:
+            return define(a + " ^ " + b);
+        case Elementwise::Shl:
+            return define(a + " << " + b);
+        case Elementwise::Shr:
+            return define(a + " >> " + b);
         case Elementwise::Not:
             return define("~" + a);
         case Elementwise::Neg:

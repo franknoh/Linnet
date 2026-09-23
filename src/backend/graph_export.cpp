@@ -597,6 +597,16 @@ private:
             return Elementwise::Min;
         case ir::OpKind::Max:
             return Elementwise::Max;
+        case ir::OpKind::BitAnd:
+            return Elementwise::BitAnd;
+        case ir::OpKind::BitOr:
+            return Elementwise::BitOr;
+        case ir::OpKind::BitXor:
+            return Elementwise::BitXor;
+        case ir::OpKind::Shl:
+            return Elementwise::Shl;
+        case ir::OpKind::Shr:
+            return Elementwise::Shr;
         case ir::OpKind::And:
             return Elementwise::And;
         case ir::OpKind::Or:

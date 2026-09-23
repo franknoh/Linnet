@@ -47,6 +47,11 @@ enum class Elementwise : std::uint8_t {
     Max,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl, // shift left by the second operand's bits
+    Shr, // shift right: arithmetic for signed dtypes, logical for unsigned
     Not,
     Neg,
     Exp,

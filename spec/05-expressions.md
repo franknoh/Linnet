@@ -43,9 +43,12 @@ Supported operators:
 + - * / %
 == != < <= > >=
 && || !
+& | ^
 ```
 
-Arithmetic operators are defined for compatible scalar types and are elementwise-lifted to tensors of the same dtype with valid broadcasting. A contextual scalar numeric literal may be lifted across a tensor, for example `x * 0.5` when `x` has floating dtype and `0.5` is representable in that dtype. General scalar variables are not implicitly converted to a tensor of a different dtype.
+Arithmetic operators are defined for compatible scalar types and are elementwise-lifted to tensors of the same dtype with valid broadcasting. Integer arithmetic wraps on overflow (two's complement) at the dtype's width; `/` and `%` on integers truncate toward zero.
+
+`&`, `|`, and `^` are bitwise on integer operands and elementwise logical on boolean operands (scalars or tensors, broadcast like arithmetic); they bind looser than `+` and tighter than comparisons. The prelude functions `shl(x, bits)` and `shr(x, bits)` shift integers; `shr` is arithmetic for signed dtypes and logical for unsigned ones. On compile-time integers all five fold when both operands are constants. A contextual scalar numeric literal may be lifted across a tensor, for example `x * 0.5` when `x` has floating dtype and `0.5` is representable in that dtype. General scalar variables are not implicitly converted to a tensor of a different dtype.
 
 Comparison of tensors produces a boolean tensor with broadcasted shape.
 

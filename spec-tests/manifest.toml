@@ -193,3 +193,7 @@ expect = "ok"
 file = "invalid/122_static_range_runtime_bound.linnet"
 expect = "error"
 code = "E2121"
+
+[[case]]
+file = "valid/022_bitwise.linnet"
+expect = "ok"

@@ -735,6 +735,16 @@ private:
                           : a.compare == ir::CompareKind::Le ? "<="
                           : a.compare == ir::CompareKind::Gt ? ">"
                                                              : ">=");
+        case ir::OpKind::BitAnd:
+            return binary("&");
+        case ir::OpKind::BitOr:
+            return binary("|");
+        case ir::OpKind::BitXor:
+            return binary("^");
+        case ir::OpKind::Shl:
+            return call("shl");
+        case ir::OpKind::Shr:
+            return call("shr");
         case ir::OpKind::Min:
             return call("min");
         case ir::OpKind::Max:
