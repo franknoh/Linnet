@@ -24,7 +24,7 @@ build/release/linnet --version
 python -m venv --system-site-packages /workspace/venv
 source /workspace/venv/bin/activate
 python -m pip install --quiet --upgrade pip
-python -m pip install --quiet -e python/linnet_torch -e python/linnet_jax
+python -m pip install --quiet -e "python/linnet[torch,jax]"
 python -m pip install --quiet "jax[cuda12]" safetensors
 python - <<'EOF'
 import jax, torch

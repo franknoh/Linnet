@@ -30,7 +30,7 @@ linnet inspect --parameters examples/03-block-and-weights/model.linnet
 ```
 
 ```python
-from linnet_torch import load
+from linnet.torch import load
 model = load("examples/03-block-and-weights/model.linnet",
              generics={"H": 8, "Inner": 16, "Layers": 2, "Vocab": 11, "T": "f32"},
              weights="weights/")          # SafeTensors named by the paths above

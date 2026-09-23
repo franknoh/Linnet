@@ -58,13 +58,13 @@ Checking never executes anything.
 ## Run it in PyTorch
 
 ```bash
-cd python/linnet_torch && uv sync
+cd python/linnet && uv sync --extra torch
 export LINNET_BIN=/path/to/Linnet/build/release/linnet
 ```
 
 ```python
 import torch
-from linnet_torch import load
+from linnet.torch import load
 
 model = load("hello-model/src/lib.linnet", generics={"In": 4, "Hidden": 8, "Out": 2})
 print(model(torch.randn(3, 4)).shape)   # torch.Size([3, 2])

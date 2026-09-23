@@ -7,8 +7,8 @@ of it is exercised by the test suites under `python/` and `tests/`.
 
 | Target | Call | Notes |
 | --- | --- | --- |
-| PyTorch | `linnet_torch.load` | interpreted Core IR, or generated source with `compile=True`; `numerics="equivalent"` selects native kernels, `"fast"` the input-dtype variants; `trainable=True` for autograd |
-| JAX | `linnet_jax.load`, `load_source`, `load_nnx` | `load` compiles StableHLO with XLA (no VJP); `load_source` runs generated `jnp` code and differentiates; `load_nnx` wraps either as a Flax NNX module |
+| PyTorch | `linnet.torch.load` | interpreted Core IR, or generated source with `compile=True`; `numerics="equivalent"` selects native kernels, `"fast"` the input-dtype variants; `trainable=True` for autograd |
+| JAX | `linnet.jax.load`, `load_source`, `load_nnx` | `load` compiles StableHLO with XLA (no VJP); `load_source` runs generated `jnp` code and differentiates; `load_nnx` wraps either as a Flax NNX module |
 | StableHLO | `linnet stablehlo --bind ...` | static shapes; parameters by `linnet.path`, state by `linnet.state` and `linnet.states` |
 | ONNX | `linnet onnx --bind ...` | opset 20 text format; parameters as `param<N>` with metadata, state as `state<N>` and `next_state<N>` |
 
@@ -16,10 +16,10 @@ of it is exercised by the test suites under `python/` and `tests/`.
 
 | Source | Call | Recovers |
 | --- | --- | --- |
-| PyTorch modules | `linnet_torch.export_linnet` | module tree as blocks and sub arrays; `Linear`, `Embedding`, `LayerNorm`, `RMSNorm`, softmax, GELU, SiLU as library calls; `matmul` and `einsum` as index notation |
-| JAX functions | `linnet_jax.export_linnet` | the parameter pytree as blocks; `dot_general`, `reduce`, row `gather`; softmax, sigmoid, silu, gelu, and RMS norm decompositions |
-| StableHLO text | `linnet_jax.import_stablehlo` | the same translation for modules produced elsewhere |
-| ONNX models | `linnet_onnx.import_onnx` | initializer names as the hierarchy, `dim_param`s as generics, shape arithmetic folded, the common operators, PyTorch's RMS norm, SiLU, and softmax decompositions |
+| PyTorch modules | `linnet.torch.export_linnet` | module tree as blocks and sub arrays; `Linear`, `Embedding`, `LayerNorm`, `RMSNorm`, softmax, GELU, SiLU as library calls; `matmul` and `einsum` as index notation |
+| JAX functions | `linnet.jax.export_linnet` | the parameter pytree as blocks; `dot_general`, `reduce`, row `gather`; softmax, sigmoid, silu, gelu, and RMS norm decompositions |
+| StableHLO text | `linnet.jax.import_stablehlo` | the same translation for modules produced elsewhere |
+| ONNX models | `linnet.onnx.import_onnx` | initializer names as the hierarchy, `dim_param`s as generics, shape arithmetic folded, the common operators, PyTorch's RMS norm, SiLU, and softmax decompositions |
 
 Every importer refuses rather than guesses. Unmapped operations stop the
 import by name; anything dropped is listed in `notes`.

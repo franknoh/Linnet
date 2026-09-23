@@ -2,7 +2,7 @@
 
 Every example checks with `linnet lint --std stdlib examples/<name>`, formats
 cleanly, materializes in PyTorch and JAX, and exports to StableHLO; the
-tests under `python/linnet_torch/tests` compare the model examples against
+tests under `python/linnet/tests/torch` compare the model examples against
 hand-written PyTorch references.
 
 | Example | What it shows |

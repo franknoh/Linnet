@@ -26,7 +26,7 @@ linnet stablehlo --bind H=64 --bind B=1 --bind S=128 src/model.linnet
 ```
 
 ```python
-from linnet_torch import load              # also linnet_jax.load / load_source / load_nnx
+from linnet.torch import load              # also linnet.jax.load / load_source / load_nnx
 model = load("src/model.linnet", generics={"H": 64}, weights="weights/")
 ```
 
@@ -38,9 +38,7 @@ model = load("src/model.linnet", generics={"H": 64}, weights="weights/")
 | `stdlib/` | the standard library in Linnet: `std.linalg`, `std.nn` (linear, embedding, activations, softmax, norms, rope, attention, swiglu, argmax), `std.random`, `std.quant` |
 | `spec/` | the normative specification and grammar; `spec-tests/` the executable cases |
 | `examples/` | a linear layer up to Llama, GPT-2, ViT, and CLIP, each with a guide |
-| `python/linnet_torch` | `load` (interpreted or generated source, training), `export_linnet` from `torch.export` |
-| `python/linnet_jax` | `load` (XLA), `load_source` (generated `jnp`, `jax.grad`), `load_nnx` (Flax), `export_linnet`, `import_stablehlo` |
-| `python/linnet_onnx` | `import_onnx` |
+| `python/linnet` | the `linnet-lang` package: `linnet` (plans, checkpoints), `linnet.torch` (`load` interpreted or generated, training, `export_linnet`), `linnet.jax` (`load` on XLA, `load_source`, `load_nnx`, `export_linnet`, `import_stablehlo`), `linnet.onnx` (`import_onnx`) |
 | `editors/` | VS Code extension, Vim runtime files, TextMate grammar |
 | `bench/` | the benchmark harness and published results |
 | `site/` | the documentation site |

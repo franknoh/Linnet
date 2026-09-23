@@ -4,15 +4,15 @@ For each model configuration the harness times a PyTorch reference (eager and
 `torch.compile`d), the Linnet source materialized as a `torch.nn.Module` with
 native kernels (`numerics="equivalent"`, and the `"fast"` tier that skips f32
 accumulation), and the same source compiled through StableHLO and run by XLA
-via `linnet_jax`. Outputs are compared against the reference so every row
+via `linnet.jax`. Outputs are compared against the reference so every row
 carries a `max |Δ|`. The result is a JSON document the
 documentation site renders (`site/benchmarks.md`).
 
     LINNET_BIN=build/release/linnet python bench/run.py --device cuda \\
         --configs small,medium --out bench/results/latest.json
 
-Run it from an environment with `linnet_torch` installed and, for the XLA
-rows, `linnet_jax` with a `jax` that sees the same device.
+Run it from an environment with `linnet-lang[torch]` installed and, for the
+XLA rows, the `jax` extra with a `jax` that sees the same device.
 """
 
 from __future__ import annotations
@@ -190,7 +190,7 @@ def bench_config(
     timings: list[dict[str, Any]],
     with_xla: bool,
 ) -> list[Run]:
-    from linnet_torch import load
+    from linnet.torch import load
 
     dtype_name = {torch.float32: "f32", torch.bfloat16: "bf16", torch.float16: "f16"}[dtype]
     B, S = 1, cfg["S"]  # noqa: N806
@@ -203,7 +203,7 @@ def bench_config(
 
     start = time.perf_counter()
     skeleton = load(LLAMA, generics=generics, std_root=STDLIB, device=device)
-    timings.append({"name": f"linnet_torch.load ({name})", "seconds": time.perf_counter() - start})
+    timings.append({"name": f"linnet.torch.load ({name})", "seconds": time.perf_counter() - start})
     weights = random_weights(skeleton, device, dtype)
     linnet_model = load(
         LLAMA, generics=generics, std_root=STDLIB, device=device, numerics="equivalent"
@@ -456,7 +456,7 @@ def xla_variant(
         import jax
         import jax.numpy as jnp
 
-        from linnet_jax import load as load_jax
+        from linnet.jax import load as load_jax
 
         function = load_jax(
             LLAMA,
@@ -512,7 +512,7 @@ def xla_decode_variant(
         import jax
         import jax.numpy as jnp
 
-        from linnet_jax import load as load_jax
+        from linnet.jax import load as load_jax
 
         function = load_jax(
             LLAMA,
@@ -587,7 +587,7 @@ def main() -> None:
     )
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=20)
-    parser.add_argument("--no-xla", action="store_true", help="skip the linnet_jax rows")
+    parser.add_argument("--no-xla", action="store_true", help="skip the linnet.jax rows")
     parser.add_argument("--out", type=Path, default=REPO / "bench/results/latest.json")
     args = parser.parse_args()
 

@@ -32,7 +32,7 @@ at position 256, in bf16, as:
 | Linnet, interpreted | `load(..., numerics="equivalent")` |
 | Linnet, generated source | `load(..., compile=True)` |
 | Linnet, generated and compiled | `load(..., compile="inductor")` |
-| Linnet, XLA | `linnet_jax.load` under `jax.jit` |
+| Linnet, XLA | `linnet.jax.load` under `jax.jit` |
 | `numerics=fast` rows | the same, with softmax, normalization, and attention in bf16 rather than f32, as the reference computes them |
 
 Latency is the median of timed calls after warm-up with the device
@@ -51,8 +51,7 @@ shapes and fused elementwise chains.
 ## Reproducing
 
 ```bash
-cd python/linnet_torch && uv sync --all-extras
-cd ../linnet_jax && uv sync --group dev
+cd python/linnet && uv sync --all-extras
 cd ../..
 LINNET_BIN=build/release/linnet python bench/run.py --device cuda --out bench/results/latest.json
 ```

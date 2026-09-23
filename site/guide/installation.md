@@ -97,9 +97,10 @@ C++.
 ```bash
 export LINNET_BIN=/path/to/linnet      # or put `linnet` on PATH
 
-cd python/linnet_torch && uv sync      # load, bind_weights, export_linnet
-cd python/linnet_jax   && uv sync      # load, load_source, load_nnx, export_linnet, import_stablehlo
-cd python/linnet_onnx  && uv sync      # import_onnx
+cd python/linnet && uv sync --extra torch    # linnet.torch: load, bind_weights, export_linnet
+cd python/linnet && uv sync --extra jax      # linnet.jax: load, load_source, export_linnet, import_stablehlo
+cd python/linnet && uv sync --extra flax     # linnet.jax.load_nnx
+cd python/linnet && uv sync --extra onnx     # linnet.onnx: import_onnx
 ```
 
 Next: the [Quickstart](/docs/getting-started), or [Coming from

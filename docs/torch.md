@@ -1,18 +1,18 @@
 # PyTorch
 
-`python/linnet_torch` turns a Linnet root block into a `torch.nn.Module` and
+`linnet.torch` turns a Linnet root block into a `torch.nn.Module` and
 a `torch.nn.Module` into Linnet source. The adapter knows nothing about any
 model; everything comes from the compiler.
 
 ```bash
-cd python/linnet_torch && uv sync
+cd python/linnet && uv sync --extra torch    # or: pip install "linnet-lang[torch]"
 export LINNET_BIN=/path/to/build/release/linnet     # or put `linnet` on PATH
 ```
 
 ## Loading a model
 
 ```python
-from linnet_torch import load
+from linnet.torch import load
 
 model = load(
     "examples/05-llama/src/lib.linnet",
@@ -104,7 +104,7 @@ between calls: they carry values, not gradients.
 
 ```python
 from torch.export import Dim
-from linnet_torch import export_linnet
+from linnet.torch import export_linnet
 
 export_linnet(
     model,
