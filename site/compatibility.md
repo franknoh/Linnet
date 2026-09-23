@@ -12,6 +12,8 @@ of it is exercised by the test suites under `python/` and `tests/`.
 | StableHLO | `linnet stablehlo --bind ...` | static shapes; parameters by `linnet.path`, state by `linnet.state` and `linnet.states` |
 | ONNX | `linnet onnx --bind ...` | opset 20 text format; parameters as `param<N>` with metadata, state as `state<N>` and `next_state<N>` |
 | ONNX, packaged | `linnet.onnx.export_model` | the same graph with the checkpoint embedded as initializers; runs in any ONNX runtime by itself |
+| vLLM, SGLang, TGI, transformers | `linnet.hf.export` | a Transformers checkpoint directory (`config.json`, `model.safetensors`, tokenizer) for models of the `llama` and `gpt2` families, recognized from the program's structure |
+| llama.cpp, Ollama | `linnet.gguf.export` | the Transformers export converted by llama.cpp's `convert_hf_to_gguf.py`, plus an Ollama Modelfile; same families |
 | Triton Inference Server | `linnet.triton.export` | a model repository entry: `config.pbtxt` from the entry's signature plus the packaged ONNX model, or a Python backend over `linnet.torch` for entries with state |
 | ComfyUI | [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) | node pack: load a model or a Nest entry, run entries on tensors, convert images |
 

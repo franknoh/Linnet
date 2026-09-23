@@ -43,6 +43,54 @@ repository = triton.export("models/tinyllama-1.1b-chat", "model_repository",
 repository.inputs      # (Tensor(name='tokens', dtype='i32', dims=(1, 128)),)
 ```
 
+## vLLM, SGLang, TGI
+
+```bash
+python -m linnet.hf export tinyllama-1.1b-chat -o serve/tinyllama
+vllm serve serve/tinyllama
+```
+
+The LLM serving stacks implement a fixed set of architectures and load
+them from Transformers checkpoint directories. `linnet.hf.export` writes
+that directory for a Linnet model whose structure is one of them: it
+recognizes the family from the parameter paths and generics of the typed
+program (`llama`: grouped-query attention, RMS norms, SwiGLU; `gpt2`), derives
+`config.json` from the generics and the module constants (`THETA` becomes
+`rope_theta`), streams the checkpoint into `model.safetensors` under the
+Transformers tensor names, and copies the tokenizer files from the card's
+Hub repository. vLLM, SGLang, TGI, and `transformers` load the result as
+they load any model of that family.
+
+The same command takes a `.linnet` file with `--weights`, `--bind`, and
+`--tokenizer <repo>`, so a model trained or modified in Linnet ships the
+same way as long as it keeps a known structure. A structure outside the
+recognized families is refused with the paths that did not fit; a general
+out-of-tree vLLM model class for arbitrary Linnet programs is not part of
+this release.
+
+`transformers` agrees with the Linnet interpreter on the exported model to
+1e-4 (the tests export tiny GPT-2 and Llama configurations and compare
+logits).
+
+## llama.cpp and Ollama
+
+```bash
+python -m linnet.gguf export tinyllama-1.1b-chat -o serve/tinyllama \
+    --converter ~/llama.cpp/convert_hf_to_gguf.py --outtype q8_0
+ollama create tinyllama -f serve/tinyllama/Modelfile
+```
+
+llama.cpp runs the same fixed set of architectures from GGUF files, and
+its `convert_hf_to_gguf.py` is the one place that knows their tensor layout,
+tokenizer metadata, and quantization. `linnet.gguf.export` writes the
+Transformers checkpoint as above, runs that converter on it (`--converter`,
+or `LLAMA_CPP` pointing at a llama.cpp checkout), and writes an Ollama
+`Modelfile` next to the GGUF file, with the chat template translated when
+the tokenizer's template is one Ollama has an equivalent for (ChatML,
+Zephyr, Llama 2). The family restriction is the same as for vLLM: `llama`
+and `gpt2`. A model outside them cannot run in llama.cpp anyway, and Linnet
+does not pretend otherwise.
+
 ## ComfyUI
 
 [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) is a custom

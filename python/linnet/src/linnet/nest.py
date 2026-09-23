@@ -240,7 +240,7 @@ def check(
     return problems
 
 
-def _expand_paths(entry: ir.ManifestEntry, bindings: ir.Bindings) -> list[str]:
+def expand_paths(entry: ir.ManifestEntry, bindings: ir.Bindings) -> list[str]:
     """`layers[*].w` with repeat (2,) becomes `layers.0.w`, `layers.1.w`."""
     paths = [entry.path]
     for repeat in entry.repeat:
@@ -283,7 +283,7 @@ def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> li
         except LinnetError as error:
             problems.append(f"{entry.path}: {error}")
             continue
-        for path in _expand_paths(entry, bindings):
+        for path in expand_paths(entry, bindings):
             source = mapping.get(path, path)
             if source not in tensors:
                 if not entry.optional:
