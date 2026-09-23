@@ -140,6 +140,32 @@ public:
         return std::nullopt;
     }
 
+    // Runtime loops. The evaluator carries the loop's values (the `while`
+    // operands, then every state member) through three calls: `begin_while`
+    // opens the loop and names the values the condition sees; after the
+    // condition is emitted, `while_condition` names the values the body
+    // sees; after the body, `end_while` closes the loop and names the final
+    // values. A target whose loop form checks the condition after the body
+    // (ONNX `Loop`) asks for the predicate before the loop and again after
+    // the body through the two `needs_` hooks.
+    virtual bool supports_while() const { return false; }
+    virtual bool while_needs_initial_condition() const { return false; }
+    virtual void while_initial_condition(const TensorInfo& predicate) { (void)predicate; }
+    virtual std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) {
+        (void)initial;
+        return {};
+    }
+    virtual std::vector<std::string> while_condition(const TensorInfo& predicate) {
+        (void)predicate;
+        return {};
+    }
+    virtual bool while_needs_trailing_condition() const { return false; }
+    virtual void while_trailing_condition(const TensorInfo& predicate) { (void)predicate; }
+    virtual std::vector<std::string> end_while(const std::vector<TensorInfo>& next) {
+        (void)next;
+        return {};
+    }
+
     // The whole document, once the entry's results are known: the entry's
     // own results, then the final values of the state members it assigned,
     // by path.

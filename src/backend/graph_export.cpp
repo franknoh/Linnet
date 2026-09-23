@@ -225,6 +225,116 @@ private:
         return subst;
     }
 
+    // A `while` loop: the target's loop form over the carried values — the
+    // loop's own, then every state member, so writes inside the body flow
+    // out of it — with the condition and body regions emitted into it.
+    void run_while(const ir::Operation& op) {
+        if (!target_.supports_while()) {
+            fail("runtime `while` loops are not exported to this format yet; they run in the "
+                 "PyTorch interpreter");
+        }
+        if (!grid_.empty()) {
+            fail("a `while` loop inside index notation is not supported");
+        }
+        for (const auto& [path, declared] : state_types_) {
+            if (!states_.contains(path)) {
+                Val value = declared;
+                value.name = target_.state(path, value.shape, value.dtype);
+                states_.emplace(path, value);
+            }
+        }
+        std::vector<Val> carried;
+        for (const ir::ValueId id : op.operands) {
+            const Val& carried_value = value(id);
+            if (carried_value.kind != Val::Kind::Tensor || carried_value.grid_rank != 0) {
+                fail("a `while` loop carries whole tensors only");
+            }
+            carried.push_back(carried_value);
+        }
+        std::vector<std::string> state_paths;
+        for (const auto& [path, value] : states_) {
+            state_paths.push_back(path);
+            carried.push_back(value);
+        }
+        const std::size_t own = op.operands.size();
+        std::vector<TensorInfo> initial;
+        initial.reserve(carried.size());
+        for (const Val& value : carried) {
+            initial.push_back(info(value));
+        }
+        // Renames every carried value (and the states among them) to what a
+        // region of the loop sees.
+        const auto renamed = [&](const std::vector<std::string>& names) {
+            if (names.size() != carried.size()) {
+                fail("internal: the target named " + std::to_string(names.size()) +
+                     " loop values for " + std::to_string(carried.size()));
+            }
+            std::vector<Val> values = carried;
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                values[i].name = names[i];
+                if (i >= own) {
+                    states_[state_paths[i - own]] = values[i];
+                }
+            }
+            return values;
+        };
+        const auto own_values = [own](const std::vector<Val>& values) {
+            return std::vector<Val>(values.begin(),
+                                    values.begin() + static_cast<std::ptrdiff_t>(own));
+        };
+        const auto predicate = [&](const std::vector<Val>& arguments) {
+            const std::vector<Val> results = run_region(op.regions.front(), arguments);
+            if (results.size() != 1 || results.front().kind != Val::Kind::Tensor) {
+                fail("a `while` condition must be one scalar");
+            }
+            return info(results.front());
+        };
+        if (target_.while_needs_initial_condition()) {
+            target_.while_initial_condition(predicate(own_values(carried)));
+        }
+        const std::vector<Val> condition_values = renamed(target_.begin_while(initial));
+        const std::vector<Val> body_values =
+            renamed(target_.while_condition(predicate(own_values(condition_values))));
+        std::vector<Val> next = run_region(op.regions.back(), own_values(body_values));
+        if (next.size() != own) {
+            fail("internal: a `while` body yielded " + std::to_string(next.size()) + " values");
+        }
+        for (std::size_t j = 0; j < state_paths.size(); ++j) {
+            const Val& current = states_.at(state_paths[j]);
+            // A state the body assigned left with a value other than the one
+            // it entered with; it is a result of the entry from now on.
+            if (current.name != body_values[own + j].name &&
+                std::find(written_states_.begin(), written_states_.end(), state_paths[j]) ==
+                    written_states_.end()) {
+                written_states_.push_back(state_paths[j]);
+            }
+            next.push_back(current);
+        }
+        if (target_.while_needs_trailing_condition()) {
+            target_.while_trailing_condition(predicate(own_values(next)));
+        }
+        std::vector<TensorInfo> outputs;
+        outputs.reserve(next.size());
+        for (const Val& value : next) {
+            outputs.push_back(info(value));
+        }
+        const std::vector<std::string> finals = target_.end_while(outputs);
+        if (finals.size() != next.size()) {
+            fail("internal: the target returned " + std::to_string(finals.size()) +
+                 " loop results");
+        }
+        for (std::size_t i = 0; i < own; ++i) {
+            Val value = next[i];
+            value.name = finals[i];
+            frame().values[op.results[i]] = value;
+        }
+        for (std::size_t j = 0; j < state_paths.size(); ++j) {
+            Val value = next[own + j];
+            value.name = finals[own + j];
+            states_[state_paths[j]] = value;
+        }
+    }
+
     // A bound of a `static for` range: a compile-time integer, possibly
     // arithmetic on dimensions and literals.
     std::int64_t range_bound(ir::ValueId value) {
@@ -928,8 +1038,8 @@ private:
             return;
         }
         case ir::OpKind::While:
-            fail("runtime `while` loops are not exported to graphs yet; they run in the PyTorch "
-                 "interpreter");
+            run_while(op);
+            return;
         case ir::OpKind::StaticRange: {
             const std::int64_t start = range_bound(op.operands[0]);
             const std::int64_t stop = range_bound(op.operands[1]);

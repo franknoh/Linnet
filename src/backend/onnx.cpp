@@ -497,6 +497,81 @@ public:
         return reduced;
     }
 
+    // ONNX `Loop`: the condition is checked before each iteration from a
+    // value the previous one produced, so the predicate is evaluated once
+    // before the loop and again at the end of each body.
+    bool supports_while() const override { return true; }
+    bool while_needs_initial_condition() const override { return true; }
+    bool while_needs_trailing_condition() const override { return true; }
+
+    void while_initial_condition(const TensorInfo& predicate) override {
+        pending_condition_ = predicate.name;
+    }
+
+    std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) override {
+        Loop loop;
+        loop.initial = initial;
+        loop.initial_condition = pending_condition_;
+        loop.outer_body = std::move(body_);
+        loop.outer_indent = indent_;
+        loop.graph = "loop_body" + std::to_string(loops_.size() + next_);
+        body_.clear();
+        indent_ += "  ";
+        std::vector<std::string> names;
+        names.reserve(initial.size());
+        for (std::size_t i = 0; i < initial.size(); ++i) {
+            names.push_back(loop.graph + "_in" + std::to_string(i));
+        }
+        loop.inputs = names;
+        loops_.push_back(std::move(loop));
+        return names;
+    }
+
+    std::vector<std::string> while_condition(const TensorInfo& predicate) override {
+        (void)predicate; // the body graph checks the condition it computes itself
+        return loops_.back().inputs;
+    }
+
+    void while_trailing_condition(const TensorInfo& predicate) override {
+        loops_.back().trailing_condition = predicate.name;
+    }
+
+    std::vector<std::string> end_while(const std::vector<TensorInfo>& next) override {
+        Loop loop = std::move(loops_.back());
+        loops_.pop_back();
+        std::string body_text = std::move(body_);
+        // Outputs are named copies of the final values.
+        std::string outputs;
+        outputs += "bool " + loop.graph + "_cond_out";
+        body_text +=
+            indent_ + loop.graph + "_cond_out = Identity(" + loop.trailing_condition + ")\n";
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            const std::string name = loop.graph + "_out" + std::to_string(i);
+            body_text += indent_ + name + " = Identity(" + next[i].name + ")\n";
+            outputs += ", " + tensor_type(next[i].shape, next[i].dtype) + " " + name;
+        }
+        indent_ = loop.outer_indent;
+        body_ = std::move(loop.outer_body);
+        std::string inputs = "int64 " + loop.graph + "_iter, bool " + loop.graph + "_cond_in";
+        for (std::size_t i = 0; i < loop.initial.size(); ++i) {
+            inputs += ", " + tensor_type(loop.initial[i].shape, loop.initial[i].dtype) + " " +
+                      loop.inputs[i];
+        }
+        std::vector<std::string> finals;
+        finals.reserve(next.size());
+        std::string results;
+        std::string inits;
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            finals.push_back(fresh());
+            results += (i == 0 ? "" : ", ") + finals.back();
+            inits += ", " + loop.initial[i].name;
+        }
+        body_ += indent_ + results + " = Loop <body = " + loop.graph + " (" + inputs + ") => (" +
+                 outputs + ") {\n" + body_text + indent_ + "}> (\"\", " + loop.initial_condition +
+                 inits + ")\n";
+        return finals;
+    }
+
     std::string finish(const std::vector<TensorInfo>& results,
                        const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
@@ -638,6 +713,18 @@ private:
         return name;
     }
 
+    struct Loop {
+        std::vector<TensorInfo> initial;
+        std::vector<std::string> inputs;
+        std::string initial_condition;
+        std::string trailing_condition;
+        std::string outer_body;
+        std::string outer_indent;
+        std::string graph;
+    };
+
+    std::vector<Loop> loops_;
+    std::string pending_condition_;
     std::vector<std::string> inputs_;
     std::vector<std::string> metadata_;
     std::map<std::string, std::string> literals_; // constant name -> literal text

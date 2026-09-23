@@ -222,3 +222,19 @@ def test_llama_sample_draws_the_same_tokens_under_xla(tmp_path: Path) -> None:
         arguments.append(np.zeros((2, 2, 8, 2), np.float32))
     actual = _run_xla(text, arguments)
     np.testing.assert_array_equal(np.asarray(actual), expected.numpy())
+
+
+def test_while_loop_runs_under_xla(tmp_path: Path) -> None:
+    """A `while` exports as `stablehlo.while` and iterates as the interpreter
+    does: here until an element reaches 1000 or the limit is hit."""
+    source = REPO / "spec-tests/valid/023_while.linnet"
+    reference = load(source, generics={"N": 3}, std_root=STDLIB)
+    scale = torch.tensor([2.0, 3.0, 1.5])
+    reference.load_state_dict({"root.scale": scale})
+    x = torch.ones(3)
+    for limit in (3, 100):
+        expected = reference(x, torch.tensor(limit, dtype=torch.int32))
+        text = _export(source, {"N": 3})
+        assert '"stablehlo.while"' in text
+        actual = _run_xla(text, [x.numpy(), np.int32(limit), scale.numpy()])
+        torch.testing.assert_close(torch.tensor(np.array(actual)), expected)

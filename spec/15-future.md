@@ -12,7 +12,7 @@ Randomness is explicit data: `std.random` implements a counter-based PRNG (Three
 
 ## 15.3 Runtime loops and scan
 
-`while` (§8.4) covers data-dependent loops with invariant shapes; a first-class `scan` that collects per-iteration outputs, and graph exports of `while` to StableHLO `while` and ONNX `Loop`, remain future work.
+`while` (§8.4) covers data-dependent loops with invariant shapes on every backend; a first-class `scan` that collects per-iteration outputs remains future work.
 
 ## 15.4 Custom gradients and training
 
