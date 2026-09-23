@@ -80,3 +80,36 @@ def test_apply_with_new_parameters(tmp_path: Path) -> None:
     np.testing.assert_allclose(
         np.asarray(function.apply(scaled, tokens)), np.asarray(forward(halved, tokens)), atol=1e-5
     )
+
+
+def test_nnx_module_trains_over_generated_source(tmp_path: Path) -> None:
+    """An NNX module built on `load_source` differentiates with `nnx.grad`."""
+    from linnet_jax import load_source, to_nnx
+
+    source = tmp_path / "mlp.linnet"
+    source.write_text(
+        "module regression\n\nuse std.nn.linear::{Linear}\n\n"
+        "pub block Mlp<In: Dim, Out: Dim> {\n    sub layer: Linear<In, Out, f32>\n\n"
+        "    pub entry forward<B: Dim>(x: Tensor[B, In; f32]) -> Tensor[B, Out; f32] {\n"
+        "        return layer.forward(x)\n    }\n}\n"
+    )
+    weights = {
+        "layer.weight": jnp.zeros((1, 3), jnp.float32),
+        "layer.bias": jnp.zeros((1,), jnp.float32),
+    }
+    model = to_nnx(
+        load_source(source, generics={"In": 3, "Out": 1}, weights=weights, std_root=STDLIB)
+    )
+    x = jax.random.normal(jax.random.PRNGKey(1), (128, 3), jnp.float32)
+    y = x @ jnp.array([[1.0, -2.0, 0.5]], jnp.float32).T
+
+    def loss(module: object) -> jax.Array:
+        return jnp.mean((module(x) - y) ** 2)  # type: ignore[operator]
+
+    first = float(loss(model))
+    for _ in range(100):
+        grads = nnx.grad(loss)(model)
+        flat = {"/".join(map(str, k)): v for k, v in nnx.to_flat_state(grads)}
+        model.layer.weight[...] = model.layer.weight[...] - 0.1 * flat["layer/weight"]
+        model.layer.bias[...] = model.layer.bias[...] - 0.1 * flat["layer/bias"]
+    assert float(loss(model)) < first * 0.05

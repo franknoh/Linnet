@@ -144,8 +144,10 @@ in the module's state. Calling the module gathers the arrays it holds and
 runs the compiled entry on them (`LinnetFunction.apply(parameters,
 *inputs)` does the same from a plain mapping), so state that went through
 `nnx.split`/`nnx.merge`, a checkpoint, or sharding is what the call uses.
-Absent optional parameters are `None`. The entry has no VJP, so the module
-is for inference.
+Absent optional parameters are `None`. Built on `load` the module is for
+inference (the compiled entry has no VJP); built on `load_source` —
+`to_nnx(load_source(...))` — `nnx.grad` differentiates it and the usual NNX
+training loop applies.
 
 ## Round trip
 
