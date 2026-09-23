@@ -37,7 +37,7 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 | Feature | PyTorch | JAX / StableHLO | ONNX |
 | --- | --- | --- | --- |
 | Symbolic shapes | bound at load, entry generics from inputs | bound per compile (`--bind`, or from inputs at call) | bound per export |
-| `static for` over sub arrays | ✓ | ✓ (unrolled) | ✓ (unrolled) |
+| `static for` over sub arrays and integer ranges | ✓ | ✓ (unrolled) | ✓ (unrolled) |
 | Index notation, reductions | ✓ | ✓ | ✓ |
 | Optional parameters (`= none`) | ✓ | ✓ (`--optionals`) | ✓ |
 | Enum-typed constants and `match` | ✓ | ✓ (folded) | ✓ (folded) |
@@ -47,7 +47,9 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 
 ## Not supported (yet)
 
-- Runtime loops, `scan`, and data-dependent shapes.
+- Runtime loops (`while`, `scan`) and data-dependent shapes; `static for`
+  over a compile-time range covers fixed-length generation (the Llama
+  example's `generate<Steps>`).
 - Random numbers (dropout, sampling): no RNG primitive; sample on the host.
 - Training: no autodiff. JAX materialization has no VJP; the PyTorch module
   holds parameters with `requires_grad=False`.
