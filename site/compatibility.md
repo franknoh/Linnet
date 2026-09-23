@@ -24,6 +24,14 @@ of it is exercised by the test suites under `python/` and `tests/`.
 Every importer refuses rather than guesses. Unmapped operations stop the
 import by name; anything dropped is listed in `notes`.
 
+## Real checkpoints
+
+The Llama example loaded with TinyLlama-1.1B's weights and the GPT-2
+example loaded with GPT-2's weights give the logits `transformers` gives
+(within 2e-2 in f32, identical argmax), including decoding through the KV
+caches. `python/linnet_torch/tests/test_hf_checkpoints.py` runs the
+comparison with `LINNET_HF_TESTS=1`.
+
 ## Language features by backend
 
 | Feature | PyTorch | JAX and StableHLO | ONNX |
