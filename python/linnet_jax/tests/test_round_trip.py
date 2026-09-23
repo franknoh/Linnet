@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from linnet_jax import ExportError, export_linnet, find_compiler, load
+from linnet_jax import ExportError, export_linnet, find_compiler, import_stablehlo, load
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
@@ -57,7 +57,10 @@ def layer(params: dict[str, Any], x: Any) -> Any:
 
 def forward(params: dict[str, Any], tokens: Any) -> Any:
     x = jnp.take(params["embedding"], tokens, axis=0)
-    for block in params["layers"]:
+    layers = params["layers"]
+    if isinstance(layers, dict):  # a stack keyed "0", "1", ...
+        layers = [layers[k] for k in sorted(layers, key=int)]
+    for block in layers:
         x = layer(block, x)
     return jax.nn.silu(x @ params["head"])
 
@@ -117,6 +120,32 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
         forward, params, (tokens,), output=tmp_path / "again/model.linnet", std_root=STDLIB
     )
     assert again.source.read_text() == source
+
+
+def test_import_stablehlo_text(tmp_path: Path) -> None:
+    """A StableHLO module from `jax.export`, with only the parameter tree's
+    shapes, imports to the same source `export_linnet` writes; a layer stack
+    keyed 0..n-1 is a sub array like a list."""
+    params = _init(jax.random.PRNGKey(0))
+    params["layers"] = {str(i): layer for i, layer in enumerate(params["layers"])}
+    tokens = jnp.array([[1, 4, 7, 2, 9]], dtype=jnp.int32)
+    text = jax.export.export(jax.jit(forward))(params, tokens).mlir_module()
+
+    def abstract(array: jax.Array) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct(array.shape, array.dtype)
+
+    shapes = jax.tree_util.tree_map(abstract, params)
+    result = import_stablehlo(text, shapes, output=tmp_path / "model.linnet", std_root=STDLIB)
+    source = result.source.read_text()
+    assert "sub layers: [Layer; 2]" in source
+    exported = export_linnet(
+        forward, params, (tokens,), output=tmp_path / "exported/model.linnet", std_root=STDLIB
+    )
+    assert exported.source.read_text() == source
+    with pytest.raises(ExportError, match="concrete arrays"):
+        import_stablehlo(
+            text, shapes, output=tmp_path / "again.linnet", weights=tmp_path / "w", std_root=STDLIB
+        )
 
 
 def test_activation_recovery(tmp_path: Path) -> None:

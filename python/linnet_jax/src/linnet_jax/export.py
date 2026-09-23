@@ -279,13 +279,42 @@ def export_linnet(
     """
     from jax import export
 
+    exported = export.export(jax.jit(function))(params, *example_inputs)
+    return import_stablehlo(
+        exported.mlir_module(),
+        params,
+        output=output,
+        module_name=module_name,
+        root_name=root_name,
+        weights=weights,
+        std_root=std_root,
+    )
+
+
+def import_stablehlo(
+    text: str,
+    params: Any,
+    *,
+    output: str | Path,
+    module_name: str | None = None,
+    root_name: str = "Model",
+    weights: str | Path | None = None,
+    std_root: str | Path | None = None,
+) -> ExportResult:
+    """Writes a StableHLO module as Linnet source at `output`.
+
+    `text` is the module as `jax.export` prints it: `@main` takes the
+    flattened leaves of `params` (dict keys sorted) followed by the entry's
+    inputs, all with static shapes. `params` gives the parameter tree; its
+    leaves may be arrays or anything with `shape` and `dtype`, such as
+    `jax.ShapeDtypeStruct`, in which case `weights` cannot be written.
+    """
     output_path = Path(output)
     module = module_name or _identifier(output_path.stem)
-    exported = export.export(jax.jit(function))(params, *example_inputs)
     hierarchy = _Hierarchy(module)
     root = hierarchy.describe(params, root_name)
     leaves = [path for path, _ in _flatten_with_paths(params)]
-    translator = _Translator(exported.mlir_module(), hierarchy, root, leaves, module)
+    translator = _Translator(text, hierarchy, root, leaves, module)
     plan = translator.run()
 
     compiler = find_compiler()
@@ -314,6 +343,8 @@ def export_linnet(
             path: np.ascontiguousarray(np.asarray(leaf))
             for path, leaf in _flatten_with_paths(params)
         }
+        if any(array.dtype == object for array in tensors.values()):
+            raise ExportError("weights need concrete arrays for every parameter")
         tensors.update(translator.constants)
         weights_path = weights_dir / "model.safetensors"
         save_file(tensors, str(weights_path))
@@ -355,6 +386,23 @@ def _flatten_with_paths(tree: Any) -> list[tuple[str, Any]]:
     return out
 
 
+def _is_indexed(node: dict[Any, Any]) -> bool:
+    keys = [str(k) for k in node]
+    return (
+        bool(keys)
+        and all(k.isdigit() for k in keys)
+        and sorted(map(int, keys)) == list(range(len(keys)))
+    )
+
+
+def _leaf_type(node: Any) -> _Type:
+    """The tensor type of a parameter leaf: an array, or anything with
+    `shape` and `dtype` such as `jax.ShapeDtypeStruct`."""
+    if hasattr(node, "shape") and hasattr(node, "dtype"):
+        return _Type(tuple(int(d) for d in node.shape), _dtype_name(np.dtype(node.dtype)))
+    return _leaf_type(np.asarray(node))
+
+
 class _Hierarchy:
     def __init__(self, module: str) -> None:
         self.module = module
@@ -370,16 +418,23 @@ class _Hierarchy:
         return member
 
     def _describe(self, node: Any, name_hint: str) -> tuple[Any, _Member | None]:
+        if isinstance(node, dict) and _is_indexed(node):
+            # A dict keyed 0..n-1 (Flax and Haiku layer stacks) is a sub array,
+            # so `layers.0.q` names the same member either way.
+            keys = sorted(cast(dict[Any, Any], node), key=lambda k: int(str(k)))
+            return self._describe([node[k] for k in keys], name_hint)
         if isinstance(node, dict):
             entries: list[Any] = []
             children: dict[str, _Member] = {}
-            for key in cast(dict[Any, Any], node):
+            # Members in the order `jax.tree_util` flattens a dict (sorted keys).
+            for key in sorted(cast(dict[Any, Any], node), key=str):
                 signature, child = self._describe(node[key], str(key))
                 if child is None:
                     continue
                 child.name = _identifier(str(key))
                 if child.kind == "sub" and child.length is None:
-                    child.block = self._block_for(str(key).capitalize(), signature, child)
+                    class_name = str(key) if not str(key).isdigit() else f"{name_hint}_{key}"
+                    child.block = self._block_for(class_name.capitalize(), signature, child)
                 children[str(key)] = child
                 entries.append((str(key), signature))
             if not entries:
@@ -403,8 +458,7 @@ class _Hierarchy:
             return ("array", len(described), signature), _Member(
                 "sub", "", length=len(described), element=block, children=children
             )
-        array = np.asarray(node)
-        leaf = _Type(tuple(int(d) for d in array.shape), _numpy_dtype_name(array))
+        leaf = _leaf_type(node)
         return ("param", leaf.dtype, leaf.shape), _Member("param", "", leaf=leaf)
 
     def _block_for(self, class_name: str, signature: Any, member: _Member) -> _Block:
@@ -692,13 +746,16 @@ def _key(value: Any) -> Any:
 
 
 def _numpy_dtype_name(array: Any) -> str:
-    text = str(np.asarray(array).dtype)
-    for name, dtype in _NUMPY_DTYPES.items():
-        if np.dtype(dtype) == np.asarray(array).dtype:
+    return _dtype_name(np.asarray(array).dtype)
+
+
+def _dtype_name(dtype: Any) -> str:
+    for name, candidate in _NUMPY_DTYPES.items():
+        if np.dtype(candidate) == dtype:
             return name
-    if text == "bfloat16":
+    if str(dtype) == "bfloat16":
         return "bf16"
-    raise ExportError(f"dtype {text} has no Linnet equivalent")
+    raise ExportError(f"dtype {dtype} has no Linnet equivalent")
 
 
 Handler = Callable[[_Translator, Any], _Value | None]
