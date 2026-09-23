@@ -37,14 +37,15 @@ export default defineConfig({
   lang: "en-US",
   cleanUrls: true,
   lastUpdated: true,
+  appearance: "dark",
   sitemap: { hostname: "https://linnet.franknoh.dev" },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
-    ["meta", { name: "theme-color", content: "#3c6e71" }],
+    ["meta", { name: "theme-color", content: "#050505" }],
   ],
   markdown: {
     languages: [grammar],
-    theme: { light: "github-light", dark: "github-dark" },
+    theme: { light: "github-light", dark: "github-dark-default" },
     config(md) {
       // The repository's Markdown marks Linnet snippets as `text`; those
       // that read like Linnet are highlighted as Linnet here.

@@ -20,23 +20,17 @@ hero:
       link: /examples/
 
 features:
-  - icon: ✅
-    title: Shapes checked before anything runs
+  - title: Shapes checked before anything runs
     details: Every dimension is a symbol the compiler reasons about. A reshape that does not preserve the element count, an attention head split that does not divide, a mismatched dtype — all reported at check time with the shapes involved, never as a runtime error.
-  - icon: 🔒
-    title: Source without payload
+  - title: Source without payload
     details: A .linnet file declares parameters and never contains tensor data. Checking or inspecting a package executes nothing, and weights bind by path from SafeTensors — no pickle, no model classes to trust.
-  - icon: 🔁
-    title: One model, every framework
+  - title: One model, every framework
     details: The same source materializes as a torch.nn.Module, a jax function or Flax NNX module, a StableHLO module for XLA, or an ONNX model. Exporters recover softmax, norms, and activations from framework graphs back into library calls.
-  - icon: 📐
-    title: Index notation
+  - title: Index notation
     details: Contractions and reductions are written as indexed expressions with compile-time domains — sum[k] a[i, k] * b[k, j] — and lowered to broadcasts, gathers, and reductions, or matched to native kernels.
-  - icon: 🧩
-    title: A standard library in Linnet
+  - title: A standard library in Linnet
     details: linear, embedding, softmax, rms_norm, layer_norm, rope, attention, swiglu are ordinary source the checker verifies like any other. The compiler knows no model names.
-  - icon: 🛠️
-    title: Tooling from day one
+  - title: Tooling from day one
     details: Formatter, linter, language server (VS Code, Neovim), executable spec tests, an optimizer with an e-graph superoptimizer, and linnet explain to see what it did.
 ---
 

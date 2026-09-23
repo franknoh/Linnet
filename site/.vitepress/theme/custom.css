@@ -1,0 +1,163 @@
+/* Linnet documentation theme: franknoh.dev's palette (near-black surfaces,
+   a single red accent, Inter + JetBrains Mono, small radii), dark first. */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+:root {
+  --vp-font-family-base: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --vp-font-family-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --linnet-red: hsl(358 85% 52%);
+  --linnet-red-soft: hsl(358 85% 52% / 0.12);
+
+  --vp-c-brand-1: var(--linnet-red);
+  --vp-c-brand-2: hsl(358 80% 46%);
+  --vp-c-brand-3: hsl(358 75% 40%);
+  --vp-c-brand-soft: var(--linnet-red-soft);
+
+  --vp-button-brand-bg: var(--linnet-red);
+  --vp-button-brand-hover-bg: hsl(358 80% 46%);
+  --vp-button-brand-active-bg: hsl(358 75% 40%);
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-text: hsl(0 0% 98%);
+
+  --vp-home-hero-name-color: var(--linnet-red);
+  --vp-home-hero-name-background: none;
+  --vp-home-hero-image-background-image: none;
+  --vp-home-hero-image-filter: none;
+
+  --vp-border-radius: 0.25rem;
+}
+
+/* Light: white page, near-black text, the same accent. */
+:root {
+  --vp-c-bg: hsl(0 0% 100%);
+  --vp-c-bg-alt: hsl(0 0% 98%);
+  --vp-c-bg-soft: hsl(0 0% 97%);
+  --vp-c-bg-elv: hsl(0 0% 100%);
+  --vp-c-text-1: hsl(0 0% 6%);
+  --vp-c-text-2: hsl(216 6% 36%);
+  --vp-c-text-3: hsl(216 6% 52%);
+  --vp-c-divider: hsl(0 0% 88%);
+  --vp-c-border: hsl(0 0% 84%);
+  --vp-c-gutter: hsl(0 0% 90%);
+  --vp-code-block-bg: hsl(0 0% 97%);
+  --vp-code-bg: hsl(0 0% 95%);
+  --vp-code-color: hsl(0 0% 12%);
+  --vp-c-default-soft: hsl(0 0% 94%);
+}
+
+/* Dark: franknoh.dev's surfaces. */
+.dark {
+  --vp-c-bg: hsl(0 0% 2%);
+  --vp-c-bg-alt: hsl(0 0% 4%);
+  --vp-c-bg-soft: hsl(0 0% 6%);
+  --vp-c-bg-elv: hsl(0 0% 5%);
+  --vp-c-text-1: hsl(216 10% 88%);
+  --vp-c-text-2: hsl(216 6% 58%);
+  --vp-c-text-3: hsl(216 6% 44%);
+  --vp-c-divider: hsl(0 0% 13%);
+  --vp-c-border: hsl(0 0% 16%);
+  --vp-c-gutter: hsl(0 0% 10%);
+  --vp-code-block-bg: hsl(0 0% 4%);
+  --vp-code-bg: hsl(0 0% 9%);
+  --vp-code-color: hsl(216 10% 88%);
+  --vp-c-default-soft: hsl(0 0% 10%);
+  --vp-c-brand-soft: hsl(358 85% 52% / 0.16);
+}
+
+/* Geometry: small radii, hairline borders, no gradients. */
+.VPButton,
+.VPFeature,
+.vp-doc div[class*="language-"],
+.vp-code-group .tabs,
+.VPNavBarSearchButton,
+.DocSearch-Button,
+.VPLocalSearchBox .search-bar,
+.vp-doc .custom-block,
+.vp-doc table {
+  border-radius: 0.25rem !important;
+}
+
+.VPFeature {
+  border: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg-alt);
+}
+.VPFeature .title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.VPFeature .details {
+  color: var(--vp-c-text-2);
+}
+
+.VPHero .name,
+.VPHero .text {
+  letter-spacing: -0.02em;
+}
+.VPHero .text {
+  font-weight: 600;
+}
+.VPHero .tagline {
+  color: var(--vp-c-text-2);
+  max-width: 44rem;
+}
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  letter-spacing: -0.015em;
+  font-weight: 600;
+}
+.vp-doc h2 {
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc div[class*="language-"] {
+  border: 1px solid var(--vp-c-divider);
+}
+.vp-doc div[class*="language-"] code {
+  font-size: 0.86em;
+}
+.vp-doc a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border: 1px solid var(--vp-c-divider);
+  overflow: hidden;
+}
+.vp-doc th {
+  background: var(--vp-c-bg-alt);
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+  text-transform: uppercase;
+  font-size: 0.72em;
+  letter-spacing: 0.06em;
+}
+.vp-doc tr:nth-child(2n) {
+  background: transparent;
+}
+.vp-doc td,
+.vp-doc th {
+  border-color: var(--vp-c-divider);
+}
+
+.VPSidebarItem.level-0 .text {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 0.72em;
+  color: var(--vp-c-text-2);
+}
+.VPNavBar .title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.VPFooter {
+  border-top: 1px solid var(--vp-c-divider);
+}
