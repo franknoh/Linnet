@@ -359,6 +359,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "flax" },
+    { name = "huggingface-hub" },
     { name = "jax" },
     { name = "onnx" },
     { name = "torch", version = "2.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
@@ -370,6 +371,9 @@ flax = [
 ]
 jax = [
     { name = "jax" },
+]
+nest = [
+    { name = "huggingface-hub" },
 ]
 onnx = [
     { name = "onnx" },
@@ -399,6 +403,8 @@ dev = [
 requires-dist = [
     { name = "flax", marker = "extra == 'all'", specifier = ">=0.12" },
     { name = "flax", marker = "extra == 'flax'", specifier = ">=0.12" },
+    { name = "huggingface-hub", marker = "extra == 'all'", specifier = ">=0.24" },
+    { name = "huggingface-hub", marker = "extra == 'nest'", specifier = ">=0.24" },
     { name = "jax", marker = "extra == 'all'", specifier = ">=0.4.35" },
     { name = "jax", marker = "extra == 'flax'", specifier = ">=0.4.35" },
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.4.35" },
@@ -409,7 +415,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
 ]
-provides-extras = ["torch", "jax", "flax", "onnx", "all"]
+provides-extras = ["torch", "jax", "flax", "onnx", "nest", "all"]
 
 [package.metadata.requires-dev]
 dev = [

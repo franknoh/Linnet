@@ -161,3 +161,21 @@
 .VPFooter {
   border-top: 1px solid var(--vp-c-divider);
 }
+
+/* Nest architecture previews: one image per colour scheme. */
+.nest-preview {
+  display: block;
+  max-width: 100%;
+  margin: 1rem auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 0.25rem;
+}
+.nest-preview-dark {
+  display: none;
+}
+.dark .nest-preview-light {
+  display: none;
+}
+.dark .nest-preview-dark {
+  display: block;
+}

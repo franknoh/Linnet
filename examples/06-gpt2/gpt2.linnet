@@ -6,7 +6,7 @@ module examples.gpt2
 use std.nn.activations::{gelu}
 use std.nn.attention::{attention, causal_mask}
 use std.nn.embedding::{embedding}
-use std.nn.linear::{Linear}
+use std.nn.linear::{linear}
 use std.nn.norm::{layer_norm}
 
 // LayerNorm with the bias GPT-2 uses; `layer_norm` takes it as an optional.
@@ -19,14 +19,26 @@ pub block LayerNorm<H: Dim, T: Float> {
     }
 }
 
+// GPT-2 stores its projections as [In, Out] (`Conv1D` in the reference
+// code). Keeping that layout lets the published checkpoints load as they
+// are; the transpose is a view in every backend.
+pub block Conv1D<In: Dim, Out: Dim, T: Float> {
+    param weight: Tensor[In, Out; T]
+    param bias: Tensor[Out; T]
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear(x, permute(weight, [1, 0]), some(bias))
+    }
+}
+
 pub block Attention<H: Dim, Heads: Dim, T: Float>
 where
     Heads > 0,
     H % Heads == 0
 {
     // One projection produces queries, keys, and values side by side.
-    sub qkv: Linear<H, 3 * H, T>
-    sub out: Linear<H, H, T>
+    sub qkv: Conv1D<H, 3 * H, T>
+    sub out: Conv1D<H, H, T>
 
     pub fn forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
         let projected = qkv.forward(x)
@@ -45,8 +57,8 @@ fn heads<B: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
 }
 
 pub block Mlp<H: Dim, T: Float> {
-    sub up: Linear<H, 4 * H, T>
-    sub down: Linear<4 * H, H, T>
+    sub up: Conv1D<H, 4 * H, T>
+    sub down: Conv1D<4 * H, H, T>
 
     pub fn forward<*S: Shape>(x: Tensor[*S, H; T]) -> Tensor[*S, H; T] {
         return down.forward(gelu(up.forward(x)))

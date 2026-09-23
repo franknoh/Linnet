@@ -668,6 +668,121 @@ def substitute(type: Type, s: Substitution) -> Type:
     return type
 
 
+# ---------------------------------------------------------------- evaluation
+
+
+@dataclass(frozen=True, slots=True)
+class Bindings:
+    """Concrete values for generics, by symbol id: what `--bind` gives the compiler."""
+
+    dims: Mapping[int, int]
+    packs: Mapping[int, tuple[int, ...]]
+    dtypes: Mapping[int, str]
+
+
+def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) -> Bindings:
+    """Binds generics by name, using declared defaults for the rest.
+
+    Raises `LinnetError` for a generic that is neither given nor defaulted,
+    and for a value of the wrong kind.
+    """
+    dims: dict[int, int] = {}
+    packs: dict[int, tuple[int, ...]] = {}
+    dtypes: dict[int, str] = {}
+    for generic in generics:
+        value = values.get(generic.name)
+        if value is None:
+            default = generic.default
+            if default is None:
+                raise LinnetError(f"generic `{generic.name}` needs a value")
+            if isinstance(default, DimArg) and isinstance(default.dim, int):
+                dims[generic.id] = default.dim
+            elif isinstance(default, DTypeArg) and isinstance(default.dtype, str):
+                dtypes[generic.id] = default.dtype
+            else:
+                raise LinnetError(f"generic `{generic.name}` needs a value")
+            continue
+        if generic.kind == "dtype":
+            if not isinstance(value, str):
+                raise LinnetError(f"`{generic.name}` is a dtype; give its name")
+            dtypes[generic.id] = value
+        elif generic.kind == "dim":
+            if not isinstance(value, int):
+                raise LinnetError(f"`{generic.name}` is a dimension; give an integer")
+            dims[generic.id] = value
+        else:
+            raise LinnetError(f"`{generic.name}` is a shape pack and cannot be bound by name")
+    unknown = sorted(set(values) - {g.name for g in generics})
+    if unknown:
+        raise LinnetError(f"unknown generics: {', '.join(unknown)}")
+    return Bindings(MappingProxyType(dims), MappingProxyType(packs), MappingProxyType(dtypes))
+
+
+def evaluate_dim(dim: Dim, bindings: Bindings) -> int:
+    if isinstance(dim, int):
+        return dim
+    if isinstance(dim, DimSymbol):
+        if dim.id not in bindings.dims:
+            raise LinnetError(f"dimension `{dim.name}` is not bound")
+        return bindings.dims[dim.id]
+    if isinstance(dim, PackSize):
+        if dim.id not in bindings.packs:
+            raise LinnetError(f"shape pack `{dim.name}` is not bound")
+        count = 1
+        for size in bindings.packs[dim.id]:
+            count *= size
+        return count
+    args = [evaluate_dim(a, bindings) for a in dim.args]
+    if dim.op == "add":
+        return sum(args)
+    if dim.op == "mul":
+        product = 1
+        for a in args:
+            product *= a
+        return product
+    if dim.op in ("floordiv", "mod"):
+        if args[1] == 0:
+            raise LinnetError("division by zero in a dimension")
+        return args[0] // args[1] if dim.op == "floordiv" else args[0] % args[1]
+    return min(args) if dim.op == "min" else max(args)
+
+
+def evaluate_shape(shape: Shape, bindings: Bindings) -> tuple[int, ...]:
+    sizes: list[int] = []
+    for unit in shape:
+        if isinstance(unit, Pack):
+            if unit.id not in bindings.packs:
+                raise LinnetError(f"shape pack `{unit.name}` is not bound")
+            sizes.extend(bindings.packs[unit.id])
+        else:
+            sizes.append(evaluate_dim(unit, bindings))
+    return tuple(sizes)
+
+
+def evaluate_dtype(dtype: DType, bindings: Bindings) -> str:
+    if isinstance(dtype, str):
+        return dtype
+    if dtype.id not in bindings.dtypes:
+        raise LinnetError(f"dtype `{dtype.name}` is not bound")
+    return bindings.dtypes[dtype.id]
+
+
+def parameter_count(program: Program, values: Mapping[str, int | str]) -> int:
+    """The number of parameter elements once the root generics are bound."""
+    bindings = bind_generics(program.root.generics, values)
+    total = 0
+    for entry in program.manifest:
+        if entry.kind != "param":
+            continue
+        count = 1
+        for size in evaluate_shape(entry.shape, bindings):
+            count *= size
+        for repeat in entry.repeat:
+            count *= evaluate_dim(repeat, bindings)
+        total += count
+    return total
+
+
 # ------------------------------------------------------------------ printing
 
 _PRECEDENCE = {"add": 1, "mul": 2, "floordiv": 2, "mod": 2}
