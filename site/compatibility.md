@@ -8,7 +8,7 @@ Everything here is exercised by the test suites under `python/` and `tests/`.
 | Target | How | Runs the model on | Notes |
 | --- | --- | --- | --- |
 | PyTorch | `linnet_torch.load` → `torch.nn.Module` | CPU, CUDA (any device PyTorch has) | Core IR interpreted on index grids, or with `compile=True` run as straight-line PyTorch source from `linnet torch` (`compile="inductor"` adds `torch.compile`); `numerics="equivalent"` selects native kernels for library ops (`matmul`, `softmax`, `layer_norm`, `rms_norm`, `attention`, activations). `state` members are non-persistent buffers. |
-| JAX | `linnet_jax.load` → callable, `load_nnx` → Flax NNX module | Any XLA backend (CPU, GPU, TPU) | Compiles through `linnet stablehlo`; composes with `jax.jit`. Inference only (no VJP). `state` is threaded: `f(*inputs, state=...) -> (out, new_state)`. |
+| JAX | `linnet_jax.load` → callable, `load_source` → generated `jnp` code, `load_nnx` → Flax NNX module | Any XLA backend (CPU, GPU, TPU) | `load` compiles through `linnet stablehlo` (no VJP); `load_source` runs `linnet jax` output under `jax.jit` and is differentiable with `jax.grad`. `state` is threaded: `f(*inputs, state=...) -> (out, new_state)`. |
 | XLA / StableHLO | `linnet stablehlo --bind ...` | Anything that consumes StableHLO | Static shapes per binding; `@main` with parameters named by `linnet.path`, state by `linnet.state` / `linnet.states`. |
 | ONNX | `linnet onnx --bind ...` → ONNX text format | ONNX Runtime and other ONNX consumers | opset 20; parameters as `param<N>` inputs with `linnet.path.*` metadata; state as `state<N>` / `next_state<N>`. |
 
@@ -55,9 +55,10 @@ are the `test_round_trip` / `test_export` / `test_import` suites.
 - Randomness is a library, not a primitive: `std.random` (Threefry-2x32,
   matching `jax.random` bit for bit) runs on every backend; there is no
   hidden generator state.
-- Training in JAX: the materialized function has no VJP yet. In PyTorch,
-  `load(..., trainable=True)` trains through autograd (interpreted or as
-  generated source).
+- Training: PyTorch via `load(..., trainable=True)` (autograd through the
+  interpreted or generated code); JAX via `load_source` (generated `jnp`
+  code, `jax.grad` over `f.apply(params, ...)`). The StableHLO-compiled
+  `load` function itself has no VJP.
 - Quantized *dtypes*: quantization is library code (`std.quant`: per-row
   int8 and packed int4 weights with scales, `Int8Linear`/`Int4Linear`), not a
   storage type; per-group and asymmetric schemes are not written yet.

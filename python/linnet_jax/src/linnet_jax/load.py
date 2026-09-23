@@ -57,7 +57,7 @@ _LINNET_DTYPES: dict[str, Any] = {
 }
 
 
-def _std_arguments(std_root: str | Path | None) -> list[str]:
+def std_arguments(std_root: str | Path | None) -> list[str]:
     return [] if std_root is None else ["--std", str(std_root)]
 
 
@@ -106,7 +106,7 @@ class LinnetFunction:
         manifest = cast(list[dict[str, Any]], plan["manifest"])
         self.parameter_paths: list[str] = [entry["path"] for entry in manifest]
         self.optional_paths: set[str] = {e["path"] for e in manifest if e["optional"]}
-        self._cache: dict[tuple[Any, ...], _Compiled] = {}
+        self._cache: dict[tuple[Any, ...], CompiledEntry] = {}
         self._check_weights(manifest)
 
     def _check_weights(self, manifest: list[dict[str, Any]]) -> None:
@@ -159,12 +159,12 @@ class LinnetFunction:
                     )
         return bindings
 
-    def _compile(self, bindings: Mapping[str, int | str]) -> _Compiled:
+    def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
         arguments = ["stablehlo", "--root", self.root, "--entry", self.entry]
         arguments += ["--optionals", "present" if self.optionals_present else "absent"]
         for name, value in bindings.items():
             arguments += ["--bind", f"{name}={value}"]
-        text = run_compiler(*arguments, *_std_arguments(self._std_root), str(self._source))
+        text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
         paths = re.findall(r'linnet\.path = "([^"]+)"', text)
         missing = [path for path in paths if path not in self._weights]
         if missing:
@@ -186,7 +186,9 @@ class LinnetFunction:
                 strict=True,
             )
         )
-        return _Compiled(paths, state_inputs, state_outputs, state_avals, exported, call, arrays)
+        return CompiledEntry(
+            paths, state_inputs, state_outputs, state_avals, exported, call, arrays
+        )
 
     def apply(self, parameters: Mapping[str, Any], *inputs: Any, state: Any = None) -> Any:
         """Runs the entry with `parameters` (path -> array) in place of the
@@ -238,7 +240,7 @@ def _platform() -> str:
 
 
 @dataclasses.dataclass
-class _Compiled:
+class CompiledEntry:
     parameters: list[str]  # parameter paths, in argument order after the inputs
     state_inputs: list[str]  # state paths read before the call, after the parameters
     state_outputs: list[str]  # state paths assigned, as results after the entry's own
@@ -246,6 +248,7 @@ class _Compiled:
     exported: Any
     call: Any  # `exported.call` under `jax.jit`
     arrays: list[Any]  # the loaded weights as device arrays, in `parameters` order
+    source_path: Path | None = None  # generated JAX source, when the entry runs as code
 
 
 def _device_array(value: Any) -> Any:
@@ -337,7 +340,7 @@ def load(
         plan_arguments += ["--root", root]
     plan = cast(
         dict[str, Any],
-        json.loads(run_compiler(*plan_arguments, *_std_arguments(std_root), str(source_path))),
+        json.loads(run_compiler(*plan_arguments, *std_arguments(std_root), str(source_path))),
     )
     root_name = str(cast(dict[str, Any], plan["root"])["name"])
     entries = [

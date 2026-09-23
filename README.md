@@ -17,7 +17,8 @@ checked model as a `torch.nn.Module` with SafeTensors weights and exports a
 `torch.nn.Module` back to Linnet source (see [docs/torch.md](docs/torch.md)),
 `linnet stablehlo` and `linnet onnx` print an entry as a StableHLO module or an
 ONNX model, and
-`python/linnet_jax` runs models in JAX and exports JAX functions to Linnet
+`python/linnet_jax` runs models in JAX (compiled StableHLO, or generated
+`jax.numpy` code that `jax.grad` trains) and exports JAX functions to Linnet
 (see [docs/jax.md](docs/jax.md)), and `python/linnet_onnx` imports ONNX graphs
 as Linnet source (see [docs/onnx.md](docs/onnx.md)).
 
@@ -54,6 +55,8 @@ linnet inspect --ast file.linnet
 linnet plan --root Model model.linnet   # JSON plan for a materializer
 linnet stablehlo --bind H=64 --bind B=1 --bind S=128 model.linnet   # StableHLO text
 linnet onnx --bind H=64 --bind B=1 --bind S=128 model.linnet        # ONNX (text format)
+linnet torch --bind H=64 --bind B=1 --bind S=128 model.linnet       # straight-line PyTorch source
+linnet jax --bind H=64 --bind B=1 --bind S=128 model.linnet         # straight-line JAX source
 linnet emit plan.json                   # Linnet source back from a plan
 linnet inspect --tokens file.linnet
 ```

@@ -1,4 +1,5 @@
 #include "linnet/ast/dump.hpp"
+#include "linnet/backend/jax_source.hpp"
 #include "linnet/backend/onnx.hpp"
 #include "linnet/backend/plan.hpp"
 #include "linnet/backend/plan_reader.hpp"
@@ -78,6 +79,7 @@ void print_usage(std::FILE* out) {
         "                                       static shapes; parameters are arguments\n"
         "  onnx [same options as stablehlo] <file>\n"
         "  torch [same options as stablehlo] <file>\n"
+        "  jax [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
@@ -383,12 +385,14 @@ int run_graph_export(std::span<const std::string_view> args,
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
     const auto text = format == "onnx"    ? backend::export_onnx(core, export_options)
                       : format == "torch" ? backend::export_torch_source(core, export_options)
+                      : format == "jax"   ? backend::export_jax_source(core, export_options)
                                           : backend::export_stablehlo(core, export_options);
     if (!text) {
         std::fprintf(stderr,
                      "linnet: cannot export %s: %s\n",
                      format == "onnx"    ? "ONNX"
                      : format == "torch" ? "PyTorch source"
+                     : format == "jax"   ? "JAX source"
                                          : "StableHLO",
                      text.error().c_str());
         return exit_failure;
@@ -1006,7 +1010,7 @@ int main(int argc, char** argv) {
     if (command == "emit") {
         return run_emit(rest, options);
     }
-    if (command == "stablehlo" || command == "onnx" || command == "torch") {
+    if (command == "stablehlo" || command == "onnx" || command == "torch" || command == "jax") {
         return run_graph_export(rest, options, argv[0], command);
     }
     if (command == "spec-test") {
