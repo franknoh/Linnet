@@ -88,40 +88,40 @@ linnet stablehlo --bind H=512 --bind Heads=8 --bind B=1 --bind S=128 tiny.linnet
 linnet onnx      --bind H=512 --bind Heads=8 --bind B=1 --bind S=128 tiny.linnet
 ```
 
-## Three ways to run the same source
+## Interpret, generate, or compile
 
 ```bash
-linnet check model.linnet                       # shapes, dtypes, index domains; nothing executes
+linnet check model.linnet        # shapes, dtypes, index domains — nothing runs
 ```
 
-| | How | When |
+| Path | Call | Use |
 | --- | --- | --- |
-| Interpret | `linnet_torch.load(...)` walks the Core IR on tensors | debugging, tiny models, every op visible |
-| Generate | `load(..., compile="inductor")`, `load_source(...)` in JAX | training and serving in a framework |
-| Compile | `linnet stablehlo`, `linnet onnx` | XLA, ONNX Runtime, or another consumer |
+| Interpreted | `linnet_torch.load(...)` | inspecting a model op by op |
+| Generated code | `load(..., compile="inductor")` or `linnet_jax.load_source(...)` | training and serving inside a framework |
+| Compiled graph | `linnet stablehlo`, `linnet onnx` | XLA, ONNX Runtime, other consumers |
 
-On an H100 the generated path under `torch.compile` runs a small Llama forward
-in 2.1 ms against 2.7 ms for hand-written compiled PyTorch, and the XLA path
-in 0.66 ms — see [Benchmarks](/benchmarks).
+Small Llama forward on an H100: generated PyTorch under `torch.compile` 2.1 ms,
+hand-written compiled PyTorch 2.7 ms, XLA 0.66 ms. Details on the
+[benchmarks](/benchmarks) page.
 
-## By the numbers
+## At a glance
 
 | | |
 | --- | --- |
-| Compiler | 25 k lines of C++23, no dependencies beyond the standard library |
-| Tests | 57 unit and CLI tests, 46 executable spec cases, 49 Python adapter tests across PyTorch, JAX, and ONNX |
-| Standard library | 12 modules, 42 operations and blocks — all Linnet source |
-| Backends | PyTorch (interpreted, generated), JAX (compiled, generated, Flax NNX), StableHLO, ONNX |
+| Compiler | C++23, about 25 k lines, no external dependencies |
+| Tests | 57 unit and CLI tests, 46 spec cases, 49 adapter tests (PyTorch, JAX, ONNX) |
+| Standard library | 12 modules, 42 operations and blocks, all written in Linnet |
+| Backends | PyTorch, JAX and Flax NNX, StableHLO, ONNX |
 | Importers | `torch.export`, `jax.export`, StableHLO text, ONNX |
 
-## What it is, and is not
+## Scope
 
-Linnet is a language for the tensor program itself: the shapes, the dtypes,
-the parameters, and the operations that connect them. It has blocks, generics
-over dimensions and dtypes, index notation, `static for` and `while`, `state`
-for caches, and a standard library written in itself.
+Linnet describes the tensor program: shapes, dtypes, parameters, and the
+operations between them. Blocks, generics over dimensions and dtypes, index
+notation, `static for` and `while`, `state` for caches, and a standard
+library in the language itself.
 
-It has no Python inside the model, no data-dependent shapes, no hidden
-mutation, and no tensor payloads in source. Tokenizers, data loading,
-optimizers, and serving stay in the framework; the model becomes a file that
-`linnet check` can vouch for and any of the backends can run.
+Not in the language: Python inside the model, data-dependent shapes, hidden
+mutation, tensor data in source. Tokenizers, data loading, optimizers, and
+serving stay in the framework; the model is a file `linnet check` can verify
+and every backend can run.

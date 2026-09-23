@@ -23,7 +23,7 @@ layers.0.down.weight
 after the generics are substituted, and whether it is optional. Weights bind
 by these names, so there is no model class to keep in sync with the file.
 
-## Run it
+## Commands
 
 ```bash
 linnet inspect --parameters examples/03-block-and-weights/model.linnet
