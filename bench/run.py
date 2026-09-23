@@ -223,13 +223,17 @@ def bench_config(
             start = time.perf_counter()
             out = compiled(tokens)
             synchronize(device)
-            timings.append({"name": f"torch.compile ({name})", "seconds": time.perf_counter() - start})
+            timings.append(
+                {"name": f"torch.compile ({name})", "seconds": time.perf_counter() - start}
+            )
             ms = time_call(lambda: compiled(tokens), device, warmup, iters)
         forward.variants.append(
             Variant("PyTorch reference (torch.compile)", ms, B * S / ms * 1e3, diff(out, expected))
         )
     except Exception as error:  # noqa: BLE001 - reported in the table
-        forward.variants.append(Variant("PyTorch reference (torch.compile)", None, None, None, str(error)[:120]))
+        forward.variants.append(
+            Variant("PyTorch reference (torch.compile)", None, None, None, str(error)[:120])
+        )
 
     with torch.no_grad():
         out = linnet_model(tokens)
@@ -244,8 +248,63 @@ def bench_config(
         )
     )
 
+    for backend, label_suffix in (
+        (None, "generated source"),
+        ("inductor", "generated source + torch.compile"),
+    ):
+        try:
+            start = time.perf_counter()
+            generated = load(
+                LLAMA,
+                generics=generics,
+                std_root=STDLIB,
+                device=device,
+                numerics="equivalent",
+                compile=backend or True,
+            )
+            generated.load_state_dict(state, strict=False)
+            for module in generated.modules():
+                if hasattr(module, "absent_params"):
+                    module.absent_params = set(module.optional_params)
+            with torch.no_grad():
+                out = generated(tokens)
+                synchronize(device)
+                timings.append(
+                    {
+                        "name": f"linnet torch + first call ({name}, {label_suffix})",
+                        "seconds": time.perf_counter() - start,
+                    }
+                )
+                ms = time_call(lambda: generated(tokens), device, warmup, iters)
+            forward.variants.append(
+                Variant(
+                    f"Linnet → PyTorch ({label_suffix})",
+                    ms,
+                    B * S / ms * 1e3,
+                    diff(out, expected),
+                    "straight-line PyTorch from `linnet torch`, native kernels",
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - reported in the table
+            forward.variants.append(
+                Variant(f"Linnet → PyTorch ({label_suffix})", None, None, None, str(error)[:120])
+            )
     if with_xla:
-        forward.variants.append(xla_variant(generics, weights, [tokens], expected, "forward", device, warmup, iters, timings, name, B * S))
+        forward.variants.append(
+            xla_variant(
+                generics,
+                weights,
+                [tokens],
+                expected,
+                "forward",
+                device,
+                warmup,
+                iters,
+                timings,
+                name,
+                B * S,
+            )
+        )
     runs.append(forward)
 
     # ---- decode: one token per step through the KV caches
@@ -256,24 +315,95 @@ def bench_config(
         expected_step = reference(prefix)[:, -1, :]
         ms = time_call(lambda: reference(prefix), device, warmup, iters)
     decode.variants.append(
-        Variant("PyTorch reference (eager, recomputes prefix)", ms, 1e3 / ms, 0.0, f"no KV cache: full forward over {half + 1} tokens")
+        Variant(
+            "PyTorch reference (eager, recomputes prefix)",
+            ms,
+            1e3 / ms,
+            0.0,
+            f"no KV cache: full forward over {half + 1} tokens",
+        )
     )
 
     def linnet_decode() -> torch.Tensor:
-        return linnet_model.run_entry("decode", [tokens[:, half : half + 1], torch.tensor(half, dtype=torch.int32, device=device)])
+        return linnet_model.run_entry(
+            "decode",
+            [tokens[:, half : half + 1], torch.tensor(half, dtype=torch.int32, device=device)],
+        )
 
     with torch.no_grad():
         linnet_model.reset_state()
         for pos in range(half):
-            linnet_model.run_entry("decode", [tokens[:, pos : pos + 1], torch.tensor(pos, dtype=torch.int32, device=device)])
+            linnet_model.run_entry(
+                "decode",
+                [tokens[:, pos : pos + 1], torch.tensor(pos, dtype=torch.int32, device=device)],
+            )
         out = linnet_decode()
         ms = time_call(linnet_decode, device, warmup, iters)
     decode.variants.append(
-        Variant("Linnet → PyTorch (numerics=equivalent)", ms, 1e3 / ms, diff(out, expected_step), f"KV cache at position {half} of {S}")
+        Variant(
+            "Linnet → PyTorch (numerics=equivalent)",
+            ms,
+            1e3 / ms,
+            diff(out, expected_step),
+            f"KV cache at position {half} of {S}",
+        )
     )
+    for backend, label_suffix in (
+        (None, "generated source"),
+        ("inductor", "generated source + torch.compile"),
+    ):
+        try:
+            generated = load(
+                LLAMA,
+                generics=generics,
+                std_root=STDLIB,
+                device=device,
+                numerics="equivalent",
+                compile=backend or True,
+            )
+            generated.load_state_dict(state, strict=False)
+            for module in generated.modules():
+                if hasattr(module, "absent_params"):
+                    module.absent_params = set(module.optional_params)
+
+            def generated_decode() -> torch.Tensor:
+                return generated.run_entry(
+                    "decode",
+                    [
+                        tokens[:, half : half + 1],
+                        torch.tensor(half, dtype=torch.int32, device=device),
+                    ],
+                )
+
+            with torch.no_grad():
+                for pos in range(half):
+                    generated.run_entry(
+                        "decode",
+                        [
+                            tokens[:, pos : pos + 1],
+                            torch.tensor(pos, dtype=torch.int32, device=device),
+                        ],
+                    )
+                out = generated_decode()
+                ms = time_call(generated_decode, device, warmup, iters)
+            decode.variants.append(
+                Variant(
+                    f"Linnet → PyTorch ({label_suffix})",
+                    ms,
+                    1e3 / ms,
+                    diff(out, expected_step),
+                    f"KV cache at position {half} of {S}",
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - reported in the table
+            decode.variants.append(
+                Variant(f"Linnet → PyTorch ({label_suffix})", None, None, None, str(error)[:120])
+            )
     if with_xla:
         decode.variants.append(
-            xla_decode_variant(generics, weights, tokens, half, expected_step, device, warmup, iters, timings, name)
+            xla_decode_variant(
+                generics, weights, tokens, half, expected_step, device, warmup, iters, timings, name
+            )
         )
     runs.append(decode)
     return runs
@@ -312,12 +442,19 @@ def xla_variant(
 
         from linnet_jax import load as load_jax
 
-        function = load_jax(LLAMA, generics=generics, weights=jax_weights(weights), entry=entry, std_root=STDLIB)
+        function = load_jax(
+            LLAMA, generics=generics, weights=jax_weights(weights), entry=entry, std_root=STDLIB
+        )
         arrays = [jnp.asarray(tensor.cpu().numpy()) for tensor in inputs]
         start = time.perf_counter()
         out = function(*arrays)
         jax.block_until_ready(out)
-        timings.append({"name": f"linnet stablehlo + XLA compile ({name}, {entry})", "seconds": time.perf_counter() - start})
+        timings.append(
+            {
+                "name": f"linnet stablehlo + XLA compile ({name}, {entry})",
+                "seconds": time.perf_counter() - start,
+            }
+        )
 
         def call() -> None:
             jax.block_until_ready(function(*arrays))
@@ -325,7 +462,13 @@ def xla_variant(
         ms = time_call(call, torch.device("cpu"), warmup, iters)
         result = torch.tensor(jax.device_get(out).astype("float32"))
         backend = jax.default_backend()
-        return Variant(f"Linnet → XLA (jax, {backend})", ms, tokens_per_call / ms * 1e3, diff(result, expected), "whole-program compile of the StableHLO export")
+        return Variant(
+            f"Linnet → XLA (jax, {backend})",
+            ms,
+            tokens_per_call / ms * 1e3,
+            diff(result, expected),
+            "whole-program compile of the StableHLO export",
+        )
     except Exception as error:  # noqa: BLE001 - reported in the table
         return Variant("Linnet → XLA (jax)", None, None, None, str(error)[:120])
 
@@ -348,14 +491,21 @@ def xla_decode_variant(
 
         from linnet_jax import load as load_jax
 
-        function = load_jax(LLAMA, generics=generics, weights=jax_weights(weights), entry="decode", std_root=STDLIB)
+        function = load_jax(
+            LLAMA, generics=generics, weights=jax_weights(weights), entry="decode", std_root=STDLIB
+        )
         ids = jnp.asarray(tokens.cpu().numpy())
         start = time.perf_counter()
         state: Any = None
         for pos in range(half):
             _, state = function(ids[:, pos : pos + 1], jnp.int32(pos), state=state)
         jax.block_until_ready(state)
-        timings.append({"name": f"linnet stablehlo + XLA compile ({name}, decode) incl. {half} steps", "seconds": time.perf_counter() - start})
+        timings.append(
+            {
+                "name": f"linnet stablehlo + XLA compile ({name}, decode) incl. {half} steps",
+                "seconds": time.perf_counter() - start,
+            }
+        )
         out, _ = function(ids[:, half : half + 1], jnp.int32(half), state=state)
 
         def step() -> None:
@@ -363,14 +513,22 @@ def xla_decode_variant(
 
         ms = time_call(step, torch.device("cpu"), warmup, iters)
         result = torch.tensor(jax.device_get(out).astype("float32"))
-        return Variant(f"Linnet → XLA (jax, {jax.default_backend()})", ms, 1e3 / ms, diff(result, expected), f"KV cache threaded as inputs/outputs, position {half}")
+        return Variant(
+            f"Linnet → XLA (jax, {jax.default_backend()})",
+            ms,
+            1e3 / ms,
+            diff(result, expected),
+            f"KV cache threaded as inputs/outputs, position {half}",
+        )
     except Exception as error:  # noqa: BLE001 - reported in the table
         return Variant("Linnet → XLA (jax)", None, None, None, str(error)[:120])
 
 
 def environment(device: torch.device) -> dict[str, str]:
     env = {
-        "device": torch.cuda.get_device_name(device) if device.type == "cuda" else platform.processor() or "cpu",
+        "device": torch.cuda.get_device_name(device)
+        if device.type == "cuda"
+        else platform.processor() or "cpu",
         "torch": torch.__version__,
         "python": platform.python_version(),
         "os": f"{platform.system()} {platform.release()}",
@@ -387,10 +545,16 @@ def environment(device: torch.device) -> dict[str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--dtype", default=None, help="f32, bf16, or f16 (default: bf16 on cuda, f32 on cpu)")
-    parser.add_argument("--configs", default="small,medium", help="comma-separated subset of " + ",".join(CONFIGS))
+    parser.add_argument(
+        "--dtype", default=None, help="f32, bf16, or f16 (default: bf16 on cuda, f32 on cpu)"
+    )
+    parser.add_argument(
+        "--configs", default="small,medium", help="comma-separated subset of " + ",".join(CONFIGS)
+    )
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=20)
     parser.add_argument("--no-xla", action="store_true", help="skip the linnet_jax rows")
@@ -404,14 +568,23 @@ def main() -> None:
 
     timings: list[dict[str, Any]] = []
     start = time.perf_counter()
-    check = subprocess.run([compiler(), "check", "--std", str(STDLIB), str(LLAMA.parent.parent)], capture_output=True, text=True, check=False)
+    check = subprocess.run(
+        [compiler(), "check", "--std", str(STDLIB), str(LLAMA.parent.parent)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if check.returncode != 0:
         raise SystemExit(check.stderr)
-    timings.append({"name": "linnet check examples/05-llama", "seconds": time.perf_counter() - start})
+    timings.append(
+        {"name": "linnet check examples/05-llama", "seconds": time.perf_counter() - start}
+    )
 
     runs: list[Run] = []
     for name in args.configs.split(","):
-        runs += bench_config(name, CONFIGS[name], device, dtype, args.warmup, args.iters, timings, not args.no_xla)
+        runs += bench_config(
+            name, CONFIGS[name], device, dtype, args.warmup, args.iters, timings, not args.no_xla
+        )
 
     result = {
         "measured_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d"),

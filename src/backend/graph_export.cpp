@@ -225,6 +225,44 @@ private:
         return subst;
     }
 
+    // A semantic call with a selected native implementation the target can
+    // spell: whole tensors in, one tensor out, outside any grid.
+    bool try_native(const ir::Operation& op) {
+        const std::vector<std::string>& names = op.attributes.names;
+        if (names.empty() || names.front() == "canonical decomposition" || !grid_.empty() ||
+            op.results.size() != 1) {
+            return false;
+        }
+        std::vector<std::optional<TensorInfo>> operands;
+        for (const ir::ValueId id : op.operands) {
+            const Val& argument = value(id);
+            if (argument.kind == Val::Kind::None) {
+                operands.emplace_back(std::nullopt);
+            } else if (argument.kind == Val::Kind::Some &&
+                       argument.elements.front().kind == Val::Kind::Tensor &&
+                       argument.elements.front().grid_rank == 0) {
+                operands.emplace_back(info(argument.elements.front()));
+            } else if (argument.kind == Val::Kind::Tensor && argument.grid_rank == 0) {
+                operands.emplace_back(info(argument));
+            } else {
+                return false;
+            }
+        }
+        const TypeId type =
+            types_.substitute(module_.value(op.results.front()).type, frame().subst);
+        if (types_.kind(type) != TypeKind::Tensor && types_.kind(type) != TypeKind::Scalar) {
+            return false;
+        }
+        Val result = tensor_value(type, {});
+        const auto name = target_.native_call(names.front(), operands, result.shape, result.dtype);
+        if (!name) {
+            return false;
+        }
+        result.name = *name;
+        define(op, result);
+        return true;
+    }
+
     // ------------------------------------------------------- parameters
 
     void collect_parameters(EntityId block, const Substitution& subst, const std::string& prefix) {
@@ -931,6 +969,9 @@ private:
         const auto found = functions_.find(op.attributes.name);
         if (found == functions_.end()) {
             fail("callee `" + op.attributes.name + "` is not defined in this program");
+        }
+        if (op.kind == ir::OpKind::SemanticCall && try_native(op)) {
+            return;
         }
         const ir::Function& callee = *found->second;
         Frame inner;

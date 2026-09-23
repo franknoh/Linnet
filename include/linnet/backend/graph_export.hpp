@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -118,6 +119,21 @@ public:
     // Reduces `body` over `dims` (trailing axes) to `shape`.
     virtual std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) = 0;
+    // A semantic call whose selected candidate (`opt::select_candidates`) is
+    // `implementation`, with its tensor operands (absent optionals as
+    // nullopt). A target that has the implementation returns the result's
+    // name; otherwise the call's canonical body is exported instead.
+    virtual std::optional<std::string>
+    native_call(const std::string& implementation,
+                const std::vector<std::optional<TensorInfo>>& operands,
+                const Dims& shape,
+                sema::ScalarKind dtype) {
+        (void)implementation;
+        (void)operands;
+        (void)shape;
+        (void)dtype;
+        return std::nullopt;
+    }
 
     // The whole document, once the entry's results are known: the entry's
     // own results, then the final values of the state members it assigned,
