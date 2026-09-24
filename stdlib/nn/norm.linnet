@@ -37,3 +37,21 @@ pub block RmsNorm<H: Dim, T: Float = bf16> {
         return rms_norm(x, weight)
     }
 }
+
+// Normalization by statistics measured during training, as inference uses
+// them: an affine transform along the channel axis.
+pub op batch_norm<B: Dim, C: Dim, H: Dim, W: Dim, T: Float>(
+    x: Tensor[B, C, H, W; T],
+    mean: Tensor[C; T],
+    variance: Tensor[C; T],
+    weight: Tensor[C; T],
+    bias: Tensor[C; T],
+    eps: f32 = 1e-5,
+) -> Tensor[B, C, H, W; T] {
+    let scaled[b, c, h, w] =
+        (cast<f32>(x[b, c, h, w]) - cast<f32>(mean[c])) *
+            rsqrt(cast<f32>(variance[c]) + eps) *
+            cast<f32>(weight[c]) +
+        cast<f32>(bias[c])
+    return cast<T>(scaled)
+}

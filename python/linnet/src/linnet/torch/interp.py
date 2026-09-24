@@ -25,7 +25,7 @@ import torch
 
 from ..plan import Env, Plan, PlanError
 from .dtypes import torch_dtype
-from .native import NATIVE, causal_mask
+from .native import NATIVE, causal_mask, conv2d
 
 Value = Any
 
@@ -283,6 +283,9 @@ class Interpreter:
             if selected == "torch.tril":
                 assert result_type is not None
                 return [causal_mask(env.shape(result_type["shape"]), self.device)]
+            if selected == "torch.nn.functional.conv2d":
+                assert result_type is not None
+                return [conv2d(operands, env.shape(result_type["shape"]))]
             if selected != "canonical decomposition":
                 if selected not in NATIVE:
                     raise PlanError(

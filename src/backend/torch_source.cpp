@@ -474,6 +474,52 @@ public:
             return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long(), " + name(1) +
                           ")");
         }
+        if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
+            operands[0] && operands[1]) {
+            // `F.conv2d` takes the window geometry as arguments; the export
+            // sees only tensors, so stride and padding are recovered from the
+            // shapes. Both spatial axes must agree, which pins them down.
+            std::vector<const TensorInfo*> at;
+            at.reserve(operands.size());
+            for (const std::optional<TensorInfo>& operand : operands) {
+                at.push_back(operand.has_value() ? &*operand : nullptr);
+            }
+            if (at[0] == nullptr || at[1] == nullptr) {
+                return std::nullopt;
+            }
+            const Dims& input = at[0]->shape;
+            const Dims& kernel = at[1]->shape;
+            if (input.size() != 4 || kernel.size() != 4 || shape.size() != 4) {
+                return std::nullopt;
+            }
+            const auto windows =
+                [](std::int64_t size, std::int64_t k, std::int64_t pad, std::int64_t stride) {
+                    return (size + 2 * pad - k) / stride + 1;
+                };
+            for (std::int64_t pad = 0; pad < kernel[2]; ++pad) {
+                for (std::int64_t stride = 1; stride <= input[2] + 2 * pad; ++stride) {
+                    if (input[2] + 2 * pad < kernel[2] || input[3] + 2 * pad < kernel[3]) {
+                        break;
+                    }
+                    if (windows(input[2], kernel[2], pad, stride) == shape[2] &&
+                        windows(input[3], kernel[3], pad, stride) == shape[3]) {
+                        return define("F.conv2d(" + name(0) + ", " + name(1) + ", " + name(2) +
+                                      ", stride=" + std::to_string(stride) +
+                                      ", padding=" + std::to_string(pad) + ")");
+                    }
+                }
+            }
+            return std::nullopt;
+        }
+        if (implementation_base == "torch.nn.functional.batch_norm" && operands.size() == 6 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4]) {
+            return define("F.batch_norm(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ", " + name(4) + ", False, 0.0, " + scalar(5) + ")");
+        }
+        if (implementation_base == "torch.Tensor.mean" && operands.size() == 1 && operands[0]) {
+            return define(name(0) + ".mean(dim=(2, 3), dtype=torch.float32).to(" + name(0) +
+                          ".dtype)");
+        }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
             return define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
         }

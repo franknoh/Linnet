@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import torch
@@ -171,4 +172,37 @@ def test_gpt2_logits_match_transformers(tmp_path: Path) -> None:
         expected = reference(tokens.long()).logits
         actual = model(tokens)
     torch.testing.assert_close(actual, expected, atol=2e-2, rtol=1e-3)
+    assert torch.equal(actual.argmax(-1), expected.argmax(-1))
+
+
+def test_resnet18_logits_match_transformers(tmp_path: Path) -> None:
+    """The convolutional path end to end: `std.nn.conv`, `std.nn.pool`, and
+    inference batch normalization against the published ResNet-18."""
+    from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
+    from transformers import (
+        AutoModelForImageClassification,  # pyright: ignore[reportUnknownVariableType]
+    )
+
+    from linnet import nest
+
+    repo = "microsoft/resnet-18"
+    checkpoint = Path(hf_hub_download(repo, "model.safetensors"))
+    model = nest.load(
+        REPO.parent / "nest/models/resnet-18",
+        backend="torch",
+        std_root=STDLIB,
+        weights=checkpoint,
+    )
+    reference = cast(
+        Any,
+        AutoModelForImageClassification.from_pretrained(  # pyright: ignore[reportUnknownMemberType]
+            repo, torch_dtype=torch.float32
+        ),
+    )
+    reference.eval()
+    images = torch.randn(2, 3, 224, 224)
+    with torch.no_grad():
+        expected = cast(torch.Tensor, reference(images).logits)
+        actual = cast(torch.Tensor, model(images))
+    torch.testing.assert_close(actual, expected, atol=2e-3, rtol=1e-3)
     assert torch.equal(actual.argmax(-1), expected.argmax(-1))
