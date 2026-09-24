@@ -16,8 +16,9 @@ in XLA. Every variant agrees with the reference within bf16 rounding.
 
 <BenchChart />
 
-The table below has every row: latency, throughput, speed-up against eager
-PyTorch, and the largest difference from it.
+Bars are speed-ups over eager PyTorch (the dashed line is 1×); the toggle
+shows latency instead. The table below has every row: latency, throughput,
+speed-up, and the largest difference from the reference.
 
 <BenchTable />
 
