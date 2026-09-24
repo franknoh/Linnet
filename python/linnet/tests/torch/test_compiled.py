@@ -78,6 +78,17 @@ def test_generated_entries_match_the_interpreter() -> None:
     )
 
 
+def test_generated_source_is_the_default_on_cuda() -> None:
+    cpu = load(LLAMA, generics=GENERICS, std_root=STDLIB)
+    assert not isinstance(cpu, CompiledLinnetModule)
+    if torch.cuda.is_available():
+        cuda = load(LLAMA, generics=GENERICS, std_root=STDLIB, device="cuda")
+        assert isinstance(cuda, CompiledLinnetModule)
+    assert isinstance(
+        load(LLAMA, generics=GENERICS, std_root=STDLIB, compile=True), CompiledLinnetModule
+    )
+
+
 def test_native_kernels_and_torch_compile() -> None:
     reference = load(LLAMA, generics=GENERICS, std_root=STDLIB)
     compiled = load(
