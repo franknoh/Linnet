@@ -9,6 +9,7 @@ interface Variant {
   throughput: number | null;
   max_abs_diff: number | null;
   note?: string;
+  kernels?: number | null;
 }
 
 interface Run {
@@ -78,6 +79,7 @@ function speedup(run: Run, variant: Variant): string {
             <th>Latency (ms)</th>
             <th>{{ run.unit }}</th>
             <th>vs reference</th>
+            <th>Kernels</th>
             <th>max |Δ|</th>
           </tr>
         </thead>
@@ -90,6 +92,7 @@ function speedup(run: Run, variant: Variant): string {
             <td>{{ ms(variant.latency_ms) }}</td>
             <td>{{ rate(variant.throughput) }}</td>
             <td>{{ speedup(run, variant) }}</td>
+            <td>{{ variant.kernels ?? "—" }}</td>
             <td>{{ diff(variant.max_abs_diff) }}</td>
           </tr>
         </tbody>
