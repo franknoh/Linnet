@@ -496,17 +496,20 @@ def load(
     backend: Literal["torch", "jax", "jax_source", "nnx"] = "torch",
     std_root: str | Path | None = None,
     generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
     **options: Any,
 ) -> Any:
     """Materializes a Nest model in a backend with its published weights.
 
     `generics` overrides the card's values (a different `Batch`, say);
-    `options` go to the backend's loader (`numerics`, `compile`, `device`,
-    `trainable`, ...).
+    `weights` uses a checkpoint already on disk instead of downloading the
+    card's; `options` go to the backend's loader (`numerics`, `compile`,
+    `device`, `trainable`, ...).
     """
     card = resolve(name_or_dir)
     values = {**card.generics, **(generics or {})}
-    weights = download_weights(card)
+    if weights is None:
+        weights = download_weights(card)
     bindings = card.bindings_path
     common: dict[str, Any] = {
         "generics": values,

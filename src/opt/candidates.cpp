@@ -15,6 +15,9 @@ std::vector<NativeCandidate> torch_candidates() {
     return {
         {"std.nn.embedding::embedding", "torch.nn.functional.embedding", Legality::Exact, {}},
         {"std.nn.attention::causal_mask", "torch.tril", Legality::Exact, {}},
+        {"std.nn.conv::conv2d", "torch.nn.functional.conv2d", equivalent, {"a square kernel"}},
+        {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
+        {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.cache::write_at",
          "torch.Tensor.index_copy",
          Legality::Exact,

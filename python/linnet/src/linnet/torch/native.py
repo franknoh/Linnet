@@ -70,6 +70,33 @@ def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return scaled if bias is None else scaled + bias
 
 
+def conv2d(args: list[Any], shape: list[int]) -> torch.Tensor:
+    """`std.nn.conv::conv2d` as `F.conv2d`. The window geometry is not in the
+    arguments, so it is recovered from the shapes, as the exporters do; both
+    spatial axes must agree, which pins stride and padding down."""
+    x, weight, bias = args
+    kernel = int(weight.shape[2])
+    for pad in range(kernel):
+        for stride in range(1, int(x.shape[2]) + 2 * pad + 1):
+            if x.shape[2] + 2 * pad < kernel or x.shape[3] + 2 * pad < kernel:
+                break
+            rows = (int(x.shape[2]) + 2 * pad - kernel) // stride + 1
+            columns = (int(x.shape[3]) + 2 * pad - int(weight.shape[3])) // stride + 1
+            if rows == shape[2] and columns == shape[3]:
+                return functional.conv2d(x, weight, bias, stride=stride, padding=pad)
+    raise ValueError(f"no stride and padding give {shape} from {list(x.shape)}")
+
+
+def _batch_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, mean, variance, weight, bias, eps = args
+    return functional.batch_norm(x, mean, variance, weight, bias, False, 0.0, float(eps.item()))
+
+
+def _spatial_mean(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x = args[0]
+    return x.mean(dim=(2, 3), dtype=torch.float32).to(x.dtype)
+
+
 def _embedding(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     ids, table = args
     return functional.embedding(ids.long(), table)
@@ -141,6 +168,8 @@ def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
 
 NATIVE: dict[str, Native] = {
     "torch.nn.functional.embedding": _embedding,
+    "torch.nn.functional.batch_norm": _batch_norm,
+    "torch.Tensor.mean": _spatial_mean,
     "torch.Tensor.index_copy": _index_copy,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,

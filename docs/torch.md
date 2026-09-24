@@ -75,7 +75,7 @@ What `load` does:
 | --- | --- |
 | `numerics="fast"` (default) | the kernels PyTorch's own reference implementations use: layer normalization and attention in the input dtype |
 | `numerics="equivalent"` | the same kernels, with the f32 accumulation the canonical bodies specify; on `bf16` this costs the fused attention kernel and about 1.6x |
-| | the kernels: `F.linear`, `scaled_dot_product_attention` with `is_causal` for a square `causal_mask` and `enable_gqa` for `grouped_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`; `F.embedding` and the causal mask are exact and selected under every policy |
+| | the kernels: `F.conv2d` (its stride and padding recovered from the shapes), `F.batch_norm`, `F.linear`, `scaled_dot_product_attention` with `is_causal` for a square `causal_mask` and `enable_gqa` for `grouped_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`; `F.embedding` and the causal mask are exact and selected under every policy |
 | `numerics="exact"` | every library operation runs as its canonical `.linnet` body: the slowest path, for comparing against |
 | | `torch.softmax` and `torch.rms_norm` are in neither tier: their kernels accumulate in f32 whatever the input dtype, so every policy calls them without casts |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape; input-independent values (rotary tables, masks) are computed once and reused. The default on CUDA; `compile=False` is the interpreter, the default elsewhere |

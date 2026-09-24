@@ -1,0 +1,30 @@
+module std.nn.pool
+
+// Square max pooling over the two spatial axes. Padding is filled with a
+// value below anything a window can contain, so it never wins a maximum.
+pub op max_pool2d<B: Dim, C: Dim, H: Dim, W: Dim, K: Dim, Stride: Dim, Pad: Dim, T: Float>(
+    x: Tensor[B, C, H, W; T],
+) -> Tensor[B, C, (H + 2 * Pad - K) / Stride + 1, (W + 2 * Pad - K) / Stride + 1; T]
+where
+    Stride > 0,
+    K > 0
+{
+    let edges = fill<T>([B, C, Pad, W], -1e30)
+    let tall = concat(concat(edges, x, axis = 2), edges, axis = 2)
+    let sides = fill<T>([B, C, H + 2 * Pad, Pad], -1e30)
+    let padded = concat(concat(sides, tall, axis = 3), sides, axis = 3)
+    let rows[oh, kh] =
+        iota<i32>((H + 2 * Pad - K) / Stride + 1)[oh] * cast<i32>(Stride) + iota<i32>(K)[kh]
+    let columns[ow, kw] =
+        iota<i32>((W + 2 * Pad - K) / Stride + 1)[ow] * cast<i32>(Stride) + iota<i32>(K)[kw]
+    let pooled[b, c, oh, ow] = max[kh, kw] padded[b, c, rows[oh, kh], columns[ow, kw]]
+    return pooled
+}
+
+// The mean over both spatial axes, which classifiers use before their head.
+pub op global_average_pool2d<B: Dim, C: Dim, H: Dim, W: Dim, T: Float>(
+    x: Tensor[B, C, H, W; T],
+) -> Tensor[B, C; T] {
+    let pooled[b, c] = sum<f32>[h, w] cast<f32>(x[b, c, h, w]) / cast<f32>(H * W)
+    return cast<T>(pooled)
+}
