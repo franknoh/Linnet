@@ -4,20 +4,26 @@ What the compiler costs and what it saves, measured. Every row comes from
 `bench/run.py`; this page renders the JSON it writes
 (`bench/results/latest.json`).
 
-On an H100 the small Llama forward runs in 0.81 ms as generated PyTorch
-replayed as CUDA graphs, against 2.9 ms for eager PyTorch and 1.4 ms for the
-compiled reference; the medium model (TinyLlama shape) takes 3.8 ms against
-8.9 ms and 3.7 ms. One decode step through the KV caches takes 1.1 ms and
-3.5 ms, ahead of XLA's 1.8 ms and 3.8 ms. Every variant agrees with the
-reference within bf16 rounding.
+On an H100 the medium model (TinyLlama shape, `bf16`) runs a forward pass in
+7.2 ms as plain generated PyTorch — ahead of the 8.6 ms the hand-written
+eager reference takes — 4.2 ms under `torch.compile`, and 3.8 ms replayed as
+CUDA graphs, against 3.7 ms for the compiled reference. The small model takes
+3.2 ms, 1.5 ms, and 0.8 ms against 2.7 ms eager and 1.3 ms compiled. Every
+variant agrees with the reference within bf16 rounding.
 
-Three changes got the generated code there: it calls the kernels the
+Four changes account for most of it: the generated code calls the kernels the
 reference calls (`F.embedding`, `scaled_dot_product_attention` with
-`is_causal` and `enable_gqa`), computes input-independent values such as
-rotary tables once per shape instead of once per layer per call, and
-replays the whole step as a CUDA graph (`compile="reduce-overhead"`), which
-removes the per-kernel launch cost that dominated decoding: the profile
-showed the GPU busy for 1.9 ms of a 5.3 ms step before.
+`is_causal` and `enable_gqa`, `index_copy` for a KV cache position), it
+computes input-independent values such as rotary tables once per shape rather
+than once per layer per call, `torch.softmax` and `torch.rms_norm` are called
+without the f32 casts their kernels make redundant, and a whole step can be
+replayed as one CUDA graph.
+
+A single decode step is the exception: it is launch-bound, not
+arithmetic-bound. One layer issues 62 kernels for 0.15 ms of GPU work, so the
+22-layer step spends most of its 12.7 ms in Python dispatch. `torch.compile`
+halves that and CUDA graphs bring it to 3.5 ms, which is what a decoding loop
+should use.
 
 <BenchChart />
 
@@ -43,8 +49,8 @@ at position 256, in bf16, as:
 | --- | --- |
 | PyTorch reference | the hand-written implementation from the test suite, eager |
 | PyTorch reference, compiled | the same under `torch.compile` |
-| Linnet, interpreted | `load(..., numerics="equivalent")` |
-| Linnet, generated source | `load(..., compile=True)` |
+| Linnet, interpreted | `load(..., compile=False)` |
+| Linnet, generated source | `load(..., compile=True)`, the default on CUDA |
 | Linnet, generated and compiled | `load(..., compile="inductor")` |
 | Linnet, CUDA graphs | `load(..., compile="reduce-overhead")`, `numerics="fast"` |
 | Linnet, XLA | `linnet.jax.load` under `jax.jit` |
