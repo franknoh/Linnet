@@ -159,6 +159,9 @@ def test_fast_numerics_skips_f32_accumulation() -> None:
         np.asarray(compiled(tokens), np.float32), reference, atol=0.1, rtol=0.1
     )
     source = fast.generated_source()
-    assert "jax.nn.softmax(" in source
+    # Attention is the library kernel with the causal mask folded into it and
+    # grouped key/value heads passed as they are.
+    assert "jax.nn.dot_product_attention(" in source and "is_causal=True" in source
+    assert "jnp.take(" in source and "mask=" not in source
     # Only the RoPE index arithmetic casts to f32; attention and the norms do not.
-    assert ".astype(jnp.float32)" not in source.split("jnp.einsum(", 1)[1]
+    assert ".astype(jnp.float32)" not in source.split("jax.nn.dot_product_attention(", 1)[1]

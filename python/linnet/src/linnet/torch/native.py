@@ -64,18 +64,53 @@ def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return scaled if bias is None else scaled + bias
 
 
-def _attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    query, key, value, scale, mask = args
+def _embedding(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    ids, table = args
+    return functional.embedding(ids.long(), table)
+
+
+def causal_mask(shape: list[int], device: torch.device) -> torch.Tensor:
+    """`causal_mask<Q, K>()` as a boolean `tril`; a square one is tagged so the
+    attention kernels can use `is_causal` instead of reading it."""
+    rows, columns = shape
+    mask = torch.ones(rows, columns, dtype=torch.bool, device=device).tril(columns - rows)
+    mask._linnet_causal = rows == columns  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+    return mask
+
+
+def _sdpa(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    scale: torch.Tensor,
+    mask: torch.Tensor | None,
+    *,
+    fast: bool,
+) -> torch.Tensor:
+    # A square mask produced by `causal_mask` becomes `is_causal=True`, which
+    # lets PyTorch use its fused causal kernels; grouped key/value heads are
+    # read once through `enable_gqa`.
+    causal = mask is not None and bool(getattr(mask, "_linnet_causal", False))
+    options: dict[str, Any] = {"scale": float(scale.item())}
+    if causal:
+        options["is_causal"] = True
+    elif mask is not None:
+        options["attn_mask"] = mask
+    if key.shape[1] != query.shape[1]:
+        options["enable_gqa"] = True
+    if fast:
+        return functional.scaled_dot_product_attention(query, key, value, **options)
     # The canonical body computes in f32; SDPA is asked to do the same so
     # that results agree with it for low-precision inputs.
     out = functional.scaled_dot_product_attention(
-        query.float(),
-        key.float(),
-        value.float(),
-        attn_mask=None if mask is None else mask,
-        scale=float(scale.item()),
+        query.float(), key.float(), value.float(), **options
     )
     return out.to(query.dtype)
+
+
+def _attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    query, key, value, scale, mask = args
+    return _sdpa(query, key, value, scale, mask, fast=False)
 
 
 def _softmax_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
@@ -95,16 +130,11 @@ def _layer_norm_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tens
 
 def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     query, key, value, scale, mask = args
-    return functional.scaled_dot_product_attention(
-        query,
-        key,
-        value,
-        attn_mask=None if mask is None else mask,
-        scale=float(scale.item()),
-    )
+    return _sdpa(query, key, value, scale, mask, fast=True)
 
 
 NATIVE: dict[str, Native] = {
+    "torch.nn.functional.embedding": _embedding,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,
@@ -119,4 +149,6 @@ NATIVE: dict[str, Native] = {
     "torch.rms_norm(input dtype)": _rms_norm_fast,
     "torch.nn.functional.layer_norm(input dtype)": _layer_norm_fast,
     "torch.nn.functional.scaled_dot_product_attention(input dtype)": _attention_fast,
+    "torch.nn.functional.scaled_dot_product_attention(enable_gqa)": _attention,
+    "torch.nn.functional.scaled_dot_product_attention(enable_gqa)(input dtype)": _attention_fast,
 }

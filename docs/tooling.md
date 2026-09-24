@@ -150,7 +150,12 @@ Anything the format cannot express is an error, never an approximation.
 format's own operator when one exists: contractions as `dot_general` or
 `MatMul`, attention as two contractions around a softmax, `torch.softmax`,
 `F.scaled_dot_product_attention`, `jax.nn.silu`, and so on. `exact` keeps
-every canonical body. `fast` additionally lets softmax, normalization, and
+every canonical body except the two that are the same numbers however they
+are computed: `std.nn.embedding::embedding` (a gather) and
+`std.nn.attention::causal_mask` (a boolean mask), which every policy takes
+natively. A square causal mask reaches attention as `is_causal=True`, and
+`std.nn.attention::grouped_attention` reaches it with the key/value heads
+unrepeated. `fast` additionally lets softmax, normalization, and
 attention accumulate in the input dtype instead of the f32 the canonical
 bodies specify; for `bf16` and `f16` this is what framework reference models
 do, and results differ by rounding only. Optional parameters are absent

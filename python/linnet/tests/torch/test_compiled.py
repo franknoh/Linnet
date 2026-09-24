@@ -93,6 +93,15 @@ def test_native_kernels_and_torch_compile() -> None:
     assert "torch.rms_norm(" in source and "F.scaled_dot_product_attention(" in source
     # `rsqrt(cast<f32>(H / Heads))` reaches the kernel as a literal, not a tensor.
     assert "scale=0.7071067" in source and "scale=float(" not in source
+    # The kernels the reference uses: a row gather, a fused causal kernel with
+    # grouped key/value heads, and no materialized mask.
+    assert source.count("F.embedding(") == 1
+    assert "is_causal=True" in source and "enable_gqa=True" in source
+    assert "attn_mask=" not in source and ".tril(" not in source
+    # Rotary tables are computed once, not once per layer, and folded
+    # scalars leave no dead tensors behind.
+    assert source.count("torch.cos(") == 1 and source.count("torch.sin(") == 1
+    assert "torch.tensor(1.0000000000000001e-05" not in source
 
 
 def test_while_loop_in_generated_source() -> None:

@@ -3,7 +3,9 @@ module std.nn.attention
 use std.nn.softmax::{softmax}
 
 // A [Q, K] mask that keeps key positions at or before each query position.
-pub fn causal_mask<Q: Dim, K: Dim>() -> Tensor[Q, K; bool] {
+// An `op`, so a backend that has a causal attention kernel can recognize the
+// mask and drop it.
+pub op causal_mask<Q: Dim, K: Dim>() -> Tensor[Q, K; bool] {
     let queries = iota(Q)
     let keys = iota(K)
     let mask[q, k] = keys[k] <= queries[q] + (K - Q)
@@ -28,4 +30,30 @@ pub op attention<B: Dim, H: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
     let weights = softmax(masked)
     let mixed[b, h, q, d] = sum[k] weights[b, h, q, k] * cast<f32>(value[b, h, k, d])
     return cast<T>(mixed)
+}
+
+// Attention whose `Hk` key/value heads are shared by `H` query heads
+// (grouped-query attention): each key/value head serves `H / Hk` consecutive
+// query heads. The canonical body repeats the heads; a kernel that groups
+// natively reads them once.
+pub op grouped_attention<B: Dim, H: Dim, Hk: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
+    query: Tensor[B, H, Q, D; T],
+    key: Tensor[B, Hk, K, D; T],
+    value: Tensor[B, Hk, K, D; T],
+    scale: f32,
+    mask: Tensor[Q, K; bool]? = none,
+) -> Tensor[B, H, Q, D; T]
+where
+    Hk > 0,
+    H % Hk == 0
+{
+    let keys = reshape(
+        broadcast_to(reshape(key, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
+        [B, H, K, D],
+    )
+    let values = reshape(
+        broadcast_to(reshape(value, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
+        [B, H, K, D],
+    )
+    return attention(query, keys, values, scale, mask)
 }

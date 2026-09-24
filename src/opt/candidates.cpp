@@ -10,7 +10,19 @@ std::vector<NativeCandidate> torch_candidates() {
     // the kernel in the tensor's own dtype: faster in bf16, within rounding
     // of the body only approximately.
     const Legality fast = Legality::Approximate;
+    // A gather and a boolean mask are the same numbers however they are
+    // computed, so these two are Exact and selected under every policy.
     return {
+        {"std.nn.embedding::embedding", "torch.nn.functional.embedding", Legality::Exact, {}},
+        {"std.nn.attention::causal_mask", "torch.tril", Legality::Exact, {}},
+        {"std.nn.attention::grouped_attention",
+         "torch.nn.functional.scaled_dot_product_attention(enable_gqa)(input dtype)",
+         fast,
+         {"mask is boolean with true meaning attend", "key/value heads divide query heads"}},
+        {"std.nn.attention::grouped_attention",
+         "torch.nn.functional.scaled_dot_product_attention(enable_gqa)",
+         equivalent,
+         {"mask is boolean with true meaning attend", "key/value heads divide query heads"}},
         {"std.nn.softmax::softmax", "torch.softmax(input dtype)", fast, {}},
         {"std.nn.norm::rms_norm", "torch.rms_norm(input dtype)", fast, {}},
         {"std.nn.norm::layer_norm", "torch.nn.functional.layer_norm(input dtype)", fast, {}},

@@ -25,7 +25,7 @@ import torch
 
 from ..plan import Env, Plan, PlanError
 from .dtypes import torch_dtype
-from .native import NATIVE
+from .native import NATIVE, causal_mask
 
 Value = Any
 
@@ -280,6 +280,9 @@ class Interpreter:
 
         if kind in ("call", "semantic.call"):
             selected = attrs.get("selected", "canonical decomposition")
+            if selected == "torch.tril":
+                assert result_type is not None
+                return [causal_mask(env.shape(result_type["shape"]), self.device)]
             if selected != "canonical decomposition":
                 if selected not in NATIVE:
                     raise PlanError(

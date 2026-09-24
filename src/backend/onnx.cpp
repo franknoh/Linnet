@@ -182,6 +182,10 @@ public:
             at[1] != nullptr) {
             return node("MatMul", {*at[0], *at[1]}, "", shape, dtype);
         }
+        if (implementation_base == "torch.nn.functional.embedding" && operands.size() == 2 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            return node("Gather", {*at[1], *at[0]}, "axis = 0", shape, dtype);
+        }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
             const TensorInfo& weight = *at[1];
