@@ -115,6 +115,18 @@ def test_index_and_preview(model_dir: Path) -> None:
     assert svg.startswith("<svg") and "for layer in blocks" in svg
 
 
+def test_tied_parameters_are_counted_once(model_dir: Path) -> None:
+    card = nest.Card.read(model_dir)
+    program = card.program(STDLIB)
+    untied = nest.parameter_count(card, program)
+    # Bind a second path to a tensor already bound: the count must not grow.
+    (model_dir / "bindings.json").write_text(
+        json.dumps({"wte": "shared", "wpe": "shared"}), encoding="utf-8"
+    )
+    tied = nest.parameter_count(nest.Card.read(model_dir), program)
+    assert tied == untied - 16 * 8  # `wpe` no longer counted on its own
+
+
 def test_cli_check_and_index(
     model_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
