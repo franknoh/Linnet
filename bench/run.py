@@ -63,6 +63,18 @@ class Variant:
     throughput: float | None
     max_abs_diff: float | None
     note: str = ""
+    kernels: int | None = None  # CUDA kernels launched by one call, when profiled
+
+    def __post_init__(self) -> None:
+        # `time_call` profiles the call it just timed; the variant built right
+        # after it takes that count.
+        global _last_kernels
+        if self.kernels is None and self.latency_ms is not None:
+            self.kernels = _last_kernels
+        _last_kernels = None
+
+
+_last_kernels: int | None = None
 
 
 @dataclass
@@ -140,7 +152,9 @@ def synchronize(device: torch.device) -> None:
 
 
 def time_call(fn: Callable[[], Any], device: torch.device, warmup: int, iters: int) -> float:
-    """Median wall time of `fn` in milliseconds, device-synchronized."""
+    """Median wall time of `fn` in milliseconds, device-synchronized. On CUDA
+    the call is also profiled once for the number of kernels it launches."""
+    global _last_kernels
     for _ in range(warmup):
         fn()
     synchronize(device)
@@ -150,7 +164,23 @@ def time_call(fn: Callable[[], Any], device: torch.device, warmup: int, iters: i
         fn()
         synchronize(device)
         samples.append((time.perf_counter() - start) * 1e3)
+    _last_kernels = count_kernels(fn, device)
     return statistics.median(samples)
+
+
+def count_kernels(fn: Callable[[], Any], device: torch.device) -> int | None:
+    """How many CUDA kernels one call launches (None off CUDA or if profiling fails)."""
+    if device.type != "cuda":
+        return None
+    try:
+        from torch.profiler import ProfilerActivity, profile
+
+        with profile(activities=[ProfilerActivity.CUDA]) as trace:
+            fn()
+            synchronize(device)
+        return sum(1 for event in trace.events() if str(event.device_type).endswith("CUDA"))
+    except Exception:  # profiling is a diagnostic; its failure is not a result
+        return None
 
 
 def diff(actual: Any, expected: torch.Tensor) -> float:
@@ -628,7 +658,8 @@ def main() -> None:
         print(f"\n{run.model} · {run.config} · {run.entry}")
         for variant in run.variants:
             latency = "—" if variant.latency_ms is None else f"{variant.latency_ms:9.2f} ms"
-            print(f"  {variant.name:48s} {latency}  Δ={variant.max_abs_diff}  {variant.note}")
+            kernels = "" if variant.kernels is None else f"  {variant.kernels} kernels"
+            print(f"  {variant.name:48s} {latency}{kernels}  Δ={variant.max_abs_diff}  {variant.note}")
     print(f"\nwrote {args.out}")
 
 
