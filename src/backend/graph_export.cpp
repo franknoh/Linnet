@@ -1,10 +1,12 @@
 #include "linnet/backend/graph_export.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <deque>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1353,6 +1355,73 @@ export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget&
     } catch (const Unsupported& error) {
         return std::unexpected(error.what());
     }
+}
+
+namespace {
+
+// The `vN` names a generated line mentions on its right-hand side.
+std::set<std::string> mentioned_values(const std::string& line) {
+    std::set<std::string> names;
+    const std::size_t assignment = line.find(" = ");
+    const std::size_t begin = assignment == std::string::npos ? 0 : assignment + 3;
+    for (std::size_t i = begin; i < line.size(); ++i) {
+        const bool boundary = i == 0 || (!std::isalnum(static_cast<unsigned char>(line[i - 1])) &&
+                                         line[i - 1] != '_');
+        if (line[i] != 'v' || !boundary) {
+            continue;
+        }
+        std::size_t j = i + 1;
+        while (j < line.size() && std::isdigit(static_cast<unsigned char>(line[j]))) {
+            ++j;
+        }
+        const bool ends = j == line.size() ||
+                          (!std::isalnum(static_cast<unsigned char>(line[j])) && line[j] != '_');
+        if (j > i + 1 && ends) {
+            names.insert(line.substr(i, j - i));
+        }
+        i = j;
+    }
+    return names;
+}
+
+} // namespace
+
+std::string prune_python_assignments(const std::string& body, const std::string& live_tail) {
+    std::vector<std::string> lines;
+    std::string current;
+    for (const char c : body) {
+        if (c == '\n') {
+            lines.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    std::set<std::string> live = mentioned_values(live_tail);
+    std::vector<bool> keep(lines.size(), true);
+    for (std::size_t i = lines.size(); i-- > 0;) {
+        const std::string& line = lines[i];
+        const std::size_t start = line.find_first_not_of(' ');
+        if (start != std::string::npos && line[start] == 'v') {
+            const std::size_t end = line.find(" = ", start);
+            if (end != std::string::npos &&
+                line.find_first_not_of("0123456789", start + 1) == end &&
+                !live.contains(line.substr(start, end - start))) {
+                keep[i] = false;
+                continue;
+            }
+        }
+        for (const std::string& name : mentioned_values(line)) {
+            live.insert(name);
+        }
+    }
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (keep[i]) {
+            out += lines[i] + "\n";
+        }
+    }
+    return out;
 }
 
 } // namespace linnet::backend

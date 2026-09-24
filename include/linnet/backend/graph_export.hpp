@@ -187,4 +187,10 @@ struct GraphExportOptions {
 std::expected<std::string, std::string>
 export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget& target);
 
+// Generated Python (the `torch` and `jax` targets): drops `vN = ...` lines
+// whose value nothing later mentions, including `live_tail` (the return
+// statement). Uses always follow definitions in the emitted text, so one
+// backward pass suffices.
+std::string prune_python_assignments(const std::string& body, const std::string& live_tail);
+
 } // namespace linnet::backend

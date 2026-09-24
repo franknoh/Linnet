@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -421,8 +422,13 @@ public:
         (void)dtype;
         const std::string suffix = "(input dtype)";
         const bool fast = implementation.ends_with(suffix);
-        const std::string implementation_base =
+        std::string implementation_base =
             fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
+        const std::string gqa = "(enable_gqa)";
+        const bool grouped = implementation_base.ends_with(gqa);
+        if (grouped) {
+            implementation_base.resize(implementation_base.size() - gqa.size());
+        }
         // `fast`: the kernel runs in the tensor's dtype; otherwise in f32 as
         // the canonical body does.
         const auto up = [&](const std::string& x) { return fast ? x : x + ".float()"; };
@@ -446,6 +452,19 @@ public:
         };
         if (implementation_base == "torch.matmul" && operands.size() == 2) {
             return define("torch.matmul(" + name(0) + ", " + name(1) + ")");
+        }
+        if (implementation_base == "torch.nn.functional.embedding" && operands.size() == 2) {
+            return define("F.embedding(" + name(0) + ".long(), " + name(1) + ")");
+        }
+        if (implementation_base == "torch.tril" && operands.empty() && shape.size() == 2) {
+            // `keys[k] <= queries[q] + (K - Q)`: ones below the diagonal K - Q.
+            std::string mask = define("torch.ones(" + dims_text(shape) +
+                                      ", dtype=torch.bool, device=_device).tril(" +
+                                      std::to_string(shape[1] - shape[0]) + ")");
+            if (shape[0] == shape[1]) {
+                causal_masks_.insert(mask);
+            }
+            return mask;
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
             return define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
@@ -490,9 +509,29 @@ public:
         }
         if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5) {
+            // A square causal mask becomes `is_causal=True`, which lets PyTorch
+            // pick its fused causal kernels; other masks are passed as they are.
+            std::vector<const TensorInfo*> at;
+            at.reserve(operands.size());
+            for (const std::optional<TensorInfo>& operand : operands) {
+                at.push_back(operand.has_value() ? &*operand : nullptr);
+            }
+            const TensorInfo* query = at[0];
+            const TensorInfo* key = at[1];
+            const TensorInfo* attn_mask = at[4];
+            std::string mask = ", attn_mask=" + name(4);
+            if (attn_mask != nullptr && causal_masks_.contains(attn_mask->name)) {
+                mask = ", is_causal=True";
+            } else if (attn_mask == nullptr) {
+                mask = "";
+            }
+            const bool heads_differ = query != nullptr && key != nullptr &&
+                                      query->shape.size() > 1 && key->shape.size() > 1 &&
+                                      key->shape[1] != query->shape[1];
+            const std::string groups = grouped && heads_differ ? ", enable_gqa=True" : "";
             return define(down("F.scaled_dot_product_attention(" + up(name(0)) + ", " +
-                                   up(name(1)) + ", " + up(name(2)) + ", attn_mask=" + name(4) +
-                                   ", scale=" + scalar(3) + ")",
+                                   up(name(1)) + ", " + up(name(2)) + mask +
+                                   ", scale=" + scalar(3) + groups + ")",
                                name(0)));
         }
         return std::nullopt;
@@ -529,8 +568,7 @@ public:
                (arguments_.empty() ? std::string("torch.device(\"cpu\")")
                                    : arguments_.front() + ".device") +
                "\n";
-        out += body_;
-        out += "    return (";
+        std::string tail = "    return (";
         std::vector<std::string> outputs;
         outputs.reserve(results.size() + states.size());
         for (const TensorInfo& result : results) {
@@ -540,9 +578,11 @@ public:
             outputs.push_back(value.name);
         }
         for (std::size_t i = 0; i < outputs.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + outputs[i];
+            tail += (i == 0 ? "" : ", ") + outputs[i];
         }
-        out += outputs.size() == 1 ? ",)\n" : ")\n";
+        tail += outputs.size() == 1 ? ",)\n" : ")\n";
+        out += prune_python_assignments(body_, tail);
+        out += tail;
         return out;
     }
 
@@ -560,6 +600,7 @@ public:
         body_ += indent_ + "while True:\n";
         indent_ += "    ";
         loop_names_.push_back(names);
+        cse_.emplace_back(); // values computed in the body belong to one iteration
         return names;
     }
 
@@ -580,13 +621,24 @@ public:
         body_ += indent_ + targets + (next.size() == 1 ? "," : "") + " = " + values +
                  (next.size() == 1 ? "," : "") + "\n";
         indent_.resize(indent_.size() - 4);
+        cse_.pop_back();
         return names;
     }
 
 private:
+    // Every value is immutable, so an expression already computed in this
+    // scope (or an enclosing one) names the same tensor: identical rotary
+    // tables or masks across inlined layers are emitted once.
     std::string define(const std::string& expression) {
+        for (auto scope = cse_.rbegin(); scope != cse_.rend(); ++scope) {
+            const auto found = scope->find(expression);
+            if (found != scope->end()) {
+                return found->second;
+            }
+        }
         const std::string name = "v" + std::to_string(next_++);
         body_ += indent_ + name + " = " + expression + "\n";
+        cse_.back()[expression] = name;
         return name;
     }
 
@@ -624,11 +676,13 @@ private:
     }
 
     std::vector<std::string> arguments_;
-    std::vector<std::string> parameters_;         // paths, in argument order
-    std::vector<std::string> states_;             // paths, in argument order
-    std::map<std::string, std::string> literals_; // constant name -> Python literal
-    std::map<std::string, double> values_;        // constant name -> folded scalar value
-    std::map<ScalarKind, std::string> zeros_;     // per-dtype zero constants
+    std::vector<std::string> parameters_;                    // paths, in argument order
+    std::vector<std::string> states_;                        // paths, in argument order
+    std::map<std::string, std::string> literals_;            // constant name -> Python literal
+    std::set<std::string> causal_masks_;                     // square masks from `causal_mask`
+    std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
+    std::map<std::string, double> values_;                   // constant name -> folded scalar value
+    std::map<ScalarKind, std::string> zeros_;                // per-dtype zero constants
     std::string body_;
     std::string indent_ = "    ";
     std::vector<std::vector<std::string>> loop_names_;

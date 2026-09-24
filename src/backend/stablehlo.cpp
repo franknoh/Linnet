@@ -412,6 +412,27 @@ public:
         for (const std::optional<TensorInfo>& operand : operands) {
             at.push_back(operand.has_value() ? &*operand : nullptr);
         }
+        if (implementation == "torch.nn.functional.embedding" && operands.size() == 2 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            // Rows of the table by id: a gather along axis 0 with the ids as
+            // the index vectors, keeping the row axis as the offset dimension.
+            const TensorInfo& ids = *at[0];
+            const TensorInfo& table = *at[1];
+            Dims index_shape = ids.shape;
+            index_shape.push_back(1);
+            const TensorInfo indices{reshape(ids, index_shape), index_shape, ids.dtype};
+            return emit("gather",
+                        {table, indices},
+                        "dimension_numbers = #stablehlo.gather<offset_dims = [" +
+                            std::to_string(ids.shape.size()) +
+                            "], collapsed_slice_dims = [0], start_index_map = [0], "
+                            "index_vector_dim = " +
+                            std::to_string(ids.shape.size()) +
+                            ">, indices_are_sorted = false, slice_sizes = " +
+                            i64_array({1, table.shape[1]}),
+                        shape,
+                        table.dtype);
+        }
         if (implementation == "torch.matmul" && operands.size() == 2 && at[0] != nullptr &&
             at[1] != nullptr) {
             const TensorInfo& a = *at[0];

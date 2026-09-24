@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -280,8 +281,12 @@ public:
         }
         const std::string suffix = "(input dtype)";
         const bool fast = implementation.ends_with(suffix);
-        const std::string implementation_base =
+        std::string implementation_base =
             fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
+        const std::string gqa = "(enable_gqa)";
+        if (implementation_base.ends_with(gqa)) {
+            implementation_base.resize(implementation_base.size() - gqa.size());
+        }
         const auto name = [&](std::size_t i) -> std::string {
             return i < at.size() && at[i] != nullptr ? at[i]->name : "None";
         };
@@ -300,6 +305,19 @@ public:
         const auto back = [&](const std::string& expression, std::size_t like) {
             return fast ? expression : expression + ".astype(" + name(like) + ".dtype)";
         };
+        if (implementation_base == "torch.nn.functional.embedding" && at.size() == 2 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            return define("jnp.take(" + name(1) + ", " + name(0) + ", axis=0)");
+        }
+        if (implementation_base == "torch.tril" && at.empty() && shape.size() == 2) {
+            std::string mask = define("jnp.tril(jnp.ones((" + std::to_string(shape[0]) + ", " +
+                                      std::to_string(shape[1]) + "), dtype=bool), " +
+                                      std::to_string(shape[1] - shape[0]) + ")");
+            if (shape[0] == shape[1]) {
+                causal_masks_.insert(mask);
+            }
+            return mask;
+        }
         if (implementation_base == "torch.matmul" && at.size() == 2) {
             return define("jnp.matmul(" + name(0) + ", " + name(1) + ")");
         }
@@ -343,14 +361,21 @@ public:
         }
         if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             at.size() == 5 && at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {
-            const std::string scores = define("jnp.einsum(\"bhqd,bhkd->bhqk\", " + f32(0) + ", " +
-                                              f32(1) + ") * " + scalar(3));
-            const std::string masked =
-                at[4] != nullptr ? define("jnp.where(" + name(4) + ", " + scores + ", -1e30)")
-                                 : scores;
-            const std::string weights = define("jax.nn.softmax(" + masked + ", axis=-1)");
-            return define(
-                back("jnp.einsum(\"bhqk,bhkd->bhqd\", " + weights + ", " + f32(2) + ")", 0));
+            // `jax.nn.dot_product_attention` takes [B, S, N, D], groups
+            // key/value heads natively, and has a causal mode, so a square
+            // `causal_mask` disappears into `is_causal=True`.
+            const std::string q = define("jnp.swapaxes(" + f32(0) + ", 1, 2)");
+            const std::string k = define("jnp.swapaxes(" + f32(1) + ", 1, 2)");
+            const std::string v = define("jnp.swapaxes(" + f32(2) + ", 1, 2)");
+            std::string mask;
+            if (at[4] != nullptr && causal_masks_.contains(at[4]->name)) {
+                mask = ", is_causal=True";
+            } else if (at[4] != nullptr) {
+                mask = ", mask=" + name(4) + "[None, None]";
+            }
+            const std::string mixed = define("jax.nn.dot_product_attention(" + q + ", " + k + ", " +
+                                             v + ", scale=" + scalar(3) + mask + ")");
+            return define(back("jnp.swapaxes(" + mixed + ", 1, 2)", 0));
         }
         return std::nullopt;
     }
@@ -371,6 +396,7 @@ public:
         indent_ += "    ";
         body_ += indent_ + unpack(loop.names) + " = carried\n";
         loops_.push_back(loop);
+        cse_.emplace_back(); // the condition's values live in its own function
         return loop.names;
     }
 
@@ -378,6 +404,8 @@ public:
         const Loop& loop = loops_.back();
         body_ += indent_ + "return " + predicate.name + "\n";
         indent_.resize(indent_.size() - 4);
+        cse_.pop_back();
+        cse_.emplace_back(); // and the body's in its own
         body_ += indent_ + "def _body" + std::to_string(loop.id) + "(carried):\n";
         indent_ += "    ";
         body_ += indent_ + unpack(loop.names) + " = carried\n";
@@ -395,6 +423,7 @@ public:
         }
         body_ += indent_ + "return (" + values + (next.size() == 1 ? ",)" : ")") + "\n";
         indent_.resize(indent_.size() - 4);
+        cse_.pop_back();
         const std::string result = "w" + std::to_string(loop.id);
         body_ += indent_ + result + " = jax.lax.while_loop(_cond" + std::to_string(loop.id) +
                  ", _body" + std::to_string(loop.id) + ", (" + inits +
@@ -435,8 +464,7 @@ public:
             out += (i == 0 ? "" : ", ") + arguments_[i];
         }
         out += "):\n";
-        out += body_;
-        out += "    return (";
+        std::string tail = "    return (";
         std::vector<std::string> outputs;
         outputs.reserve(results.size() + states.size());
         for (const TensorInfo& result : results) {
@@ -446,9 +474,10 @@ public:
             outputs.push_back(value.name);
         }
         for (std::size_t i = 0; i < outputs.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + outputs[i];
+            tail += (i == 0 ? "" : ", ") + outputs[i];
         }
-        out += outputs.size() == 1 ? ",)\n" : ")\n";
+        out += prune_python_assignments(body_, tail);
+        out += tail + (outputs.size() == 1 ? ",)\n" : ")\n");
         return out;
     }
 
@@ -459,9 +488,18 @@ private:
         std::vector<std::string> names;
     };
 
+    // Values are immutable, so an expression already computed in this scope
+    // or an enclosing one names the same array (see the torch target).
     std::string define(const std::string& expression) {
+        for (auto scope = cse_.rbegin(); scope != cse_.rend(); ++scope) {
+            const auto found = scope->find(expression);
+            if (found != scope->end()) {
+                return found->second;
+            }
+        }
         const std::string name = "v" + std::to_string(next_++);
         body_ += indent_ + name + " = " + expression + "\n";
+        cse_.back()[expression] = name;
         return name;
     }
 
@@ -627,6 +665,8 @@ private:
     std::size_t loops_made_ = 0;
     std::string body_;
     std::string indent_ = "    ";
+    std::set<std::string> causal_masks_;                     // square masks from `causal_mask`
+    std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::size_t next_ = 0;
 };
 

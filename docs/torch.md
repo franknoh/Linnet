@@ -74,7 +74,7 @@ What `load` does:
 | Option | |
 | --- | --- |
 | `numerics="exact"` (default) | library operations run as their canonical `.linnet` bodies |
-| `numerics="equivalent"` | library operations dispatch to PyTorch kernels (`F.linear`, `scaled_dot_product_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`) that agree up to rounding |
+| `numerics="equivalent"` | library operations dispatch to PyTorch kernels (`F.linear`, `scaled_dot_product_attention` with `is_causal` for a square `causal_mask` and `enable_gqa` for `grouped_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`) that agree up to rounding; `F.embedding` and the causal mask are exact and selected under every policy |
 | `numerics="fast"` | the same kernels run in the input dtype; softmax, normalization, and attention no longer accumulate in f32, matching PyTorch reference models on `bf16` |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape |
 | `compile="inductor"` | the same, passed through `torch.compile` |
