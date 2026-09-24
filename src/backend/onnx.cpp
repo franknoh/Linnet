@@ -156,6 +156,8 @@ public:
         return name;
     }
 
+    bool broadcasts_elementwise() const override { return true; }
+
     std::optional<std::string> native_call(const std::string& implementation,
                                            const std::vector<std::optional<TensorInfo>>& operands,
                                            const Dims& shape,

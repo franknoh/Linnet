@@ -108,6 +108,12 @@ public:
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) = 0;
     // Axis i of `value` becomes axis dims[i] of the result; other axes broadcast.
     virtual std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) = 0;
+
+    // Whether the target's elementwise operations broadcast right-aligned
+    // operands themselves (PyTorch, NumPy, ONNX do; StableHLO does not). When
+    // they do, the exporter leaves those broadcasts out: one emitted
+    // operation fewer for every operand of every elementwise operation.
+    virtual bool broadcasts_elementwise() const { return false; }
     virtual std::string slice(const TensorInfo& value,
                               const Dims& starts,
                               const Dims& limits,

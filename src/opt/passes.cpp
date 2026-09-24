@@ -196,12 +196,24 @@ bool canonicalize(Module& module) {
                 return module.value(op.operands[i]).type;
             };
             switch (op.kind) {
-            case OpKind::Reshape:
             case OpKind::Broadcast:
             case OpKind::Cast:
                 // A view or conversion to the operand's own type is a copy.
                 if (same_type(module, operand_type(0), module.value(result).type)) {
                     replace_with(op.operands.front());
+                }
+                break;
+            case OpKind::Reshape:
+                if (same_type(module, operand_type(0), module.value(result).type)) {
+                    replace_with(op.operands.front());
+                    break;
+                }
+                // reshape(reshape(x, a), b) == reshape(x, b): the first shape
+                // is never observed.
+                if (const OpId producer = module.value(op.operands.front()).producer;
+                    producer != no_id && module.op(producer).kind == OpKind::Reshape) {
+                    op.operands.front() = module.op(producer).operands.front();
+                    has_changed = true;
                 }
                 break;
             case OpKind::Permute:

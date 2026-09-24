@@ -328,7 +328,7 @@ def describe(card: Card, std_root: str | Path | None = None) -> dict[str, Any]:
     program = card.program(std_root)
     parameters: int | None
     try:
-        parameters = ir.parameter_count(program, card.generics)
+        parameters = parameter_count(card, program)
     except LinnetError:
         parameters = None
     files = sorted(
@@ -373,6 +373,32 @@ def describe(card: Card, std_root: str | Path | None = None) -> dict[str, Any]:
         },
         "files": files,
     }
+
+
+def parameter_count(card: Card, program: ir.Program) -> int:
+    """The model's parameters, counting a tensor two paths share only once.
+
+    Tied embeddings are two parameters of the program bound to one tensor of
+    the checkpoint, and the published figure counts that tensor once.
+    """
+    bindings = card.bindings_path
+    mapping = read_bindings(bindings) if bindings is not None and bindings.exists() else {}
+    values = ir.bind_generics(program.root.generics, card.generics)
+    counted: set[str] = set()
+    total = 0
+    for entry in program.manifest:
+        if entry.kind != "param":
+            continue
+        elements = 1
+        for size in ir.evaluate_shape(entry.shape, values):
+            elements *= size
+        for path in expand_paths(entry, values):
+            source = mapping.get(path, path)
+            if source in counted:
+                continue
+            counted.add(source)
+            total += elements
+    return total
 
 
 def index(root: str | Path, std_root: str | Path | None = None) -> dict[str, Any]:

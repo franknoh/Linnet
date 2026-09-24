@@ -618,10 +618,41 @@ private:
     std::vector<Val> aligned(const std::vector<Val>& operands, const Dims& shape) {
         std::vector<Val> out;
         out.reserve(operands.size());
+        // A target that broadcasts its own elementwise operands needs the
+        // broadcasts only when no operand already has the result shape: the
+        // shapes are right-aligned, which is the rule those targets use.
+        const bool implicit =
+            target_.broadcasts_elementwise() && !in_grid() &&
+            std::any_of(operands.begin(), operands.end(), [&](const Val& operand) {
+                return operand.kind == Val::Kind::Tensor && operand.shape == shape;
+            });
         for (const Val& operand : operands) {
+            if (implicit && operand.kind == Val::Kind::Tensor &&
+                trailing_compatible(operand.shape, shape)) {
+                Val kept = operand;
+                kept.shape = shape; // what the operation produces, not what it reads
+                out.push_back(kept);
+                continue;
+            }
             out.push_back(in_grid() ? to_grid(operand) : broadcast_trailing(operand, shape));
         }
         return out;
+    }
+
+    // Right-aligned axes that are equal or one: what implicit broadcasting
+    // accepts without a copy.
+    static bool trailing_compatible(const Dims& from, const Dims& to) {
+        if (from.size() > to.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < from.size(); ++i) {
+            const std::int64_t axis = from[from.size() - 1 - i];
+            const std::int64_t target = to[to.size() - 1 - i];
+            if (axis != target && axis != 1) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ---------------------------------------------------------- running
