@@ -70,7 +70,9 @@ this release.
 
 `transformers` agrees with the Linnet interpreter on the exported model to
 1e-4 (the tests export tiny GPT-2 and Llama configurations and compare
-logits).
+logits). The export of `tinyllama-1.1b-chat` from Nest was served by vLLM
+0.30 on an H100 as it is: `/v1/completions` and `/v1/chat/completions`
+answer with the model's chat template applied.
 
 ## llama.cpp and Ollama
 
