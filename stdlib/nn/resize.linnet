@@ -1,0 +1,13 @@
+module std.nn.resize
+
+// Nearest-neighbour upsampling by a whole factor: every output position
+// reads the input position it sits in, which is an index tensor away.
+pub op upsample_nearest2d<B: Dim, C: Dim, H: Dim, W: Dim, Scale: Dim, T: Float>(
+    x: Tensor[B, C, H, W; T],
+) -> Tensor[B, C, H * Scale, W * Scale; T]
+where Scale > 0 {
+    let rows[oh] = iota<i32>(H * Scale)[oh] / cast<i32>(Scale)
+    let columns[ow] = iota<i32>(W * Scale)[ow] / cast<i32>(Scale)
+    let out[b, c, oh, ow] = x[b, c, rows[oh], columns[ow]]
+    return out
+}

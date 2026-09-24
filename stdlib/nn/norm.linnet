@@ -55,3 +55,28 @@ pub op batch_norm<B: Dim, C: Dim, H: Dim, W: Dim, T: Float>(
         cast<f32>(bias[c])
     return cast<T>(scaled)
 }
+
+// Normalization over groups of channels and the whole spatial extent, which
+// convolutional generators use where a batch is too small for batch
+// statistics. `Groups` is a generic rather than an argument because the
+// body reshapes by it.
+pub op group_norm<B: Dim, C: Dim, H: Dim, W: Dim, Groups: Dim, T: Float>(
+    x: Tensor[B, C, H, W; T],
+    weight: Tensor[C; T],
+    bias: Tensor[C; T],
+    eps: f32 = 1e-6,
+) -> Tensor[B, C, H, W; T]
+where
+    Groups > 0,
+    C % Groups == 0
+{
+    let grouped = reshape(x, [B, Groups, C / Groups, H, W])
+    let count = cast<f32>((C / Groups) * H * W)
+    let mean[b, g] = sum<f32>[k, h, w] cast<f32>(grouped[b, g, k, h, w]) / count
+    let centered[b, g, k, h, w] = cast<f32>(grouped[b, g, k, h, w]) - mean[b, g]
+    let variance[b, g] = sum[k, h, w] centered[b, g, k, h, w] * centered[b, g, k, h, w] / count
+    let normalized[b, g, k, h, w] = centered[b, g, k, h, w] * rsqrt(variance[b, g] + eps)
+    let restored = reshape(cast<T>(normalized), [B, C, H, W])
+    let out[b, c, h, w] = restored[b, c, h, w] * weight[c] + bias[c]
+    return out
+}

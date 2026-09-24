@@ -87,6 +87,13 @@ def conv2d(args: list[Any], shape: list[int]) -> torch.Tensor:
     raise ValueError(f"no stride and padding give {shape} from {list(x.shape)}")
 
 
+def upsample_nearest2d(args: list[Any], shape: list[int]) -> torch.Tensor:
+    """`std.nn.resize::upsample_nearest2d` as `F.interpolate`; the scale is
+    the ratio of the shapes, as the exporters recover it."""
+    x = args[0]
+    return functional.interpolate(x, scale_factor=shape[2] // int(x.shape[2]), mode="nearest")
+
+
 def _batch_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     x, mean, variance, weight, bias, eps = args
     return functional.batch_norm(x, mean, variance, weight, bias, False, 0.0, float(eps.item()))
