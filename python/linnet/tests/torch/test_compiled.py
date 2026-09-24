@@ -102,6 +102,10 @@ def test_native_kernels_and_torch_compile() -> None:
     # scalars leave no dead tensors behind.
     assert source.count("torch.cos(") == 1 and source.count("torch.sin(") == 1
     assert "torch.tensor(1.0000000000000001e-05" not in source
+    # ... and live in `constants`, computed once per shape, not in `main`.
+    main_body = source.split("def main(", 1)[1]
+    assert "def constants(_device):" in source and "torch.cos(" not in main_body
+    assert "torch.arange(" not in main_body
 
 
 def test_while_loop_in_generated_source() -> None:
