@@ -4,15 +4,20 @@ What the compiler costs and what it saves, measured. Every row comes from
 `bench/run.py`; this page renders the JSON it writes
 (`bench/results/latest.json`).
 
-On an H100 the small Llama forward runs in 0.69 ms through XLA and 1.83 ms
-as generated PyTorch under `torch.compile` with `numerics="fast"`, against
-3.5 ms for eager PyTorch and 1.4 ms for the compiled reference; the medium
-model (TinyLlama shape) takes 5.0 ms, 5.0 ms, 9.1 ms, and 4.0 ms
-respectively. One decode step through the KV caches takes 0.9 ms and 2.5 ms
-in XLA. The `fast` tier (softmax, normalization, and attention in bf16, as
-the reference computes them) closes most of the remaining gap to the compiled
-reference on the medium model: 6.5 ms to 5.0 ms in PyTorch, 5.6 ms to 5.0 ms
-in XLA. Every variant agrees with the reference within bf16 rounding.
+On an H100 the small Llama forward runs in 0.81 ms as generated PyTorch
+replayed as CUDA graphs, against 2.9 ms for eager PyTorch and 1.4 ms for the
+compiled reference; the medium model (TinyLlama shape) takes 3.8 ms against
+8.9 ms and 3.7 ms. One decode step through the KV caches takes 1.1 ms and
+3.5 ms, ahead of XLA's 1.8 ms and 3.8 ms. Every variant agrees with the
+reference within bf16 rounding.
+
+Three changes got the generated code there: it calls the kernels the
+reference calls (`F.embedding`, `scaled_dot_product_attention` with
+`is_causal` and `enable_gqa`), computes input-independent values such as
+rotary tables once per shape instead of once per layer per call, and
+replays the whole step as a CUDA graph (`compile="reduce-overhead"`), which
+removes the per-kernel launch cost that dominated decoding: the profile
+showed the GPU busy for 1.9 ms of a 5.3 ms step before.
 
 <BenchChart />
 
@@ -41,6 +46,7 @@ at position 256, in bf16, as:
 | Linnet, interpreted | `load(..., numerics="equivalent")` |
 | Linnet, generated source | `load(..., compile=True)` |
 | Linnet, generated and compiled | `load(..., compile="inductor")` |
+| Linnet, CUDA graphs | `load(..., compile="reduce-overhead")`, `numerics="fast"` |
 | Linnet, XLA | `linnet.jax.load` under `jax.jit` |
 | `numerics=fast` rows | the same, with softmax, normalization, and attention in bf16 rather than f32, as the reference computes them |
 

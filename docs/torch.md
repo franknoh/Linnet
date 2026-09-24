@@ -78,6 +78,7 @@ What `load` does:
 | `numerics="fast"` | the same kernels run in the input dtype; softmax, normalization, and attention no longer accumulate in f32, matching PyTorch reference models on `bf16` |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape; input-independent values (rotary tables, masks) are computed once and reused. The default on CUDA; `compile=False` is the interpreter, the default elsewhere |
 | `compile="inductor"` | the same, passed through `torch.compile` |
+| `compile="reduce-overhead"` | `torch.compile` with CUDA graphs: one replay per call instead of one launch per kernel, for decoding |
 | `trainable=True` | parameters require gradients |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 

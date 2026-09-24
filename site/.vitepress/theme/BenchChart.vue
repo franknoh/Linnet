@@ -40,6 +40,7 @@ function label(name: string): string {
   if (name.startsWith("PyTorch reference (eager")) return "PyTorch eager";
   if (name.startsWith("PyTorch reference (torch.compile")) return "PyTorch torch.compile";
   if (name.includes("numerics=equivalent")) return "Linnet interpreted";
+  if (name.includes("CUDA graphs")) return "Linnet generated + CUDA graphs, fast";
   if (name.includes("generated source + torch.compile")) return fast ? "Linnet generated + compile, fast" : "Linnet generated + compile";
   if (name.includes("generated source")) return "Linnet generated";
   if (name.includes("XLA")) return fast ? "Linnet XLA, fast" : "Linnet XLA";
