@@ -15,6 +15,10 @@ std::vector<NativeCandidate> torch_candidates() {
     return {
         {"std.nn.embedding::embedding", "torch.nn.functional.embedding", Legality::Exact, {}},
         {"std.nn.attention::causal_mask", "torch.tril", Legality::Exact, {}},
+        {"std.nn.cache::write_at",
+         "torch.Tensor.index_copy",
+         Legality::Exact,
+         {"the position is inside the cache"}},
         {"std.nn.attention::grouped_attention",
          "torch.nn.functional.scaled_dot_product_attention(enable_gqa)(input dtype)",
          fast,

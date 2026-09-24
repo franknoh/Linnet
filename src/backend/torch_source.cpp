@@ -466,11 +466,20 @@ public:
             }
             return mask;
         }
+        if (implementation_base == "torch.Tensor.index_copy" && operands.size() == 3 &&
+            operands[0] && operands[1] && operands[2]) {
+            // One position of a cache: a slice write, not a pass over it.
+            return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long(), " + name(1) +
+                          ")");
+        }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
             return define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
         }
+        // `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and
+        // bf16 inputs themselves, so their results are bit-identical to the
+        // canonical body's explicit casts: no `.float()` in any tier.
         if (implementation_base == "torch.softmax" && operands.size() == 1) {
-            return define(down("torch.softmax(" + up(name(0)) + ", dim=-1)", name(0)));
+            return define("torch.softmax(" + name(0) + ", dim=-1)");
         }
         if (implementation_base == "torch.relu" && operands.size() == 1) {
             return define("torch.relu(" + name(0) + ")");
@@ -493,10 +502,8 @@ public:
         };
         if (implementation_base == "torch.rms_norm" && operands.size() == 3 && operands[0]) {
             const std::string width = width_of(0);
-            return define(
-                down("torch.rms_norm(" + up(name(0)) + ", [" + width + "], eps=" + scalar(2) + ")",
-                     name(0)) +
-                " * " + name(1));
+            return define("torch.rms_norm(" + name(0) + ", [" + width + "], eps=" + scalar(2) +
+                          ") * " + name(1));
         }
         if (implementation_base == "torch.nn.functional.layer_norm" && operands.size() == 4 &&
             operands[0]) {

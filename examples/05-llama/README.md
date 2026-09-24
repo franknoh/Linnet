@@ -21,8 +21,8 @@ state cache_k: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
 state cache_v: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
 ```
 
-`decode(x, pos)` writes the new key and value at `pos` with a masked
-`select` and attends over positions `<= pos`. The runtime keeps the caches
+`decode(x, pos)` writes the new key and value at `pos` with
+`std.nn.cache::write_at` and attends over positions `<= pos`. The runtime keeps the caches
 between calls (PyTorch: buffers with `reset_state()`); graph exports thread
 them in and out as extra arguments and results.
 

@@ -155,17 +155,19 @@ are computed: `std.nn.embedding::embedding` (a gather) and
 `std.nn.attention::causal_mask` (a boolean mask), which every policy takes
 natively. A square causal mask reaches attention as `is_causal=True`, and
 `std.nn.attention::grouped_attention` reaches it with the key/value heads
-unrepeated. `fast` additionally lets softmax, normalization, and
-attention accumulate in the input dtype instead of the f32 the canonical
-bodies specify; for `bf16` and `f16` this is what framework reference models
-do, and results differ by rounding only. Optional parameters are absent
+unrepeated. `fast` additionally lets layer normalization and attention
+accumulate in the input dtype instead of the f32 the canonical bodies
+specify; for `bf16` and `f16` this is what framework reference models do, and
+results differ by rounding only. Softmax and RMS normalization are not in
+that tier for PyTorch: those kernels accumulate in f32 whatever their input
+dtype, so `equivalent` already selects them without casts. Optional parameters are absent
 unless `--optionals present`.
 
 | Tier | Selected implementations | Agreement with the canonical body |
 | --- | --- | --- |
 | `exact` | the canonical `.linnet` bodies | bit-exact |
 | `equivalent` | library kernels with f32 accumulation | up to floating-point rounding |
-| `fast` | the same kernels in the input dtype | rounding of the input dtype |
+| `fast` | layer normalization and attention in the input dtype | rounding of the input dtype |
 
 ## explain
 

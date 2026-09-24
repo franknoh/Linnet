@@ -42,6 +42,7 @@ LLAMA = REPO / "examples/05-llama/src/lib.linnet"
 # and attention in the input dtype, as the PyTorch reference does.
 GENERATED_VARIANTS: tuple[tuple[str | None, str, str], ...] = (
     (None, "equivalent", "generated source"),
+    (None, "fast", "generated source, numerics=fast"),
     ("inductor", "equivalent", "generated source + torch.compile"),
     ("inductor", "fast", "generated source + torch.compile, numerics=fast"),
     ("reduce-overhead", "fast", "generated source + CUDA graphs, numerics=fast"),

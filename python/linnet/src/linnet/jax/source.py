@@ -92,7 +92,7 @@ def load_source(
     entry: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
-    numerics: str = "equivalent",
+    numerics: str = "fast",
 ) -> SourceFunction:
     """`load`, with entries running as generated JAX source (differentiable)."""
     function = load(

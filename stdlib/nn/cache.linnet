@@ -1,0 +1,18 @@
+module std.nn.cache
+
+// One position of a key/value cache.
+//
+// The canonical body is a select over every position, which is what a
+// backend without a scatter has to do; a backend that can write one slice
+// (`index_copy`, `dynamic_update_slice`) writes only `at`. Decoding calls
+// this once per layer per token, so the difference is the whole step.
+pub op write_at<B: Dim, H: Dim, S: Dim, D: Dim, T: Float>(
+    cache: Tensor[B, H, S, D; T],
+    value: Tensor[B, H, 1, D; T],
+    at: i32,
+) -> Tensor[B, H, S, D; T]
+where S > 0 {
+    let positions = iota<i32>(S)
+    let out[b, h, s, d] = select(positions[s] == at, value[b, h, 0, d], cache[b, h, s, d])
+    return out
+}

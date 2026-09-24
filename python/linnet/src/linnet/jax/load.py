@@ -312,7 +312,7 @@ def load(
     entry: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
-    numerics: str = "equivalent",
+    numerics: str = "fast",
 ) -> LinnetFunction:
     """Materializes the entry of a root block as a JAX callable.
 
@@ -322,10 +322,10 @@ def load(
     `bindings` is an optional JSON file mapping parameter paths to tensor
     names in the weights.
 
-    `numerics` is `"exact"` (every library operation is its canonical
-    decomposition), `"equivalent"` (the default: StableHLO spellings that
-    agree with it up to rounding), or `"fast"` (softmax, normalization, and
-    attention accumulate in the input dtype instead of f32).
+    `numerics` is `"fast"` (the default: layer normalization and attention
+    accumulate in the input dtype, as framework reference implementations
+    do), `"equivalent"` (the f32 accumulation the canonical bodies specify),
+    or `"exact"` (every library operation as its canonical decomposition).
     """
     if numerics not in ("exact", "equivalent", "fast"):
         raise LinnetError('numerics must be "exact", "equivalent", or "fast"')

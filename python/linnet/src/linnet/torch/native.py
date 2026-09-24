@@ -21,6 +21,11 @@ import torch.nn.functional as functional
 Native = Callable[[list[Any], torch.dtype | None], Any]
 
 
+def _index_copy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    cache, value, at = args
+    return cache.index_copy(2, at.reshape(1).long(), value)
+
+
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
@@ -30,9 +35,11 @@ def _linear(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return functional.linear(x, weight, bias)
 
 
+# `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and bf16
+# inputs themselves, so these results are bit-identical to the canonical
+# body's explicit casts (`tests/torch/test_native.py` checks it).
 def _softmax(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    x = args[0]
-    return torch.softmax(x.float(), dim=-1).to(x.dtype)
+    return torch.softmax(args[0], dim=-1)
 
 
 def _relu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
@@ -53,8 +60,7 @@ def _gelu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
 
 def _rms_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     x, weight, eps = args
-    normalized = torch.rms_norm(x.float(), [x.shape[-1]], eps=float(eps.item()))
-    return normalized.to(x.dtype) * weight
+    return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
 
 
 def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
@@ -135,6 +141,7 @@ def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
 
 NATIVE: dict[str, Native] = {
     "torch.nn.functional.embedding": _embedding,
+    "torch.Tensor.index_copy": _index_copy,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,

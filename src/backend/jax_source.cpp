@@ -318,6 +318,11 @@ public:
             }
             return mask;
         }
+        if (implementation_base == "torch.Tensor.index_copy" && at.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {
+            return define("jax.lax.dynamic_update_slice_in_dim(" + name(0) + ", " + name(1) + ", " +
+                          name(2) + ".astype(jnp.int32), 2)");
+        }
         if (implementation_base == "torch.matmul" && at.size() == 2) {
             return define("jnp.matmul(" + name(0) + ", " + name(1) + ")");
         }
