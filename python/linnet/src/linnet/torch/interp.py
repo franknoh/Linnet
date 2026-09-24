@@ -25,7 +25,7 @@ import torch
 
 from ..plan import Env, Plan, PlanError
 from .dtypes import torch_dtype
-from .native import NATIVE, causal_mask, conv2d
+from .native import NATIVE, causal_mask, conv2d, upsample_nearest2d
 
 Value = Any
 
@@ -286,6 +286,9 @@ class Interpreter:
             if selected == "torch.nn.functional.conv2d":
                 assert result_type is not None
                 return [conv2d(operands, env.shape(result_type["shape"]))]
+            if selected == "torch.nn.functional.interpolate(nearest)":
+                assert result_type is not None
+                return [upsample_nearest2d(operands, env.shape(result_type["shape"]))]
             if selected != "canonical decomposition":
                 if selected not in NATIVE:
                     raise PlanError(

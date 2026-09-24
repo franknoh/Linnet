@@ -511,6 +511,26 @@ public:
             }
             return std::nullopt;
         }
+        if (implementation_base == "torch.nn.functional.interpolate(nearest)" &&
+            operands.size() == 1 && shape.size() == 4) {
+            // Like the convolution, the scale is recovered from the shapes.
+            const TensorInfo* source = nullptr;
+            for (const std::optional<TensorInfo>& operand : operands) {
+                source = operand.has_value() ? &*operand : nullptr;
+            }
+            if (source == nullptr || source->shape.size() != 4 || source->shape[2] <= 0 ||
+                source->shape[3] <= 0) {
+                return std::nullopt;
+            }
+            const Dims& input = source->shape;
+            if (shape[2] % input[2] != 0 || shape[3] % input[3] != 0 ||
+                shape[2] / input[2] != shape[3] / input[3]) {
+                return std::nullopt;
+            }
+            const std::int64_t scale = shape[2] / input[2];
+            return define("F.interpolate(" + name(0) + ", scale_factor=" + std::to_string(scale) +
+                          ", mode=\"nearest\")");
+        }
         if (implementation_base == "torch.nn.functional.batch_norm" && operands.size() == 6 &&
             operands[0] && operands[1] && operands[2] && operands[3] && operands[4]) {
             return define("F.batch_norm(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +

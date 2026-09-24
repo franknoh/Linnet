@@ -20,7 +20,9 @@ module tests.conv
 
 use std.nn.conv::{conv2d}
 use std.nn.norm::{batch_norm}
+use std.nn.norm::{group_norm}
 use std.nn.pool::{global_average_pool2d, max_pool2d}
+use std.nn.resize::{upsample_nearest2d}
 
 pub block Ops<Cin: Dim, Cout: Dim, H: Dim, W: Dim, K: Dim, Stride: Dim, Pad: Dim, T: Float>
 where
@@ -48,6 +50,15 @@ where
 
     pub entry normalize<B: Dim>(x: Tensor[B, Cin, H, W; T]) -> Tensor[B, Cin; T] {
         return global_average_pool2d(batch_norm(x, mean, variance, scale, shift))
+    }
+
+    pub entry grouped<B: Dim, Groups: Dim>(x: Tensor[B, Cin, H, W; T]) -> Tensor[B, Cin, H, W; T]
+    where Groups > 0, Cin % Groups == 0 {
+        return group_norm<B, Cin, H, W, Groups, T>(x, scale, shift, 1e-6)
+    }
+
+    pub entry upsample<B: Dim>(x: Tensor[B, Cin, H, W; T]) -> Tensor[B, Cin, H * 2, W * 2; T] {
+        return upsample_nearest2d<B, Cin, H, W, 2, T>(x)
     }
 }
 """
@@ -150,3 +161,37 @@ def test_the_kernels_are_selected(tmp_path: Path) -> None:
     source_text = model.generated_source("convolve")
     # The geometry is recovered from the shapes, not written by the source.
     assert "F.conv2d(in_x, p0, p1, stride=2, padding=1)" in source_text
+
+
+@pytest.mark.parametrize("groups", [1, 5])
+def test_group_norm_and_upsampling_match_pytorch(tmp_path: Path, groups: int) -> None:
+    source = tmp_path / "conv.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    generics: dict[str, int | str] = {
+        "Cin": 10,
+        "Cout": 2,
+        "H": 6,
+        "W": 8,
+        "K": 3,
+        "Stride": 1,
+        "Pad": 1,
+        "T": "f32",
+    }
+    model = load(source, generics=generics, std_root=STDLIB)
+    scale, shift = torch.randn(10), torch.randn(10)
+    with torch.no_grad():
+        model.get_parameter("root.scale").copy_(scale)
+        model.get_parameter("root.shift").copy_(shift)
+    x = torch.randn(2, 10, 6, 8)
+    torch.testing.assert_close(
+        model.run_entry("grouped", [x], generics={"Groups": groups}),
+        functional.group_norm(x, groups, scale, shift, eps=1e-6),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    torch.testing.assert_close(
+        model.run_entry("upsample", [x]),
+        functional.interpolate(x, scale_factor=2, mode="nearest"),
+        atol=0,
+        rtol=0,
+    )
