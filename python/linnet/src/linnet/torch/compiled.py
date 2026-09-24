@@ -45,7 +45,11 @@ class CompiledLinnetModule(LinnetModule):
         self._source = Path(source)
         self._std_root = std_root
         self._numerics = numerics
-        self._backend = backend  # a `torch.compile` backend, or None for eager
+        # A `torch.compile` backend, or a mode ("reduce-overhead": CUDA graphs,
+        # which remove the per-kernel launch cost that dominates decoding),
+        # or None for eager.
+        self._backend = backend
+        self._cuda_graphs = backend in ("reduce-overhead", "cudagraphs")
         self._generic_arguments = dict(generics)
         self._compiled: dict[tuple[Any, ...], _Generated] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
@@ -72,6 +76,9 @@ class CompiledLinnetModule(LinnetModule):
         arguments += [buffers[f"root.{path}"] for path in generated.states]
         arguments += generated.constants
         outputs = generated.main(*arguments)
+        if self._cuda_graphs:
+            # Graph outputs are overwritten by the next replay; keep copies.
+            outputs = [value.clone() for value in outputs]
         results = list(outputs[: generated.results])
         for path, value in zip(generated.next_states, outputs[generated.results :], strict=True):
             owner, leaf = owner_of(self, path)
@@ -135,7 +142,9 @@ class CompiledLinnetModule(LinnetModule):
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         main: Callable[..., Any] = module.main
-        if self._backend is not None:
+        if self._cuda_graphs:
+            main = torch.compile(main, mode="reduce-overhead")
+        elif self._backend is not None:
             main = torch.compile(main, backend=self._backend)
         # Input-independent values (rotary tables, masks) are computed once
         # here and passed to every call.

@@ -44,6 +44,7 @@ GENERATED_VARIANTS: tuple[tuple[str | None, str, str], ...] = (
     (None, "equivalent", "generated source"),
     ("inductor", "equivalent", "generated source + torch.compile"),
     ("inductor", "fast", "generated source + torch.compile, numerics=fast"),
+    ("reduce-overhead", "fast", "generated source + CUDA graphs, numerics=fast"),
 )
 
 # Llama-shaped configurations: hidden width, query heads, key/value heads,
