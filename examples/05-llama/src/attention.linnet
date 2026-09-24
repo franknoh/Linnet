@@ -11,6 +11,7 @@ module llama.attention
 
 use crate.rope::{THETA, tables}
 use std.nn.attention::{causal_mask, grouped_attention}
+use std.nn.cache::{write_at}
 use std.nn.linear::{Linear}
 use std.nn.rope::{rope}
 
@@ -74,11 +75,9 @@ where
             sin_row,
         )
         let v = split_heads<Batch, 1, KvHeads, H / Heads, T>(v_proj.forward(x))
+        cache_k = write_at(cache_k, k, pos)
+        cache_v = write_at(cache_v, v, pos)
         let positions = iota<i32>(MaxSeq)
-        let new_k[b, h, s, d] = select(positions[s] == pos, k[b, h, 0, d], cache_k[b, h, s, d])
-        let new_v[b, h, s, d] = select(positions[s] == pos, v[b, h, 0, d], cache_v[b, h, s, d])
-        cache_k = new_k
-        cache_v = new_v
         let seen[s] = positions[s] <= pos
         let mixed = grouped_attention(
             q,

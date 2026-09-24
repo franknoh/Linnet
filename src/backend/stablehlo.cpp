@@ -433,6 +433,16 @@ public:
                         shape,
                         table.dtype);
         }
+        if (implementation == "torch.Tensor.index_copy" && operands.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {
+            // `dynamic_update_slice` takes one start index per dimension.
+            Literal zero;
+            zero.kind = Literal::Kind::Integer;
+            zero.integer = 0;
+            const TensorInfo origin{constant(zero, ScalarKind::I32), {}, ScalarKind::I32};
+            const std::vector<TensorInfo> arguments{*at[0], *at[1], origin, origin, *at[2], origin};
+            return emit("dynamic_update_slice", arguments, "", shape, dtype);
+        }
         if (implementation == "torch.matmul" && operands.size() == 2 && at[0] != nullptr &&
             at[1] != nullptr) {
             const TensorInfo& a = *at[0];

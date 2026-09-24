@@ -21,6 +21,11 @@ import torch.nn.functional as functional
 Native = Callable[[list[Any], torch.dtype | None], Any]
 
 
+def _index_copy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    cache, value, at = args
+    return cache.index_copy(2, at.reshape(1).long(), value)
+
+
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
@@ -136,6 +141,7 @@ def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
 
 NATIVE: dict[str, Native] = {
     "torch.nn.functional.embedding": _embedding,
+    "torch.Tensor.index_copy": _index_copy,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,

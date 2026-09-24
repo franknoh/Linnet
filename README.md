@@ -35,7 +35,7 @@ model = load("src/model.linnet", generics={"H": 64}, weights="weights/")
 | Directory | |
 | --- | --- |
 | `src/`, `include/` | the compiler: parser, checker, Core IR, optimizer, emitter, exporters, language server (C++23, no dependencies) |
-| `stdlib/` | the standard library in Linnet: `std.linalg`, `std.nn` (linear, embedding, activations, softmax, norms, rope, attention, swiglu, argmax), `std.random`, `std.quant` |
+| `stdlib/` | the standard library in Linnet: `std.linalg`, `std.nn` (linear, embedding, activations, softmax, norms, rope, attention, swiglu, argmax, kv cache), `std.random`, `std.quant` |
 | `spec/` | the normative specification and grammar; `spec-tests/` the executable cases |
 | `examples/` | a linear layer up to Llama, GPT-2, ViT, and CLIP, each with a guide |
 | `python/linnet` | the `linnet-lang` package: `linnet` (plans, checkpoints, the typed program, diagrams, the [Nest](https://github.com/franknoh/nest) zoo client, `linnet.triton` model repositories, `linnet.hf` checkpoints for vLLM, `linnet.gguf` for Ollama), `linnet.torch` (`load` interpreted or generated, training, `export_linnet`), `linnet.jax` (`load` on XLA, `load_source`, `load_nnx`, `export_linnet`, `import_stablehlo`), `linnet.onnx` (`import_onnx`) |

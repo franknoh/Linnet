@@ -466,6 +466,12 @@ public:
             }
             return mask;
         }
+        if (implementation_base == "torch.Tensor.index_copy" && operands.size() == 3 &&
+            operands[0] && operands[1] && operands[2]) {
+            // One position of a cache: a slice write, not a pass over it.
+            return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long(), " + name(1) +
+                          ")");
+        }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
             return define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
         }
