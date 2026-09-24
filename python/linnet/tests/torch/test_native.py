@@ -87,6 +87,19 @@ def test_native_implementations_agree_with_canonical(tmp_path: Path, dtype: str)
     torch.testing.assert_close(actual.float(), expected.float(), atol=tolerance, rtol=tolerance)
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_pytorch_reductions_accumulate_in_f32(dtype: torch.dtype) -> None:
+    """Why `torch.softmax` and `torch.rms_norm` need no casts: their kernels
+    accumulate in f32 for low-precision inputs, so they return exactly what
+    the canonical body's `.float()` ... `.to(dtype)` returns."""
+    x = (torch.randn(4, 256, 512) * 3).to(dtype)
+    assert torch.equal(torch.softmax(x, dim=-1), torch.softmax(x.float(), dim=-1).to(dtype))
+    assert torch.equal(
+        torch.rms_norm(x, [512], eps=1e-5),
+        torch.rms_norm(x.float(), [512], eps=1e-5).to(dtype),
+    )
+
+
 @pytest.mark.parametrize("dtype", ["f32", "bf16"])
 def test_fast_tier_agrees_up_to_input_rounding(tmp_path: Path, dtype: str) -> None:
     source = tmp_path / "native.linnet"

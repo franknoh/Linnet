@@ -47,8 +47,8 @@ def _weights(model: torch.nn.Module) -> dict[str, torch.Tensor]:
 
 
 def test_generated_entries_match_the_interpreter() -> None:
-    reference = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    compiled = load(LLAMA, generics=GENERICS, std_root=STDLIB, compile=True)
+    reference = load(LLAMA, generics=GENERICS, std_root=STDLIB, numerics="exact")
+    compiled = load(LLAMA, generics=GENERICS, std_root=STDLIB, numerics="exact", compile=True)
     assert isinstance(compiled, CompiledLinnetModule)
     weights = _weights(reference)
     reference.load_state_dict(weights, strict=False)

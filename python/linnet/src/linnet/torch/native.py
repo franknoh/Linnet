@@ -30,9 +30,11 @@ def _linear(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return functional.linear(x, weight, bias)
 
 
+# `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and bf16
+# inputs themselves, so these results are bit-identical to the canonical
+# body's explicit casts (`tests/torch/test_native.py` checks it).
 def _softmax(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    x = args[0]
-    return torch.softmax(x.float(), dim=-1).to(x.dtype)
+    return torch.softmax(args[0], dim=-1)
 
 
 def _relu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
@@ -53,8 +55,7 @@ def _gelu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
 
 def _rms_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     x, weight, eps = args
-    normalized = torch.rms_norm(x.float(), [x.shape[-1]], eps=float(eps.item()))
-    return normalized.to(x.dtype) * weight
+    return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
 
 
 def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
