@@ -22,7 +22,9 @@ interface Run {
 }
 
 const data = results as { runs: Run[] };
-const log = ref(false);
+// Bars show speed-up against the first variant (eager PyTorch); the toggle
+// switches to raw latency.
+const latency = ref(false);
 
 type Family = "reference" | "torch" | "xla";
 
@@ -70,18 +72,14 @@ interface Bar {
 const charts = computed(() =>
   data.runs.map((run) => {
     const variants = run.variants.filter((v) => v.latency_ms !== null);
-    const max = Math.max(...variants.map((v) => v.latency_ms as number));
-    const min = Math.min(...variants.map((v) => v.latency_ms as number));
+    const base = variants[0]?.latency_ms ?? 1;
+    const measure = (v: Variant) => (latency.value ? (v.latency_ms as number) : base / (v.latency_ms as number));
+    const values = variants.map(measure);
+    const max = Math.max(...values);
     const plot = WIDTH - LABEL - 64;
-    const floor = log.value ? Math.pow(10, Math.floor(Math.log10(min))) : 0;
-    const scale = (value: number) => {
-      if (log.value) {
-        return (plot * (Math.log10(value) - Math.log10(floor))) / (Math.log10(max) - Math.log10(floor));
-      }
-      return (plot * value) / max;
-    };
+    const scale = (value: number) => (plot * value) / max;
     const bars: Bar[] = variants.map((v, i) => {
-      const value = v.latency_ms as number;
+      const value = values[i];
       return {
         label: label(v.name),
         family: family(v.name),
@@ -90,18 +88,25 @@ const charts = computed(() =>
         x: LABEL,
         y: TOP + i * (BAR + GAP),
         width: Math.max(2, scale(value)),
-        text: value >= 100 ? value.toFixed(0) : value.toFixed(2),
+        text: latency.value
+          ? `${value >= 100 ? value.toFixed(0) : value.toFixed(2)} ms`
+          : `${value.toFixed(2)}×`,
       };
     });
-    const ticks = log.value
-      ? [1, 2, 5, 10, 20, 50, 100].filter((t) => t >= floor && t <= max * 1.05)
-      : [0, 0.25, 0.5, 0.75, 1].map((f) => max * f);
+    const step = max > 8 ? 2 : max > 4 ? 1 : 0.5;
+    const ticks = latency.value
+      ? [0, 0.25, 0.5, 0.75, 1].map((f) => max * f)
+      : Array.from({ length: Math.floor(max / step) + 1 }, (_, i) => i * step);
     return {
       key: `${run.config}-${run.entry}`,
       title: title(run),
       height: TOP + variants.length * (BAR + GAP) + 22,
       bars,
-      ticks: ticks.map((t) => ({ x: LABEL + (t === 0 ? 0 : scale(t)), text: t >= 10 ? t.toFixed(0) : t >= 1 ? t.toFixed(1) : t.toFixed(2) })),
+      baseline: LABEL + scale(1),
+      ticks: ticks.map((t) => ({
+        x: LABEL + (t === 0 ? 0 : scale(t)),
+        text: latency.value ? (t >= 10 ? t.toFixed(0) : t >= 1 ? t.toFixed(1) : t.toFixed(2)) : `${t}×`,
+      })),
       axisY: TOP + variants.length * (BAR + GAP) + 2,
     };
   }),
@@ -125,7 +130,7 @@ const charts = computed(() =>
         <i class="swatch swatch-xla"></i> Linnet in XLA
         <i class="swatch swatch-fast"></i> numerics=fast
       </span>
-      <label class="bench-toggle"><input v-model="log" type="checkbox" /> log scale</label>
+      <label class="bench-toggle"><input v-model="latency" type="checkbox" /> show latency instead of speed-up</label>
     </div>
     <div class="bench-grid">
       <figure v-for="chart in charts" :key="chart.key" class="bench-chart">
@@ -135,10 +140,11 @@ const charts = computed(() =>
             <line :x1="tick.x" :x2="tick.x" :y1="TOP - 2" :y2="chart.axisY" />
             <text :x="tick.x" :y="chart.axisY + 14" text-anchor="middle">{{ tick.text }}</text>
           </g>
+          <line v-if="!latency" class="bench-baseline" :x1="chart.baseline" :x2="chart.baseline" :y1="TOP - 2" :y2="chart.axisY" />
           <g v-for="bar in chart.bars" :key="bar.label" :class="['bench-bar', `bench-bar-${bar.family}`, { 'bench-bar-fast': bar.fast }]">
             <text class="bench-label" :x="LABEL - 8" :y="bar.y + BAR / 2 + 4" text-anchor="end">{{ bar.label }}</text>
             <rect :x="bar.x" :y="bar.y" :width="bar.width" :height="BAR" rx="2" />
-            <text class="bench-value" :x="bar.x + bar.width + 6" :y="bar.y + BAR / 2 + 4">{{ bar.text }} ms</text>
+            <text class="bench-value" :x="bar.x + bar.width + 6" :y="bar.y + BAR / 2 + 4">{{ bar.text }}</text>
           </g>
         </svg>
       </figure>
@@ -226,6 +232,11 @@ const charts = computed(() =>
 .bench-tick line {
   stroke: var(--vp-c-divider);
   stroke-width: 1;
+}
+.bench-baseline {
+  stroke: var(--vp-c-text-3);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
 }
 .bench-tick text {
   font-size: 10px;
