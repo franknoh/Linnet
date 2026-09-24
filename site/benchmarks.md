@@ -14,6 +14,11 @@ the reference computes them) closes most of the remaining gap to the compiled
 reference on the medium model: 6.5 ms to 5.0 ms in PyTorch, 5.6 ms to 5.0 ms
 in XLA. Every variant agrees with the reference within bf16 rounding.
 
+<BenchChart />
+
+The table below has every row: latency, throughput, speed-up against eager
+PyTorch, and the largest difference from it.
+
 <BenchTable />
 
 ## Setup
