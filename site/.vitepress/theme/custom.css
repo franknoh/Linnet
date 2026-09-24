@@ -125,11 +125,17 @@
   text-underline-offset: 3px;
 }
 
+/* Tables keep VitePress's own horizontal scroll on narrow screens (a
+   wide table must not widen the page) and fill the column on wide ones. */
 .vp-doc table {
-  display: table;
-  width: 100%;
   border: 1px solid var(--vp-c-divider);
-  overflow: hidden;
+}
+@media (min-width: 768px) {
+  .vp-doc table {
+    display: table;
+    width: 100%;
+    overflow: hidden;
+  }
 }
 .vp-doc th {
   background: var(--vp-c-bg-alt);
