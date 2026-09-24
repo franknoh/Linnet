@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-09-23",
+  "measured_at": "2026-09-24",
   "environment": {
     "device": "NVIDIA H100 80GB HBM3",
     "torch": "2.9.1+cu128",
@@ -17,43 +17,57 @@
       "variants": [
         {
           "name": "PyTorch reference (eager)",
-          "latency_ms": 3.456634469330311,
-          "throughput": 148120.9553809706,
+          "latency_ms": 3.457601531408727,
+          "throughput": 148079.5271950832,
           "max_abs_diff": 0.0,
           "note": ""
         },
         {
           "name": "PyTorch reference (torch.compile)",
-          "latency_ms": 2.6648417115211487,
-          "throughput": 192131.48675451326,
+          "latency_ms": 1.4283250202424824,
+          "throughput": 358461.82958629355,
           "max_abs_diff": 0.00048828125,
           "note": ""
         },
         {
           "name": "Linnet \u2192 PyTorch (numerics=equivalent)",
-          "latency_ms": 14.405611902475357,
-          "throughput": 35541.70440424135,
+          "latency_ms": 15.02018398605287,
+          "throughput": 34087.465271758476,
           "max_abs_diff": 0.000244140625,
           "note": "Core IR interpreted per call; library ops on native kernels"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source)",
-          "latency_ms": 7.114442065358162,
-          "throughput": 71966.28987858999,
+          "latency_ms": 7.160834444221109,
+          "throughput": 71500.04709481742,
           "max_abs_diff": 0.000244140625,
           "note": "straight-line PyTorch from `linnet torch`, native kernels"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source + torch.compile)",
-          "latency_ms": 2.1089836955070496,
-          "throughput": 242770.9617152365,
+          "latency_ms": 2.085267973598093,
+          "throughput": 245531.99228229315,
+          "max_abs_diff": 0.00048828125,
+          "note": "straight-line PyTorch from `linnet torch`, native kernels"
+        },
+        {
+          "name": "Linnet \u2192 PyTorch (generated source + torch.compile, numerics=fast)",
+          "latency_ms": 1.8256214680150151,
+          "throughput": 280452.44261763303,
           "max_abs_diff": 0.00048828125,
           "note": "straight-line PyTorch from `linnet torch`, native kernels"
         },
         {
           "name": "Linnet \u2192 XLA (jax, gpu)",
-          "latency_ms": 0.6578359752893448,
-          "throughput": 778309.5167071095,
+          "latency_ms": 0.7134004845283926,
+          "throughput": 717689.4480783367,
+          "max_abs_diff": 0.000244140625,
+          "note": "whole-program compile of the StableHLO export"
+        },
+        {
+          "name": "Linnet \u2192 XLA (jax, gpu, numerics=fast)",
+          "latency_ms": 0.6875285180285573,
+          "throughput": 744696.3821488107,
           "max_abs_diff": 0.000244140625,
           "note": "whole-program compile of the StableHLO export"
         }
@@ -67,36 +81,50 @@
       "variants": [
         {
           "name": "PyTorch reference (eager, recomputes prefix)",
-          "latency_ms": 3.6066854372620583,
-          "throughput": 277.2628823319645,
+          "latency_ms": 3.6141304881311953,
+          "throughput": 276.6917252390305,
           "max_abs_diff": 0.0,
           "note": "no KV cache: full forward over 257 tokens"
         },
         {
           "name": "Linnet \u2192 PyTorch (numerics=equivalent)",
-          "latency_ms": 19.775771535933018,
-          "throughput": 50.566927221169486,
+          "latency_ms": 20.705477509181947,
+          "throughput": 48.29639884212016,
           "max_abs_diff": 0.000244140625,
           "note": "KV cache at position 256 of 512"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source)",
-          "latency_ms": 10.248829610645771,
-          "throughput": 97.57211681627233,
+          "latency_ms": 10.431342001538724,
+          "throughput": 95.86494238732566,
           "max_abs_diff": 0.000244140625,
           "note": "KV cache at position 256 of 512"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source + torch.compile)",
-          "latency_ms": 2.5236550718545914,
-          "throughput": 396.25066482049664,
+          "latency_ms": 2.5326175382360816,
+          "throughput": 394.8484067975303,
           "max_abs_diff": 0.000274658203125,
           "note": "KV cache at position 256 of 512"
         },
         {
+          "name": "Linnet \u2192 PyTorch (generated source + torch.compile, numerics=fast)",
+          "latency_ms": 2.428241481538862,
+          "throughput": 411.8206560602304,
+          "max_abs_diff": 0.00030517578125,
+          "note": "KV cache at position 256 of 512"
+        },
+        {
           "name": "Linnet \u2192 XLA (jax, gpu)",
-          "latency_ms": 0.9608706459403038,
-          "throughput": 1040.722811363859,
+          "latency_ms": 0.9369465406052768,
+          "throughput": 1067.2967524422365,
+          "max_abs_diff": 0.000244140625,
+          "note": "KV cache threaded as inputs/outputs, position 256"
+        },
+        {
+          "name": "Linnet \u2192 XLA (jax, gpu, numerics=fast)",
+          "latency_ms": 0.9651170112192631,
+          "throughput": 1036.1437922813816,
           "max_abs_diff": 0.000244140625,
           "note": "KV cache threaded as inputs/outputs, position 256"
         }
@@ -110,43 +138,57 @@
       "variants": [
         {
           "name": "PyTorch reference (eager)",
-          "latency_ms": 8.985491469502449,
-          "throughput": 56980.74520884842,
+          "latency_ms": 9.092145541217178,
+          "throughput": 56312.34098475044,
           "max_abs_diff": 0.0,
           "note": ""
         },
         {
           "name": "PyTorch reference (torch.compile)",
-          "latency_ms": 3.9716558530926704,
-          "throughput": 128913.48569421316,
+          "latency_ms": 3.994285478256643,
+          "throughput": 128183.1263156155,
           "max_abs_diff": 0.0010986328125,
           "note": ""
         },
         {
           "name": "Linnet \u2192 PyTorch (numerics=equivalent)",
-          "latency_ms": 40.78218713402748,
-          "throughput": 12554.500775482,
+          "latency_ms": 42.49191551934928,
+          "throughput": 12049.350888096673,
           "max_abs_diff": 0.000762939453125,
           "note": "Core IR interpreted per call; library ops on native kernels"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source)",
-          "latency_ms": 21.502019837498665,
-          "throughput": 23811.71647451894,
+          "latency_ms": 21.238654502667487,
+          "throughput": 24106.988507002407,
           "max_abs_diff": 0.000762939453125,
           "note": "straight-line PyTorch from `linnet torch`, native kernels"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source + torch.compile)",
-          "latency_ms": 6.575101986527443,
-          "throughput": 77869.51457925694,
+          "latency_ms": 6.485753983724862,
+          "throughput": 78942.24808477101,
+          "max_abs_diff": 0.0010986328125,
+          "note": "straight-line PyTorch from `linnet torch`, native kernels"
+        },
+        {
+          "name": "Linnet \u2192 PyTorch (generated source + torch.compile, numerics=fast)",
+          "latency_ms": 5.039754440076649,
+          "throughput": 101592.25138600463,
           "max_abs_diff": 0.0010986328125,
           "note": "straight-line PyTorch from `linnet torch`, native kernels"
         },
         {
           "name": "Linnet \u2192 XLA (jax, gpu)",
-          "latency_ms": 5.810093134641647,
-          "throughput": 88122.51165945877,
+          "latency_ms": 5.624726007226855,
+          "throughput": 91026.65611483362,
+          "max_abs_diff": 0.0009765625,
+          "note": "whole-program compile of the StableHLO export"
+        },
+        {
+          "name": "Linnet \u2192 XLA (jax, gpu, numerics=fast)",
+          "latency_ms": 5.0293984822928905,
+          "throughput": 101801.43844290907,
           "max_abs_diff": 0.0009765625,
           "note": "whole-program compile of the StableHLO export"
         }
@@ -160,37 +202,51 @@
       "variants": [
         {
           "name": "PyTorch reference (eager, recomputes prefix)",
-          "latency_ms": 9.04127862304449,
-          "throughput": 110.60382515490576,
+          "latency_ms": 8.998630451969802,
+          "throughput": 111.12802168479979,
           "max_abs_diff": 0.0,
           "note": "no KV cache: full forward over 257 tokens"
         },
         {
           "name": "Linnet \u2192 PyTorch (numerics=equivalent)",
-          "latency_ms": 54.85146772116423,
-          "throughput": 18.231052723756996,
+          "latency_ms": 58.10041446238756,
+          "throughput": 17.211581178089006,
           "max_abs_diff": 0.0006427764892578125,
           "note": "KV cache at position 256 of 512"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source)",
-          "latency_ms": 29.051993042230606,
-          "throughput": 34.42104638213214,
+          "latency_ms": 29.04578991001472,
+          "throughput": 34.428397475091884,
           "max_abs_diff": 0.0006427764892578125,
           "note": "KV cache at position 256 of 512"
         },
         {
           "name": "Linnet \u2192 PyTorch (generated source + torch.compile)",
-          "latency_ms": 6.440047174692154,
-          "throughput": 155.27836565076123,
+          "latency_ms": 6.489217979833484,
+          "throughput": 154.1017736047234,
           "max_abs_diff": 0.00079345703125,
           "note": "KV cache at position 256 of 512"
         },
         {
+          "name": "Linnet \u2192 PyTorch (generated source + torch.compile, numerics=fast)",
+          "latency_ms": 6.329344003461301,
+          "throughput": 157.9942565063827,
+          "max_abs_diff": 0.0008544921875,
+          "note": "KV cache at position 256 of 512"
+        },
+        {
           "name": "Linnet \u2192 XLA (jax, gpu)",
-          "latency_ms": 2.479403279721737,
-          "throughput": 403.3228511790264,
+          "latency_ms": 2.4886640021577477,
+          "throughput": 401.82202142714704,
           "max_abs_diff": 0.0006866455078125,
+          "note": "KV cache threaded as inputs/outputs, position 256"
+        },
+        {
+          "name": "Linnet \u2192 XLA (jax, gpu, numerics=fast)",
+          "latency_ms": 2.480302006006241,
+          "throughput": 403.1767089565801,
+          "max_abs_diff": 0.0007476806640625,
           "note": "KV cache threaded as inputs/outputs, position 256"
         }
       ]
@@ -199,55 +255,79 @@
   "timings": [
     {
       "name": "linnet check examples/05-llama",
-      "seconds": 0.017900845035910606
+      "seconds": 0.010244616074487567
     },
     {
-      "name": "linnet_torch.load (small)",
-      "seconds": 0.23861465975642204
+      "name": "linnet.torch.load (small)",
+      "seconds": 0.22829048510175198
     },
     {
       "name": "torch.compile (small)",
-      "seconds": 1.1872074119746685
+      "seconds": 5.264120214967988
     },
     {
       "name": "linnet torch + first call (small, generated source)",
-      "seconds": 0.22046032920479774
+      "seconds": 0.09926391392946243
     },
     {
       "name": "linnet torch + first call (small, generated source + torch.compile)",
-      "seconds": 6.854609495028853
+      "seconds": 6.068822222063318
     },
     {
-      "name": "linnet stablehlo + XLA compile (small, forward)",
-      "seconds": 4.818929588422179
+      "name": "linnet torch + first call (small, generated source + torch.compile, numerics=fast)",
+      "seconds": 5.18245194805786
     },
     {
-      "name": "linnet stablehlo + XLA compile (small, decode) incl. 256 steps",
-      "seconds": 3.0751310866326094
+      "name": "linnet stablehlo + XLA compile (small, forward, numerics=equivalent)",
+      "seconds": 4.612031858996488
     },
     {
-      "name": "linnet_torch.load (medium)",
-      "seconds": 0.04547771438956261
+      "name": "linnet stablehlo + XLA compile (small, forward, numerics=fast)",
+      "seconds": 1.7454064179910347
+    },
+    {
+      "name": "linnet stablehlo + XLA compile (small, decode, numerics=equivalent) incl. 256 steps",
+      "seconds": 2.813163966056891
+    },
+    {
+      "name": "linnet stablehlo + XLA compile (small, decode, numerics=fast) incl. 256 steps",
+      "seconds": 2.2336858910275623
+    },
+    {
+      "name": "linnet.torch.load (medium)",
+      "seconds": 0.04805217601824552
     },
     {
       "name": "torch.compile (medium)",
-      "seconds": 3.330164421349764
+      "seconds": 13.74616518500261
     },
     {
       "name": "linnet torch + first call (medium, generated source)",
-      "seconds": 0.5929802879691124
+      "seconds": 0.14881305501330644
     },
     {
       "name": "linnet torch + first call (medium, generated source + torch.compile)",
-      "seconds": 16.640977382659912
+      "seconds": 17.416648842045106
     },
     {
-      "name": "linnet stablehlo + XLA compile (medium, forward)",
-      "seconds": 6.10768854059279
+      "name": "linnet torch + first call (medium, generated source + torch.compile, numerics=fast)",
+      "seconds": 15.842555372975767
     },
     {
-      "name": "linnet stablehlo + XLA compile (medium, decode) incl. 256 steps",
-      "seconds": 6.267556443810463
+      "name": "linnet stablehlo + XLA compile (medium, forward, numerics=equivalent)",
+      "seconds": 6.322327914065681
+    },
+    {
+      "name": "linnet stablehlo + XLA compile (medium, forward, numerics=fast)",
+      "seconds": 3.6833564010448754
+    },
+    {
+      "name": "linnet stablehlo + XLA compile (medium, decode, numerics=equivalent) incl. 256 steps",
+      "seconds": 6.260313033941202
+    },
+    {
+      "name": "linnet stablehlo + XLA compile (medium, decode, numerics=fast) incl. 256 steps",
+      "seconds": 4.915776844020002
     }
   ]
 }
