@@ -143,7 +143,7 @@ Anything the format cannot express is an error, never an approximation.
 | --- | --- |
 | `stablehlo` | an MLIR module with `@main`; parameters carry `linnet.path`, state inputs `linnet.state`, assigned states are listed in `linnet.states` |
 | `onnx` | ONNX text (`onnx.parser.parse_model`); parameters are `param<N>` inputs with `linnet.path.param<N>` metadata, states `state<N>` in and `next_state<N>` out |
-| `torch` | a Python module: `main(*inputs, *parameters, *states)` with `PARAMETERS`, `STATES`, `NEXT_STATES`, `RESULTS` |
+| `torch` | a Python module: `main(*inputs, *parameters, *states, *constants)` with `PARAMETERS`, `STATES`, `NEXT_STATES`, `RESULTS`, and `constants(device)`, the input-independent tensors (rotary tables, masks) computed once per shape |
 | `jax` | the same module in `jax.numpy`, differentiable with `jax.grad` |
 
 `--numerics equivalent` (the default) spells library operations with the

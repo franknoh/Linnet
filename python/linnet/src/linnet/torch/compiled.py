@@ -70,6 +70,7 @@ class CompiledLinnetModule(LinnetModule):
         arguments: list[Any] = list(inputs)
         arguments += [parameters[f"root.{path}"] for path in generated.parameters]
         arguments += [buffers[f"root.{path}"] for path in generated.states]
+        arguments += generated.constants
         outputs = generated.main(*arguments)
         results = list(outputs[: generated.results])
         for path, value in zip(generated.next_states, outputs[generated.results :], strict=True):
@@ -136,6 +137,12 @@ class CompiledLinnetModule(LinnetModule):
         main: Callable[..., Any] = module.main
         if self._backend is not None:
             main = torch.compile(main, backend=self._backend)
+        # Input-independent values (rotary tables, masks) are computed once
+        # here and passed to every call.
+        constants: list[torch.Tensor] = []
+        if hasattr(module, "constants"):
+            with torch.no_grad():
+                constants = list(module.constants(self.interpreter.device))
         return _Generated(
             path,
             main,
@@ -143,6 +150,7 @@ class CompiledLinnetModule(LinnetModule):
             list(module.STATES),
             list(module.NEXT_STATES),
             int(module.RESULTS),
+            constants,
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -163,3 +171,4 @@ class _Generated:
     states: list[str]  # paths, after the parameters
     next_states: list[str]  # paths of the results after the entry's own
     results: int
+    constants: list[torch.Tensor]  # `constants(device)`, after the states
