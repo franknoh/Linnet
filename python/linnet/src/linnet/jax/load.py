@@ -74,9 +74,11 @@ class LinnetFunction:
         root: str,
         entry: str,
         numerics: str = "equivalent",
+        cast_dtype: bool = False,
     ) -> None:
         self._source = source
         self.numerics = numerics
+        self.cast_dtype = cast_dtype
         self.plan = plan
         self.generics = dict(generics)
         self._generics = self.generics
@@ -205,6 +207,19 @@ class LinnetFunction:
         # loaded weights go to the device once rather than per call.
         call = jax.jit(exported.call)
         arrays = [_device_array(self._weights[path]) for path in paths]
+        if self.cast_dtype:
+            # The export declares each parameter's dtype; a floating array of
+            # another width is converted to it once, here, on the device.
+            first = len(exported.in_avals) - len(state_inputs) - len(paths)
+            declared = exported.in_avals[first : first + len(paths)]
+            arrays = [
+                array.astype(aval.dtype)
+                if array.dtype != aval.dtype
+                and jnp.issubdtype(array.dtype, jnp.floating)
+                and jnp.issubdtype(aval.dtype, jnp.floating)
+                else array
+                for array, aval in zip(arrays, declared, strict=True)
+            ]
         state_avals = dict(
             zip(
                 state_inputs,
@@ -352,6 +367,7 @@ def load(
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
     numerics: str = "fast",
+    cast_dtype: bool = False,
 ) -> LinnetFunction:
     """Materializes the entry of a root block as a JAX callable.
 
@@ -365,6 +381,11 @@ def load(
     accumulate in the input dtype, as framework reference implementations
     do), `"equivalent"` (the f32 accumulation the canonical bodies specify),
     or `"exact"` (every library operation as its canonical decomposition).
+
+    `cast_dtype=True` converts floating-point weights to the dtype the export
+    declares for them, so a checkpoint published in f32 runs in bf16 (or the
+    reverse) as the generics ask; an integer where a float is declared is
+    still an error.
     """
     if numerics not in ("exact", "equivalent", "fast"):
         raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
@@ -389,7 +410,7 @@ def load(
         entry_name = entries[0]
     loaded = apply_bindings(read_arrays(weights), bindings)
     return LinnetFunction(
-        source_path, plan, generics, loaded, std_root, root_name, entry_name, numerics
+        source_path, plan, generics, loaded, std_root, root_name, entry_name, numerics, cast_dtype
     )
 
 
