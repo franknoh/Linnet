@@ -492,11 +492,26 @@ public:
             }
             return mask;
         }
-        if (implementation_base == "torch.Tensor.index_copy" && operands.size() == 3 &&
-            operands[0] && operands[1] && operands[2]) {
-            // One position of a cache: a slice write, not a pass over it.
-            return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long(), " + name(1) +
-                          ")");
+        if (implementation_base == "torch.Tensor.index_copy" && operands.size() == 3) {
+            std::vector<const TensorInfo*> at;
+            at.reserve(operands.size());
+            for (const std::optional<TensorInfo>& operand : operands) {
+                at.push_back(operand.has_value() ? &*operand : nullptr);
+            }
+            if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
+                return std::nullopt;
+            }
+            // A slice write, not a pass over the cache: one position when
+            // decoding, the whole prompt's span when prefilling.
+            const Dims& value = at[1]->shape;
+            const std::int64_t span = value.size() == 4 ? value[2] : 1;
+            if (span == 1) {
+                return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long(), " +
+                              name(1) + ")");
+            }
+            return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long() + " +
+                          "torch.arange(" + std::to_string(span) + ", device=" + name(0) +
+                          ".device), " + name(1) + ")");
         }
         if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
             operands[0] && operands[1]) {

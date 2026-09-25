@@ -23,7 +23,9 @@ Native = Callable[[list[Any], torch.dtype | None], Any]
 
 def _index_copy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     cache, value, at = args
-    return cache.index_copy(2, at.reshape(1).long(), value)
+    # One position when decoding, a span of them when prefilling.
+    positions = at.reshape(1).long() + torch.arange(value.shape[2], device=cache.device)
+    return cache.index_copy(2, positions, value)
 
 
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
