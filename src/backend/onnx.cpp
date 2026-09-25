@@ -219,6 +219,10 @@ public:
                 node("LayerNormalization", inputs, "axis = -1, epsilon = " + epsilon, shape, acc);
             return back(normalized, shape);
         }
+        if (implementation_base == "torch.nn.functional.gelu" && operands.size() == 1 &&
+            at[0] != nullptr) {
+            return node("Gelu", {*at[0]}, "approximate = \"none\"", shape, dtype);
+        }
         if (implementation_base == "torch.nn.functional.gelu(tanh)" && operands.size() == 1 &&
             at[0] != nullptr) {
             return node("Gelu", {*at[0]}, "approximate = \"tanh\"", shape, dtype);

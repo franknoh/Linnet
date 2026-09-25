@@ -18,3 +18,26 @@ pub op gelu<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
     let inner = 0.7978845608 * (xf + 0.044715 * xf * xf * xf)
     return cast<T>(0.5 * xf * (1.0 + tanh(inner)))
 }
+
+// GELU as the checkpoints that say `gelu` mean it: `x` times the normal
+// cumulative distribution, not the tanh approximation above. The language
+// has no `erf`, so the distribution is Abramowitz and Stegun 26.2.17, whose
+// error is below 7.5e-8 -- under f32 resolution here, where `gelu`'s tanh
+// form is off by 4.7e-4. That distance matters more than it looks: a gated
+// MLP multiplies the activation by an unbounded gate, so the error is
+// amplified rather than averaged away.
+//
+// A backend with a fused erf GELU calls it instead of evaluating this.
+pub op gelu_erf<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    let xf = cast<f32>(x)
+    let magnitude = abs(xf)
+    let t = 1.0 / (1.0 + 0.2316419 * magnitude)
+    let series =
+        t *
+        (0.319381530 +
+            t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+    let density = 0.3989422804014327 * exp(-0.5 * magnitude * magnitude)
+    let upper = 1.0 - density * series
+    let cumulative = select(xf >= 0.0, upper, 1.0 - upper)
+    return cast<T>(xf * cumulative)
+}

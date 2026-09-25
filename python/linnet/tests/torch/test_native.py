@@ -19,7 +19,7 @@ SOURCE = """\
 module tests.native
 
 use std.linalg::{batched_matmul, matmul}
-use std.nn.activations::{gelu, relu, sigmoid, silu}
+use std.nn.activations::{gelu, gelu_erf, relu, sigmoid, silu}
 use std.nn.attention::{attention, causal_mask}
 use std.nn.linear::{linear}
 use std.nn.norm::{layer_norm, rms_norm}
@@ -32,6 +32,10 @@ pub block Ops<H: Dim, T: Float> {
 
     pub entry activations<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
         return gelu(silu(sigmoid(relu(x))))
+    }
+
+    pub entry exact_gelu<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        return gelu_erf(x)
     }
 
     pub entry projections<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
@@ -132,3 +136,31 @@ def test_fast_tier_agrees_up_to_input_rounding(tmp_path: Path, dtype: str) -> No
     generated.run_entry("attend", [q, k, v])
     source_text = generated.generated_source("attend")
     assert "F.scaled_dot_product_attention(" in source_text and ".float()" not in source_text
+
+
+@pytest.mark.parametrize("numerics", ["exact", "equivalent"])
+def test_gelu_erf_is_the_activation_checkpoints_mean(tmp_path: Path, numerics: str) -> None:
+    """`gelu_erf` must agree with `F.gelu`, whichever side computes it.
+
+    At `exact` the canonical series runs; at `equivalent` the fused kernel is
+    selected. The tanh approximation is three orders of magnitude further
+    away, which is the whole reason this op exists.
+    """
+    source = tmp_path / "native.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    model = load(source, generics={"H": 64, "T": "f32"}, std_root=STDLIB, numerics=numerics)
+    x = torch.linspace(-8.0, 8.0, 4 * 64).reshape(4, 64)
+    expected = torch.nn.functional.gelu(x, approximate="none")
+    got = model.run_entry("exact_gelu", [x])
+    torch.testing.assert_close(got, expected, atol=2e-6, rtol=0)
+    tanh_form = torch.nn.functional.gelu(x, approximate="tanh")
+    assert (tanh_form - expected).abs().max() > 100 * (got - expected).abs().max()
+
+
+def test_the_erf_gelu_kernel_is_selected(tmp_path: Path) -> None:
+    source = tmp_path / "native.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    model = load(source, generics={"H": 64, "T": "f32"}, std_root=STDLIB, compile=True)
+    assert isinstance(model, CompiledLinnetModule)
+    model.run_entry("exact_gelu", [torch.randn(2, 64)])
+    assert 'F.gelu(in_x, approximate="none")' in model.generated_source("exact_gelu")

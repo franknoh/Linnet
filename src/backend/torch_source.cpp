@@ -558,6 +558,9 @@ public:
         if (implementation_base == "torch.nn.functional.silu" && operands.size() == 1) {
             return define("F.silu(" + name(0) + ")");
         }
+        if (implementation_base == "torch.nn.functional.gelu" && operands.size() == 1) {
+            return define("F.gelu(" + name(0) + ", approximate=\"none\")");
+        }
         if (implementation_base == "torch.nn.functional.gelu(tanh)" && operands.size() == 1) {
             return define("F.gelu(" + name(0) + ", approximate=\"tanh\")");
         }

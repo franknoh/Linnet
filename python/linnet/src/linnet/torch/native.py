@@ -58,6 +58,10 @@ def _gelu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return functional.gelu(args[0], approximate="tanh")
 
 
+def _gelu_erf(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    return functional.gelu(args[0], approximate="none")
+
+
 def _rms_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     x, weight, eps = args
     return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
@@ -185,6 +189,7 @@ NATIVE: dict[str, Native] = {
     "torch.sigmoid": _sigmoid,
     "torch.nn.functional.silu": _silu,
     "torch.nn.functional.gelu(tanh)": _gelu,
+    "torch.nn.functional.gelu": _gelu_erf,
     "torch.rms_norm": _rms_norm,
     "torch.nn.functional.layer_norm": _layer_norm,
     "torch.nn.functional.scaled_dot_product_attention": _attention,
