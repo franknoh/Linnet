@@ -25,6 +25,7 @@
 #include "linnet/version.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -78,9 +79,14 @@ void print_usage(std::FILE* out) {
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments\n"
         "  onnx [same options as stablehlo] <file>\n"
-        "  torch [same options as stablehlo] <file>\n"
-        "  jax [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
+        "  torch [same options as stablehlo] [--place <block>=<slot>]...\n"
+        "        [--offload <block>]... <file>\n"
+        "                                       Print an entry as PyTorch source; --place\n"
+        "                                       runs a block on a device slot and --offload\n"
+        "                                       streams its parameters in from the host\n"
+        "  jax [same options as stablehlo] <file>\n"
+        "                                       Print an entry as JAX source\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent|fast] <file>\n"
@@ -321,7 +327,7 @@ int run_graph_export(std::span<const std::string_view> args,
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
-            arg == "--optionals" || arg == "--numerics") {
+            arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload") {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
             }
@@ -334,6 +340,32 @@ int run_graph_export(std::span<const std::string_view> args,
                 export_options.root = value;
             } else if (arg == "--entry") {
                 export_options.entry = value;
+            } else if (arg == "--place" || arg == "--offload") {
+                // A block path, with or without its trailing `.`: `layers.3`.
+                const std::size_t equals = value.find('=');
+                std::string prefix(arg == "--place" ? value.substr(0, equals) : value);
+                if (prefix.empty()) {
+                    return usage_error(std::string(arg) + " needs a block path");
+                }
+                if (!prefix.ends_with('.')) {
+                    prefix += '.';
+                }
+                if (arg == "--offload") {
+                    export_options.offload.push_back(prefix);
+                    continue;
+                }
+                if (equals == std::string_view::npos) {
+                    return usage_error("--place takes <block path>=<slot>");
+                }
+                const std::string_view slot_text = value.substr(equals + 1);
+                int slot = -1;
+                const auto [end, error] =
+                    std::from_chars(slot_text.data(), slot_text.data() + slot_text.size(), slot);
+                if (error != std::errc{} || end != slot_text.data() + slot_text.size() ||
+                    slot < 0) {
+                    return usage_error("--place slot must be a non-negative integer");
+                }
+                export_options.placement[prefix] = slot;
             } else if (arg == "--optionals") {
                 if (value != "present" && value != "absent") {
                     return usage_error("--optionals must be `present` or `absent`");

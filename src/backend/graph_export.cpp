@@ -41,7 +41,14 @@ struct Val {
     EntityId block = no_entity;    // Block: declaration
     Substitution subst;            // Block: its generic bindings
     std::vector<std::size_t> axes; // Index (one), Pack (several): grid axes
+    int slot = -2;                 // Tensor, with placement: see `unplaced` and `host`
 };
+
+// A tensor made before placement assigned it a slot runs on slot 0; a
+// parameter of an offloaded block lives on the host and runs nowhere until
+// it is transferred.
+constexpr int unplaced = -2;
+constexpr int host = -1;
 
 TensorInfo info(const Val& value) {
     return {value.name, value.shape, value.dtype};
@@ -66,6 +73,20 @@ public:
         self.kind = Val::Kind::Block;
         self.block = root;
         self.subst = root_subst;
+
+        if (placing()) {
+            if (!target_.supports_placement()) {
+                fail("this target cannot place blocks on devices; placement is for `torch`");
+            }
+            int slots = 1;
+            for (const auto& [prefix, slot] : options_.placement) {
+                if (slot < 0) {
+                    fail("placement slot for `" + prefix + "` must not be negative");
+                }
+                slots = std::max(slots, slot + 1);
+            }
+            target_.enable_placement(slots);
+        }
 
         Frame frame;
         frame.subst = entry_bindings(entry, root_subst);
@@ -112,6 +133,14 @@ private:
         std::map<ir::ValueId, Val> values;
         Substitution subst;
     };
+
+    // Placement state: the slot stack (calls into placed blocks push), the
+    // transfers already made per loop scope, and per offloaded block the
+    // parameter copies to release when it returns.
+    std::vector<int> slots_{0};
+    std::vector<std::map<std::pair<std::string, int>, std::string>> moved_{1};
+    std::vector<std::vector<std::string>> releases_;
+    std::vector<std::vector<std::pair<std::string, int>>> released_keys_;
 
     // ------------------------------------------------------------- roots
 
@@ -295,6 +324,7 @@ private:
             target_.while_initial_condition(predicate(own_values(carried)));
         }
         const std::vector<Val> condition_values = renamed(target_.begin_while(initial));
+        moved_.emplace_back();
         const std::vector<Val> body_values =
             renamed(target_.while_condition(predicate(own_values(condition_values))));
         std::vector<Val> next = run_region(op.regions.back(), own_values(body_values));
@@ -312,6 +342,12 @@ private:
             }
             next.push_back(current);
         }
+        if (placing()) {
+            for (std::size_t i = 0; i < next.size(); ++i) {
+                const int entered_on = body_values[i].slot == unplaced ? 0 : body_values[i].slot;
+                next[i] = on_slot(next[i], entered_on);
+            }
+        }
         if (target_.while_needs_trailing_condition()) {
             target_.while_trailing_condition(predicate(own_values(next)));
         }
@@ -321,6 +357,7 @@ private:
             outputs.push_back(info(value));
         }
         const std::vector<std::string> finals = target_.end_while(outputs);
+        moved_.pop_back();
         if (finals.size() != next.size()) {
             fail("internal: the target returned " + std::to_string(finals.size()) +
                  " loop results");
@@ -442,6 +479,9 @@ private:
                 const TypeId tensor = is_optional ? data.elements.front() : type;
                 Val value = tensor_value(tensor, {});
                 value.name = target_.parameter(path, value.shape, value.dtype);
+                if (placing()) {
+                    value.slot = offloaded(path) ? host : slot_of(path);
+                }
                 parameters_[path] = value;
             }
         }
@@ -703,13 +743,112 @@ private:
     }
 
     void define(const ir::Operation& op, Val value) {
+        if (placing()) {
+            stamp(value);
+        }
         frame().values[op.results.front()] = std::move(value);
+    }
+
+    // ------------------------------------------------------- placement
+
+    bool placing() const { return !options_.placement.empty() || !options_.offload.empty(); }
+
+    // The slot a member path runs on: the longest placement key it starts
+    // with, or slot 0.
+    int slot_of(const std::string& path) const {
+        int slot = 0;
+        std::size_t longest = 0;
+        for (const auto& [prefix, assigned] : options_.placement) {
+            if (prefix.size() > longest && path.starts_with(prefix)) {
+                slot = assigned;
+                longest = prefix.size();
+            }
+        }
+        return slot;
+    }
+
+    bool offloaded(const std::string& path) const {
+        return std::ranges::any_of(
+            options_.offload, [&](const std::string& prefix) { return path.starts_with(prefix); });
+    }
+
+    int current_slot() const { return slots_.back(); }
+
+    void stamp(Val& value) const {
+        if (value.kind == Val::Kind::Tensor && value.slot == unplaced) {
+            value.slot = current_slot();
+        }
+        for (Val& element : value.elements) {
+            stamp(element);
+        }
+    }
+
+    // `value` as it is on `slot`: itself if it is already there, otherwise a
+    // transfer, made once per scope. A transfer of an offloaded parameter
+    // belongs to the offloaded block that asked for it and is released when
+    // that block returns.
+    Val on_slot(const Val& value, int slot) {
+        if (value.kind != Val::Kind::Tensor) {
+            Val out = value;
+            for (Val& element : out.elements) {
+                element = on_slot(element, slot);
+            }
+            return out;
+        }
+        const int from = value.slot == unplaced ? 0 : value.slot;
+        if (from == slot) {
+            return value;
+        }
+        const std::pair<std::string, int> key{value.name, slot};
+        for (auto scope = moved_.rbegin(); scope != moved_.rend(); ++scope) {
+            const auto found = scope->find(key);
+            if (found != scope->end()) {
+                Val out = value;
+                out.name = found->second;
+                out.slot = slot;
+                return out;
+            }
+        }
+        Val out = value;
+        out.name = target_.transfer(info(value), slot);
+        out.slot = slot;
+        if (from == host && !releases_.empty()) {
+            releases_.back().push_back(out.name);
+            released_keys_.back().push_back(key);
+        }
+        moved_.back()[key] = out.name;
+        return out;
     }
 
     // Inside index notation most operations are scalar and evaluate over the
     // grid, but a tensor-valued expression there is a whole tensor computed
     // once.
     void run_op(const ir::Operation& op) {
+        if (!placing() || op.kind == ir::OpKind::Call) {
+            run_placed_op(op);
+            return;
+        }
+        // Operands on another slot are replaced for the duration of this one
+        // operation, so the operation and everything it defines live here.
+        std::vector<std::pair<ir::ValueId, Val>> saved;
+        for (const ir::ValueId id : op.operands) {
+            const auto found = frame().values.find(id);
+            if (found == frame().values.end() || found->second.kind == Val::Kind::Block) {
+                continue;
+            }
+            Val moved = on_slot(found->second, current_slot());
+            if (moved.name != found->second.name || !moved.elements.empty()) {
+                saved.emplace_back(id, found->second);
+                found->second = std::move(moved);
+            }
+        }
+        run_placed_op(op);
+        for (auto& [id, original] : saved) {
+            frame().values[id] = std::move(original);
+        }
+    }
+
+    void run_placed_op(const ir::Operation& op) {
         if (in_grid() && op.results.size() == 1 && op.kind != ir::OpKind::Reduce) {
             const TypeData& data = types_.get(
                 types_.substitute(module_.value(op.results.front()).type, frame().subst));
@@ -1023,6 +1162,9 @@ private:
                 }
                 Val value = declared->second;
                 value.name = target_.state(path, value.shape, value.dtype);
+                if (placing()) {
+                    value.slot = slot_of(path); // a cache stays where its block runs
+                }
                 found = states_.emplace(path, value).first;
             }
             define(op, found->second);
@@ -1208,7 +1350,36 @@ private:
         const Dims saved_grid = grid_;
         grid_.clear();
         frames_.push_back(std::move(inner));
+        bool entered = false;
+        bool unit = false;
+        if (placing() && !arguments.empty() && arguments.front().kind == Val::Kind::Block) {
+            const std::string& path = arguments.front().path;
+            slots_.push_back(slot_of(path));
+            target_.set_slot(current_slot());
+            entered = true;
+            unit = std::ranges::find(options_.offload, path) != options_.offload.end();
+            if (unit) {
+                releases_.emplace_back();
+                released_keys_.emplace_back();
+            }
+        }
         const std::vector<Val> results = run_region(callee.body, arguments);
+        if (unit) {
+            if (!releases_.back().empty()) {
+                target_.release(releases_.back());
+            }
+            for (const auto& key : released_keys_.back()) {
+                for (auto& scope : moved_) {
+                    scope.erase(key);
+                }
+            }
+            releases_.pop_back();
+            released_keys_.pop_back();
+        }
+        if (entered) {
+            slots_.pop_back();
+            target_.set_slot(current_slot());
+        }
         frames_.pop_back();
         grid_ = saved_grid;
         if (!op.results.empty()) {

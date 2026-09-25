@@ -11,12 +11,17 @@ from ..plan import Plan, PlanError, compile_plan
 from .compiled import CompiledLinnetModule
 from .export import ExportError, ExportResult, export_linnet
 from .module import LinnetModule, bind_weights
+from .placement import Placement
+from .placement import apply as apply_placement
+from .placement import from_map as placement_from_map
+from .placement import plan as placement_plan
 
 __all__ = [
     "CompiledLinnetModule",
     "ExportError",
     "ExportResult",
     "LinnetModule",
+    "Placement",
     "Plan",
     "PlanError",
     "bind_weights",
@@ -40,6 +45,10 @@ def load(
     numerics: str = "fast",
     compile: bool | str | None = None,
     trainable: bool = False,
+    device_map: str | Mapping[str, str | int] | None = None,
+    max_memory: Mapping[int | str, int | str] | None = None,
+    offload: bool = True,
+    cast_dtype: bool = False,
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
 
@@ -63,6 +72,22 @@ def load(
         dominates token-by-token decoding. Unset, it is `True` on a CUDA device
         and `False` (the interpreter) elsewhere.
 
+        `device_map="auto"` spreads the model over every visible GPU, in the
+        order its blocks are declared, and keeps on the host whatever does not
+        fit: those blocks' weights are streamed to the GPU one block at a time
+        ("offloading"), so a model larger than the GPU still runs, more slowly.
+        Each GPU may use what is free on it, less a reserve for activations;
+        `max_memory={0: "20GiB"}` caps a device, and `offload=False` makes a
+        model that does not fit an error instead. A mapping such as
+        `{"layers.0": "cuda:0", "layers.31": "cpu"}` places blocks by hand. The
+        placement is compiled into the generated source (see `linnet torch
+        --place`), so it needs the generated path, and `model.placement`
+        says where everything went.
+
+        `cast_dtype=True` converts floating-point weights to the dtype the
+        generics ask for as they are read, so a checkpoint published in f32 runs
+        in bf16 (or the reverse) without a converted copy on disk.
+
         `trainable=True` makes the parameters require gradients: every entry is
         ordinary differentiable PyTorch arithmetic (interpreted or generated), so
         `loss.backward()` and any `torch.optim` optimizer train the model without
@@ -70,6 +95,23 @@ def load(
         calls.
     """
     plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
+    if device_map is not None:
+        return _load_placed(
+            plan,
+            source,
+            generics,
+            std_root=std_root,
+            weights=weights,
+            bindings=bindings,
+            strict=strict,
+            numerics=numerics,
+            compile=compile,
+            trainable=trainable,
+            device_map=device_map,
+            max_memory=max_memory,
+            offload=offload,
+            cast_dtype=cast_dtype,
+        )
     if compile is None:
         compile = torch.device(device).type == "cuda"
     module: LinnetModule
@@ -86,7 +128,57 @@ def load(
     else:
         module = LinnetModule(plan, generics, torch.device(device))
     if weights is not None:
-        bind_weights(module, weights, bindings, strict=strict)
+        bind_weights(module, weights, bindings, strict=strict, cast_dtype=cast_dtype)
+    if trainable:
+        for parameter in module.parameters():
+            parameter.requires_grad_(True)
+    return module
+
+
+def _load_placed(
+    plan: Plan,
+    source: str | Path,
+    generics: Mapping[str, int | str],
+    *,
+    std_root: str | Path | None,
+    weights: str | Path | None,
+    bindings: str | Path | None,
+    strict: bool,
+    numerics: str,
+    compile: bool | str | None,
+    trainable: bool,
+    device_map: str | Mapping[str, str | int],
+    max_memory: Mapping[int | str, int | str] | None,
+    offload: bool,
+    cast_dtype: bool,
+) -> CompiledLinnetModule:
+    """Builds the model on the host, binds its weights there, then moves each
+    unit to the device its placement names. Nothing larger than one unit is
+    ever on a GPU before it is placed."""
+    if compile in ("reduce-overhead", "cudagraphs") and offload:
+        raise PlanError(
+            "CUDA graphs replay fixed allocations, which streamed weights are not; "
+            "use compile=True or offload=False"
+        )
+    module = CompiledLinnetModule(
+        plan,
+        generics,
+        torch.device("cpu"),
+        source=Path(source),
+        std_root=std_root,
+        numerics=numerics,
+        backend=compile if isinstance(compile, str) else None,
+    )
+    if weights is not None:
+        bind_weights(module, weights, bindings, strict=strict, cast_dtype=cast_dtype)
+    if device_map == "auto":
+        placement = placement_plan(module, max_memory=max_memory, offload=offload)
+    elif isinstance(device_map, str):
+        raise PlanError(f'device_map must be "auto" or a mapping, not {device_map!r}')
+    else:
+        placement = placement_from_map(module, device_map)
+    apply_placement(module, placement)
+    module.placement = placement
     if trainable:
         for parameter in module.parameters():
             parameter.requires_grad_(True)

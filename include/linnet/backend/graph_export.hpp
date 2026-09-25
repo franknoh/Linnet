@@ -114,6 +114,17 @@ public:
     // they do, the exporter leaves those broadcasts out: one emitted
     // operation fewer for every operand of every elementwise operation.
     virtual bool broadcasts_elementwise() const { return false; }
+    // Placement (see `GraphExportOptions::placement`). A target that supports
+    // it is told how many slots there are, which slot the following
+    // operations run on, and asked to move a tensor or to drop names.
+    virtual bool supports_placement() const { return false; }
+    virtual void enable_placement(int slots) { (void)slots; }
+    virtual void set_slot(int slot) { (void)slot; }
+    virtual std::string transfer(const TensorInfo& value, int slot) {
+        (void)slot;
+        return value.name;
+    }
+    virtual void release(const std::vector<std::string>& names) { (void)names; }
     virtual std::string slice(const TensorInfo& value,
                               const Dims& starts,
                               const Dims& limits,
@@ -188,6 +199,14 @@ struct GraphExportOptions {
     std::uint32_t root_module = 0;
     std::map<std::string, std::string> bindings; // generic name -> integer or dtype
     bool optionals_present = false;
+    // Placement across devices, for a target that supports it. A block whose
+    // member path starts with a key runs on that device slot (the longest key
+    // wins; everything else runs on slot 0), and a tensor consumed on another
+    // slot is transferred once. Keys end in `.`, like `layers.3.`.
+    std::map<std::string, int> placement;
+    // Blocks whose parameters stay on the host: each is transferred to the
+    // block's slot when first used and released when the block returns.
+    std::vector<std::string> offload;
 };
 
 std::expected<std::string, std::string>

@@ -321,6 +321,7 @@ def bind_weights(
     weights: str | Path,
     bindings: str | Path | None = None,
     strict: bool = True,
+    cast_dtype: bool = False,
 ) -> None:
     """Loads SafeTensors weights into the module.
 
@@ -329,6 +330,12 @@ def bind_weights(
     names; paths that are not listed use their own name. Every tensor is
     checked against the plan's shape and dtype before anything is assigned,
     and with `strict` every required parameter must be present.
+
+    `cast_dtype=True` accepts a floating-point tensor of another width and
+    converts it on the way in, one tensor at a time: an f32 checkpoint run in
+    bf16, or a bf16 one checked in f32, without writing a converted copy.
+    Any other mismatch (an integer where a float is expected) still means the
+    binding is wrong, and is still an error.
     """
     from safetensors import safe_open  # type: ignore[import-untyped]
 
@@ -386,7 +393,12 @@ def bind_weights(
         expected_dtype = tensor.dtype
         if shape != list(tensor.shape):
             problems.append(f"`{source}` has shape {shape}, `{path}` needs {list(tensor.shape)}")
-        elif safetensor_dtypes.get(dtype_name) != expected_dtype:
+        elif safetensor_dtypes.get(dtype_name) != expected_dtype and not (
+            cast_dtype
+            and expected_dtype.is_floating_point
+            and (found := safetensor_dtypes.get(dtype_name)) is not None
+            and found.is_floating_point
+        ):
             problems.append(f"`{source}` has dtype {dtype_name}, `{path}` needs {expected_dtype}")
         else:
             assignments.append((path, source, available[source][0]))

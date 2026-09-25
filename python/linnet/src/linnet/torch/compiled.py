@@ -25,6 +25,7 @@ import torch
 from ..compiler import find_compiler
 from ..plan import Env, Plan, PlanError
 from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
+from .placement import Placement
 
 
 class CompiledLinnetModule(LinnetModule):
@@ -40,8 +41,11 @@ class CompiledLinnetModule(LinnetModule):
         std_root: str | Path | None,
         numerics: str,
         backend: str | None,
+        placement: Placement | None = None,
     ) -> None:
         super().__init__(plan, generics, device)
+        # Set by `linnet.torch.load` once the weights are bound and placed.
+        self.placement = placement
         self._source = Path(source)
         self._std_root = std_root
         self._numerics = numerics
@@ -71,15 +75,25 @@ class CompiledLinnetModule(LinnetModule):
         generated = self._compiled[key]
         parameters = dict(self.named_parameters())
         buffers = dict(self.named_buffers())
+        if self.placement is not None:
+            # Inputs enter where the first unit runs.
+            inputs = [value.to(self.placement.devices[0]) for value in inputs]
         arguments: list[Any] = list(inputs)
         arguments += [parameters[f"root.{path}"] for path in generated.parameters]
         arguments += [buffers[f"root.{path}"] for path in generated.states]
         arguments += generated.constants
+        if generated.placed:
+            assert self.placement is not None
+            arguments.append(self.placement.devices)
         outputs = generated.main(*arguments)
         if self._cuda_graphs:
             # Graph outputs are overwritten by the next replay; keep copies.
             outputs = [value.clone() for value in outputs]
         results = list(outputs[: generated.results])
+        if self.placement is not None:
+            # Results come back where they were computed; hand them over on
+            # the first device, where the inputs went in.
+            results = [value.to(self.placement.devices[0]) for value in results]
         for path, value in zip(generated.next_states, outputs[generated.results :], strict=True):
             owner, leaf = owner_of(self, path)
             setattr(owner, leaf, value.detach())
@@ -128,6 +142,8 @@ class CompiledLinnetModule(LinnetModule):
             command += ["--std", str(self._std_root)]
         for name, value in bindings.items():
             command += ["--bind", f"{name}={value}"]
+        if self.placement is not None and not self.placement.trivial:
+            command += self.placement.flags()
         completed = subprocess.run(
             [*command, str(self._source)], capture_output=True, text=True, check=False
         )
@@ -148,10 +164,15 @@ class CompiledLinnetModule(LinnetModule):
             main = torch.compile(main, backend=self._backend)
         # Input-independent values (rotary tables, masks) are computed once
         # here and passed to every call.
+        placed = hasattr(module, "SLOTS")
         constants: list[torch.Tensor] = []
         if hasattr(module, "constants"):
             with torch.no_grad():
-                constants = list(module.constants(self.interpreter.device))
+                if placed:
+                    assert self.placement is not None
+                    constants = list(module.constants(self.placement.devices))
+                else:
+                    constants = list(module.constants(self.interpreter.device))
         return _Generated(
             path,
             main,
@@ -160,6 +181,7 @@ class CompiledLinnetModule(LinnetModule):
             list(module.NEXT_STATES),
             int(module.RESULTS),
             constants,
+            placed,
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -181,3 +203,4 @@ class _Generated:
     next_states: list[str]  # paths of the results after the entry's own
     results: int
     constants: list[torch.Tensor]  # `constants(device)`, after the states
+    placed: bool = False  # `main` also takes the device of every slot
