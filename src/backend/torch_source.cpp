@@ -107,8 +107,8 @@ public:
 
     std::string constant(const Literal& literal, ScalarKind dtype) override {
         const std::string text = literal_text(literal, dtype);
-        const std::string name =
-            define("torch.tensor(" + text + ", dtype=" + torch_dtype(dtype) + ", device=_device)");
+        const std::string name = define("torch.tensor(" + text + ", dtype=" + torch_dtype(dtype) +
+                                        ", device=" + device() + ")");
         literals_[name] = text;
         if (literal.kind == Literal::Kind::Integer || literal.kind == Literal::Kind::Real) {
             values_[name] = literal.kind == Literal::Kind::Real
@@ -376,7 +376,7 @@ public:
 
     std::string iota(std::int64_t length) override {
         return define("torch.arange(" + std::to_string(length) +
-                      ", dtype=torch.int64, device=_device)");
+                      ", dtype=torch.int64, device=" + device() + ")");
     }
 
     std::string
@@ -415,6 +415,30 @@ public:
     }
 
     bool broadcasts_elementwise() const override { return true; }
+
+    // Placement: `_dev` is the tuple of devices `main` receives, one per
+    // slot. A transfer is never shared through the expression cache, since
+    // an offloaded parameter's copy is deleted when its block returns and
+    // the same expression later must make a new one.
+    bool supports_placement() const override { return true; }
+    void enable_placement(int slots) override {
+        placed_ = true;
+        slots_ = slots;
+    }
+    void set_slot(int slot) override { slot_ = slot; }
+    std::string transfer(const TensorInfo& value, int slot) override {
+        const std::string name = "v" + std::to_string(next_++);
+        body_ += indent_ + name + " = " + value.name + ".to(_dev[" + std::to_string(slot) +
+                 "], non_blocking=True)\n";
+        return name;
+    }
+    void release(const std::vector<std::string>& names) override {
+        std::string line = indent_ + "del ";
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            line += (i == 0 ? "" : ", ") + names[i];
+        }
+        body_ += line + "\n";
+    }
 
     std::optional<std::string> native_call(const std::string& implementation,
                                            const std::vector<std::optional<TensorInfo>>& operands,
@@ -460,9 +484,9 @@ public:
         }
         if (implementation_base == "torch.tril" && operands.empty() && shape.size() == 2) {
             // `keys[k] <= queries[q] + (K - Q)`: ones below the diagonal K - Q.
-            std::string mask = define("torch.ones(" + dims_text(shape) +
-                                      ", dtype=torch.bool, device=_device).tril(" +
-                                      std::to_string(shape[1] - shape[0]) + ")");
+            std::string mask =
+                define("torch.ones(" + dims_text(shape) + ", dtype=torch.bool, device=" + device() +
+                       ").tril(" + std::to_string(shape[1] - shape[0]) + ")");
             if (shape[0] == shape[1]) {
                 causal_masks_.insert(mask);
             }
@@ -652,8 +676,17 @@ public:
         }
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         const Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
-        out += "CONSTANTS = " + string_list(hoisted.names) + "\n\n\n";
-        out += "def constants(_device):\n";
+        out += "CONSTANTS = " + string_list(hoisted.names) + "\n";
+        if (placed_) {
+            out += "SLOTS = " + std::to_string(slots_) + "\n";
+        }
+        out += "\n\n";
+        if (placed_) {
+            out += "def constants(_dev):\n";
+            out += "    _device = _dev[0]\n";
+        } else {
+            out += "def constants(_device):\n";
+        }
         out += hoisted.constants;
         out += "    return (";
         for (std::size_t i = 0; i < hoisted.names.size(); ++i) {
@@ -663,14 +696,21 @@ public:
         out += "def main(";
         std::vector<std::string> arguments = arguments_;
         arguments.insert(arguments.end(), hoisted.names.begin(), hoisted.names.end());
+        if (placed_) {
+            arguments.emplace_back("_dev");
+        }
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             out += (i == 0 ? "" : ", ") + arguments[i];
         }
         out += "):\n";
-        out += "    _device = " +
-               (arguments_.empty() ? std::string("torch.device(\"cpu\")")
-                                   : arguments_.front() + ".device") +
-               "\n";
+        if (placed_) {
+            out += "    _device = _dev[0]\n";
+        } else {
+            out += "    _device = " +
+                   (arguments_.empty() ? std::string("torch.device(\"cpu\")")
+                                       : arguments_.front() + ".device") +
+                   "\n";
+        }
         out += hoisted.body;
         out += tail;
         return out;
@@ -826,6 +866,10 @@ public:
     }
 
 private:
+    std::string device() const {
+        return placed_ ? "_dev[" + std::to_string(slot_) + "]" : std::string("_device");
+    }
+
     // Every value is immutable, so an expression already computed in this
     // scope (or an enclosing one) names the same tensor: identical rotary
     // tables or masks across inlined layers are emitted once.
@@ -875,6 +919,9 @@ private:
         return "0";
     }
 
+    bool placed_ = false; // with placement, `main` and `constants` take `_dev`
+    int slots_ = 1;
+    int slot_ = 0;
     std::vector<std::string> arguments_;
     std::vector<std::string> parameters_;                    // paths, in argument order
     std::vector<std::string> states_;                        // paths, in argument order

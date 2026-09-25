@@ -227,3 +227,46 @@ def test_emitted_source_materializes_identically(tmp_path: Path) -> None:
     torch.testing.assert_close(
         copy(tokens, cos_table, sin_table), original(tokens, cos_table, sin_table)
     )
+
+
+CAST_SOURCE = """\
+module tests.cast
+
+pub block Model<T: Float> {
+    param scale: Tensor[4; T]
+
+    pub entry forward(x: Tensor[4; T]) -> Tensor[4; T] {
+        return x * scale
+    }
+}
+"""
+
+
+def test_floats_of_another_width_bind_only_when_asked(tmp_path: Path) -> None:
+    """An f32 checkpoint in a bf16 model is a conversion people mean; an
+    integer where a float belongs is a wrong binding either way."""
+    source = tmp_path / "cast.linnet"
+    source.write_text(CAST_SOURCE, encoding="utf-8")
+    scale = torch.tensor([0.5, 1.5, -2.0, 3.25])
+    save_file({"scale": scale}, str(tmp_path / "f32.safetensors"))
+    with pytest.raises(PlanError, match="dtype F32"):
+        load(source, generics={"T": "bf16"}, std_root=STDLIB, weights=tmp_path / "f32.safetensors")
+    model = load(
+        source,
+        generics={"T": "bf16"},
+        std_root=STDLIB,
+        weights=tmp_path / "f32.safetensors",
+        cast_dtype=True,
+    )
+    got = model(torch.ones(4, dtype=torch.bfloat16))
+    torch.testing.assert_close(got, scale.to(torch.bfloat16))
+
+    save_file({"scale": torch.arange(4, dtype=torch.int32)}, str(tmp_path / "i32.safetensors"))
+    with pytest.raises(PlanError, match="dtype I32"):
+        load(
+            source,
+            generics={"T": "bf16"},
+            std_root=STDLIB,
+            weights=tmp_path / "i32.safetensors",
+            cast_dtype=True,
+        )

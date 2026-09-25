@@ -83,11 +83,56 @@ What `load` does:
 | `compile="reduce-overhead"` | `torch.compile` with CUDA graphs: one replay per call instead of one launch per kernel, for decoding |
 | `trainable=True` | parameters require gradients |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
+| `cast_dtype=True` | converts floating-point weights to the model's dtype as they are read: an f32 checkpoint in a bf16 model, or the reverse |
+| `device_map="auto"` | spreads the model over the visible GPUs and streams what does not fit from the host; see below |
 
 Entries with generics the inputs do not determine take them by name:
 `model.run_entry("generate", [prompt, pos], generics={"Steps": 16})`.
 `model.reset_state()` zeroes every `state` member; `model.state_paths()`
 lists them; `model.generated_source(entry)` shows the code `compile` ran.
+
+## More than one GPU, and more than the GPU holds
+
+```python
+model = linnet.torch.load("model.linnet", generics=generics, weights="weights/",
+                          device_map="auto")
+print(model.placement.describe())
+```
+
+```text
+cuda:0: embedding, layers.0-15
+cuda:1: layers.16-31, norm, head
+```
+
+A model is divided into units: every sub-block of the root, and every
+element of a sub-block array. The manifest gives each unit's size before any
+weight is read, so the placement is decided up front. Units fill the first
+GPU in the order they are declared, then the next; each GPU may use what is
+free on it, less a reserve for activations, and `max_memory={0: "20GiB"}`
+caps one. When the GPUs are full, the remaining units stay in pinned host
+memory and are *offloaded*: each is copied to the last GPU when it runs and
+dropped when it returns, so a model larger than the GPU still runs, at the
+speed of the copies. `offload=False` makes that an error instead, and a
+mapping such as `{"layers.30": "cpu", "layers.31": "cpu"}` places units by
+hand.
+
+The placement is compiled, not hooked in at run time. `linnet torch --place
+layers.16=1 --offload layers.31` generates the same straight-line source as
+an unplaced model, with every operation on its unit's device and a `.to()`
+exactly where a value crosses devices:
+
+```python
+    v212 = v209.to(_dev[1], non_blocking=True)   # the residual stream, once
+    ...
+    v480 = p291.to(_dev[1], non_blocking=True)   # an offloaded layer's weights
+    v481 = F.linear(v479, v480, None)
+    ...
+    del v480                                     # gone when the layer returns
+```
+
+Placement needs the generated path (it is always used with `device_map`), and
+CUDA graphs cannot replay streamed weights, so `compile="reduce-overhead"`
+requires `offload=False`.
 
 ## Training
 
