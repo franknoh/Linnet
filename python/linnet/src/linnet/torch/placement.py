@@ -61,11 +61,18 @@ def parse_size(size: int | str) -> int:
 
 @dataclass(frozen=True)
 class Unit:
-    """A placeable piece of the model: its path, module, and weight bytes."""
+    """A placeable piece of the model: its path and module, the bytes of its
+    parameters, and the bytes of its `state` members (a key/value cache),
+    which stay on the device the unit runs on even when it is offloaded."""
 
     path: str
     module: nn.Module
     bytes: int
+    state_bytes: int = 0
+
+    @property
+    def resident(self) -> int:
+        return self.bytes + self.state_bytes
 
 
 @dataclass(frozen=True)
@@ -110,10 +117,12 @@ def units_of(model: LinnetModule) -> list[Unit]:
     found: list[Unit] = []
     for name, child in model.root.named_children():
         if isinstance(child, BlockModule):
-            found.append(Unit(name, child, _weight_bytes(child)))
+            found.append(Unit(name, child, _weight_bytes(child), _buffer_bytes(child)))
         elif isinstance(child, nn.ModuleList):
             for index, element in enumerate(child):
-                found.append(Unit(f"{name}.{index}", element, _weight_bytes(element)))
+                found.append(
+                    Unit(f"{name}.{index}", element, _weight_bytes(element), _buffer_bytes(element))
+                )
     return found
 
 
@@ -135,8 +144,10 @@ def plan(
         raise PlanError('device_map="auto" needs a CUDA device; use device="cpu" instead')
     budgets = [_budget(index, max_memory) for index in range(count)]
     found = units_of(model)
-    # Parameters of the root itself run in the root's code, on slot 0.
-    budgets[0] -= _weight_bytes(model.root, recurse=False)
+    # Tensors of the root itself are used by the root's code, on slot 0.
+    budgets[0] -= _weight_bytes(model.root, recurse=False) + _buffer_bytes(
+        model.root, recurse=False
+    )
 
     # The room kept for streaming depends on what is offloaded, and what is
     # offloaded depends on that room: iterate to the fixed point, which a
@@ -226,7 +237,9 @@ def _fill(
     units: list[Unit], budgets: list[int], streaming: int
 ) -> tuple[dict[str, int], list[str]]:
     """Units into GPUs in order, keeping `streaming` bytes free on the last
-    GPU for an offloaded unit's copy; what is left over is offloaded."""
+    GPU for an offloaded unit's copy; what is left over is offloaded. An
+    offloaded unit's state still lives on the last GPU, so it still costs
+    room there; if even that does not fit, no placement exists."""
     last = len(budgets) - 1
     room = list(budgets)
     room[last] -= streaming
@@ -234,14 +247,21 @@ def _fill(
     offloaded: list[str] = []
     gpu = 0
     for unit in units:
-        while gpu <= last and unit.bytes > room[gpu]:
+        while gpu <= last and unit.resident > room[gpu]:
             gpu += 1
         if gpu <= last:
             slots[unit.path] = gpu
-            room[gpu] -= unit.bytes
-        else:
-            slots[unit.path] = last
-            offloaded.append(unit.path)
+            room[gpu] -= unit.resident
+            continue
+        slots[unit.path] = last
+        offloaded.append(unit.path)
+        room[last] -= unit.state_bytes
+        if room[last] < 0:
+            raise PlanError(
+                f"`{unit.path}` keeps {unit.state_bytes / 2**30:.1f} GiB of state on the GPU even "
+                "when its weights are offloaded, and the GPUs have no room left for it; "
+                "a smaller maximum sequence length (for example `MaxSeq`) shrinks it"
+            )
     return slots, offloaded
 
 
@@ -262,6 +282,10 @@ def _budget(index: int, max_memory: Mapping[int | str, int | str] | None) -> int
 
 def _weight_bytes(module: nn.Module, recurse: bool = True) -> int:
     return sum(p.numel() * p.element_size() for p in module.parameters(recurse=recurse))
+
+
+def _buffer_bytes(module: nn.Module, recurse: bool = True) -> int:
+    return sum(b.numel() * b.element_size() for b in module.buffers(recurse=recurse))
 
 
 def _ranges(paths: list[str]) -> str:

@@ -201,3 +201,50 @@ def test_the_plan_offloads_what_the_budget_cannot_hold(
     assert squeezed.offloaded == tuple(sorted(squeezed.offloaded, key=list(roomy.slots).index))
     with pytest.raises(Exception, match="offload=False"):
         plan(model, max_memory={0: 3 * per_layer}, offload=False)
+
+
+STATEFUL = """\
+module tests.stateful
+
+pub block Layer<D: Dim, MaxSeq: Dim, T: Float> {
+    param weight: Tensor[D; T]
+    state cache: Tensor[MaxSeq, D; T]
+
+    pub fn forward(x: Tensor[D; T]) -> Tensor[D; T] {
+        return x * weight
+    }
+}
+
+pub block Model<D: Dim, MaxSeq: Dim, T: Float = f32> {
+    sub layers: [Layer<D, MaxSeq, T>; 2]
+
+    pub entry forward(x: Tensor[D; T]) -> Tensor[D; T] {
+        var h = x
+        static for layer in layers {
+            h = layer.forward(h)
+        }
+        return h
+    }
+}
+"""
+
+
+def test_a_cache_counts_against_the_gpu_even_when_offloaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key/value cache is allocated at `MaxSeq` when the model is built and
+    lives where the block runs, so the plan must pay for it on the GPU even
+    for a block whose weights are streamed from the host."""
+    source = tmp_path / "stateful.linnet"
+    source.write_text(STATEFUL, encoding="utf-8")
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index=0: (8 << 30, 8 << 30))
+    model = load(source, generics={"D": 4, "MaxSeq": 1024}, std_root=STDLIB, compile=True)
+    assert isinstance(model, CompiledLinnetModule)
+    from linnet.torch.placement import units_of
+
+    layer = units_of(model)[0]
+    assert layer.bytes == 4 * 4 and layer.state_bytes == 1024 * 4 * 4
+    # Room for both layers' weights but not for one cache: nothing can go.
+    with pytest.raises(Exception, match="MaxSeq"):
+        plan(model, max_memory={0: 2 * layer.bytes + 16})
