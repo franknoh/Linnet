@@ -160,10 +160,10 @@ def test_offloaded_blocks_compute_what_the_resident_model_does(source: Path) -> 
         ("layers.1", "layers.2"),
     )
     expected, placed, x = _reference_and_placed(source, placement)
-    weight = placed.root.layers[1].proj.weight  # pyright: ignore[reportIndexIssue, reportUnknownMemberType]
-    assert weight.device.type == "cpu"  # pyright: ignore[reportUnknownMemberType]
+    weight = dict(placed.named_parameters())["root.layers.1.proj.weight"]
+    assert weight.device.type == "cpu"
     if torch.cuda.is_available():
-        assert weight.is_pinned()  # pyright: ignore[reportUnknownMemberType]
+        assert weight.is_pinned()
     got = placed.run_entry("forward", [x])
     assert got.device == first
     torch.testing.assert_close(got.cpu(), expected, atol=1e-5, rtol=1e-5)
