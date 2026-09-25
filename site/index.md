@@ -96,9 +96,10 @@ linnet check model.linnet        # shapes, dtypes, index domains — nothing run
 | Generated code | `load(..., compile="inductor")` or `linnet.jax.load_source(...)` | training and serving inside a framework |
 | Compiled graph | `linnet stablehlo`, `linnet onnx` | XLA, ONNX Runtime, other consumers |
 
-Small Llama forward on an H100: generated PyTorch under `torch.compile` 2.1 ms,
-hand-written compiled PyTorch 2.7 ms, XLA 0.66 ms. Details on the
-[benchmarks](/benchmarks) page.
+On one H100, Llama 3.1 8B decodes at 165 tokens per second through XLA
+(vLLM: 156, transformers compiled: 114), and BERT's forward pass runs 5.2×
+faster than in transformers. Every model in the zoo, and where Linnet loses, is
+on the [benchmarks](/benchmarks) page.
 
 ## At a glance
 
