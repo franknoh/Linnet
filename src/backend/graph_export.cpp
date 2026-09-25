@@ -1450,7 +1450,152 @@ private:
         return result;
     }
 
+    // One factor of a contraction: a whole tensor, and the grid axis each of
+    // its own axes runs along.
+    struct Factor {
+        TensorInfo tensor;
+        Dims axes;
+    };
+
+    // `sum[k] a[i, k] * b[k, j]`, recognized before it is evaluated. Taken
+    // literally over the grid it builds the whole product `[i, j, k]` and then
+    // sums it: 51 GB for SAM's relative-position term, 85 GiB for a
+    // mixture-of-experts projection at 160 positions. As a contraction the
+    // target never materializes it (`einsum`, `dot_general`, ONNX `Einsum`).
+    //
+    // The body must be the product of two element reads indexed directly by
+    // grid positions (each axis once), each optionally cast, in the dtype the
+    // sum accumulates in. Anything else -- a gather, a third factor, a
+    // product in a narrower type than its sum -- is not a plain contraction
+    // and takes the general path. Nothing is emitted before the match is
+    // certain, so falling back costs nothing.
+    std::optional<Val> try_contract(const ir::Operation& op) {
+        if (op.attributes.reduce != ir::ReduceKind::Sum) {
+            return std::nullopt;
+        }
+        const ir::Region& region = module_.region(op.regions.front());
+        if (region.blocks.size() != 1) {
+            return std::nullopt;
+        }
+        const ir::Block& body = module_.block(region.blocks.front());
+        // Pass one: the shape of the body, from op kinds alone.
+        std::set<ir::ValueId> params;
+        std::map<ir::ValueId, ir::ValueId> element_of; // cast/element result -> element result
+        std::optional<ir::ValueId> product;
+        std::optional<std::pair<ir::ValueId, ir::ValueId>> factors;
+        for (const ir::OpId id : body.ops) {
+            const ir::Operation& inner = module_.op(id);
+            switch (inner.kind) {
+            case ir::OpKind::BlockParam:
+                params.insert(inner.results.front());
+                break;
+            case ir::OpKind::Element:
+                element_of[inner.results.front()] = inner.results.front();
+                break;
+            case ir::OpKind::Cast: {
+                const auto found = element_of.find(inner.operands.front());
+                if (found == element_of.end()) {
+                    return std::nullopt;
+                }
+                element_of[inner.results.front()] = found->second;
+                break;
+            }
+            case ir::OpKind::Mul:
+                if (product || inner.operands.size() != 2 ||
+                    !element_of.contains(inner.operands[0]) ||
+                    !element_of.contains(inner.operands[1])) {
+                    return std::nullopt;
+                }
+                product = inner.results.front();
+                factors = {inner.operands[0], inner.operands[1]};
+                break;
+            case ir::OpKind::Yield:
+                if (!product || inner.operands.size() != 1 || inner.operands.front() != *product) {
+                    return std::nullopt;
+                }
+                break;
+            default:
+                return std::nullopt;
+            }
+        }
+        if (!factors) {
+            return std::nullopt;
+        }
+        // Pass two: bind the grid and read each factor's tensor and axes.
+        const Dims outer = grid_;
+        const std::vector<Val> arguments = index_arguments(op);
+        for (std::size_t i = 0; i < arguments.size() && i < body.arguments.size(); ++i) {
+            frame().values[body.arguments[i]] = arguments[i];
+        }
+        const auto give_up = [&]() -> std::optional<Val> {
+            grid_ = outer;
+            return std::nullopt;
+        };
+        const ScalarKind dtype = result_dtype(op);
+        std::vector<Factor> read;
+        for (const ir::ValueId factor : {factors->first, factors->second}) {
+            const ir::Operation& element =
+                module_.op(module_.value(element_of.at(factor)).producer);
+            const ir::ValueId source_id = element.operands.front();
+            if (params.contains(source_id)) {
+                run_op(module_.op(module_.value(source_id).producer));
+            }
+            const Val& source = value(source_id);
+            if (source.kind != Val::Kind::Tensor || source.grid_rank != 0) {
+                return give_up();
+            }
+            Dims axes;
+            for (std::size_t i = 1; i < element.operands.size(); ++i) {
+                const Val& index = value(element.operands[i]);
+                if (index.kind != Val::Kind::Index && index.kind != Val::Kind::Pack) {
+                    return give_up();
+                }
+                for (const std::size_t axis : index.axes) {
+                    axes.push_back(static_cast<std::int64_t>(axis));
+                }
+            }
+            Dims sorted = axes;
+            std::sort(sorted.begin(), sorted.end());
+            if (axes.size() != source.shape.size() ||
+                std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+                return give_up();
+            }
+            // The factor's own dtype: the element read's, or its cast's.
+            const ScalarKind factor_dtype =
+                tensor_value(module_.value(factor).type, frame().subst).dtype;
+            if (factor_dtype != dtype) {
+                return give_up(); // a product narrower than its sum rounds first
+            }
+            TensorInfo tensor = info(source);
+            if (tensor.dtype != factor_dtype) {
+                tensor = {target_.convert(tensor, factor_dtype), tensor.shape, factor_dtype};
+            }
+            read.push_back({tensor, axes});
+        }
+        Dims out_axes;
+        for (std::size_t axis = 0; axis < outer.size(); ++axis) {
+            const auto uses = [&](const Factor& f) {
+                return std::find(f.axes.begin(), f.axes.end(), static_cast<std::int64_t>(axis)) !=
+                       f.axes.end();
+            };
+            if (!uses(read[0]) && !uses(read[1])) {
+                return give_up(); // an output axis neither factor spans
+            }
+            out_axes.push_back(static_cast<std::int64_t>(axis));
+        }
+        const auto name = target_.contract(
+            read[0].tensor, read[0].axes, read[1].tensor, read[1].axes, out_axes, outer, dtype);
+        grid_ = outer;
+        if (!name) {
+            return std::nullopt;
+        }
+        return tensor(*name, outer, dtype);
+    }
+
     Val reduce(const ir::Operation& op) {
+        if (auto contracted = try_contract(op)) {
+            return *contracted;
+        }
         const Dims outer = grid_;
         const std::vector<Val> arguments = index_arguments(op);
         Val body = to_grid(run_region(op.regions.front(), arguments).front());
@@ -1603,6 +1748,100 @@ std::set<std::string> mentioned_values(const std::string& line) {
 }
 
 } // namespace
+
+std::string release_dead_values(const std::string& body, const std::string& live_tail) {
+    std::vector<std::string> lines;
+    std::string current;
+    for (const char c : body) {
+        if (c == '\n') {
+            lines.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    const auto indent = [](const std::string& line) {
+        const std::size_t first = line.find_first_not_of(' ');
+        return first == std::string::npos ? line.size() : first;
+    };
+    // A top-level statement and the lines nested under it.
+    std::vector<std::pair<std::size_t, std::size_t>> groups;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (groups.empty() || indent(lines[i]) <= 4) {
+            groups.emplace_back(i, i);
+        } else {
+            groups.back().second = i;
+        }
+    }
+    std::set<std::string> assigned; // by a top-level `vN = ...`
+    std::set<std::string> released; // already by a `del` in the body
+    for (const auto& [first, last] : groups) {
+        const std::string& line = lines[first];
+        const std::size_t start = indent(line);
+        const std::size_t equals = line.find(" = ", start);
+        if (start == 4 && line[start] == 'v' && equals != std::string::npos &&
+            line.find_first_not_of("0123456789", start + 1) == equals) {
+            assigned.insert(line.substr(start, equals - start));
+        }
+        if (line.compare(start, 4, "del ") == 0) {
+            for (const std::string& name : mentioned_values(line)) {
+                released.insert(name);
+            }
+        }
+        (void)last;
+    }
+    std::set<std::string> live = mentioned_values(live_tail);
+    std::vector<std::vector<std::string>> after(groups.size());
+    for (std::size_t g = groups.size(); g-- > 0;) {
+        std::set<std::string> uses;
+        for (std::size_t i = groups[g].first; i <= groups[g].second; ++i) {
+            for (const std::string& name : mentioned_values(lines[i])) {
+                uses.insert(name);
+            }
+        }
+        for (const std::string& name : uses) {
+            if (!live.contains(name) && assigned.contains(name) && !released.contains(name)) {
+                after[g].push_back(name);
+            }
+            live.insert(name);
+        }
+    }
+    std::string out;
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        for (std::size_t i = groups[g].first; i <= groups[g].second; ++i) {
+            out += lines[i] + "\n";
+        }
+        if (!after[g].empty()) {
+            std::string line = "    del ";
+            for (std::size_t i = 0; i < after[g].size(); ++i) {
+                line += (i == 0 ? "" : ", ") + after[g][i];
+            }
+            out += line + "\n";
+        }
+    }
+    return out;
+}
+
+std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes) {
+    std::map<std::int64_t, char> letters;
+    const auto word = [&](const Dims& axes) {
+        std::string out;
+        for (const std::int64_t axis : axes) {
+            const auto found = letters.find(axis);
+            if (found != letters.end()) {
+                out += found->second;
+                continue;
+            }
+            const char letter = static_cast<char>('a' + letters.size());
+            letters.emplace(axis, letter);
+            out += letter;
+        }
+        return out;
+    };
+    const std::string lhs = word(lhs_axes);
+    const std::string rhs = word(rhs_axes);
+    return lhs + "," + rhs + "->" + word(out_axes);
+}
 
 std::string prune_python_assignments(const std::string& body, const std::string& live_tail) {
     std::vector<std::string> lines;

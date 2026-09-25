@@ -115,6 +115,22 @@ public:
     // they do, the exporter leaves those broadcasts out: one emitted
     // operation fewer for every operand of every elementwise operation.
     virtual bool broadcasts_elementwise() const { return false; }
+    // The sum of the product of two tensors over the axes the result does
+    // not keep, without building the product: each operand's axes are named
+    // by grid axis, and the result has `out_axes`, in order. A target without
+    // one returns nothing, and the product is built and summed instead.
+    virtual std::optional<std::string> contract(const TensorInfo& lhs,
+                                                const Dims& lhs_axes,
+                                                const TensorInfo& rhs,
+                                                const Dims& rhs_axes,
+                                                const Dims& out_axes,
+                                                const Dims& shape,
+                                                sema::ScalarKind dtype) {
+        (void)lhs, (void)lhs_axes, (void)rhs, (void)rhs_axes, (void)out_axes, (void)shape;
+        (void)dtype;
+        return std::nullopt;
+    }
+
     // Placement (see `GraphExportOptions::placement`). A target that supports
     // it is told how many slots there are, which slot the following
     // operations run on, and asked to move a tensor or to drop names.
@@ -241,5 +257,17 @@ export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget&
 // statement). Uses always follow definitions in the emitted text, so one
 // backward pass suffices.
 std::string prune_python_assignments(const std::string& body, const std::string& live_tail);
+
+// Generated Python (the `torch` target): `del`s each value right after the
+// statement that uses it last, so an entry holds what is still needed rather
+// than every intermediate until it returns -- which for a deep model is the
+// difference between one layer's activations and all of them. Only values a
+// top-level statement assigns are released (a loop body may run zero times);
+// a use inside a loop counts at the loop's end; `live_tail` is never released.
+std::string release_dead_values(const std::string& body, const std::string& live_tail);
+
+// `"ik,kj->ij"` for a contraction whose operands and result name grid axes:
+// one letter per axis, in order of first appearance.
+std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes);
 
 } // namespace linnet::backend

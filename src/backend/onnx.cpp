@@ -158,6 +158,20 @@ public:
 
     bool broadcasts_elementwise() const override { return true; }
 
+    std::optional<std::string> contract(const TensorInfo& lhs,
+                                        const Dims& lhs_axes,
+                                        const TensorInfo& rhs,
+                                        const Dims& rhs_axes,
+                                        const Dims& out_axes,
+                                        const Dims& shape,
+                                        ScalarKind dtype) override {
+        return node("Einsum",
+                    {lhs, rhs},
+                    "equation = \"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\"",
+                    shape,
+                    dtype);
+    }
+
     std::optional<std::string> native_call(const std::string& implementation,
                                            const std::vector<std::optional<TensorInfo>>& operands,
                                            const Dims& shape,
@@ -187,6 +201,24 @@ public:
         if (implementation_base == "torch.nn.functional.embedding" && operands.size() == 2 &&
             at[0] != nullptr && at[1] != nullptr) {
             return node("Gather", {*at[1], *at[0]}, "axis = 0", shape, dtype);
+        }
+        if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            const auto stride = call_generic("Stride");
+            const auto pad = call_generic("Pad");
+            if (!stride || !pad) {
+                return std::nullopt;
+            }
+            std::vector<TensorInfo> inputs{*at[0], *at[1]};
+            if (at[2] != nullptr) {
+                inputs.push_back(*at[2]);
+            }
+            return node("Conv",
+                        inputs,
+                        "strides = [" + int_list({*stride, *stride}) + "], pads = [" +
+                            int_list({*pad, *pad, *pad, *pad}) + "]",
+                        shape,
+                        dtype);
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {

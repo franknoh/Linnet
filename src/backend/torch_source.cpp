@@ -416,6 +416,18 @@ public:
 
     bool broadcasts_elementwise() const override { return true; }
 
+    std::optional<std::string> contract(const TensorInfo& lhs,
+                                        const Dims& lhs_axes,
+                                        const TensorInfo& rhs,
+                                        const Dims& rhs_axes,
+                                        const Dims& out_axes,
+                                        const Dims& shape,
+                                        ScalarKind dtype) override {
+        (void)shape, (void)dtype;
+        return define("torch.einsum(\"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\", " +
+                      lhs.name + ", " + rhs.name + ")");
+    }
+
     // Placement: `_dev` is the tuple of devices `main` receives, one per
     // slot. A transfer is never shared through the expression cache, since
     // an offloaded parameter's copy is deleted when its block returns and
@@ -704,7 +716,7 @@ public:
                                        : arguments_.front() + ".device") +
                    "\n";
         }
-        out += hoisted.body;
+        out += release_dead_values(hoisted.body, tail);
         out += tail;
         return out;
     }
