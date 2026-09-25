@@ -62,6 +62,7 @@ const TOP = 6;
 interface Bar {
   label: string;
   family: Family;
+  best: boolean;
   fast: boolean;
   value: number;
   x: number;
@@ -79,11 +80,14 @@ const charts = computed(() =>
     const max = Math.max(...values);
     const plot = WIDTH - LABEL - 64;
     const scale = (value: number) => (plot * value) / max;
+    // The best bar in the accent: the largest speed-up, or the lowest latency.
+    const target = latency.value ? Math.min(...values) : Math.max(...values);
     const bars: Bar[] = variants.map((v, i) => {
       const value = values[i];
       return {
         label: label(v.name),
         family: family(v.name),
+        best: value === target,
         fast: v.name.includes("numerics=fast"),
         value,
         x: LABEL,
@@ -120,15 +124,15 @@ const charts = computed(() =>
       <defs>
         <pattern id="bench-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
           <rect width="6" height="6" fill="var(--vp-c-bg-alt)" />
-          <rect width="3" height="6" fill="var(--linnet-red)" fill-opacity="0.75" />
+          <rect width="3" height="6" fill="var(--bench-linnet)" />
         </pattern>
       </defs>
     </svg>
     <div class="bench-charts-bar">
       <span class="bench-legend">
+        <i class="swatch swatch-best"></i> best in the chart
+        <i class="swatch swatch-torch"></i> Linnet
         <i class="swatch swatch-reference"></i> PyTorch reference
-        <i class="swatch swatch-torch"></i> Linnet in PyTorch
-        <i class="swatch swatch-xla"></i> Linnet in XLA
         <i class="swatch swatch-fast"></i> numerics=fast
       </span>
       <label class="bench-toggle"><input v-model="latency" type="checkbox" /> show latency instead of speed-up</label>
@@ -142,7 +146,7 @@ const charts = computed(() =>
             <text :x="tick.x" :y="chart.axisY + 14" text-anchor="middle">{{ tick.text }}</text>
           </g>
           <line v-if="!latency" class="bench-baseline" :x1="chart.baseline" :x2="chart.baseline" :y1="TOP - 2" :y2="chart.axisY" />
-          <g v-for="bar in chart.bars" :key="bar.label" :class="['bench-bar', `bench-bar-${bar.family}`, { 'bench-bar-fast': bar.fast }]">
+          <g v-for="bar in chart.bars" :key="bar.label" :class="['bench-bar', `bench-bar-${bar.family}`, { 'bench-bar-fast': bar.fast, 'bench-bar-best': bar.best }]">
             <text class="bench-label" :x="LABEL - 8" :y="bar.y + BAR / 2 + 4" text-anchor="end">{{ bar.label }}</text>
             <rect :x="bar.x" :y="bar.y" :width="bar.width" :height="BAR" rx="2" />
             <text class="bench-value" :x="bar.x + bar.width + 6" :y="bar.y + BAR / 2 + 4">{{ bar.text }}</text>
@@ -186,18 +190,18 @@ const charts = computed(() =>
 .swatch:first-child {
   margin-left: 0;
 }
+.swatch-best {
+  background: var(--bench-best);
+}
 .swatch-reference {
-  background: var(--vp-c-text-3);
+  background: var(--bench-reference);
 }
 .swatch-torch {
-  background: var(--linnet-red);
-}
-.swatch-xla {
-  background: hsl(358 60% 34%);
+  background: var(--bench-linnet);
 }
 .swatch-fast {
-  background: repeating-linear-gradient(135deg, var(--linnet-red) 0 3px, transparent 3px 6px);
-  border: 1px solid var(--linnet-red);
+  background: repeating-linear-gradient(135deg, var(--bench-linnet) 0 3px, transparent 3px 6px);
+  border: 1px solid var(--bench-linnet);
 }
 .bench-toggle {
   display: inline-flex;
@@ -254,20 +258,19 @@ const charts = computed(() =>
   font-family: var(--vp-font-family-mono);
 }
 .bench-bar-reference rect {
-  fill: var(--vp-c-text-3);
+  fill: var(--bench-reference);
 }
-.bench-bar-torch rect {
-  fill: var(--linnet-red);
-}
+.bench-bar-torch rect,
 .bench-bar-xla rect {
-  fill: hsl(358 60% 34%);
+  fill: var(--bench-linnet);
 }
 .bench-bar-fast rect {
   fill: url(#bench-hatch);
-  stroke: var(--linnet-red);
+  stroke: var(--bench-linnet);
   stroke-width: 1;
 }
-.bench-bar-fast.bench-bar-xla rect {
-  stroke: hsl(358 60% 34%);
+.bench-bar-best rect {
+  fill: var(--bench-best);
+  stroke: none;
 }
 </style>
