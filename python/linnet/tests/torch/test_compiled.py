@@ -142,3 +142,54 @@ def test_while_loop_in_generated_source() -> None:
     torch.testing.assert_close(tokens, expected_tokens)
     assert int(count) == int(expected_count) == 4
     assert "while True:" in compiled.generated_source("generate_until")
+
+
+RELEASE_SOURCE = """\
+module tests.release
+
+use std.nn.activations::{relu}
+use std.nn.linear::{Linear}
+
+pub block Model<D: Dim, T: Float = f32> {
+    sub layers: [Linear<D, D, T>; 4]
+
+    pub entry forward<B: Dim>(x: Tensor[B, D; T]) -> Tensor[B, D; T] {
+        var h = x
+        static for layer in layers {
+            h = h + relu(layer.forward(h))
+        }
+        return h
+    }
+}
+"""
+
+
+def test_intermediates_are_released_after_their_last_use(tmp_path: Path) -> None:
+    """A flat generated entry would otherwise keep every layer's activations
+    until it returns: SAM's image encoder peaked at 22.5 GB that way, and at
+    2.3 GB once each value is dropped after its last use."""
+    import re
+
+    source = tmp_path / "release.linnet"
+    source.write_text(RELEASE_SOURCE, encoding="utf-8")
+    model = load(source, generics={"D": 8}, std_root=STDLIB, compile=True)
+    assert isinstance(model, CompiledLinnetModule)
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.copy_(torch.randn_like(parameter) * 0.3)
+    x = torch.randn(2, 8)
+    reference = load(source, generics={"D": 8}, std_root=STDLIB, compile=False)
+    reference.load_state_dict(model.state_dict())
+    torch.testing.assert_close(model(x), reference(x))
+
+    body = model.generated_source("forward").split("def main(")[1]
+    assigned = re.findall(r"^    (v\d+) = ", body, flags=re.MULTILINE)
+    returned = set(re.findall(r"v\d+", body.splitlines()[-1]))
+    released = [
+        name
+        for line in body.splitlines()
+        if line.strip().startswith("del ")
+        for name in re.findall(r"v\d+", line)
+    ]
+    assert sorted(released) == sorted(set(assigned) - returned)

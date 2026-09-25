@@ -454,6 +454,31 @@ public:
             }
             return dot_general(a, b, batch, batch, {rank - 1}, {rank - 2}, shape, dtype);
         }
+        if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            // The window geometry is the call's own `Stride` and `Pad`, never
+            // a guess from the shapes; without them the gather body runs.
+            const auto stride = call_generic("Stride");
+            const auto pad = call_generic("Pad");
+            if (!stride || !pad) {
+                return std::nullopt;
+            }
+            const std::string p = std::to_string(*pad);
+            const std::string attributes =
+                "batch_group_count = 1 : i64, dimension_numbers = "
+                "#stablehlo.conv<[b, f, 0, 1]x[o, i, 0, 1]->[b, f, 0, 1]>, "
+                "feature_group_count = 1 : i64, lhs_dilation = " +
+                i64_array({1, 1}) + ", padding = dense<[[" + p + ", " + p + "], [" + p + ", " + p +
+                "]]> : tensor<2x2xi64>, rhs_dilation = " + i64_array({1, 1}) +
+                ", window_strides = " + i64_array({*stride, *stride});
+            std::string out = emit("convolution", {*at[0], *at[1]}, attributes, shape, dtype);
+            if (at[2] != nullptr) {
+                const std::string spread = broadcast(*at[2], {1}, shape);
+                out = elementwise(
+                    Elementwise::Add, {{out, shape, dtype}, {spread, shape, dtype}}, shape, dtype);
+            }
+            return out;
+        }
         if (implementation == "torch.nn.functional.linear" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
             const TensorInfo& x = *at[0];
@@ -478,6 +503,99 @@ public:
 
     // `stablehlo.while` with the condition and body as regions: the outer
     // body text is saved while each region is written into its own buffer.
+    // A contraction as `dot_general`. Axes only one operand has and the
+    // result drops are summed away first; then the shared axes the result
+    // keeps are batched, the shared ones it drops are contracted, and a
+    // transpose puts the result's axes in the order asked for.
+    std::optional<std::string> contract(const TensorInfo& lhs,
+                                        const Dims& lhs_axes,
+                                        const TensorInfo& rhs,
+                                        const Dims& rhs_axes,
+                                        const Dims& out_axes,
+                                        const Dims& shape,
+                                        ScalarKind dtype) override {
+        const auto has = [](const Dims& axes, std::int64_t axis) {
+            return std::find(axes.begin(), axes.end(), axis) != axes.end();
+        };
+        const auto position = [](const Dims& axes, std::int64_t axis) {
+            return static_cast<std::int64_t>(std::find(axes.begin(), axes.end(), axis) -
+                                             axes.begin());
+        };
+        const auto alone = [&](const TensorInfo& value, const Dims& axes, const Dims& other) {
+            Dims drop;
+            Dims kept_axes;
+            Dims kept_shape;
+            for (std::size_t i = 0; i < axes.size(); ++i) {
+                if (!has(other, axes[i]) && !has(out_axes, axes[i])) {
+                    drop.push_back(static_cast<std::int64_t>(i));
+                } else {
+                    kept_axes.push_back(axes[i]);
+                    kept_shape.push_back(value.shape[i]);
+                }
+            }
+            if (drop.empty()) {
+                return std::pair{value, axes};
+            }
+            const TensorInfo summed{
+                reduce(Reduction::Sum, value, drop, kept_shape), kept_shape, value.dtype};
+            return std::pair{summed, kept_axes};
+        };
+        const auto [left, left_axes] = alone(lhs, lhs_axes, rhs_axes);
+        const auto [right, right_axes] = alone(rhs, rhs_axes, lhs_axes);
+        Dims left_batch;
+        Dims right_batch;
+        Dims left_contract;
+        Dims right_contract;
+        Dims order; // the axes of `dot_general`'s result: batch, left free, right free
+        for (std::size_t i = 0; i < left_axes.size(); ++i) {
+            const std::int64_t axis = left_axes[i];
+            if (!has(right_axes, axis)) {
+                continue;
+            }
+            if (has(out_axes, axis)) {
+                left_batch.push_back(static_cast<std::int64_t>(i));
+                right_batch.push_back(position(right_axes, axis));
+                order.push_back(axis);
+            } else {
+                left_contract.push_back(static_cast<std::int64_t>(i));
+                right_contract.push_back(position(right_axes, axis));
+            }
+        }
+        for (const std::int64_t axis : left_axes) {
+            if (!has(right_axes, axis)) {
+                order.push_back(axis);
+            }
+        }
+        for (const std::int64_t axis : right_axes) {
+            if (!has(left_axes, axis)) {
+                order.push_back(axis);
+            }
+        }
+        Dims order_shape;
+        Dims permutation;
+        for (const std::int64_t axis : order) {
+            order_shape.push_back(shape[static_cast<std::size_t>(position(out_axes, axis))]);
+        }
+        for (const std::int64_t axis : out_axes) {
+            permutation.push_back(position(order, axis));
+        }
+        const TensorInfo product{dot_general(left,
+                                             right,
+                                             left_batch,
+                                             right_batch,
+                                             left_contract,
+                                             right_contract,
+                                             order_shape,
+                                             dtype),
+                                 order_shape,
+                                 dtype};
+        bool in_order = true;
+        for (std::size_t i = 0; i < permutation.size(); ++i) {
+            in_order = in_order && permutation[i] == static_cast<std::int64_t>(i);
+        }
+        return in_order ? product.name : transpose(product, permutation, shape);
+    }
+
     bool supports_while() const override { return true; }
 
     std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) override {

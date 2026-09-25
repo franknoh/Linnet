@@ -270,6 +270,18 @@ public:
 
     bool broadcasts_elementwise() const override { return true; }
 
+    std::optional<std::string> contract(const TensorInfo& lhs,
+                                        const Dims& lhs_axes,
+                                        const TensorInfo& rhs,
+                                        const Dims& rhs_axes,
+                                        const Dims& out_axes,
+                                        const Dims& shape,
+                                        ScalarKind dtype) override {
+        (void)shape, (void)dtype;
+        return define("jnp.einsum(\"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\", " +
+                      lhs.name + ", " + rhs.name + ")");
+    }
+
     std::optional<std::string> native_call(const std::string& implementation,
                                            const std::vector<std::optional<TensorInfo>>& operands,
                                            const Dims& shape,
@@ -327,6 +339,22 @@ public:
         }
         if (implementation_base == "torch.matmul" && at.size() == 2) {
             return define("jnp.matmul(" + name(0) + ", " + name(1) + ")");
+        }
+        if (implementation_base == "torch.nn.functional.conv2d" && at.size() == 3 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            const auto stride = call_generic("Stride");
+            const auto pad = call_generic("Pad");
+            if (!stride || !pad) {
+                return std::nullopt;
+            }
+            const std::string s = std::to_string(*stride);
+            const std::string p = std::to_string(*pad);
+            const std::string mixed =
+                define("jax.lax.conv_general_dilated(" + name(0) + ", " + name(1) + ", (" + s +
+                       ", " + s + "), ((" + p + ", " + p + "), (" + p + ", " + p +
+                       ")), dimension_numbers=(\"NCHW\", \"OIHW\", \"NCHW\"))");
+            return at[2] != nullptr ? define(mixed + " + " + name(2) + ".reshape((1, -1, 1, 1))")
+                                    : mixed;
         }
         if (implementation_base == "torch.nn.functional.linear" && at.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {

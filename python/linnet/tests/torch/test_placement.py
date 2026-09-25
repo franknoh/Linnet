@@ -103,9 +103,14 @@ def test_an_offloaded_block_streams_its_weights_and_drops_them(source: Path) -> 
     # block returns, so only one offloaded block is ever resident.
     transfers = [line for line in body.splitlines() if ".to(_dev[0], non_blocking=True)" in line]
     assert len(transfers) == 2
-    released = [line.strip() for line in body.splitlines() if line.strip().startswith("del ")]
+    # Other intermediates are released after their last use too; the
+    # streamed copies go together, in one statement, when the block returns.
     names = sorted(line.split(" = ")[0].strip() for line in transfers)
-    assert released == ["del " + ", ".join(names)]
+    releases = [line.strip() for line in body.splitlines() if line.strip().startswith("del ")]
+    assert "del " + ", ".join(names) in releases
+    assert sum(
+        name in line.split() or name + "," in line.split() for line in releases for name in names
+    ) == len(names)  # each copy released exactly once
 
 
 def test_without_placement_the_source_is_unchanged(source: Path) -> None:
