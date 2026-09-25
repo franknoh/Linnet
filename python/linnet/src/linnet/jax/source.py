@@ -57,7 +57,12 @@ class SourceFunction(LinnetFunction):
             raise LinnetError(
                 "internal: the JAX source and StableHLO exports disagree on arguments"
             )
-        jitted = jax.jit(module.main)
+        # The StableHLO export's state layout is the source's, so the same
+        # positions are donated.
+        donated = self._donated(
+            len(compiled.exported.in_avals), compiled.state_inputs, compiled.state_outputs
+        )
+        jitted = jax.jit(module.main, donate_argnums=donated)
 
         def call(*arguments: Any) -> Any:
             # A lone result is returned bare, as the StableHLO path does.

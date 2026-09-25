@@ -1546,6 +1546,11 @@ private:
             }
             Dims axes;
             for (std::size_t i = 1; i < element.operands.size(); ++i) {
+                // An index computed in the body (a gather: `t[idx[b, k], h]`)
+                // has no value yet, and is not a grid axis anyway.
+                if (!frame().values.contains(element.operands[i])) {
+                    return give_up();
+                }
                 const Val& index = value(element.operands[i]);
                 if (index.kind != Val::Kind::Index && index.kind != Val::Kind::Pack) {
                     return give_up();

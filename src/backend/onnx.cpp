@@ -282,7 +282,10 @@ public:
             const TensorInfo* value = at[2];
             const TensorInfo* scale = at[3];
             const TensorInfo* mask = at[4];
-            if (query == nullptr || key == nullptr || value == nullptr || scale == nullptr) {
+            // A mask per sequence ([B, Q, K]) would line its batch axis up
+            // with the heads; the canonical body spells that one out.
+            if (query == nullptr || key == nullptr || value == nullptr || scale == nullptr ||
+                (mask != nullptr && mask->shape.size() != 2)) {
                 return std::nullopt;
             }
             // q·kᵀ in f32, scaled, masked, Softmax, ·v: the canonical arithmetic.

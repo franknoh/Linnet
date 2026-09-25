@@ -66,6 +66,14 @@ pub block Model<T: Float = f32> {
         return s
     }
 
+    // A factor read through a computed index (a gather, as a mixture of
+    // experts reads its chosen experts) is not a plain contraction.
+    pub entry gathered() -> Tensor[5; f32] {
+        let rows[k] = (iota<i64>(4)[k] + 1) % 4
+        let s[j] = sum<f32>[k] cast<f32>(a[0, k]) * cast<f32>(b[rows[k], j])
+        return s
+    }
+
     // A product in a narrower type than its sum rounds before it adds, which a
     // contraction would not: this one must stay a product and a sum.
     pub entry narrow() -> Tensor[3, 5; f32] {
@@ -75,7 +83,7 @@ pub block Model<T: Float = f32> {
 }
 """
 
-ENTRIES = ["plain", "swapped", "experts", "relative", "lopsided", "narrow"]
+ENTRIES = ["plain", "swapped", "experts", "relative", "lopsided", "gathered", "narrow"]
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +121,8 @@ def _expected(entry: str, v: dict[str, np.ndarray]) -> np.ndarray:
         return np.einsum("ik,kj->ji", v["a"], v["b"])
     if entry == "experts":
         return np.einsum("nsh,eoh->nseo", v["x"], v["w"])
+    if entry == "gathered":
+        return np.einsum("k,kj->j", v["a"][0], v["b"][[1, 2, 3, 0]])
     if entry == "relative":
         return np.einsum("nhijc,ikc->nhijk", v["q"], v["r"])
     return np.einsum("ik,kj->i", v["a"], v["b"])

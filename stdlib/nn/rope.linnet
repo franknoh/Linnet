@@ -17,3 +17,17 @@ pub op rope<B: Dim, H: Dim, S: Dim, D: Dim, T: Float>(
 where D % 2 == 0 {
     return x * cos_table + rotate_half(x) * sin_table
 }
+
+// `rope` with a table row per sequence: `cos_rows[b, s]` rotates position
+// `s` of sequence `b`. A batch decoded together has each sequence at its own
+// position, so the rows differ.
+pub fn rope_rows<B: Dim, H: Dim, S: Dim, D: Dim, T: Float>(
+    x: Tensor[B, H, S, D; T],
+    cos_rows: Tensor[B, S, D; T],
+    sin_rows: Tensor[B, S, D; T],
+) -> Tensor[B, H, S, D; T]
+where D % 2 == 0 {
+    let turned = rotate_half(x)
+    let out[b, h, s, d] = x[b, h, s, d] * cos_rows[b, s, d] + turned[b, h, s, d] * sin_rows[b, s, d]
+    return out
+}

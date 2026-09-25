@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,7 +53,6 @@ class CompiledLinnetModule(LinnetModule):
         # which remove the per-kernel launch cost that dominates decoding),
         # or None for eager.
         self._backend = backend
-        self._cuda_graphs = backend in ("reduce-overhead", "cudagraphs")
         self._generic_arguments = dict(generics)
         self._compiled: dict[tuple[Any, ...], _Generated] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
@@ -63,15 +62,24 @@ class CompiledLinnetModule(LinnetModule):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
+        compile: bool | str | None = None,
     ) -> Any:
+        """Runs entry `name`. `compile` overrides the module's own setting for
+        this entry (`True`: the generated source as it is; a backend or mode
+        name: through `torch.compile`), so a server can replay its decoding
+        step as CUDA graphs and run prompts of many lengths without them."""
+        backend = (
+            self._backend if compile is None else compile if isinstance(compile, str) else None
+        )
+        cuda_graphs = backend in ("reduce-overhead", "cudagraphs")
         function = self.entries[name]
         params = function["body"]["args"][1:]
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
         bindings = self._bindings(function, inputs, generics or {})
-        key = (name, tuple(sorted(bindings.items())), self._absent_optionals())
+        key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend)
         if key not in self._compiled:
-            self._compiled[key] = self._compile(name, bindings)
+            self._compiled[key] = self._compile(name, bindings, backend)
         generated = self._compiled[key]
         parameters = dict(self.named_parameters())
         buffers = dict(self.named_buffers())
@@ -85,16 +93,33 @@ class CompiledLinnetModule(LinnetModule):
         if generated.placed:
             assert self.placement is not None
             arguments.append(self.placement.devices)
-        outputs = generated.main(*arguments)
-        if self._cuda_graphs:
-            # Graph outputs are overwritten by the next replay; keep copies.
-            outputs = [value.clone() for value in outputs]
+        states = arguments[len(inputs) + len(generated.parameters) :][: len(generated.states)]
+        by_path = dict(zip(generated.states, states, strict=True))
+        if cuda_graphs:
+            # A state written in place is an input the graph mutates, which
+            # CUDA graphs allow only at an address that never changes.
+            for path in generated.in_place:
+                _mark_static(by_path[path])
+        outputs = list(generated.main(*arguments))
+        if cuda_graphs:
+            # Graph outputs are overwritten by the next replay; keep copies
+            # of everything but a state written in place, which is the
+            # state's own tensor.
+            outputs = [
+                value
+                if i >= generated.results
+                and _same(value, by_path.get(generated.next_states[i - generated.results]))
+                else value.clone()
+                for i, value in enumerate(outputs)
+            ]
         results = list(outputs[: generated.results])
         if self.placement is not None:
             # Results come back where they were computed; hand them over on
             # the first device, where the inputs went in.
             results = [value.to(self.placement.devices[0]) for value in results]
         for path, value in zip(generated.next_states, outputs[generated.results :], strict=True):
+            if _same(value, by_path.get(path)):
+                continue  # written in place: the buffer already holds it
             owner, leaf = owner_of(self, path)
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
@@ -145,7 +170,7 @@ class CompiledLinnetModule(LinnetModule):
                 absent += [prefix + leaf for leaf in sorted(module.absent_params)]
         return tuple(absent)
 
-    def _compile(self, entry: str, bindings: dict[str, str]) -> _Generated:
+    def _compile(self, entry: str, bindings: dict[str, str], backend: str | None) -> _Generated:
         command = [find_compiler(), "torch", "--root", self.plan.root["name"], "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
@@ -174,10 +199,10 @@ class CompiledLinnetModule(LinnetModule):
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         main: Callable[..., Any] = module.main
-        if self._cuda_graphs:
+        if backend in ("reduce-overhead", "cudagraphs"):
             main = torch.compile(main, mode="reduce-overhead")
-        elif self._backend is not None:
-            main = torch.compile(main, backend=self._backend)
+        elif backend is not None:
+            main = torch.compile(main, backend=backend)
         # Input-independent values (rotary tables, masks) are computed once
         # here and passed to every call.
         placed = hasattr(module, "SLOTS")
@@ -198,6 +223,7 @@ class CompiledLinnetModule(LinnetModule):
             int(module.RESULTS),
             constants,
             placed,
+            list(getattr(module, "IN_PLACE", [])),
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -206,6 +232,22 @@ class CompiledLinnetModule(LinnetModule):
             if entry is None or key[0] == entry:
                 return self._compiled[key].path.read_text(encoding="utf-8")
         raise PlanError("no entry has been compiled yet")
+
+
+def _mark_static(tensor: torch.Tensor) -> None:
+    if not getattr(tensor, "_linnet_static", False):
+        torch._dynamo.mark_static_address(tensor)  # pyright: ignore[reportPrivateUsage]
+        tensor._linnet_static = True  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def _same(value: torch.Tensor, state: torch.Tensor | None) -> bool:
+    """Whether `value` is `state` itself, as a state written in place comes back."""
+    return (
+        state is not None
+        and value.data_ptr() == state.data_ptr()
+        and value.shape == state.shape
+        and value.dtype == state.dtype
+    )
 
 
 @dataclass
@@ -220,3 +262,4 @@ class _Generated:
     results: int
     constants: list[torch.Tensor]  # `constants(device)`, after the states
     placed: bool = False  # `main` also takes the device of every slot
+    in_place: list[str] = field(default_factory=list[str])  # states `main` writes into

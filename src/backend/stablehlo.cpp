@@ -443,6 +443,17 @@ public:
             const std::vector<TensorInfo> arguments{*at[0], *at[1], origin, origin, *at[2], origin};
             return emit("dynamic_update_slice", arguments, "", shape, dtype);
         }
+        if (implementation == "torch.Tensor.index_put" && operands.size() == 4 &&
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr) {
+            // `write_slot`: one row's span as a `dynamic_update_slice`.
+            // (`write_rows` would be a scatter; its canonical select stands.)
+            Literal zero;
+            zero.kind = Literal::Kind::Integer;
+            zero.integer = 0;
+            const TensorInfo origin{constant(zero, ScalarKind::I32), {}, ScalarKind::I32};
+            const std::vector<TensorInfo> arguments{*at[0], *at[1], *at[2], origin, *at[3], origin};
+            return emit("dynamic_update_slice", arguments, "", shape, dtype);
+        }
         if (implementation == "torch.matmul" && operands.size() == 2 && at[0] != nullptr &&
             at[1] != nullptr) {
             const TensorInfo& a = *at[0];
@@ -782,8 +793,10 @@ private:
             lowest.kind = Literal::Kind::Real;
             lowest.real = -1e30;
             const TensorInfo fill{constant(lowest, f32), {}, f32};
+            // A shared [Q, K] mask, or one per sequence ([B, Q, K]).
+            const Dims mask_axes = mask->shape.size() == 3 ? Dims{0, 2, 3} : Dims{2, 3};
             const TensorInfo spread_mask{
-                broadcast(*mask, {2, 3}, scores_shape), scores_shape, ScalarKind::Bool};
+                broadcast(*mask, mask_axes, scores_shape), scores_shape, ScalarKind::Bool};
             const TensorInfo spread_fill{broadcast(fill, {}, scores_shape), scores_shape, f32};
             scores = {
                 select(spread_mask, scores, spread_fill, scores_shape, f32), scores_shape, f32};

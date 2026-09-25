@@ -40,6 +40,25 @@ accumulate in the input dtype, as Flax reference models do on `bf16`.
 `"equivalent"` keeps the f32 accumulation the canonical bodies specify, and
 `"exact"` keeps every canonical body. All three loaders take it.
 
+## load_model
+
+```python
+from linnet.jax import load_model
+
+model = load_model("model.linnet", generics={..., "Batch": 1, "MaxSeq": 1024},
+                   weights="model.safetensors")
+logits = model.run_entry("prefill", [tokens, jnp.int32(0)])
+logits = model.run_entry("decode", [token, jnp.int32(position)])
+```
+
+`load` is one entry; `load_model` is every entry of the root block over one
+copy of the weights on the device, with the block's `state` (a decoder's KV
+caches) kept there between calls in `model.state`. Each state an entry
+replaces is donated to it, so XLA writes the new cache into the old one's
+memory. The entries run as generated JAX source (`generated=False` runs
+the StableHLO export instead). `linnet.serve.Engine` takes such a model for
+continuous batching.
+
 ## load_source and training
 
 ```python

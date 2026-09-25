@@ -150,6 +150,7 @@ class LinnetModule(nn.Module):
     def __init__(self, plan: Plan, generics: Mapping[str, int | str], device: torch.device) -> None:
         super().__init__()
         self.plan = plan
+        self.generics = dict(generics)  # the root block's, as given
         root = plan.root
         env = Env()
         for generic in root["generics"]:
