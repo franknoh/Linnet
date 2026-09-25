@@ -5,7 +5,7 @@ row of a shared cache (`write_slot`), and attention masked per sequence
 must compute the same numbers on every path, and the generated PyTorch must
 write its caches in place rather than copy them."""
 
-# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
