@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -95,6 +96,52 @@ class LinnetFunction:
         self._cache: dict[tuple[Any, ...], CompiledEntry] = {}
         self._check_weights(manifest)
 
+    def _export(self, target: str, bindings: Mapping[str, int | str]) -> str:
+        """`linnet <target>` for this entry, with each optional parameter
+        compiled in exactly when the weights have it. The first export takes
+        every optional and reads back which paths the weights lack; after
+        that the set is known and reused."""
+        arguments = [target, "--root", self.root, "--entry", self.entry]
+        arguments += ["--numerics", self.numerics, "--optionals", "present"]
+        for name, value in bindings.items():
+            arguments += ["--bind", f"{name}={value}"]
+
+        def run(absent: list[str]) -> str:
+            if not absent:
+                return run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
+            with tempfile.TemporaryDirectory() as work:
+                listing = Path(work) / "absent.txt"
+                listing.write_text("\n".join(absent) + "\n", encoding="utf-8")
+                return run_compiler(
+                    *arguments,
+                    "--absent-file",
+                    str(listing),
+                    *std_arguments(self._std_root),
+                    str(self._source),
+                )
+
+        if self.absent is None:
+            if target != "stablehlo":
+                self._export("stablehlo", bindings)
+            else:
+                probe = run([])
+                paths = re.findall(r'linnet\.path = "([^"]+)"', probe)
+                optional = [
+                    path
+                    for path in paths
+                    if any(self._matches(pattern, path) for pattern in self.optional_paths)
+                ]
+                self.absent = sorted(path for path in optional if path not in self._weights)
+                if not self.absent:
+                    return probe
+        assert self.absent is not None
+        return run(self.absent)
+
+    @staticmethod
+    def _matches(pattern: str, path: str) -> bool:
+        """Manifest paths spell array elements `[*]`; weights spell them `.0`."""
+        return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
+
     def _check_weights(self, manifest: list[dict[str, Any]]) -> None:
         # Manifest paths spell array elements `[*]`; weights spell them `.0`.
         def matches(pattern: str, path: str) -> bool:
@@ -105,13 +152,10 @@ class LinnetFunction:
                 continue
             if not any(matches(entry["path"], path) for path in self._weights):
                 raise LinnetError(f"missing weights for `{entry['path']}`")
-        present = [p for p in self.optional_paths if any(matches(p, w) for w in self._weights)]
-        if present and len(present) != len(self.optional_paths):
-            raise LinnetError(
-                "optional parameters must all be present or all absent; present: "
-                + ", ".join(sorted(present))
-            )
-        self.optionals_present = bool(present)
+        # Which optional parameters are absent is read off the first export
+        # (see `_export`): checkpoints mix them, a bias on some projections
+        # and not others, so it is decided per parameter.
+        self.absent: list[str] | None = None
 
     # ---- entry generics from input shapes
 
@@ -146,12 +190,7 @@ class LinnetFunction:
         return bindings
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
-        arguments = ["stablehlo", "--root", self.root, "--entry", self.entry]
-        arguments += ["--numerics", self.numerics]
-        arguments += ["--optionals", "present" if self.optionals_present else "absent"]
-        for name, value in bindings.items():
-            arguments += ["--bind", f"{name}={value}"]
-        text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
+        text = self._export("stablehlo", bindings)
         paths = re.findall(r'linnet\.path = "([^"]+)"', text)
         missing = [path for path in paths if path not in self._weights]
         if missing:

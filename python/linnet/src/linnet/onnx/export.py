@@ -11,13 +11,14 @@ when it is too large for one protobuf.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..compiler import LinnetError, run_compiler, std_arguments
-from ..weights import iter_safetensors, read_bindings
+from ..weights import iter_safetensors, read_bindings, safetensors_index
 
 # SafeTensors dtype names to ONNX TensorProto data types.
 ONNX_DTYPES = {
@@ -85,18 +86,26 @@ def export_model(
     std_root: str | Path | None = None,
     numerics: str = "equivalent",
     bindings: str | Path | None = None,
-    optionals: str = "absent",
+    optionals: str = "auto",
 ) -> Exported:
     """Compiles one entry to ONNX and embeds the checkpoint as initializers.
 
     `generics` binds the root block's and the entry's generics (`--bind`).
     Every parameter the graph names must be in `weights` with the shape and
     dtype the graph declares; `bindings` maps parameter paths to tensor names.
+
+    `optionals="auto"` (the default) includes each optional parameter exactly
+    when the checkpoint has it. Checkpoints mix them -- attention projections
+    with a bias beside ones without, convolutions without one before a
+    classifier with one -- so neither `"present"` nor `"absent"` for the whole
+    model is right in general; those two remain for a caller who knows.
     """
     import onnx
     from onnx import parser
 
-    arguments = ["onnx", "--numerics", numerics, "--optionals", optionals]
+    mapping = read_bindings(bindings) if bindings is not None else {}
+    arguments = ["onnx", "--numerics", numerics]
+    arguments += ["--optionals", "present" if optionals == "auto" else optionals]
     if root is not None:
         arguments += ["--root", root]
     if entry is not None:
@@ -105,13 +114,34 @@ def export_model(
         arguments += ["--bind", f"{name}={value}"]
     text = run_compiler(*arguments, *std_arguments(std_root), str(source))
     model = parser.parse_model(text)
+    if optionals == "auto":
+        # Every optional was compiled in; the ones the checkpoint lacks are
+        # compiled out again, by path. A required parameter the checkpoint
+        # lacks stays in the graph and is reported as missing below.
+        available = set(safetensors_index(weights))
+        missing = sorted(
+            p.value
+            for p in model.metadata_props
+            if p.key.startswith("linnet.path.") and mapping.get(p.value, p.value) not in available
+        )
+        if missing:
+            with tempfile.TemporaryDirectory() as work:
+                listing = Path(work) / "absent.txt"
+                listing.write_text("\n".join(missing) + "\n", encoding="utf-8")
+                text = run_compiler(
+                    *arguments,
+                    "--absent-file",
+                    str(listing),
+                    *std_arguments(std_root),
+                    str(source),
+                )
+            model = parser.parse_model(text)
 
     paths = {
         p.key.removeprefix("linnet.path."): p.value
         for p in model.metadata_props
         if p.key.startswith("linnet.path.")
     }
-    mapping = read_bindings(bindings) if bindings is not None else {}
     wanted = {mapping.get(path, path): (input_name, path) for input_name, path in paths.items()}
     declared = {i.name: i for i in model.graph.input}
 

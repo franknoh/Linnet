@@ -6,6 +6,7 @@
 #include <expected>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -145,6 +146,19 @@ public:
     // `implementation`, with its tensor operands (absent optionals as
     // nullopt). A target that has the implementation returns the result's
     // name; otherwise the call's canonical body is exported instead.
+    // The dimension generics of the semantic call being lowered, by name
+    // (`Stride`, `Pad`), set before each `native_call`. A kernel whose
+    // arguments are not tensors reads them here instead of inferring them
+    // from shapes, which is ambiguous: a 3x3 window taking 4 positions to 2
+    // fits both stride 1 without padding and stride 2 with one.
+    void set_call_generics(std::map<std::string, std::int64_t> generics) {
+        call_generics_ = std::move(generics);
+    }
+    std::optional<std::int64_t> call_generic(const std::string& name) const {
+        const auto found = call_generics_.find(name);
+        return found == call_generics_.end() ? std::nullopt : std::optional(found->second);
+    }
+
     virtual std::optional<std::string>
     native_call(const std::string& implementation,
                 const std::vector<std::optional<TensorInfo>>& operands,
@@ -191,6 +205,9 @@ public:
                                const std::string& module_path,
                                const std::string& block_name,
                                const std::string& entry_name) = 0;
+
+private:
+    std::map<std::string, std::int64_t> call_generics_;
 };
 
 struct GraphExportOptions {
@@ -199,6 +216,13 @@ struct GraphExportOptions {
     std::uint32_t root_module = 0;
     std::map<std::string, std::string> bindings; // generic name -> integer or dtype
     bool optionals_present = false;
+    // Optional parameters that are absent even though `optionals_present`
+    // says otherwise, by path (`classifier.bias`, `layers.3.k_proj.bias`).
+    // Real checkpoints mix them -- a ResNet's convolutions have no bias while
+    // its classifier has one -- and one switch for the whole model would
+    // either drop the classifier's bias or ask for convolution biases the
+    // checkpoint does not have.
+    std::set<std::string> absent;
     // Placement across devices, for a target that supports it. A block whose
     // member path starts with a key runs on that device slot (the longest key
     // wins; everything else runs on slot 0), and a tensor consumed on another

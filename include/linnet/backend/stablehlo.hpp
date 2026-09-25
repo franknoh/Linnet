@@ -16,8 +16,9 @@ namespace linnet::backend {
 // followed by every parameter and buffer of the block hierarchy, in manifest
 // order, each annotated with `linnet.path` so a runtime can bind weights by
 // name. Shapes are static: every generic parameter of the root block and of
-// the entry must be bound to a constant (`bindings`), and optional parameters
-// are either all present or all absent (`optionals_present`). Calls are
+// the entry must be bound to a constant (`bindings`), and each optional
+// parameter is present or absent as the checkpoint has it (`optionals_present`,
+// less the paths in `absent`). Calls are
 // inlined, `static for` is unrolled, and index notation becomes broadcasts,
 // gathers, and reductions over the output grid.
 //

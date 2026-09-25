@@ -15,10 +15,10 @@ import importlib.util
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -69,7 +69,7 @@ class CompiledLinnetModule(LinnetModule):
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
         bindings = self._bindings(function, inputs, generics or {})
-        key = (name, tuple(sorted(bindings.items())), self._optionals_present())
+        key = (name, tuple(sorted(bindings.items())), self._absent_optionals())
         if key not in self._compiled:
             self._compiled[key] = self._compile(name, bindings)
         generated = self._compiled[key]
@@ -128,16 +128,32 @@ class CompiledLinnetModule(LinnetModule):
                 raise PlanError("shape-pack generics of entries cannot be compiled per call yet")
         return bindings
 
-    def _optionals_present(self) -> bool:
-        for module in self.modules():
-            if isinstance(module, BlockModule) and module.optional_params:
-                return not module.absent_params
-        return False
+    def _absent_optionals(self) -> tuple[str, ...]:
+        """Every optional parameter the bound weights leave out, by path.
+
+        Checkpoints mix them: a ResNet's convolutions have no bias and its
+        classifier has one, Qwen2.5 biases its query/key/value projections and
+        nothing else. The compiled source has to know each one, as the
+        interpreter does -- deciding from the first block with an optional
+        dropped the classifier's bias from every compiled ResNet."""
+        absent: list[str] = []
+        named = cast("Iterable[tuple[str, torch.nn.Module]]", self.named_modules())
+        for name, module in named:
+            if isinstance(module, BlockModule):
+                path = name.removeprefix("root").removeprefix(".")
+                prefix = f"{path}." if path else ""
+                absent += [prefix + leaf for leaf in sorted(module.absent_params)]
+        return tuple(absent)
 
     def _compile(self, entry: str, bindings: dict[str, str]) -> _Generated:
         command = [find_compiler(), "torch", "--root", self.plan.root["name"], "--entry", entry]
         command += ["--numerics", self._numerics]
-        command += ["--optionals", "present" if self._optionals_present() else "absent"]
+        command += ["--optionals", "present"]
+        absent = self._absent_optionals()
+        if absent:
+            listing = self._work / "absent.txt"
+            listing.write_text("\n".join(absent) + "\n", encoding="utf-8")
+            command += ["--absent-file", str(listing)]
         if self._std_root is not None:
             command += ["--std", str(self._std_root)]
         for name, value in bindings.items():

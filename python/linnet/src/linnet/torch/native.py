@@ -76,21 +76,12 @@ def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return scaled if bias is None else scaled + bias
 
 
-def conv2d(args: list[Any], shape: list[int]) -> torch.Tensor:
-    """`std.nn.conv::conv2d` as `F.conv2d`. The window geometry is not in the
-    arguments, so it is recovered from the shapes, as the exporters do; both
-    spatial axes must agree, which pins stride and padding down."""
+def conv2d(args: list[Any], stride: int, pad: int) -> torch.Tensor:
+    """`std.nn.conv::conv2d` as `F.conv2d`, with the call's own `Stride` and
+    `Pad`. They are not recovered from the shapes: a 3x3 window taking 4
+    positions to 2 fits both stride 1 without padding and stride 2 with one."""
     x, weight, bias = args
-    kernel = int(weight.shape[2])
-    for pad in range(kernel):
-        for stride in range(1, int(x.shape[2]) + 2 * pad + 1):
-            if x.shape[2] + 2 * pad < kernel or x.shape[3] + 2 * pad < kernel:
-                break
-            rows = (int(x.shape[2]) + 2 * pad - kernel) // stride + 1
-            columns = (int(x.shape[3]) + 2 * pad - int(weight.shape[3])) // stride + 1
-            if rows == shape[2] and columns == shape[3]:
-                return functional.conv2d(x, weight, bias, stride=stride, padding=pad)
-    raise ValueError(f"no stride and padding give {shape} from {list(x.shape)}")
+    return functional.conv2d(x, weight, bias, stride=stride, padding=pad)
 
 
 def upsample_nearest2d(args: list[Any], shape: list[int]) -> torch.Tensor:
