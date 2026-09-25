@@ -265,6 +265,14 @@ TEST("format: comments in untracked positions move to a line boundary") {
         "}\n");
 }
 
+TEST("format: a comment inside the module line keeps the blank line after it") {
+    // Printed after `module t`, the comment reads as the first item's leading
+    // comment on the next pass, which puts a blank line before it; the first
+    // pass must too, or formatting is not a fixed point.
+    CHECK_EQ(fmt("module//\nt fn m(){}"), "module t\n\n//\n\nfn m() {}\n");
+    CHECK_EQ(fmt("module//\nu block C{}"), "module u\n\n//\n\nblock C {}\n");
+}
+
 TEST("format: one-element tuple types keep their comma") {
     CHECK_EQ(fmt("module m\nfn f(x: (f32,)) -> (f32,) { return x }\n"),
              "module m\n\nfn f(x: (f32,)) -> (f32,) {\n    return x\n}\n");
