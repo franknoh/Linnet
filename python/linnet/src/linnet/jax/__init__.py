@@ -8,6 +8,7 @@ from ..compiler import LinnetError, find_compiler
 from .export import ExportError, ExportResult, export_linnet, import_stablehlo
 from .flax_nnx import load_nnx, to_nnx
 from .load import LinnetFunction, load
+from .module import LinnetModel, load_model
 from .source import SourceFunction, load_source
 
 __all__ = [
@@ -15,11 +16,13 @@ __all__ = [
     "ExportResult",
     "LinnetError",
     "LinnetFunction",
+    "LinnetModel",
     "SourceFunction",
     "export_linnet",
     "find_compiler",
     "import_stablehlo",
     "load",
+    "load_model",
     "load_nnx",
     "load_source",
     "to_nnx",

@@ -80,7 +80,7 @@ What `load` does:
 | | `torch.softmax` and `torch.rms_norm` are in neither tier: their kernels accumulate in f32 whatever the input dtype, so every policy calls them without casts |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape; input-independent values (rotary tables, masks) are computed once and reused. The default on CUDA; `compile=False` is the interpreter, the default elsewhere |
 | `compile="inductor"` | the same, passed through `torch.compile` |
-| `compile="reduce-overhead"` | `torch.compile` with CUDA graphs: one replay per call instead of one launch per kernel, for decoding |
+| `compile="reduce-overhead"` | `torch.compile` with CUDA graphs: one replay per call instead of one launch per kernel, for decoding. A KV cache the entry writes is written in place, at an address the graph keeps |
 | `trainable=True` | parameters require gradients |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 | `cast_dtype=True` | converts floating-point weights to the model's dtype as they are read: an f32 checkpoint in a bf16 model, or the reverse |
@@ -88,6 +88,9 @@ What `load` does:
 
 Entries with generics the inputs do not determine take them by name:
 `model.run_entry("generate", [prompt, pos], generics={"Steps": 16})`.
+`run_entry(..., compile=...)` overrides the module's setting for one call,
+so a decoding step can replay as a CUDA graph while prompts of many lengths
+run without one.
 `model.reset_state()` zeroes every `state` member; `model.state_paths()`
 lists them; `model.generated_source(entry)` shows the code `compile` ran.
 

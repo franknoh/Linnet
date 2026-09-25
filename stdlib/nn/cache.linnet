@@ -40,3 +40,39 @@ where
     let out[b, h, s, d] = select(inside[s], value[b, h, offset[s], d], cache[b, h, s, d])
     return out
 }
+
+// One position per sequence: row `b` of the cache is written at `at[b]`.
+// A batch decoded together has each sequence at its own length, which is
+// what serving many requests at once needs; `write_at` puts every row at
+// the same position.
+pub op write_rows<B: Dim, H: Dim, S: Dim, D: Dim, T: Float>(
+    cache: Tensor[B, H, S, D; T],
+    value: Tensor[B, H, 1, D; T],
+    at: Tensor[B; i32],
+) -> Tensor[B, H, S, D; T]
+where S > 0 {
+    let positions = iota<i32>(S)
+    let out[b, h, s, d] = select(positions[s] == at[b], value[b, h, 0, d], cache[b, h, s, d])
+    return out
+}
+
+// `N` consecutive positions of one sequence's row, `slot`, starting at `at`:
+// a prompt written into its row of a cache the batch shares, leaving every
+// other row as it was.
+pub op write_slot<B: Dim, H: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
+    cache: Tensor[B, H, S, D; T],
+    value: Tensor[1, H, N, D; T],
+    slot: i32,
+    at: i32,
+) -> Tensor[B, H, S, D; T]
+where
+    S > 0,
+    N > 0
+{
+    let rows = iota<i32>(B)
+    let positions = iota<i32>(S)
+    let offset[s] = min(max(positions[s] - at, 0), cast<i32>(N) - 1)
+    let inside[b, s] = rows[b] == slot && positions[s] >= at && positions[s] < at + cast<i32>(N)
+    let out[b, h, s, d] = select(inside[b, s], value[0, h, offset[s], d], cache[b, h, s, d])
+    return out
+}

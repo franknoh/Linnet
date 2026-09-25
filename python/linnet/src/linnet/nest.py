@@ -529,7 +529,7 @@ def download_weights(card: Card) -> Path:
 def load(
     name_or_dir: str | Path,
     *,
-    backend: Literal["torch", "jax", "jax_source", "nnx"] = "torch",
+    backend: Literal["torch", "jax", "jax_source", "jax_model", "nnx"] = "torch",
     std_root: str | Path | None = None,
     generics: Mapping[str, int | str] | None = None,
     weights: str | Path | None = None,
@@ -540,7 +540,9 @@ def load(
     `generics` overrides the card's values (a different `Batch`, say);
     `weights` uses a checkpoint already on disk instead of downloading the
     card's; `options` go to the backend's loader (`numerics`, `compile`,
-    `device`, `trainable`, ...).
+    `device`, `trainable`, ...). `"jax_model"` is every entry over one copy of
+    the weights with the state kept on the device (`linnet.jax.load_model`),
+    which decoding and serving need.
     """
     card = resolve(name_or_dir)
     values = {**card.generics, **(generics or {})}
@@ -560,6 +562,8 @@ def load(
         return torch_backend.load(card.source_path, **common, **options)
     from . import jax as jax_backend
 
+    if backend == "jax_model":
+        return jax_backend.load_model(card.source_path, **common, **options)
     entry = options.pop("entry", card.entry)
     if backend == "jax":
         return jax_backend.load(card.source_path, entry=entry, **common, **options)

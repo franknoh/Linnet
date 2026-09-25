@@ -96,6 +96,12 @@ class LinnetFunction:
         self.parameter_paths: list[str] = [entry["path"] for entry in manifest]
         self.optional_paths: set[str] = {e["path"] for e in manifest if e["optional"]}
         self._cache: dict[tuple[Any, ...], CompiledEntry] = {}
+        # Set by `LinnetModel`, which runs several entries over one copy of
+        # the weights and keeps their state on the device: the weights are
+        # written back once placed (and cast), so the next entry finds them
+        # there, and the state an entry replaces is donated to it.
+        self.share_weights = False
+        self.donate_state = False
         self._check_weights(manifest)
 
     def _export(self, target: str, bindings: Mapping[str, int | str]) -> str:
@@ -205,7 +211,8 @@ class LinnetFunction:
         exported = _wrap_module(text)
         # The compiled program under `jit`, so a call is one dispatch; the
         # loaded weights go to the device once rather than per call.
-        call = jax.jit(exported.call)
+        donated = self._donated(len(exported.in_avals), state_inputs, state_outputs)
+        call = jax.jit(exported.call, donate_argnums=donated)
         arrays = [_device_array(self._weights[path]) for path in paths]
         if self.cast_dtype:
             # The export declares each parameter's dtype; a floating array of
@@ -220,6 +227,8 @@ class LinnetFunction:
                 else array
                 for array, aval in zip(arrays, declared, strict=True)
             ]
+        if self.share_weights:
+            self._weights.update(zip(paths, arrays, strict=True))
         state_avals = dict(
             zip(
                 state_inputs,
@@ -230,6 +239,17 @@ class LinnetFunction:
         return CompiledEntry(
             paths, state_inputs, state_outputs, state_avals, exported, call, arrays
         )
+
+    def _donated(
+        self, arguments: int, state_inputs: Sequence[str], state_outputs: Sequence[str]
+    ) -> tuple[int, ...]:
+        """The argument positions of the states this entry replaces, when
+        `donate_state` is set: XLA then writes the new value into the old
+        one's memory (a cache updated in place) instead of beside it."""
+        if not self.donate_state:
+            return ()
+        first = arguments - len(state_inputs)
+        return tuple(first + i for i, path in enumerate(state_inputs) if path in state_outputs)
 
     def apply(self, parameters: Mapping[str, Any], *inputs: Any, state: Any = None) -> Any:
         """Runs the entry with `parameters` (path -> array) in place of the

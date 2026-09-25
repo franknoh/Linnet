@@ -57,3 +57,44 @@ where
     )
     return attention(query, keys, values, scale, mask)
 }
+
+// Attention with a mask per sequence: `mask[b]` says which keys the queries
+// of sequence `b` see. A batch whose sequences sit at different positions
+// (each request of a server at its own length) needs one; `attention`'s
+// mask is shared by the whole batch.
+pub op attention_rows<B: Dim, H: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
+    query: Tensor[B, H, Q, D; T],
+    key: Tensor[B, H, K, D; T],
+    value: Tensor[B, H, K, D; T],
+    scale: f32,
+    mask: Tensor[B, Q, K; bool],
+) -> Tensor[B, H, Q, D; T] {
+    let score[b, h, q, k] = sum<f32>[d] cast<f32>(query[b, h, q, d]) * cast<f32>(key[b, h, k, d])
+    let masked[b, h, q, k] = select(mask[b, q, k], score[b, h, q, k] * scale, -1e30)
+    let weights = softmax(masked)
+    let mixed[b, h, q, d] = sum[k] weights[b, h, q, k] * cast<f32>(value[b, h, k, d])
+    return cast<T>(mixed)
+}
+
+// `grouped_attention` with a mask per sequence, as `attention_rows`.
+pub op grouped_attention_rows<B: Dim, H: Dim, Hk: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
+    query: Tensor[B, H, Q, D; T],
+    key: Tensor[B, Hk, K, D; T],
+    value: Tensor[B, Hk, K, D; T],
+    scale: f32,
+    mask: Tensor[B, Q, K; bool],
+) -> Tensor[B, H, Q, D; T]
+where
+    Hk > 0,
+    H % Hk == 0
+{
+    let keys = reshape(
+        broadcast_to(reshape(key, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
+        [B, H, K, D],
+    )
+    let values = reshape(
+        broadcast_to(reshape(value, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
+        [B, H, K, D],
+    )
+    return attention_rows(query, keys, values, scale, mask)
+}

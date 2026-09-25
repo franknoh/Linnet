@@ -525,6 +525,38 @@ public:
                           "torch.arange(" + std::to_string(span) + ", device=" + name(0) +
                           ".device), " + name(1) + ")");
         }
+        if (implementation_base == "torch.Tensor.index_put" &&
+            (operands.size() == 3 || operands.size() == 4)) {
+            std::vector<const TensorInfo*> at;
+            at.reserve(operands.size());
+            for (const std::optional<TensorInfo>& operand : operands) {
+                at.push_back(operand.has_value() ? &*operand : nullptr);
+            }
+            if (at[0] == nullptr || at[1] == nullptr) {
+                return std::nullopt;
+            }
+            // Every index spelled out, one per axis but the last, so the
+            // write is one kernel over the positions it changes.
+            const Dims& cache = at[0]->shape;
+            const Dims& value = at[1]->shape;
+            if (cache.size() != 4 || value.size() != 4) {
+                return std::nullopt;
+            }
+            const std::string device = name(0) + ".device";
+            const std::string heads =
+                "torch.arange(" + std::to_string(cache[1]) + ", device=" + device + ")";
+            if (operands.size() == 3) {
+                // `write_rows`: row b at at[b]; the indices broadcast to [B, H].
+                return define(name(0) + ".index_put((torch.arange(" + std::to_string(cache[0]) +
+                              ", device=" + device + ")[:, None], " + heads + "[None, :], " +
+                              name(2) + ".long()[:, None]), " + name(1) + "[:, :, 0])");
+            }
+            // `write_slot`: one row, a span of positions; [H, N] indices.
+            return define(name(0) + ".index_put((" + name(2) + ".long().reshape(1, 1), " + heads +
+                          "[:, None], (" + name(3) + ".long() + torch.arange(" +
+                          std::to_string(value[2]) + ", device=" + device + "))[None, :]), " +
+                          name(1) + "[0])");
+        }
         if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
             operands[0] && operands[1]) {
             // `F.conv2d` takes the window geometry as arguments. It comes from
@@ -626,7 +658,11 @@ public:
             const TensorInfo* query = at[0];
             const TensorInfo* key = at[1];
             const TensorInfo* attn_mask = at[4];
+            // A mask per sequence ([B, Q, K]) broadcasts over the heads.
             std::string mask = ", attn_mask=" + name(4);
+            if (attn_mask != nullptr && attn_mask->shape.size() == 3) {
+                mask += ".unsqueeze(1)";
+            }
             if (attn_mask != nullptr && causal_masks_.contains(attn_mask->name)) {
                 mask = ", is_causal=True";
             } else if (attn_mask == nullptr) {
@@ -682,6 +718,17 @@ public:
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         const Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
         out += "CONSTANTS = " + string_list(hoisted.names) + "\n";
+        // The states `main` writes into the tensor it was given: CUDA graphs
+        // must be told their addresses are fixed, or they are skipped.
+        std::vector<std::string> in_place;
+        const std::string body =
+            write_states_in_place(release_dead_values(hoisted.body, tail), tail, in_place);
+        std::vector<std::string> in_place_paths;
+        in_place_paths.reserve(in_place.size());
+        for (const std::string& argument : in_place) {
+            in_place_paths.push_back(states_.at(std::stoul(argument.substr(1))));
+        }
+        out += "IN_PLACE = " + string_list(in_place_paths) + "\n";
         if (placed_) {
             out += "SLOTS = " + std::to_string(slots_) + "\n";
         }
@@ -716,8 +763,73 @@ public:
                                        : arguments_.front() + ".device") +
                    "\n";
         }
-        out += release_dead_values(hoisted.body, tail);
+        out += body;
         out += tail;
+        return out;
+    }
+
+    // A cache write whose cache is a state argument nothing else reads
+    // happens in place (`index_copy_`, `index_put_`): the
+    // functional form copies the whole cache to change one position per
+    // sequence, every layer, every step -- for a batch of long sequences,
+    // more memory traffic than the weights. The runtime sees the state
+    // come back as the same tensor and keeps it.
+    static std::string write_states_in_place(const std::string& body,
+                                             const std::string& tail,
+                                             std::vector<std::string>& written) {
+        std::vector<std::string> lines;
+        std::string current;
+        for (const char c : body) {
+            if (c == '\n') {
+                lines.push_back(current);
+                current.clear();
+            } else {
+                current += c;
+            }
+        }
+        lines.push_back(tail);
+        const auto mentions = [](const std::string& line, const std::string& name) {
+            for (std::size_t at = line.find(name); at != std::string::npos;
+                 at = line.find(name, at + 1)) {
+                const std::size_t end = at + name.size();
+                const bool starts =
+                    at == 0 || (!std::isalnum(static_cast<unsigned char>(line[at - 1])) &&
+                                line[at - 1] != '_');
+                const bool ends =
+                    end == line.size() ||
+                    (!std::isalnum(static_cast<unsigned char>(line[end])) && line[end] != '_');
+                if (starts && ends) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::string out;
+        for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+            std::string line = lines[i];
+            const std::size_t equals = line.find(" = s");
+            if (line.starts_with("    v") && equals != std::string::npos) {
+                const std::size_t start = equals + 3;
+                const std::size_t dot = line.find('.', start);
+                const std::string state = line.substr(start, dot - start);
+                const bool digits = state.size() > 1 &&
+                                    state.find_first_not_of("0123456789", 1) == std::string::npos;
+                // The write must be the state's only use: a read after it
+                // would see the new value, and one before it may be a view.
+                bool read_later = false;
+                for (std::size_t j = 0; j < lines.size() && !read_later; ++j) {
+                    read_later = j != i && mentions(lines[j], state);
+                }
+                for (const char* write : {".index_copy(", ".index_put("}) {
+                    const std::string call(write);
+                    if (digits && !read_later && line.compare(dot, call.size(), call) == 0) {
+                        line.insert(dot + call.size() - 1, "_");
+                        written.push_back(state);
+                    }
+                }
+            }
+            out += line + "\n";
+        }
         return out;
     }
 

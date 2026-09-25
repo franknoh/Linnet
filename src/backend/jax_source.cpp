@@ -337,6 +337,21 @@ public:
             return define("jax.lax.dynamic_update_slice_in_dim(" + name(0) + ", " + name(1) + ", " +
                           name(2) + ".astype(jnp.int32), 2)");
         }
+        if (implementation_base == "torch.Tensor.index_put" && (at.size() == 3 || at.size() == 4) &&
+            at[0] != nullptr && at[1] != nullptr && at[0]->shape.size() == 4) {
+            if (at.size() == 3) {
+                // `write_rows`: row b at at[b], a scatter of B x H vectors.
+                const Dims& cache = at[0]->shape;
+                return define(name(0) + ".at[jnp.arange(" + std::to_string(cache[0]) +
+                              ")[:, None], jnp.arange(" + std::to_string(cache[1]) +
+                              ")[None, :], " + name(2) + ".astype(jnp.int32)[:, None]].set(" +
+                              name(1) + "[:, :, 0])");
+            }
+            // `write_slot`: one row's span, a slice write.
+            return define("jax.lax.dynamic_update_slice(" + name(0) + ", " + name(1) + ", (" +
+                          name(2) + ".astype(jnp.int32), jnp.int32(0), " + name(3) +
+                          ".astype(jnp.int32), jnp.int32(0)))");
+        }
         if (implementation_base == "torch.matmul" && at.size() == 2) {
             return define("jnp.matmul(" + name(0) + ", " + name(1) + ")");
         }
@@ -409,7 +424,9 @@ public:
             if (at[4] != nullptr && causal_masks_.contains(at[4]->name)) {
                 mask = ", is_causal=True";
             } else if (at[4] != nullptr) {
-                mask = ", mask=" + name(4) + "[None, None]";
+                // A shared [Q, K] mask, or one per sequence ([B, Q, K]).
+                mask =
+                    ", mask=" + name(4) + (at[4]->shape.size() == 3 ? "[:, None]" : "[None, None]");
             }
             const std::string mixed = define("jax.nn.dot_product_attention(" + q + ", " + k + ", " +
                                              v + ", scale=" + scalar(3) + mask + ")");

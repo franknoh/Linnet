@@ -28,6 +28,22 @@ def _index_copy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return cache.index_copy(2, positions, value)
 
 
+def _index_put(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    cache, value = args[0], args[1]
+    batch, heads = cache.shape[0], cache.shape[1]
+    rows = torch.arange(batch, device=cache.device)
+    lanes = torch.arange(heads, device=cache.device)
+    if len(args) == 3:
+        # `write_rows`: row b at at[b].
+        return cache.index_put(
+            (rows[:, None], lanes[None, :], args[2].long()[:, None]), value[:, :, 0]
+        )
+    # `write_slot`: one row, a span of positions.
+    slot, at = args[2], args[3]
+    span = at.long() + torch.arange(value.shape[2], device=cache.device)
+    return cache.index_put((slot.long().reshape(1, 1), lanes[:, None], span[None, :]), value[0])
+
+
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
@@ -132,7 +148,8 @@ def _sdpa(
     if causal:
         options["is_causal"] = True
     elif mask is not None:
-        options["attn_mask"] = mask
+        # A mask per sequence ([B, Q, K]) broadcasts over the heads.
+        options["attn_mask"] = mask.unsqueeze(1) if mask.dim() == 3 else mask
     if key.shape[1] != query.shape[1]:
         options["enable_gqa"] = True
     if fast:
@@ -175,6 +192,7 @@ NATIVE: dict[str, Native] = {
     "torch.nn.functional.batch_norm": _batch_norm,
     "torch.Tensor.mean": _spatial_mean,
     "torch.Tensor.index_copy": _index_copy,
+    "torch.Tensor.index_put": _index_put,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,

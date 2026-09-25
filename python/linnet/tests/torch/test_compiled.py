@@ -108,10 +108,11 @@ def test_native_kernels_and_torch_compile() -> None:
     # grouped key/value heads, and no materialized mask.
     assert source.count("F.embedding(") == 1
     assert "is_causal=True" in source and "enable_gqa=True" in source
-    # A decode step writes one cache position, rather than rebuilding the cache.
+    # A decode step writes one cache position, in place, rather than
+    # rebuilding the cache.
     compiled.run_entry("decode", [tokens[:, :1], torch.tensor(0, dtype=torch.int32)])
     decode = compiled.generated_source("decode")
-    assert decode.count(".index_copy(2, ") == 2 * int(GENERICS["Layers"])
+    assert decode.count(".index_copy_(2, ") == 2 * int(GENERICS["Layers"])
     assert "torch.where(" not in decode
     assert "attn_mask=" not in source and ".tril(" not in source
     # Rotary tables are computed once, not once per layer, and folded
