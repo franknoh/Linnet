@@ -151,6 +151,16 @@ public:
     }
 
     std::string constant(const Literal& literal, ScalarKind dtype) override {
+        if (dtype == ScalarKind::F16 || dtype == ScalarKind::BF16) {
+            // The text format spells a 16-bit float by its bit pattern, so
+            // `float16 {0.0}` does not parse. A float constant cast down says
+            // the same thing and stays readable.
+            const TensorInfo wide{
+                constant_text(literal_text(literal, ScalarKind::F32), {}, ScalarKind::F32),
+                {},
+                ScalarKind::F32};
+            return convert(wide, dtype);
+        }
         const std::string name = constant_text(literal_text(literal, dtype), {}, dtype);
         literals_[name] = literal_text(literal, dtype);
         return name;
