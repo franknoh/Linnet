@@ -164,8 +164,12 @@ private:
             previous_end = element.end;
 
             // Comments written inside the element at untracked positions.
+            // They print after it, where a second pass reads them as the next
+            // element's leading comments -- so they take the blank line that
+            // element forces, or formatting would not be a fixed point
+            // (`module // c` + newline + name, then an item).
             const bool had_leftovers = has_comment_before(element.end);
-            own_line_comments(element.end, false);
+            own_line_comments(element.end, i + 1 < elements.size() && elements[i + 1].blank_before);
             if (!had_leftovers) {
                 const std::uint32_t limit = i + 1 < elements.size() ? elements[i + 1].begin : close;
                 append_trailing_comments(parts, previous_end, limit);
