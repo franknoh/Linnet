@@ -91,6 +91,10 @@ class Card:
     check: Mapping[str, int | str]
     weights: Weights | None
     extra: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    # The published parameter count, when counting the checkpoint's tensors
+    # would get it wrong: 4-bit weights packed two to a byte (gpt-oss's
+    # MXFP4) count half their parameters as elements.
+    parameters: int | None = None
 
     @staticmethod
     def read(directory: str | Path) -> Card:
@@ -137,6 +141,7 @@ class Card:
             check=MappingProxyType(_generic_values(_table(document, "check"))),
             weights=weights,
             extra=MappingProxyType({k: v for k, v in document.items() if k not in _KNOWN_TABLES}),
+            parameters=int(model["parameters"]) if "parameters" in model else None,
         )
 
     @property
@@ -356,11 +361,12 @@ def _check_exports(
 def describe(card: Card, std_root: str | Path | None = None) -> dict[str, Any]:
     """The card plus what the compiler knows: entries, parameter count, files."""
     program = card.program(std_root)
-    parameters: int | None
-    try:
-        parameters = parameter_count(card, program)
-    except LinnetError:
-        parameters = None
+    parameters: int | None = card.parameters
+    if parameters is None:
+        try:
+            parameters = parameter_count(card, program)
+        except LinnetError:
+            parameters = None
     files = sorted(
         str(p.relative_to(card.directory)).replace(os.sep, "/")
         for p in card.directory.rglob("*")

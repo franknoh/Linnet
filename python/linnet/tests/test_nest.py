@@ -128,6 +128,21 @@ def test_tied_parameters_are_counted_once(model_dir: Path) -> None:
     assert tied == untied - 16 * 8  # `wpe` no longer counted on its own
 
 
+def test_a_card_can_state_its_published_parameter_count(model_dir: Path) -> None:
+    """Packed 4-bit weights hold two parameters per stored element, so a
+    card whose checkpoint packs them states the published count instead."""
+    counted = nest.describe(nest.Card.read(model_dir), STDLIB)["parameters"]
+    card_path = model_dir / "nest.toml"
+    card_path.write_text(
+        card_path.read_text(encoding="utf-8").replace(
+            "[model]\n", "[model]\nparameters = 20914757184\n", 1
+        ),
+        encoding="utf-8",
+    )
+    stated = nest.describe(nest.Card.read(model_dir), STDLIB)["parameters"]
+    assert stated == 20914757184 != counted
+
+
 def test_cli_check_and_index(
     model_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
