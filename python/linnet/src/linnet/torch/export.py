@@ -1243,12 +1243,11 @@ def _relu(exporter: _Exporter, node: Any) -> _Value:
 
 @_handles("aten.gelu.default")
 def _gelu(exporter: _Exporter, node: Any) -> _Value:
-    if node.kwargs.get("approximate", "none") != "tanh":
-        raise ExportError("only the tanh approximation of gelu is available; erf is not primitive")
+    tanh = node.kwargs.get("approximate", "none") == "tanh"
     x = exporter.tensor_arg(node, 0)
     return exporter.call(
         node,
-        "std.nn.activations::gelu",
+        "std.nn.activations::gelu" if tanh else "std.nn.activations::gelu_erf",
         [_generic_shape(exporter, x.shape or ()), _generic_dtype(x.dtype)],
         [x],
     )

@@ -345,6 +345,9 @@ public:
         if (implementation_base == "torch.nn.functional.silu" && at.size() == 1) {
             return define("jax.nn.silu(" + name(0) + ")");
         }
+        if (implementation_base == "torch.nn.functional.gelu" && at.size() == 1) {
+            return define("jax.nn.gelu(" + name(0) + ", approximate=False)");
+        }
         if (implementation_base == "torch.nn.functional.gelu(tanh)" && at.size() == 1) {
             return define("jax.nn.gelu(" + name(0) + ", approximate=True)");
         }
