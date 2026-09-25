@@ -195,3 +195,31 @@ def test_group_norm_and_upsampling_match_pytorch(tmp_path: Path, groups: int) ->
         atol=0,
         rtol=0,
     )
+
+
+@pytest.mark.parametrize("compile", [False, True])
+def test_a_geometry_the_shapes_cannot_tell_apart(tmp_path: Path, compile: bool) -> None:
+    """A 3x3 window taking 4 positions to 2 fits stride 2 with padding 1 and
+    stride 1 without padding alike. The kernel must take the call's own
+    `Stride` and `Pad`; recovering them from the shapes picked the wrong pair
+    at the bottom of every small UNet."""
+    source = tmp_path / "conv.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    generics: dict[str, int | str] = {
+        "Cin": 3,
+        "Cout": 4,
+        "H": 4,
+        "W": 4,
+        "K": 3,
+        "Stride": 2,
+        "Pad": 1,
+        "T": "f32",
+    }
+    model = load(source, generics=generics, std_root=STDLIB, numerics="equivalent", compile=compile)
+    weight, bias = torch.randn(4, 3, 3, 3), torch.randn(4)
+    with torch.no_grad():
+        model.get_parameter("root.weight").copy_(weight)
+        model.get_parameter("root.bias").copy_(bias)
+    x = torch.randn(2, 3, 4, 4)
+    expected = functional.conv2d(x, weight, bias, stride=2, padding=1)
+    torch.testing.assert_close(model.run_entry("convolve", [x]), expected, atol=1e-5, rtol=1e-5)

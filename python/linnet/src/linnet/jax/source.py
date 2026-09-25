@@ -20,7 +20,7 @@ from typing import Any
 
 import jax
 
-from ..compiler import LinnetError, run_compiler, std_arguments
+from ..compiler import LinnetError
 from .load import CompiledEntry, LinnetFunction, load
 
 
@@ -41,12 +41,7 @@ class SourceFunction(LinnetFunction):
         # The StableHLO export supplies the argument order and state avals;
         # the JAX source supplies the function that runs.
         compiled = super()._compile(bindings)
-        arguments = ["jax", "--root", self.root, "--entry", self.entry]
-        arguments += ["--numerics", self.numerics]
-        arguments += ["--optionals", "present" if self.optionals_present else "absent"]
-        for name, value in bindings.items():
-            arguments += ["--bind", f"{name}={value}"]
-        text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
+        text = self._export("jax", bindings)
         path = self._work / f"{self.entry}_{len(self._cache)}.py"
         path.write_text(text, encoding="utf-8")
         spec = importlib.util.spec_from_file_location(f"linnet_jax_generated_{path.stem}", path)

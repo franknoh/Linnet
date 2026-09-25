@@ -434,6 +434,21 @@ private:
             return false;
         }
         Val result = tensor_value(type, {});
+        std::map<std::string, std::int64_t> generics;
+        if (const auto callee = functions_.find(op.attributes.name); callee != functions_.end()) {
+            for (const sema::GenericInfo& generic : callee->second->generics) {
+                const auto bound = op.attributes.substitution.dims.find(generic.symbol);
+                if (generic.kind != sema::GenericKind::Dim ||
+                    bound == op.attributes.substitution.dims.end()) {
+                    continue;
+                }
+                const auto value = types_.substitute(bound->second, frame().subst).constant();
+                if (value) {
+                    generics.emplace(std::string(generic.name), *value);
+                }
+            }
+        }
+        target_.set_call_generics(std::move(generics));
         const auto name = target_.native_call(names.front(), operands, result.shape, result.dtype);
         if (!name) {
             return false;
@@ -473,7 +488,8 @@ private:
                 state_types_[path] = tensor_value(type, {});
             } else {
                 const bool is_optional = data.kind == TypeKind::Optional;
-                if (is_optional && !options_.optionals_present) {
+                if (is_optional &&
+                    (!options_.optionals_present || options_.absent.contains(path))) {
                     continue;
                 }
                 const TypeId tensor = is_optional ? data.elements.front() : type;

@@ -75,7 +75,8 @@ void print_usage(std::FILE* out) {
         "                                       root block and everything it uses\n"
         "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
         "            [--numerics exact|equivalent|fast]\n"
-        "            [--optionals present|absent] [--std <dir>] <file>\n"
+        "            [--optionals present|absent] [--absent <param>]...\n"
+        "            [--absent-file <file>] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments\n"
         "  onnx [same options as stablehlo] <file>\n"
@@ -327,7 +328,8 @@ int run_graph_export(std::span<const std::string_view> args,
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
-            arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload") {
+            arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload" ||
+            arg == "--absent" || arg == "--absent-file") {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
             }
@@ -340,6 +342,20 @@ int run_graph_export(std::span<const std::string_view> args,
                 export_options.root = value;
             } else if (arg == "--entry") {
                 export_options.entry = value;
+            } else if (arg == "--absent") {
+                export_options.absent.emplace(value);
+            } else if (arg == "--absent-file") {
+                // One path per line: a model can have hundreds (every attention
+                // projection without a bias), more than a command line should hold.
+                std::ifstream file{std::string(value)};
+                if (!file) {
+                    return usage_error("cannot read --absent-file " + std::string(value));
+                }
+                for (std::string line; std::getline(file, line);) {
+                    if (!line.empty()) {
+                        export_options.absent.insert(line);
+                    }
+                }
             } else if (arg == "--place" || arg == "--offload") {
                 // A block path, with or without its trailing `.`: `layers.3`.
                 const std::size_t equals = value.find('=');

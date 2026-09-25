@@ -284,8 +284,11 @@ class Interpreter:
                 assert result_type is not None
                 return [causal_mask(env.shape(result_type["shape"]), self.device)]
             if selected == "torch.nn.functional.conv2d":
-                assert result_type is not None
-                return [conv2d(operands, env.shape(result_type["shape"]))]
+                callee = self.plan.functions[attrs["callee"]]
+                callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
+                stride = self._generic_dim(callee, callee_env, "Stride")
+                pad = self._generic_dim(callee, callee_env, "Pad")
+                return [conv2d(operands, stride, pad)]
             if selected == "torch.nn.functional.interpolate(nearest)":
                 assert result_type is not None
                 return [upsample_nearest2d(operands, env.shape(result_type["shape"]))]
@@ -418,6 +421,14 @@ class Interpreter:
         )
         dims = tuple(range(first_new_axis, inner_grid.rank()))
         return REDUCTIONS[op["attrs"]["reduce"]](body, dims)
+
+    @staticmethod
+    def _generic_dim(callee: dict[str, Any], env: Env, name: str) -> int:
+        """A dimension generic of the callee, by name, as bound for this call."""
+        for generic in callee["generics"]:
+            if generic["name"] == name and generic["kind"] == "dim":
+                return int(env.dims[int(generic["sym"])])
+        raise PlanError(f"`{callee['name']}` has no dimension generic `{name}`")
 
     def _callee_env(
         self, callee: dict[str, Any], substitution: dict[str, Any], env: Env, operands: list[Value]
