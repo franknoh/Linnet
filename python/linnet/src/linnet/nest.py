@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import struct
 import sys
 import tomllib
 import urllib.request
@@ -249,23 +250,52 @@ def expand_paths(entry: ir.ManifestEntry, bindings: ir.Bindings) -> list[str]:
     return paths
 
 
+def hub_safetensors_header(repo: str, filename: str, revision: str | None = None) -> dict[str, Any]:
+    """The SafeTensors header of one file in a Hub repository.
+
+    Read with two ranged requests: the eight bytes holding the header's
+    length, then the header itself. No tensor data crosses the network.
+
+    `huggingface_hub.get_safetensors_metadata` would be the obvious call, but
+    it only knows the `transformers` naming (`model.safetensors` and its
+    index), so it cannot see a checkpoint named the way `diffusers` names
+    one. A card already says which files it means, so read those.
+    """
+    from huggingface_hub import hf_hub_url  # type: ignore[import-untyped]
+    from huggingface_hub.utils import get_session  # type: ignore[import-untyped]
+
+    url = hf_hub_url(repo, filename, revision=revision)
+    session = get_session()
+    prefix = session.get(url, headers={"Range": "bytes=0-7"}, timeout=30)
+    prefix.raise_for_status()
+    if prefix.status_code != 206 or len(prefix.content) != 8:
+        raise LinnetError(f"{repo}/{filename}: the Hub did not honour a ranged request")
+    (size,) = struct.unpack("<Q", prefix.content)
+    body = session.get(url, headers={"Range": f"bytes=8-{7 + size}"}, timeout=60)
+    body.raise_for_status()
+    return cast(dict[str, Any], json.loads(body.content.decode("utf-8")))
+
+
 def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> list[str]:
     assert card.weights is not None
     try:
-        from huggingface_hub import get_safetensors_metadata  # type: ignore[import-untyped]
+        import huggingface_hub  # type: ignore[import-untyped]  # noqa: F401
     except ImportError:
         return ["huggingface-hub is not installed (pip install 'linnet-lang[nest]')"]
-    try:
-        metadata: Any = get_safetensors_metadata(card.weights.repo, revision=card.weights.revision)
-    except Exception as error:  # any Hub failure is one problem
-        return [f"cannot read the checkpoint headers of {card.weights.repo}: {error}"]
-    files_metadata = cast(dict[str, Any], metadata.files_metadata)
     tensors: dict[str, tuple[tuple[int, ...], str]] = {}
     for filename in card.weights.files:
-        if filename not in files_metadata:
-            return [f"{card.weights.repo} has no file `{filename}`"]
-        for name, info in cast(dict[str, Any], files_metadata[filename].tensors).items():
-            tensors[str(name)] = (tuple(int(d) for d in info.shape), str(info.dtype))
+        try:
+            header = hub_safetensors_header(
+                card.weights.repo, filename, revision=card.weights.revision
+            )
+        except Exception as error:  # any Hub failure is one problem
+            return [f"cannot read the headers of {card.weights.repo}/{filename}: {error}"]
+        for name, info in header.items():
+            if name == "__metadata__":
+                continue
+            entry = cast(dict[str, Any], info)
+            shape = tuple(int(d) for d in cast(list[Any], entry["shape"]))
+            tensors[str(name)] = (shape, str(entry["dtype"]))
     mapping: dict[str, str] = {}
     bindings_path = card.bindings_path
     if bindings_path is not None:

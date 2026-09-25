@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 from pathlib import Path
 
 import pytest
@@ -135,3 +136,48 @@ def test_cli_check_and_index(
     out = tmp_path / "index.json"
     assert nest.main(["--std", str(STDLIB), "index", str(model_dir.parent), "-o", str(out)]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["models"][0]["name"] == "gpt2-tiny"
+
+
+def test_hub_headers_come_from_the_files_the_card_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A checkpoint named the way `diffusers` names one is still readable.
+
+    `huggingface_hub.get_safetensors_metadata` only looks for
+    `model.safetensors`, so the header is read directly, with two ranged
+    requests and no tensor data.
+    """
+    header = json.dumps(
+        {
+            "__metadata__": {"format": "pt"},
+            "decoder.conv_in.weight": {
+                "dtype": "F32",
+                "shape": [512, 4, 3, 3],
+                "data_offsets": [0, 24],
+            },
+        }
+    ).encode("utf-8")
+    blob = struct.pack("<Q", len(header)) + header + bytes(24)
+    asked: list[str] = []
+
+    class Response:
+        def __init__(self, content: bytes) -> None:
+            self.content = content
+            self.status_code = 206
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class Session:
+        def get(self, url: str, headers: dict[str, str], timeout: int) -> Response:
+            asked.append(headers["Range"])
+            first, last = (int(v) for v in headers["Range"][len("bytes=") :].split("-"))
+            return Response(blob[first : last + 1])
+
+    def url(repo: str, filename: str, revision: str | None = None) -> str:
+        return f"https://example.invalid/{repo}/{filename}"
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_url", url)
+    monkeypatch.setattr("huggingface_hub.utils.get_session", Session)
+
+    parsed = nest.hub_safetensors_header("org/repo", "diffusion_pytorch_model.safetensors")
+    assert parsed["decoder.conv_in.weight"]["shape"] == [512, 4, 3, 3]
+    assert asked == ["bytes=0-7", f"bytes=8-{7 + len(header)}"]
