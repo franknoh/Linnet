@@ -71,11 +71,12 @@ const DECODER_VIEWS: View[] = [
   { id: "memory", label: "Peak GPU memory", metric: () => "peak_vram_mib", speedup: false, unit: "GiB" },
 ];
 const OTHER_VIEWS: View[] = [
-  { id: "speedup", label: "Speed-up", metric: (m) => m.primary, speedup: true, unit: "×" },
+  { id: "latency", label: "Latency", metric: (m) => m.primary, speedup: false, unit: "ms" },
+  { id: "throughput", label: "Throughput", metric: () => "throughput_per_s", speedup: false, unit: "/s" },
   { id: "memory", label: "Peak GPU memory", metric: () => "peak_vram_mib", speedup: false, unit: "GiB" },
 ];
 const views = computed(() => (props.part === "decoders" ? DECODER_VIEWS : OTHER_VIEWS));
-const viewId = ref(props.part === "decoders" ? "decode" : "speedup");
+const viewId = ref(props.part === "decoders" ? "decode" : "latency");
 const view = computed(() => views.value.find((v) => v.id === viewId.value) ?? views.value[0]);
 
 const models = computed(() =>
@@ -100,6 +101,7 @@ function format(value: number, v: View): string {
   if (v.speedup) return `${value.toFixed(2)}×`;
   if (v.unit === "GiB") return `${value.toFixed(1)} GiB`;
   if (v.unit === "ms") return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ms`;
+  if (v.unit === "/s") return `${value >= 1000 ? value.toFixed(0) : value.toFixed(1)}/s`;
   return `${value.toFixed(0)} ${v.unit}`;
 }
 
@@ -117,9 +119,12 @@ const charts = computed(() => {
   return models.value.map((whole) => {
     const metric = v.metric(whole);
     // Rows that measured this, and rows that failed: never "not measured".
+    // A reserved pool (vLLM) and a deliberate cap (offloading) are settings,
+    // not memory a model needed: they are left out of the memory view.
+    const unlike = (r: Row) => v.unit === "GiB" && (r.key.includes("vllm") || r.key === "linnet-offload");
     const model = {
       ...whole,
-      rows: whole.rows.filter((r) => r.error || (metric !== null && metric in r.metrics)),
+      rows: whole.rows.filter((r) => !unlike(r) && (r.error || (metric !== null && metric in r.metrics))),
     };
     const reference = model.rows.find((r) => r.key === model.reference);
     const base = metric ? reference?.metrics[metric] : undefined;
@@ -136,20 +141,20 @@ const charts = computed(() => {
     // The best bar in the accent: speed-ups and rates are higher-is-better,
     // times and memory lower. A reserved pool is a setting, so it never wins.
     const lower = !v.speedup && (v.unit === "ms" || v.unit === "GiB");
-    const eligible = values.map((x, i) => (x !== null && !model.rows[i].error && !(v.unit === "GiB" && model.rows[i].key.includes("vllm")) ? x : null));
+    // The offloaded row runs under a cap by design and wins nothing.
+    const eligible = values.map((x, i) => (x !== null && !model.rows[i].error && model.rows[i].key !== "linnet-offload" ? x : null));
     const present = eligible.filter((x): x is number => x !== null);
     const target = present.length ? (lower ? Math.min(...present) : Math.max(...present)) : null;
     const bars = model.rows.map((row, i) => {
       const x = values[i];
-      const reserved = v.unit === "GiB" && row.key.includes("vllm");
-      return {
+            return {
         key: row.key,
         label: label(row),
         family: family(row),
         best: target !== null && eligible[i] === target,
         y: TOP + i * (BAR + GAP),
         width: x === null ? 0 : Math.max(2, scale(x)),
-        text: row.error ? "failed" : x === null ? "not measured" : format(x, v) + (reserved ? " reserved" : ""),
+        text: row.error ? "failed" : x === null ? "not measured" : format(x, v),
         hover: hover(row),
       };
     });
@@ -157,13 +162,13 @@ const charts = computed(() => {
       key: model.name,
       title: model.title,
       size: size(model.parameters),
-      what: v.speedup && model.primary ? `${PRIMARY_LABEL[model.primary] ?? model.primary}, over ${reference ? label(reference) : "eager"}` : "",
+      what: v.id === "latency" && model.primary ? `${PRIMARY_LABEL[model.primary] ?? model.primary}, batch 1` : v.id === "throughput" ? "items per second at the family's large batch" : "",
       href: `${NEST}${model.name}/benchmarks`,
       height: TOP + model.rows.length * (BAR + GAP) + 2,
       bars,
       baseline: v.speedup ? LABEL + scale(1) : null,
     };
-  });
+  }).filter((chart) => chart.bars.some((bar) => bar.width > 0)); // nothing measured: no card
 });
 
 // The table: every row of one model.
