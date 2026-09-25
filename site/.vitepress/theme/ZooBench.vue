@@ -30,11 +30,10 @@ const props = defineProps<{ part: "decoders" | "others" | "table" }>();
 const data = zoo as unknown as { date: string; environment: Record<string, string>; models: Model[] };
 const NEST = "https://nest.franknoh.dev/models/";
 
-type Family = "reference" | "torch" | "xla";
+type Family = "reference" | "linnet";
 
 function family(row: Row): Family {
-  if (row.kind !== "linnet") return "reference";
-  return row.key === "linnet-jax" || row.key === "linnet-onnx" ? "xla" : "torch";
+  return row.kind === "linnet" ? "linnet" : "reference";
 }
 
 const LABELS: Record<string, string> = {
@@ -72,11 +71,12 @@ const DECODER_VIEWS: View[] = [
   { id: "memory", label: "Peak GPU memory", metric: () => "peak_vram_mib", speedup: false, unit: "GiB" },
 ];
 const OTHER_VIEWS: View[] = [
-  { id: "speedup", label: "Speed-up", metric: (m) => m.primary, speedup: true, unit: "×" },
+  { id: "latency", label: "Latency", metric: (m) => m.primary, speedup: false, unit: "ms" },
+  { id: "throughput", label: "Throughput", metric: () => "throughput_per_s", speedup: false, unit: "/s" },
   { id: "memory", label: "Peak GPU memory", metric: () => "peak_vram_mib", speedup: false, unit: "GiB" },
 ];
 const views = computed(() => (props.part === "decoders" ? DECODER_VIEWS : OTHER_VIEWS));
-const viewId = ref(props.part === "decoders" ? "decode" : "speedup");
+const viewId = ref(props.part === "decoders" ? "decode" : "latency");
 const view = computed(() => views.value.find((v) => v.id === viewId.value) ?? views.value[0]);
 
 const models = computed(() =>
@@ -101,6 +101,7 @@ function format(value: number, v: View): string {
   if (v.speedup) return `${value.toFixed(2)}×`;
   if (v.unit === "GiB") return `${value.toFixed(1)} GiB`;
   if (v.unit === "ms") return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ms`;
+  if (v.unit === "/s") return `${value >= 1000 ? value.toFixed(0) : value.toFixed(1)}/s`;
   return `${value.toFixed(0)} ${v.unit}`;
 }
 
@@ -115,8 +116,16 @@ function hover(row: Row): string {
 
 const charts = computed(() => {
   const v = view.value;
-  return models.value.map((model) => {
-    const metric = v.metric(model);
+  return models.value.map((whole) => {
+    const metric = v.metric(whole);
+    // Rows that measured this, and rows that failed: never "not measured".
+    // A reserved pool (vLLM) and a deliberate cap (offloading) are settings,
+    // not memory a model needed: they are left out of the memory view.
+    const unlike = (r: Row) => v.unit === "GiB" && (r.key.includes("vllm") || r.key === "linnet-offload");
+    const model = {
+      ...whole,
+      rows: whole.rows.filter((r) => !unlike(r) && (r.error || (metric !== null && metric in r.metrics))),
+    };
     const reference = model.rows.find((r) => r.key === model.reference);
     const base = metric ? reference?.metrics[metric] : undefined;
     const value = (row: Row): number | null => {
@@ -129,16 +138,23 @@ const charts = computed(() => {
     const max = Math.max(1, ...values.filter((x): x is number => x !== null));
     const plot = WIDTH - LABEL - 78;
     const scale = (x: number) => (plot * x) / max;
+    // The best bar in the accent: speed-ups and rates are higher-is-better,
+    // times and memory lower. A reserved pool is a setting, so it never wins.
+    const lower = !v.speedup && (v.unit === "ms" || v.unit === "GiB");
+    // The offloaded row runs under a cap by design and wins nothing.
+    const eligible = values.map((x, i) => (x !== null && !model.rows[i].error && model.rows[i].key !== "linnet-offload" ? x : null));
+    const present = eligible.filter((x): x is number => x !== null);
+    const target = present.length ? (lower ? Math.min(...present) : Math.max(...present)) : null;
     const bars = model.rows.map((row, i) => {
       const x = values[i];
-      const reserved = v.unit === "GiB" && row.key === "vllm";
-      return {
+            return {
         key: row.key,
         label: label(row),
         family: family(row),
+        best: target !== null && eligible[i] === target,
         y: TOP + i * (BAR + GAP),
         width: x === null ? 0 : Math.max(2, scale(x)),
-        text: row.error ? "failed" : x === null ? "not measured" : format(x, v) + (reserved ? " reserved" : ""),
+        text: row.error ? "failed" : x === null ? "not measured" : format(x, v),
         hover: hover(row),
       };
     });
@@ -146,13 +162,13 @@ const charts = computed(() => {
       key: model.name,
       title: model.title,
       size: size(model.parameters),
-      what: v.speedup && model.primary ? `${PRIMARY_LABEL[model.primary] ?? model.primary}, over ${reference ? label(reference) : "eager"}` : "",
+      what: v.id === "latency" && model.primary ? `${PRIMARY_LABEL[model.primary] ?? model.primary}, batch 1` : v.id === "throughput" ? "items per second at the family's large batch" : "",
       href: `${NEST}${model.name}/benchmarks`,
       height: TOP + model.rows.length * (BAR + GAP) + 2,
       bars,
       baseline: v.speedup ? LABEL + scale(1) : null,
     };
-  });
+  }).filter((chart) => chart.bars.some((bar) => bar.width > 0)); // nothing measured: no card
 });
 
 // The table: every row of one model.
@@ -186,9 +202,9 @@ function diff(row: Row): string {
   <div v-if="part !== 'table'" class="zoo">
     <div class="zoo-bar">
       <span class="zoo-legend">
+        <i class="swatch swatch-best"></i> best in the chart
+        <i class="swatch swatch-linnet"></i> Linnet
         <i class="swatch swatch-reference"></i> existing stacks
-        <i class="swatch swatch-torch"></i> Linnet in PyTorch
-        <i class="swatch swatch-xla"></i> Linnet in XLA or ONNX Runtime
       </span>
       <span class="zoo-views" role="group" aria-label="What the bars show">
         <button
@@ -219,7 +235,7 @@ function diff(row: Row): string {
             :y1="0"
             :y2="chart.height"
           />
-          <g v-for="bar in chart.bars" :key="bar.key" :class="['zoo-row', `zoo-${bar.family}`]">
+          <g v-for="bar in chart.bars" :key="bar.key" :class="['zoo-row', `zoo-${bar.family}`, { 'zoo-best': bar.best }]">
             <title>{{ bar.hover }}</title>
             <rect class="zoo-hit" x="0" :y="bar.y - GAP / 2" :width="WIDTH" :height="BAR + GAP" />
             <text class="zoo-label" :x="LABEL - 8" :y="bar.y + BAR / 2 + 4" text-anchor="end">{{ bar.label }}</text>
@@ -291,14 +307,14 @@ function diff(row: Row): string {
 .swatch:first-child {
   margin-left: 0;
 }
+.swatch-best {
+  background: var(--bench-best);
+}
+.swatch-linnet {
+  background: var(--bench-linnet);
+}
 .swatch-reference {
-  background: var(--vp-c-text-3);
-}
-.swatch-torch {
-  background: var(--linnet-red);
-}
-.swatch-xla {
-  background: hsl(358 60% 34%);
+  background: var(--bench-reference);
 }
 .zoo-views {
   display: inline-flex;
@@ -388,13 +404,13 @@ function diff(row: Row): string {
   font-family: var(--vp-font-family-mono);
 }
 .zoo-reference .zoo-mark {
-  fill: var(--vp-c-text-3);
+  fill: var(--bench-reference);
 }
-.zoo-torch .zoo-mark {
-  fill: var(--linnet-red);
+.zoo-linnet .zoo-mark {
+  fill: var(--bench-linnet);
 }
-.zoo-xla .zoo-mark {
-  fill: hsl(358 60% 34%);
+.zoo-best .zoo-mark {
+  fill: var(--bench-best);
 }
 .zoo-table {
   margin: 1rem 0 2rem;
@@ -432,7 +448,7 @@ function diff(row: Row): string {
   min-width: 14rem;
 }
 tr.linnet td:first-child {
-  color: var(--linnet-red);
+  color: var(--vp-c-text-1);
   font-weight: 600;
 }
 </style>

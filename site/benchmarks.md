@@ -34,21 +34,23 @@ models (4.6 ms for Qwen2.5 0.5B, 11.7 ms under vLLM) and matches it at 8 B.
 
 The XLA path is not free. Its first token is three to four times slower than
 the PyTorch paths', and it currently holds the weights twice, once for the
-prompt and once for decoding, which is what its memory bars show; vLLM's
-memory is the KV-cache pool it reserves up front (85% of the GPU), a setting
-rather than a need. gpt-oss 20B's card has no KV-cache entries yet, so only
+prompt and once for decoding, which is what its memory bars show. The memory
+view leaves out two rows whose number is a setting rather than a need: vLLM
+reserves 85% of the GPU for its KV-cache pool before it runs, and the
+offloaded row is held under an 8 GiB cap on purpose; both are in the table. gpt-oss 20B's card has no KV-cache entries yet, so only
 its first token is timed.
 
 The offloaded rows run Llama 3.1 8B and Qwen3 8B on a GPU capped at 8 GiB:
 half the layers stay on the device and the rest stream in from host memory
 as they are needed (`device_map="auto", max_memory=...`). Llama peaks at
 9.1 GiB and decodes 5.7 tokens per second, bound by the host link, where
-otherwise it would not load at all.
+otherwise it would not load at all. It answers a different question from the
+other rows -- what a small GPU can do -- so it is never marked best.
 
 ### Encoders, vision, audio, and diffusion
 
-Bars are speed-ups over the eager reference (the dashed line is 1×). XLA
-gives the largest gains on encoders, where one compiled program replaces a
+Bars are raw numbers; in every chart the best one is red (the shortest
+where lower is better, the longest where higher is). XLA gives the largest gains on encoders, where one compiled program replaces a
 long chain of small kernels: 5.2× for BERT, 6.7× for ModernBERT, 3.0× for
 the Stable Diffusion VAE decoder, 2.8× for SAM's image encoder. On the
 larger convolutional and transformer blocks the paths come close to

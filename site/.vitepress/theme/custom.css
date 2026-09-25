@@ -46,10 +46,18 @@
   --vp-code-bg: hsl(0 0% 95%);
   --vp-code-color: hsl(0 0% 12%);
   --vp-c-default-soft: hsl(0 0% 94%);
+  /* Benchmark bars: Linnet dark gray, references light gray, the best bar of
+     each chart (by its metric's direction) in the accent. */
+  --bench-linnet: #3d4249;
+  --bench-reference: #aeb3bb;
+  --bench-best: #ed1d23;
 }
 
 /* Dark: franknoh.dev's surfaces. */
 .dark {
+  --bench-linnet: #4b5058;
+  --bench-reference: #a9aeb6;
+  --bench-best: #f0353b;
   --vp-c-bg: hsl(0 0% 2%);
   --vp-c-bg-alt: hsl(0 0% 4%);
   --vp-c-bg-soft: hsl(0 0% 6%);
