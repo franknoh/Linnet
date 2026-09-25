@@ -213,20 +213,23 @@ class LinnetFunction:
         # loaded weights go to the device once rather than per call.
         donated = self._donated(len(exported.in_avals), state_inputs, state_outputs)
         call = jax.jit(exported.call, donate_argnums=donated)
-        arrays = [_device_array(self._weights[path]) for path in paths]
-        if self.cast_dtype:
-            # The export declares each parameter's dtype; a floating array of
-            # another width is converted to it once, here, on the device.
-            first = len(exported.in_avals) - len(state_inputs) - len(paths)
-            declared = exported.in_avals[first : first + len(paths)]
-            arrays = [
-                array.astype(aval.dtype)
-                if array.dtype != aval.dtype
+        first = len(exported.in_avals) - len(state_inputs) - len(paths)
+        declared = exported.in_avals[first : first + len(paths)]
+        arrays: list[Any] = []
+        for path, aval in zip(paths, declared, strict=True):
+            array = _device_array(self._weights[path])
+            if (
+                self.cast_dtype
+                and array.dtype != aval.dtype
                 and jnp.issubdtype(array.dtype, jnp.floating)
                 and jnp.issubdtype(aval.dtype, jnp.floating)
-                else array
-                for array, aval in zip(arrays, declared, strict=True)
-            ]
+            ):
+                # The export declares each parameter's dtype; a floating array
+                # of another width is converted to it on the device, one at a
+                # time, so the uncast copy of only one parameter is ever there
+                # (all of them at once is a bf16 model's weights twice over).
+                array = array.astype(aval.dtype)
+            arrays.append(array)
         if self.share_weights:
             self._weights.update(zip(paths, arrays, strict=True))
         state_avals = dict(
