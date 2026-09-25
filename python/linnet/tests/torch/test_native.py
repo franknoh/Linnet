@@ -164,3 +164,63 @@ def test_the_erf_gelu_kernel_is_selected(tmp_path: Path) -> None:
     assert isinstance(model, CompiledLinnetModule)
     model.run_entry("exact_gelu", [torch.randn(2, 64)])
     assert 'F.gelu(in_x, approximate="none")' in model.generated_source("exact_gelu")
+
+
+SPAN_SOURCE = """\
+module tests.span
+
+use std.nn.cache::{write_at, write_span}
+
+pub block Cache<S: Dim, N: Dim, T: Float>
+where
+    S > 0,
+    N > 0
+{
+    pub entry span(cache: Tensor[1, 2, S, 4; T], value: Tensor[1, 2, N, 4; T], at: i32)
+        -> Tensor[1, 2, S, 4; T] {
+        return write_span(cache, value, at)
+    }
+
+    pub entry one(cache: Tensor[1, 2, S, 4; T], value: Tensor[1, 2, 1, 4; T], at: i32)
+        -> Tensor[1, 2, S, 4; T] {
+        return write_at(cache, value, at)
+    }
+}
+"""
+
+
+@pytest.mark.parametrize("numerics", ["exact", "equivalent"])
+@pytest.mark.parametrize("at", [0, 3, 6])
+def test_a_span_lands_where_a_slice_assignment_puts_it(
+    tmp_path: Path, numerics: str, at: int
+) -> None:
+    """A prefill writes the whole prompt into the cache at once; the canonical
+    select and the selected slice write must both leave every other position
+    alone. `at = 6` with four positions ends exactly at the cache's end."""
+    source = tmp_path / "span.linnet"
+    source.write_text(SPAN_SOURCE, encoding="utf-8")
+    model = load(source, generics={"S": 10, "N": 4, "T": "f32"}, std_root=STDLIB, numerics=numerics)
+    cache = torch.randn(1, 2, 10, 4)
+    value = torch.randn(1, 2, 4, 4)
+    expected = cache.clone()
+    expected[:, :, at : at + 4] = value
+    got = model.run_entry("span", [cache, value, torch.tensor(at, dtype=torch.int32)])
+    torch.testing.assert_close(got, expected, atol=0, rtol=0)
+    # One position is the special case it always was.
+    single = model.run_entry("one", [cache, value[:, :, :1], torch.tensor(at, dtype=torch.int32)])
+    expected_one = cache.clone()
+    expected_one[:, :, at] = value[:, :, 0]
+    torch.testing.assert_close(single, expected_one, atol=0, rtol=0)
+
+
+def test_the_span_write_is_a_slice_write(tmp_path: Path) -> None:
+    source = tmp_path / "span.linnet"
+    source.write_text(SPAN_SOURCE, encoding="utf-8")
+    model = load(source, generics={"S": 10, "N": 4, "T": "f32"}, std_root=STDLIB, compile=True)
+    assert isinstance(model, CompiledLinnetModule)
+    model.run_entry(
+        "span",
+        [torch.zeros(1, 2, 10, 4), torch.ones(1, 2, 4, 4), torch.tensor(2, dtype=torch.int32)],
+    )
+    text = model.generated_source("span")
+    assert "index_copy(2, " in text and "torch.arange(4, device=" in text

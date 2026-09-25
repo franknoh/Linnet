@@ -16,3 +16,27 @@ where S > 0 {
     let out[b, h, s, d] = select(positions[s] == at, value[b, h, 0, d], cache[b, h, s, d])
     return out
 }
+
+// `N` consecutive positions of a key/value cache, starting at `at`: what a
+// prefill writes, once per layer for the whole prompt rather than once per
+// token.
+//
+// Index notation cannot shift an index by `at`, so each cache position looks
+// its value up through an offset tensor, clamped to stay in range, and the
+// select keeps the cache outside `[at, at + N)`. A backend with a slice write
+// writes only the span.
+pub op write_span<B: Dim, H: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
+    cache: Tensor[B, H, S, D; T],
+    value: Tensor[B, H, N, D; T],
+    at: i32,
+) -> Tensor[B, H, S, D; T]
+where
+    S > 0,
+    N > 0
+{
+    let positions = iota<i32>(S)
+    let offset[s] = min(max(positions[s] - at, 0), cast<i32>(N) - 1)
+    let inside[s] = positions[s] >= at && positions[s] < at + cast<i32>(N)
+    let out[b, h, s, d] = select(inside[s], value[b, h, offset[s], d], cache[b, h, s, d])
+    return out
+}
