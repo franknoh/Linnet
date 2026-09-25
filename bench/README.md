@@ -56,3 +56,17 @@ JAX copy), which does not fit an 80 GB device at 8 B parameters in bf16.
 `results/latest.json` records the date, device, and library versions it was
 measured with. The published run was made on a RunPod cloud GPU from a clean
 checkout; see the `environment` field.
+
+## The model zoo's numbers
+
+The page's first half draws `results/zoo.json`: the measurements the model
+zoo ([franknoh/nest](https://github.com/franknoh/nest)) takes of every model
+it hosts, with real weights, against transformers, diffusers,
+sentence-transformers, and vLLM. They are taken there (`bench/run-all.sh`
+after `bench/setup-pod.sh`, on one GPU) and copied here with
+
+```bash
+python bench/zoo.py ../nest
+```
+
+which keeps only the rows the page draws.

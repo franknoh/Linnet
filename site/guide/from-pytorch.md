@@ -106,7 +106,7 @@ with `linnet.onnx.import_onnx`, JAX functions with `linnet.jax.export_linnet`.
 | Code and weights | entangled or by convention | separate by construction |
 | Other frameworks | rewrite or export a frozen graph | same source: `linnet stablehlo`, `linnet onnx`, `linnet.jax.load` |
 | Library code | opaque kernels | source in `stdlib/`, checked like yours |
-| Performance | native kernels | the same kernels from generated source (2.1 ms vs 2.7 ms for the compiled reference, small Llama on an H100), or XLA (0.66 ms); see [Benchmarks](/benchmarks) |
+| Performance | native kernels | the same kernels from generated source, replayable as CUDA graphs, or XLA (Llama 3.1 8B decodes at 165 tok/s on an H100, transformers compiled at 114); see [Benchmarks](/benchmarks) |
 | Refactoring | search and hope | rename through the language server; every use is typed |
 
 The trade: no Python inside the model and no data-dependent shapes. Loops

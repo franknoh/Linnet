@@ -1,8 +1,79 @@
 # Benchmarks
 
-What the compiler costs and what it saves, measured. Every row comes from
-`bench/run.py`; this page renders the JSON it writes
-(`bench/results/latest.json`).
+What the compiler costs and what it saves, measured. Two sets of numbers:
+24 real checkpoints from the [model zoo](https://nest.franknoh.dev), run
+against the stacks people already serve them with, and a synthetic Llama that
+isolates what the generated code itself costs. Nothing on this page is typed
+in by hand: the charts render `bench/results/zoo.json` and
+`bench/results/latest.json`.
+
+## Real models
+
+Every model in the zoo was measured on one H100 80GB (SXM) in `bf16` at
+batch 1, each method in a process of its own: transformers, diffusers,
+sentence-transformers, and vLLM beside Linnet's generated PyTorch, the same
+source replayed as CUDA graphs, XLA through `linnet.jax`, and ONNX Runtime
+through `linnet.onnx`. Decoders read a 512-token prompt and generate 128
+tokens greedily; the rest time one forward pass. Every Linnet output is
+checked against the reference stack's, and peak GPU memory is sampled from the
+driver. Each model's page in the zoo has the samples it produced and the full
+numbers.
+
+### Decoders
+
+From 1.7 B parameters up, Linnet under XLA decodes as fast as vLLM or faster:
+165 against 156 tokens per second for Llama 3.1 8B, 172 against 165 for
+Mistral 7B, 158 against 152 for Qwen3 8B, 268 against 250 for Phi-3 mini,
+where transformers decodes Llama at 114 compiled and 70 eager. Below that vLLM wins
+decisively (607 against 316 for Qwen2.5 0.5B): a step that small is bound by
+launching work, not by the arithmetic, and vLLM's runtime is built for
+exactly that. The CUDA graphs path has the shortest first token on small
+models (4.6 ms for Qwen2.5 0.5B, 11.7 ms under vLLM) and matches it at 8 B.
+
+<ZooBench part="decoders" />
+
+The XLA path is not free. Its first token is three to four times slower than
+the PyTorch paths', and it currently holds the weights twice, once for the
+prompt and once for decoding, which is what its memory bars show; vLLM's
+memory is the KV-cache pool it reserves up front (85% of the GPU), a setting
+rather than a need. gpt-oss 20B's card has no KV-cache entries yet, so only
+its first token is timed.
+
+The offloaded rows run Llama 3.1 8B and Qwen3 8B on a GPU capped at 8 GiB:
+half the layers stay on the device and the rest stream in from host memory
+as they are needed (`device_map="auto", max_memory=...`). Llama peaks at
+9.1 GiB and decodes 5.7 tokens per second, bound by the host link, where
+otherwise it would not load at all.
+
+### Encoders, vision, audio, and diffusion
+
+Bars are speed-ups over the eager reference (the dashed line is 1×). XLA
+gives the largest gains on encoders, where one compiled program replaces a
+long chain of small kernels: 5.2× for BERT, 6.7× for ModernBERT, 3.0× for
+the Stable Diffusion VAE decoder, 2.8× for SAM's image encoder. On the
+larger convolutional and transformer blocks the paths come close to
+`torch.compile` rather than ahead of it (SDXL's UNet: 1.22× against 1.36×),
+and Whisper large's encoder is slightly slower than eager.
+
+<ZooBench part="others" />
+
+Two ONNX rows failed and are shown as such: the SD VAE's export trips
+ONNX Runtime's CUDA `Concat`, and Whisper large is past the 2 GB a single
+ONNX file can hold without external data.
+
+### Every row
+
+<ZooBench part="table" />
+
+The zoo's `bench/run-all.sh` reproduces all of it on a fresh GPU machine,
+after `bench/setup-pod.sh`; `python bench/zoo.py <zoo checkout>` refreshes
+this page's copy.
+
+## The generated code
+
+A Llama-shaped model with random weights (`examples/05-llama`), timed by
+`bench/run.py` against a hand-written PyTorch implementation of the same
+architecture, shows what the generated code costs on its own.
 
 On an H100 the medium model (TinyLlama shape, `bf16`) runs a forward pass in
 7.2 ms as plain generated PyTorch — ahead of the 8.6 ms the hand-written
@@ -33,7 +104,7 @@ speed-up, and the largest difference from the reference.
 
 <BenchTable />
 
-## Setup
+### Setup
 
 The model is the Llama example (`examples/05-llama`) with random weights:
 
@@ -61,7 +132,7 @@ synchronized; throughput is tokens per second for `forward` and steps per
 second for `decode`. Outputs are compared against the eager reference and the
 largest difference is shown. Compile and load times are listed separately.
 
-## Reading the table
+### Reading the table
 
 The interpreted path pays a Python dispatch per Core IR operation on every
 call; the arithmetic is the same kernels, so the gap shrinks as the model
@@ -69,7 +140,7 @@ grows. Generated source removes that overhead and gives `torch.compile` a
 whole function to trace. The XLA path is one compiled program with static
 shapes and fused elementwise chains.
 
-## Reproducing
+### Reproducing
 
 ```bash
 cd python/linnet && uv sync --all-extras
