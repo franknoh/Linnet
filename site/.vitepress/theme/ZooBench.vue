@@ -26,7 +26,7 @@ interface Model {
   rows: Row[];
 }
 
-const props = defineProps<{ part: "decoders" | "others" | "table" }>();
+const props = defineProps<{ part: "decoders" | "serving" | "others" | "table" }>();
 const data = zoo as unknown as { date: string; environment: Record<string, string>; models: Model[] };
 const NEST = "https://nest.franknoh.dev/models/";
 
@@ -48,6 +48,16 @@ const LABELS: Record<string, string> = {
   "linnet-jax": "Linnet, XLA",
   "linnet-onnx": "Linnet, ONNX Runtime",
   "linnet-offload": "Linnet, offloaded",
+  "keras-hub": "KerasHub (JAX)",
+  "onnx-reference": "torch.onnx, ONNX Runtime",
+  "triton-onnx": "Triton, torch.onnx",
+  "triton-linnet-onnx": "Triton, Linnet ONNX",
+  "serve-vllm": "vLLM",
+  "serve-transformers": "transformers, batched",
+  "serve-keras-hub": "KerasHub, static batches",
+  "serve-triton-vllm": "Triton, vLLM backend",
+  "serve-linnet-torch": "Linnet serve, CUDA graphs",
+  "serve-linnet-jax": "Linnet serve, XLA",
 };
 const label = (row: Row) => LABELS[row.key] ?? row.method;
 
@@ -75,13 +85,26 @@ const OTHER_VIEWS: View[] = [
   { id: "throughput", label: "Throughput", metric: () => "throughput_per_s", speedup: false, unit: "/s" },
   { id: "memory", label: "Peak GPU memory", metric: () => "peak_vram_mib", speedup: false, unit: "GiB" },
 ];
-const views = computed(() => (props.part === "decoders" ? DECODER_VIEWS : OTHER_VIEWS));
-const viewId = ref(props.part === "decoders" ? "decode" : "latency");
+const SERVING_VIEWS: View[] = [
+  { id: "serve", label: "Throughput", metric: () => "serve_tok_s", speedup: false, unit: "tok/s" },
+  { id: "serve_ttft", label: "Time to first token", metric: () => "serve_ttft_ms", speedup: false, unit: "ms" },
+  { id: "memory", label: "Peak GPU memory", metric: () => "peak_vram_mib", speedup: false, unit: "GiB" },
+];
+const views = computed(() =>
+  props.part === "decoders" ? DECODER_VIEWS : props.part === "serving" ? SERVING_VIEWS : OTHER_VIEWS,
+);
+const viewId = ref(props.part === "decoders" ? "decode" : props.part === "serving" ? "serve" : "latency");
 const view = computed(() => views.value.find((v) => v.id === viewId.value) ?? views.value[0]);
 
 const models = computed(() =>
   data.models
-    .filter((m) => (props.part === "decoders" ? m.task === "decoder" : m.task !== "decoder"))
+    .filter((m) => (props.part === "others" ? m.task !== "decoder" : m.task === "decoder"))
+    // Serving rows (`serve-*`) are their own section; the others, single requests.
+    .map((m) => ({
+      ...m,
+      rows: m.rows.filter((r) => (props.part === "serving") === r.key.startsWith("serve-")),
+    }))
+    .filter((m) => m.rows.length > 0)
     .sort((a, b) => (a.parameters ?? 0) - (b.parameters ?? 0)),
 );
 
@@ -121,7 +144,9 @@ const charts = computed(() => {
     // Rows that measured this, and rows that failed: never "not measured".
     // A reserved pool (vLLM) and a deliberate cap (offloading) are settings,
     // not memory a model needed: they are left out of the memory view.
-    const unlike = (r: Row) => v.unit === "GiB" && (r.key.includes("vllm") || r.key === "linnet-offload");
+    const unlike = (r: Row) =>
+      v.unit === "GiB" &&
+      (r.key === "linnet-offload" || /reserv\w* .*pool|pool .*reserv|gpu_memory_utilization/i.test(r.notes));
     const model = {
       ...whole,
       rows: whole.rows.filter((r) => !unlike(r) && (r.error || (metric !== null && metric in r.metrics))),
