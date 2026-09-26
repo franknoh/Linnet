@@ -96,9 +96,10 @@ linnet check model.linnet        # shapes, dtypes, index domains — nothing run
 | Generated code | `load(..., compile="inductor")` or `linnet.jax.load_source(...)` | training and serving inside a framework |
 | Compiled graph | `linnet stablehlo`, `linnet onnx` | XLA, ONNX Runtime, other consumers |
 
-On one H100, Llama 3.1 8B decodes at 165 tokens per second through XLA
-(vLLM: 156, transformers compiled: 114), and BERT's forward pass runs 5.2×
-faster than in transformers. Every model in the zoo, and where Linnet loses, is
+On one H100, Llama 3.1 8B decodes one request at 170 tokens per second
+through XLA (vLLM: 158, transformers compiled: 103), and BERT's forward pass
+takes 0.85 ms against 3.65 in transformers; serving many requests at once,
+vLLM is still well ahead. Every model in the zoo, and where Linnet loses, is
 on the [benchmarks](/benchmarks) page.
 
 ## At a glance

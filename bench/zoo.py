@@ -57,7 +57,7 @@ def collect(nest: Path) -> dict[str, object]:
                 {
                     "key": method["key"],
                     "method": method["method"],
-                    "kind": "linnet" if method["key"].startswith("linnet") else "reference",
+                    "kind": "linnet" if "linnet" in method["key"] else "reference",
                     "metrics": metrics,
                     "max_abs_diff": method.get("max_abs_diff"),
                     "notes": method.get("notes") or "",
