@@ -92,8 +92,20 @@ with. No graph embeds the weights: they go to the device once, as
 a step entry share one copy, and a model past ONNX's 2 GB file limit loads
 all the same. The block's state stays on the device between calls.
 `linnet.serve.Engine` takes such a model, and `nest.load(...,
-backend="onnx_model")` loads a zoo card this way. ONNX Runtime's CPU
-kernels have no `bf16` arithmetic; use `f16` or `f32` there.
+backend="onnx_model")` loads a zoo card this way.
+
+An entry without state (an encoder's, a classifier's) takes the weights as
+initializers instead, from the same host copy, so ONNX Runtime can fold
+what reads only weights, such as a batch norm into its convolution. On
+CUDA, every session allocates from one shared arena.
+
+`model.place(array, "f16")` puts an input on the device once, for a call
+that repeats; `run_entry(..., keep_on_device=True)` leaves the results there
+as `OrtValue`s. `providers` takes what `InferenceSession` does, TensorRT's
+`(name, options)` pairs included. Operations ONNX Runtime has no `bf16`
+kernel for (contractions, convolution, pooling, reductions) run in `f32`
+and round back; its CPU kernels have no `bf16` arithmetic at all, so use
+`f16` or `f32` there.
 
 ## Tests
 

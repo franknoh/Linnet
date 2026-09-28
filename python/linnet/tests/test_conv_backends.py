@@ -164,3 +164,9 @@ def test_onnx_runtime_folds_batch_norm_into_the_convolution(tmp_path: Path) -> N
     )
     got = model.run_entry("forward", [x.numpy()])
     np.testing.assert_allclose(got, expected.numpy(), atol=1e-5, rtol=1e-5)
+    # An input placed once, as a benchmark or a server keeps one, is bound
+    # as it is.
+    placed = model.run_entry("forward", [model.place(x.numpy(), "f32")])
+    np.testing.assert_array_equal(placed, got)
+    kept = model.run_entry("forward", [x.numpy()], keep_on_device=True)
+    np.testing.assert_array_equal(kept.numpy(), got)
