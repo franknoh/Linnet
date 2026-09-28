@@ -196,8 +196,8 @@ def test_xla(source: Path, target: str) -> None:
 
 
 def test_onnx(source: Path, tmp_path: Path) -> None:
-    """ONNX takes the canonical bodies (a scatter and a per-sequence mask are
-    not lowered to its operators yet); they must still be right."""
+    """Cache writes become ONNX's ScatterND; a per-sequence mask takes the
+    canonical body. Both must be right."""
     onnxruntime = pytest.importorskip("onnxruntime")
     from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
@@ -219,3 +219,28 @@ def test_onnx(source: Path, tmp_path: Path) -> None:
     feeds = dict(zip(names, [case["value"], case["at"], case["query"], cache], strict=True))
     got = session.run(None, feeds)[0]
     np.testing.assert_allclose(got, mixed, atol=1e-5, rtol=1e-5)
+    # Every cache write is one ScatterND, not a pass over the whole cache.
+    assert any(node.op_type == "ScatterND" for node in exported.model.graph.node)
+    rng = np.random.default_rng(2)
+    one = rng.standard_normal((1, 2, 3, 4)).astype(np.float32)
+    two = rng.standard_normal((2, 2, 3, 4)).astype(np.float32)
+    for entry, inputs, expected in [
+        ("store", [one, np.array(2, np.int32), np.array(1, np.int32)], {2: one[0]}),
+        (
+            "store_many",
+            [two, np.array([2, 0], np.int32), np.array(1, np.int32)],
+            {2: two[0], 0: two[1]},
+        ),
+    ]:
+        exported = export_model(
+            source, generics=GENERICS, weights=weights, std_root=STDLIB, entry=entry
+        )
+        session = onnxruntime.InferenceSession(
+            exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
+        )
+        names = [i.name for i in session.get_inputs()]
+        feeds = dict(zip(names, [*inputs, np.zeros((3, 2, 8, 4), np.float32)], strict=True))
+        want = np.zeros((3, 2, 8, 4), np.float32)
+        for row, values in expected.items():
+            want[row, :, 1:4] = values
+        np.testing.assert_allclose(session.run(None, feeds)[0], want, atol=1e-6)
