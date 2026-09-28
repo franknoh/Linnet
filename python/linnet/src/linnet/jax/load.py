@@ -102,6 +102,10 @@ class LinnetFunction:
         # there, and the state an entry replaces is donated to it.
         self.share_weights = False
         self.donate_state = False
+        # Set by `LinnetModel` (inference only): weight-only work runs once, in
+        # `prepare`, its results kept here by key and shared across entries.
+        self.prepare_weights = False
+        self.prepared: dict[str, Any] = {}
         self._check_weights(manifest)
 
     def _export(self, target: str, bindings: Mapping[str, int | str]) -> str:
@@ -111,6 +115,8 @@ class LinnetFunction:
         that the set is known and reused."""
         arguments = [target, "--root", self.root, "--entry", self.entry]
         arguments += ["--numerics", self.numerics, "--optionals", "present"]
+        if target == "jax" and self.prepare_weights:
+            arguments.append("--prepare")
         for name, value in bindings.items():
             arguments += ["--bind", f"{name}={value}"]
 

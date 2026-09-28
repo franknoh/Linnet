@@ -76,3 +76,34 @@ where
     let out[b, h, s, d] = select(inside[b, s], value[0, h, offset[s], d], cache[b, h, s, d])
     return out
 }
+
+// `N` consecutive positions from `at` in each of `M` rows, `slots[m]`: the
+// prompts of several requests written into their rows of a shared cache in
+// one pass. The slots must be distinct.
+pub op write_slots<B: Dim, H: Dim, S: Dim, M: Dim, N: Dim, D: Dim, T: Float>(
+    cache: Tensor[B, H, S, D; T],
+    value: Tensor[M, H, N, D; T],
+    slots: Tensor[M; i32],
+    at: i32,
+) -> Tensor[B, H, S, D; T]
+where
+    S > 0,
+    N > 0,
+    M > 0
+{
+    let rows = iota<i32>(B)
+    let positions = iota<i32>(S)
+    let offset[s] = min(max(positions[s] - at, 0), cast<i32>(N) - 1)
+    let inside[s] = positions[s] >= at && positions[s] < at + cast<i32>(N)
+    // Which of the `M` written rows is row `b`, or `M` when none is.
+    let hits[b, m] = cast<i32>(slots[m] == rows[b])
+    let chosen[b] = sum<i32>[m] hits[b, m] * cast<i32>(iota<i64>(M)[m])
+    let written[b] = (sum<i32>[m] hits[b, m]) > 0
+    let source[b] = cast<i64>(min(chosen[b], cast<i32>(M) - 1))
+    let out[b, h, s, d] = select(
+        written[b] && inside[s],
+        value[source[b], h, offset[s], d],
+        cache[b, h, s, d],
+    )
+    return out
+}

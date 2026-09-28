@@ -74,6 +74,8 @@ std::string real_text(double value) {
 // The generated module: straight-line `jax.numpy` over static shapes.
 class JaxTarget : public GraphTarget {
 public:
+    explicit JaxTarget(bool prepare) : prepare_(prepare) {}
+
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
@@ -347,6 +349,14 @@ public:
                               ")[None, :], " + name(2) + ".astype(jnp.int32)[:, None]].set(" +
                               name(1) + "[:, :, 0])");
             }
+            if (at[2] != nullptr && !at[2]->shape.empty()) {
+                // `write_slots`: a span in each of several rows, a scatter.
+                return define(name(0) + ".at[" + name(2) + ".astype(jnp.int32)[:, None, None], " +
+                              "jnp.arange(" + std::to_string(at[0]->shape[1]) +
+                              ")[None, :, None], (" + name(3) + ".astype(jnp.int32) + jnp.arange(" +
+                              std::to_string(at[1]->shape[2]) + "))[None, None, :]].set(" +
+                              name(1) + ")");
+            }
             // `write_slot`: one row's span, a slice write.
             return define("jax.lax.dynamic_update_slice(" + name(0) + ", " + name(1) + ", (" +
                           name(2) + ".astype(jnp.int32), jnp.int32(0), " + name(3) +
@@ -421,6 +431,8 @@ public:
             const std::string k = define("jnp.swapaxes(" + f32(1) + ", 1, 2)");
             const std::string v = define("jnp.swapaxes(" + f32(2) + ", 1, 2)");
             std::string mask;
+            // cuDNN takes a causal or no mask; an explicit mask stays with XLA.
+            const bool cudnn = at[4] == nullptr || causal_masks_.contains(at[4]->name);
             if (at[4] != nullptr && causal_masks_.contains(at[4]->name)) {
                 mask = ", is_causal=True";
             } else if (at[4] != nullptr) {
@@ -428,8 +440,10 @@ public:
                 mask =
                     ", mask=" + name(4) + (at[4]->shape.size() == 3 ? "[:, None]" : "[None, None]");
             }
+            const std::string kernel =
+                cudnn ? ", implementation=_attention_kernel(" + q + ".dtype)" : std::string();
             const std::string mixed = define("jax.nn.dot_product_attention(" + q + ", " + k + ", " +
-                                             v + ", scale=" + scalar(3) + mask + ")");
+                                             v + ", scale=" + scalar(3) + mask + kernel + ")");
             return define(back("jnp.swapaxes(" + mixed + ", 1, 2)", 0));
         }
         return std::nullopt;
@@ -504,7 +518,15 @@ public:
                           "# order. Linnet's `i64` needs 64-bit integers enabled.\n"
                           "import jax\n"
                           "import jax.numpy as jnp\n\n"
-                          "jax.config.update(\"jax_enable_x64\", True)\n\n";
+                          "jax.config.update(\"jax_enable_x64\", True)\n\n"
+                          "\n"
+                          "def _attention_kernel(dtype):\n"
+                          "    # cuDNN's fused attention on a GPU for 16-bit inputs, XLA's own\n"
+                          "    # elsewhere (CPU, f32), where cuDNN has no kernel.\n"
+                          "    if jax.default_backend() == \"gpu\" and dtype in (jnp.bfloat16, "
+                          "jnp.float16):\n"
+                          "        return \"cudnn\"\n"
+                          "    return None\n\n";
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
         std::vector<std::string> next_states;
@@ -513,12 +535,7 @@ public:
             next_states.push_back(path);
         }
         out += "NEXT_STATES = " + string_list(next_states) + "\n";
-        out += "RESULTS = " + std::to_string(results.size()) + "\n\n\n";
-        out += "def main(";
-        for (std::size_t i = 0; i < arguments_.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments_[i];
-        }
-        out += "):\n";
+        out += "RESULTS = " + std::to_string(results.size()) + "\n";
         std::string tail = "    return (";
         std::vector<std::string> outputs;
         outputs.reserve(results.size() + states.size());
@@ -531,12 +548,39 @@ public:
         for (std::size_t i = 0; i < outputs.size(); ++i) {
             tail += (i == 0 ? "" : ", ") + outputs[i];
         }
-        out += prune_python_assignments(body_, tail);
-        out += tail + (outputs.size() == 1 ? ",)\n" : ")\n");
+        tail += outputs.size() == 1 ? ",)\n" : ")\n";
+        // Weight-only work, run once per loaded model (`--prepare`).
+        PreparedSplit prepared;
+        prepared.body = prune_python_assignments(body_, tail);
+        if (prepare_) {
+            prepared = split_prepared(prepared.body, tail, parameters_, "");
+        }
+        if (!prepared.outputs.empty()) {
+            out += "PREPARED = " + string_list(prepared.keys) + "\n";
+            out += "PREPARE_INPUTS = " + string_list(prepared.inputs) + "\n\n\n";
+            out += "def prepare(";
+            for (std::size_t i = 0; i < prepared.inputs.size(); ++i) {
+                out += (i == 0 ? "" : ", ") + prepared.inputs[i];
+            }
+            out += "):\n" + prepared.prepare + "    return (";
+            for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
+                out += (i == 0 ? "" : ", ") + prepared.outputs[i];
+            }
+            out += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
+        }
+        out += "\n\ndef main(";
+        std::vector<std::string> arguments = arguments_;
+        arguments.insert(arguments.end(), prepared.outputs.begin(), prepared.outputs.end());
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            out += (i == 0 ? "" : ", ") + arguments[i];
+        }
+        out += "):\n" + prepared.body + tail;
         return out;
     }
 
 private:
+    bool prepare_ = false; // split weight-only work into `prepare`
+
     struct Loop {
         std::size_t id = 0;
         std::vector<TensorInfo> initial;
@@ -729,7 +773,7 @@ private:
 
 std::expected<std::string, std::string> export_jax_source(ir::Module& module,
                                                           const JaxSourceOptions& options) {
-    JaxTarget target;
+    JaxTarget target(options.prepare);
     return export_graph(module, options, target);
 }
 

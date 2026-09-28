@@ -44,6 +44,8 @@ class LinnetModel:
             if f["kind"] == "entry" and f["block"] == root
         ]
         self.state: dict[str, Any] = {}
+        # Weight-only values (`prepare`), shared by every entry by key.
+        self._prepared: dict[str, Any] = {}
 
     def _function(self, name: str) -> LinnetFunction:
         if name not in self._functions:
@@ -64,6 +66,9 @@ class LinnetModel:
             )
             function.share_weights = True
             function.donate_state = True
+            if self._generated:
+                function.prepare_weights = True
+                function.prepared = self._prepared
             # Which optional parameters the weights lack is the same for every
             # entry; the first export found it.
             known = [f.absent for f in self._functions.values() if f.absent is not None]

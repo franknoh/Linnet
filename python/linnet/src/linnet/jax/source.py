@@ -63,10 +63,11 @@ class SourceFunction(LinnetFunction):
             len(compiled.exported.in_avals), compiled.state_inputs, compiled.state_outputs
         )
         jitted = jax.jit(module.main, donate_argnums=donated)
+        prepared = self._prepared_values(module, compiled.arrays)
 
         def call(*arguments: Any) -> Any:
             # A lone result is returned bare, as the StableHLO path does.
-            outputs = jitted(*arguments)
+            outputs = jitted(*arguments, *prepared)
             return outputs[0] if len(outputs) == 1 else outputs
 
         compiled.call = call
@@ -74,6 +75,19 @@ class SourceFunction(LinnetFunction):
         for name, array in zip(compiled.parameters, compiled.arrays, strict=True):
             self.parameters.setdefault(name, array)
         return compiled
+
+    def _prepared_values(self, module: Any, arrays: list[Any]) -> list[Any]:
+        """The entry's weight-only values (`prepare`), computed once and kept
+        by key in `self.prepared`, which `LinnetModel` shares across entries."""
+        keys = list(getattr(module, "PREPARED", []))
+        if not keys:
+            return []
+        if not all(key in self.prepared for key in keys):
+            inputs = [arrays[int(name[1:])] for name in module.PREPARE_INPUTS]
+            values = jax.jit(module.prepare)(*inputs)
+            for key, value in zip(keys, values, strict=True):
+                self.prepared.setdefault(key, value)
+        return [self.prepared[key] for key in keys]
 
     def generated_source(self) -> str:
         """The JAX source of the most recently compiled entry."""

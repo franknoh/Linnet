@@ -444,7 +444,8 @@ public:
             return emit("dynamic_update_slice", arguments, "", shape, dtype);
         }
         if (implementation == "torch.Tensor.index_put" && operands.size() == 4 &&
-            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr) {
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr &&
+            at[2]->shape.empty()) {
             // `write_slot`: one row's span as a `dynamic_update_slice`.
             // (`write_rows` would be a scatter; its canonical select stands.)
             Literal zero;

@@ -23,7 +23,7 @@ SOURCE = """\
 module tests.serve
 
 use std.nn.attention::{causal_mask, grouped_attention, grouped_attention_rows}
-use std.nn.cache::{write_rows, write_slot}
+use std.nn.cache::{write_rows, write_slots}
 use std.nn.embedding::{Embedding}
 use std.nn.linear::{Linear}
 
@@ -56,29 +56,30 @@ where
         return head.forward(x + merge<1, S>(mixed))
     }
 
-    pub entry prefill_slot<S: Dim>(
-        tokens: Tensor[1, S; i32],
-        slot: i32,
-        length: i32,
-    ) -> Tensor[1, Vocab; T]
+    pub entry prefill_slots<M: Dim, S: Dim>(
+        tokens: Tensor[M, S; i32],
+        slots: Tensor[M; i32],
+        lengths: Tensor[M; i32],
+    ) -> Tensor[M, Vocab; T]
     where
+        M > 0,
         S > 0,
         S <= MaxSeq
     {
         let x = embedding.forward(tokens) + positions.forward(iota<i32>(S))
-        let k = heads<1, S>(k_proj.forward(x))
-        let v = heads<1, S>(v_proj.forward(x))
-        cache_k = write_slot(cache_k, k, slot, 0)
-        cache_v = write_slot(cache_v, v, slot, 0)
+        let k = heads<M, S>(k_proj.forward(x))
+        let v = heads<M, S>(v_proj.forward(x))
+        cache_k = write_slots(cache_k, k, slots, 0)
+        cache_v = write_slots(cache_v, v, slots, 0)
         let mixed = grouped_attention(
-            heads<1, S>(q_proj.forward(x)),
+            heads<M, S>(q_proj.forward(x)),
             k,
             v,
             rsqrt(cast<f32>(H / Heads)),
             some(causal_mask<S, S>()),
         )
-        let out = x + merge<1, S>(mixed)
-        let last[b, h] = out[b, cast<i64>(length) - 1, h]
+        let out = x + merge<M, S>(mixed)
+        let last[b, h] = out[b, cast<i64>(lengths[b]) - 1, h]
         return head.forward(last)
     }
 
@@ -170,8 +171,9 @@ def test_torch(model_files: tuple[Path, Path]) -> None:
     model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
     requests = _requests()
     done, stats = Engine(model, graphs=False, buckets=[8, 16, 32]).run(requests)
-    # Eight requests through three rows: some had to wait for a row.
-    assert stats.prefills == len(requests) and max(c.admitted for c in done) > 0
+    # Eight requests through three rows: some had to wait for a row, and the
+    # first three prompts went through together (a pass of two and one of one).
+    assert stats.prefills < len(requests) and max(c.admitted for c in done) > 0
     for completion in done:
         assert completion.tokens == _greedy(model, completion.request)
         assert completion.reason == "length"
@@ -203,7 +205,7 @@ def test_jax(model_files: tuple[Path, Path]) -> None:
     for completion in done:
         assert completion.tokens == _greedy(torch_model, completion.request)
     # One copy of each weight, shared by every entry the engine ran.
-    first = model._function("prefill_slot")  # pyright: ignore[reportPrivateUsage]
+    first = model._function("prefill_slots")  # pyright: ignore[reportPrivateUsage]
     second = model._function("decode_rows")  # pyright: ignore[reportPrivateUsage]
     shared = [
         path

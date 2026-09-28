@@ -25,20 +25,28 @@ drives two entries, which every decoder in the zoo has:
 
 | Entry | Does |
 | --- | --- |
-| `prefill_slot<S>(tokens: [1, S], slot, length) -> [1, Vocab]` | writes one prompt into row `slot` of the KV caches; `tokens` is padded to one of a few compiled lengths and `length` says where the prompt ends |
+| `prefill_slots<M, S>(tokens: [M, S], slots: [M], lengths: [M]) -> [M, Vocab]` | writes `M` prompts into rows `slots` of the KV caches in one pass; each row of `tokens` is padded to one of a few compiled lengths and `lengths` says where each prompt ends |
 | `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]` | one token for every row, each at its own position |
 
-They are built from `std.nn.cache::write_slot` and `write_rows` (a cache
+They are built from `std.nn.cache::write_slots` and `write_rows` (a cache
 row written at each sequence's own position) and
 `std.nn.attention::grouped_attention_rows` (a mask per sequence). The
 caches are fixed slots sized by the model's `Batch` and `MaxSeq` generics,
 so `Batch` is the most requests in flight and `MaxSeq` the longest prompt
 plus completion; there is no paging. The generated PyTorch writes the
-caches in place, the step is replayed as a CUDA graph, and prompts run as
-generated source; with `linnet.jax.load_model` (or `nest.load(...,
-backend="jax_model")`) both entries are XLA programs over one copy of the
-weights, with the caches donated so XLA updates them in place. Decoding is
-greedy.
+caches in place, the step is replayed as a CUDA graph, and waiting prompts
+go through in passes of up to 8, each padded to its longest; with
+`linnet.jax.load_model` (or `nest.load(..., backend="jax_model")`) both
+entries are XLA programs over one copy of the weights, with the caches
+donated so XLA updates them in place. Decoding is greedy.
+
+Work that reads nothing but weights -- dequantizing a quantized
+checkpoint, say -- runs once when a model is loaded for inference, not on
+every call: `linnet torch --prepare` and `linnet jax --prepare` move it
+into a `prepare` function, and the runtime shares each result across the
+entries that compute it. A weight seen through views and casts is not
+prepared, since that would only copy it; a model loaded with
+`trainable=True` keeps the work in the graph, where gradients reach it.
 
 ## Triton Inference Server
 

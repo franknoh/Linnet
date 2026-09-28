@@ -82,11 +82,13 @@ void print_usage(std::FILE* out) {
         "  onnx [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
         "  torch [same options as stablehlo] [--place <block>=<slot>]...\n"
-        "        [--offload <block>]... <file>\n"
+        "        [--offload <block>]... [--prepare] <file>\n"
         "                                       Print an entry as PyTorch source; --place\n"
-        "                                       runs a block on a device slot and --offload\n"
-        "                                       streams its parameters in from the host\n"
-        "  jax [same options as stablehlo] <file>\n"
+        "                                       runs a block on a device slot, --offload\n"
+        "                                       streams its parameters in from the host,\n"
+        "                                       and --prepare moves weight-only work into\n"
+        "                                       a `prepare` function run once at load\n"
+        "  jax [same options as stablehlo] [--prepare] <file>\n"
         "                                       Print an entry as JAX source\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
@@ -395,6 +397,8 @@ int run_graph_export(std::span<const std::string_view> args,
                 export_options.bindings[std::string(value.substr(0, equals))] =
                     std::string(value.substr(equals + 1));
             }
+        } else if (arg == "--prepare" && (format == "torch" || format == "jax")) {
+            export_options.prepare = true;
         } else if (arg.starts_with("-")) {
             return usage_error("unknown " + std::string(format) + " option '" + std::string(arg) +
                                "'");

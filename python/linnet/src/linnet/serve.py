@@ -4,15 +4,16 @@ length, joining the batch as soon as a row is free and leaving it when done.
 A decoder that serves this way has two entries (the zoo's decoder cards
 all do):
 
-- `prefill_slot<S>(tokens: [1, S], slot, length) -> [1, Vocab]` writes one
-  request's prompt into row `slot` of its KV caches and returns the logits
-  after the prompt's last token;
+- `prefill_slots<M, S>(tokens: [M, S], slots: [M], lengths: [M]) -> [M, Vocab]`
+  writes `M` requests' prompts into rows `slots` of its KV caches in one pass
+  and returns the logits after each prompt's last token;
 - `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]`
   advances every row by one token, each at its own position.
 
 `Engine` schedules requests over them. Between two decoding steps it admits
-waiting requests into free rows (one prompt pass each, padded to one of a
-few compiled lengths), then takes one step for the whole batch; a request
+waiting requests into free rows -- their prompts in passes of up to 8, each
+pass padded to one of a few compiled lengths -- then takes one step for the
+whole batch; a request
 leaves when it reaches its token budget, an end-of-sequence token, or the
 cache's length. Rows are fixed slots of a cache sized by the model's `Batch`
 and `MaxSeq` generics -- no paging -- so `Batch` is the most requests in
@@ -81,7 +82,7 @@ class Stats:
     generated_tokens: int
     seconds: float
     steps: int
-    prefills: int
+    prefills: int  # prompt passes, each of one or more prompts
 
     @property
     def tokens_per_second(self) -> float:
@@ -92,7 +93,9 @@ class _Backend(Protocol):
     slots: int
     max_seq: int
 
-    def prefill(self, tokens: list[int], slot: int, length: int) -> int: ...
+    def prefill(
+        self, tokens: list[list[int]], slots: list[int], lengths: list[int]
+    ) -> list[int]: ...
     def decode(self, tokens: list[int], positions: list[int]) -> list[int]: ...
 
 
@@ -100,10 +103,11 @@ class Engine:
     """Continuous batching over a loaded decoder (see the module docs).
 
     `model` is a `linnet.torch` module or a `linnet.jax.LinnetModel` with
-    `prefill_slot` and `decode_rows` entries. `buckets` are the prompt
-    lengths compiled (each prompt is padded to the smallest that holds it);
-    by default powers of two from 16 up to `MaxSeq`. `graphs=True` replays
-    the PyTorch step as a CUDA graph.
+    `prefill_slots` and `decode_rows` entries. `buckets` are the prompt
+    lengths compiled (a pass is padded to the smallest that holds its longest
+    prompt): by default 16, 32, 64, then every 128 up to `MaxSeq`. Prompts are
+    passed `max_group` at a time at most, in groups of powers of two, each a
+    compiled shape. `graphs=True` replays the PyTorch step as a CUDA graph.
     """
 
     def __init__(
@@ -113,18 +117,20 @@ class Engine:
         buckets: Sequence[int] | None = None,
         graphs: bool = True,
         pad: int = 0,
+        max_group: int = 8,
     ) -> None:
         self.backend: _Backend = _backend_for(model, graphs)
         limit = self.backend.max_seq
         if buckets is None:
-            buckets = []
-            length = 16
+            buckets = [16, 32, 64]
+            length = 128
             while length < limit:
                 buckets.append(length)
-                length *= 2
+                length += 128
             buckets.append(limit)
-        self.buckets = sorted(b for b in buckets if b <= limit)
+        self.buckets = sorted({b for b in buckets if b <= limit})
         self.pad = pad
+        self.max_group = max(1, max_group)
 
     @property
     def slots(self) -> int:
@@ -135,7 +141,10 @@ class Engine:
         the first requests do not pay for it."""
         lengths = {self._bucket(n) for n in prompt_lengths} or {self.buckets[0]}
         for bucket in sorted(lengths):
-            self.backend.prefill([self.pad] * bucket, 0, 1)
+            group = 1
+            while group <= min(self.max_group, self.slots):
+                self.backend.prefill([[self.pad] * bucket] * group, list(range(group)), [1] * group)
+                group *= 2
         for _ in range(3):
             self.backend.decode([self.pad] * self.slots, [0] * self.slots)
 
@@ -159,24 +168,35 @@ class Engine:
         steps = prefills = 0
         start = time.perf_counter()
         while waiting or any(row is not None for row in rows):
-            # Admit whoever fits: each prompt fills a free row of the caches.
-            for slot in range(self.slots):
-                if rows[slot] is not None or not waiting:
-                    continue
-                completion = waiting.popleft()
-                prompt = list(completion.request.prompt)
-                completion.admitted = time.perf_counter() - start
-                bucket = self._bucket(len(prompt))
-                token = self.backend.prefill(
-                    prompt + [self.pad] * (bucket - len(prompt)), slot, len(prompt)
+            # Admit whoever fits into the free rows, their prompts in passes
+            # of a power of two, similar lengths together.
+            free = [slot for slot in range(self.slots) if rows[slot] is None]
+            admitted = [waiting.popleft() for _ in range(min(len(free), len(waiting)))]
+            admitted.sort(key=lambda c: len(c.request.prompt))
+            placed = list(zip(free, admitted, strict=False))
+            while placed:
+                group = 1
+                while group * 2 <= min(len(placed), self.max_group):
+                    group *= 2
+                batch, placed = placed[:group], placed[group:]
+                now = time.perf_counter() - start
+                prompts = [list(c.request.prompt) for _, c in batch]
+                bucket = self._bucket(max(len(p) for p in prompts))
+                tokens = self.backend.prefill(
+                    [p + [self.pad] * (bucket - len(p)) for p in prompts],
+                    [slot for slot, _ in batch],
+                    [len(p) for p in prompts],
                 )
                 prefills += 1
-                completion.first_token = time.perf_counter() - start
-                completion.tokens.append(token)
-                rows[slot], positions[slot], last[slot] = completion, len(prompt), token
-                if self._finished(completion, positions[slot]):
-                    completion.finished = completion.first_token
-                    rows[slot] = None
+                first = time.perf_counter() - start
+                for (slot, completion), prompt, token in zip(batch, prompts, tokens, strict=True):
+                    completion.admitted = now
+                    completion.first_token = first
+                    completion.tokens.append(token)
+                    rows[slot], positions[slot], last[slot] = completion, len(prompt), token
+                    if self._finished(completion, positions[slot]):
+                        completion.finished = first
+                        rows[slot] = None
             if not any(row is not None for row in rows):
                 continue
             # One step for the whole batch; empty rows compute along.
@@ -244,7 +264,7 @@ class _TorchBackend:
     def __init__(self, model: Any, graphs: bool) -> None:
         import torch
 
-        for entry in ("prefill_slot", "decode_rows"):
+        for entry in ("prefill_slots", "decode_rows"):
             if entry not in model.entries:
                 raise ValueError(f"the model has no `{entry}` entry, which serving needs")
         self.torch = torch
@@ -255,20 +275,19 @@ class _TorchBackend:
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
 
-    def prefill(self, tokens: list[int], slot: int, length: int) -> int:
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> list[int]:
         torch = self.torch
-        ids = torch.tensor([tokens], dtype=torch.int32, device=self.device)
-        scalar = torch.tensor
+        device = self.device
         logits = self.model.run_entry(
-            "prefill_slot",
+            "prefill_slots",
             [
-                ids,
-                scalar(slot, dtype=torch.int32, device=self.device),
-                scalar(length, dtype=torch.int32, device=self.device),
+                torch.tensor(tokens, dtype=torch.int32, device=device),
+                torch.tensor(slots, dtype=torch.int32, device=device),
+                torch.tensor(lengths, dtype=torch.int32, device=device),
             ],
             compile=True,
         )
-        return int(logits[0].argmax())
+        return logits.argmax(-1).tolist()
 
     def decode(self, tokens: list[int], positions: list[int]) -> list[int]:
         torch = self.torch
@@ -286,7 +305,7 @@ class _JaxBackend:
         import jax.numpy as jnp
         import numpy as np
 
-        for entry in ("prefill_slot", "decode_rows"):
+        for entry in ("prefill_slots", "decode_rows"):
             if entry not in model.entries:
                 raise ValueError(f"the model has no `{entry}` entry, which serving needs")
         self.jnp: Any = jnp
@@ -294,13 +313,17 @@ class _JaxBackend:
         self.model = model
         self.slots, self.max_seq = _cache_generics(model)
 
-    def prefill(self, tokens: list[int], slot: int, length: int) -> int:
-        jnp = self.jnp
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> list[int]:
+        np, jnp = self.np, self.jnp
         logits = self.model.run_entry(
-            "prefill_slot",
-            [jnp.asarray([tokens], dtype=jnp.int32), jnp.int32(slot), jnp.int32(length)],
+            "prefill_slots",
+            [
+                jnp.asarray(np.asarray(tokens, dtype=np.int32)),
+                jnp.asarray(np.asarray(slots, dtype=np.int32)),
+                jnp.asarray(np.asarray(lengths, dtype=np.int32)),
+            ],
         )
-        return int(jnp.argmax(logits[0]))
+        return np.asarray(jnp.argmax(logits, -1)).tolist()
 
     def decode(self, tokens: list[int], positions: list[int]) -> list[int]:
         np, jnp = self.np, self.jnp
