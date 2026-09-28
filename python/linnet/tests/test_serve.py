@@ -13,7 +13,7 @@ import pytest
 import torch
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
-from linnet.serve import Engine, Request
+from linnet.serve import Completion, Engine, Request
 from linnet.torch import load
 
 REPO = Path(__file__).resolve().parents[3]
@@ -279,7 +279,7 @@ def test_requests_arriving_while_others_run(model_files: tuple[Path, Path]) -> N
     engine.step()
     engine.step()
     late = engine.submit(Request(prompt=[9, 8, 7], max_new_tokens=5))
-    finished = []
+    finished: list[Completion] = []
     while engine.busy:
         finished += engine.step()
     # `step` reported every request once, when it finished.
