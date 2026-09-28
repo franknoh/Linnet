@@ -47,6 +47,7 @@ class LinnetModel:
         # Weight-only values (`prepare`), shared by every entry by key.
         self._prepared: dict[str, Any] = {}
         self.mesh: Any = None  # set by `shard`
+        self._split_shardings: dict[int, Any] = {}  # id -> a state sharding known split right
 
     def _function(self, name: str) -> LinnetFunction:
         if name not in self._functions:
@@ -100,10 +101,19 @@ class LinnetModel:
         axis = state_axis(value.shape, self.mesh.devices.size)
         if axis is None:
             return value
+        # XLA hands the same sharding back call after call, spelled
+        # `P(None, 'model')` for `P(None, 'model', None, None)`: equivalent,
+        # not equal. Each one seen is checked once.
+        given = value.sharding
+        if id(given) in self._split_shardings:
+            return value
         spec = [None] * value.ndim
         spec[axis] = self.mesh.axis_names[0]
         wanted = NamedSharding(self.mesh, PartitionSpec(*spec))
-        return value if value.sharding == wanted else jax.device_put(value, wanted)
+        if given.is_equivalent_to(wanted, value.ndim):
+            self._split_shardings[id(given)] = given
+            return value
+        return jax.device_put(value, wanted)
 
     def reset_state(self) -> None:
         self.state = {}
