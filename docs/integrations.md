@@ -40,6 +40,13 @@ go through in passes of up to 8, each padded to its longest; with
 entries are XLA programs over one copy of the weights, with the caches
 donated so XLA updates them in place. Decoding is greedy.
 
+A server whose requests arrive while it runs drives the same engine step by
+step: `engine.submit(request)` queues one and returns its `Completion`, which
+fills in as it runs; `engine.step()` admits waiting requests into free rows,
+takes one decoding step, and returns the requests that finished;
+`engine.busy` says whether anything is left. `run` is `submit` for every
+request, then `step` until nothing is.
+
 Work that reads nothing but weights -- dequantizing a quantized
 checkpoint, say -- runs once when a model is loaded for inference, not on
 every call: `linnet torch --prepare` and `linnet jax --prepare` move it

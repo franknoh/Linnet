@@ -267,3 +267,23 @@ def test_onnx_bf16_values_cross_as_bits() -> None:
     assert bits.dtype == np.uint16
     back = _decode(bits, 16)
     np.testing.assert_allclose(back, values, rtol=4e-3)
+
+
+def test_requests_arriving_while_others_run(model_files: tuple[Path, Path]) -> None:
+    """`submit` and `step`, as a server uses them: a request that arrives
+    mid-decode joins a free row and gets the same tokens as on its own."""
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, buckets=[8, 16, 32])
+    early = [engine.submit(r) for r in _requests()[:2]]
+    engine.step()
+    engine.step()
+    late = engine.submit(Request(prompt=[9, 8, 7], max_new_tokens=5))
+    finished = []
+    while engine.busy:
+        finished += engine.step()
+    # `step` reported every request once, when it finished.
+    assert sorted(id(c) for c in finished) == sorted(id(c) for c in [*early, late])
+    for completion in [*early, late]:
+        assert completion.tokens == _greedy(model, completion.request)
+    assert late.admitted > 0 and late.reason == "length"
