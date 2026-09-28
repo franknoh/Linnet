@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -124,7 +125,7 @@ def test_jax_master_weights(files: tuple[Path, Path]) -> None:
     assert got.dtype == jnp.bfloat16
     np.testing.assert_allclose(np.asarray(got, dtype=np.float32), expected, atol=3e-2, rtol=3e-2)
 
-    def loss(parameters: dict[str, jax.Array]) -> jax.Array:
+    def loss(parameters: dict[str, Any]) -> Any:
         out = mixed.apply(parameters, jnp.asarray(x, dtype=jnp.bfloat16))
         return jnp.log(out.astype(jnp.float32)).sum()
 
