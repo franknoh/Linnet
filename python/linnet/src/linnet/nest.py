@@ -529,7 +529,7 @@ def download_weights(card: Card) -> Path:
 def load(
     name_or_dir: str | Path,
     *,
-    backend: Literal["torch", "jax", "jax_source", "jax_model", "nnx"] = "torch",
+    backend: Literal["torch", "jax", "jax_source", "jax_model", "onnx_model", "nnx"] = "torch",
     std_root: str | Path | None = None,
     generics: Mapping[str, int | str] | None = None,
     weights: str | Path | None = None,
@@ -542,7 +542,8 @@ def load(
     card's; `options` go to the backend's loader (`numerics`, `compile`,
     `device`, `trainable`, ...). `"jax_model"` is every entry over one copy of
     the weights with the state kept on the device (`linnet.jax.load_model`),
-    which decoding and serving need.
+    which decoding and serving need; `"onnx_model"` is the same on ONNX
+    Runtime (`linnet.onnx.load_model`).
     """
     card = resolve(name_or_dir)
     values = {**card.generics, **(generics or {})}
@@ -560,6 +561,10 @@ def load(
         from . import torch as torch_backend
 
         return torch_backend.load(card.source_path, **common, **options)
+    if backend == "onnx_model":
+        from .onnx import load_model as load_onnx
+
+        return load_onnx(card.source_path, **common, **options)
     from . import jax as jax_backend
 
     if backend == "jax_model":

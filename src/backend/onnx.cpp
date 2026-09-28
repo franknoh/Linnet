@@ -269,6 +269,13 @@ public:
             at[0] != nullptr) {
             return node("Gelu", {*at[0]}, "approximate = \"tanh\"", shape, dtype);
         }
+        if ((implementation_base == "torch.Tensor.index_copy" ||
+             implementation_base == "torch.Tensor.index_put") &&
+            (operands.size() == 3 || operands.size() == 4) && at[0] != nullptr &&
+            at[1] != nullptr && at[2] != nullptr && at[0]->shape.size() == 4 &&
+            at[1]->shape.size() == 4 && (operands.size() == 3 || at[3] != nullptr)) {
+            return cache_write(implementation_base == "torch.Tensor.index_copy", at, shape, dtype);
+        }
         if (implementation_base == "torch.sigmoid" && operands.size() == 1 && at[0] != nullptr) {
             return node("Sigmoid", {*at[0]}, "", shape, dtype);
         }
@@ -735,6 +742,74 @@ private:
         body_ += indent_ + name + " = Constant <value = " + tensor_type(shape, dtype) + " {" +
                  values + "}> ()\n";
         return name;
+    }
+
+    // A KV-cache write as one `ScatterND`: the value's vectors go to (row,
+    // head, position) triples, and nothing else of the cache is touched --
+    // the canonical `Where` rewrites all of it. The four writes differ only
+    // in where the rows and positions come from:
+    //   write_at / write_span (`index_copy`): every row, positions at + [0, N);
+    //   write_rows (`index_put`, 3 operands): row b at at[b];
+    //   write_slot (4 operands, a scalar slot): one row, positions at + [0, N);
+    //   write_slots (4 operands, slots [M]): rows slots[m], positions at + [0, N).
+    std::string cache_write(bool every_row,
+                            const std::vector<const TensorInfo*>& at,
+                            const Dims& shape,
+                            ScalarKind dtype) {
+        const TensorInfo& cache = *at[0];
+        const TensorInfo& value = *at[1];
+        const std::int64_t rows = value.shape[0];
+        const std::int64_t heads = value.shape[1];
+        const std::int64_t span = value.shape[2];
+        const Dims grid{rows, heads, span};
+        const auto as_i64 = [&](const TensorInfo& t) {
+            return t.dtype == ScalarKind::I64
+                       ? t
+                       : TensorInfo{convert(t, ScalarKind::I64), t.shape, ScalarKind::I64};
+        };
+        // `values` laid along `axis` of the grid and broadcast over the rest.
+        const auto spread = [&](const TensorInfo& values, std::size_t axis) {
+            Dims placed{1, 1, 1};
+            placed[axis] = values.shape.empty() ? 1 : values.shape[0];
+            const TensorInfo shaped{reshape(values, placed), placed, ScalarKind::I64};
+            const TensorInfo target = int64_vector(grid);
+            const TensorInfo full{
+                node("Expand", {shaped, target}, "", grid, ScalarKind::I64), grid, ScalarKind::I64};
+            const Dims last{rows, heads, span, 1};
+            return TensorInfo{reshape(full, last), last, ScalarKind::I64};
+        };
+        const TensorInfo head_ids{iota(heads), {heads}, ScalarKind::I64};
+        TensorInfo row_ids{iota(rows), {rows}, ScalarKind::I64};
+        TensorInfo positions;
+        const auto span_from = [&](const TensorInfo& start) {
+            const TensorInfo offsets{iota(span), {span}, ScalarKind::I64};
+            const TensorInfo first = as_i64(start);
+            return TensorInfo{
+                elementwise(Elementwise::Add, {first, offsets}, {span}, ScalarKind::I64),
+                {span},
+                ScalarKind::I64};
+        };
+        if (every_row) {
+            positions = span_from(*at[2]);
+        } else if (at.size() == 3) {
+            positions = as_i64(*at[2]); // one position per row
+        } else {
+            positions = span_from(*at[3]);
+            const TensorInfo slots = as_i64(*at[2]);
+            row_ids =
+                slots.shape.empty() ? TensorInfo{reshape(slots, {1}), {1}, ScalarKind::I64} : slots;
+        }
+        const Dims index_shape{rows, heads, span, 3};
+        const TensorInfo indices{node("Concat",
+                                      {spread(row_ids, 0),
+                                       spread(head_ids, 1),
+                                       spread(positions, at.size() == 3 && !every_row ? 0 : 2)},
+                                      "axis = 3",
+                                      index_shape,
+                                      ScalarKind::I64),
+                                 index_shape,
+                                 ScalarKind::I64};
+        return node("ScatterND", {cache, indices, value}, "", shape, dtype);
     }
 
     TensorInfo int64_vector(const Dims& values) {

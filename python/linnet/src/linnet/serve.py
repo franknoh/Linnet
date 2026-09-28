@@ -102,7 +102,8 @@ class _Backend(Protocol):
 class Engine:
     """Continuous batching over a loaded decoder (see the module docs).
 
-    `model` is a `linnet.torch` module or a `linnet.jax.LinnetModel` with
+    `model` is a `linnet.torch` module, a `linnet.jax.LinnetModel`, or a
+    `linnet.onnx.OnnxModel` with
     `prefill_slots` and `decode_rows` entries. `buckets` are the prompt
     lengths compiled (a pass is padded to the smallest that holds its longest
     prompt): by default 16, 32, 64, then every 128 up to `MaxSeq`. Prompts are
@@ -247,6 +248,8 @@ def _backend_for(model: Any, graphs: bool) -> _Backend:
     module = type(model).__module__
     if module.startswith("linnet.jax"):
         return _JaxBackend(model)
+    if module.startswith("linnet.onnx"):
+        return _OnnxBackend(model)
     return _TorchBackend(model, graphs)
 
 
@@ -335,6 +338,43 @@ class _JaxBackend:
             ],
         )
         return np.asarray(jnp.argmax(logits, -1)).tolist()
+
+
+class _OnnxBackend:
+    """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device."""
+
+    def __init__(self, model: Any) -> None:
+        import numpy as np
+
+        for entry in ("prefill_slots", "decode_rows"):
+            if entry not in model.entries:
+                raise ValueError(f"the model has no `{entry}` entry, which serving needs")
+        self.np: Any = np
+        self.model = model
+        self.slots, self.max_seq = _cache_generics(model)
+
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> list[int]:
+        np = self.np
+        logits = self.model.run_entry(
+            "prefill_slots",
+            [
+                np.asarray(tokens, dtype=np.int32),
+                np.asarray(slots, dtype=np.int32),
+                np.asarray(lengths, dtype=np.int32),
+            ],
+        )
+        return np.asarray(logits).argmax(-1).tolist()
+
+    def decode(self, tokens: list[int], positions: list[int]) -> list[int]:
+        np = self.np
+        logits = self.model.run_entry(
+            "decode_rows",
+            [
+                np.asarray(tokens, dtype=np.int32).reshape(self.slots, 1),
+                np.asarray(positions, dtype=np.int32),
+            ],
+        )
+        return np.asarray(logits).argmax(-1).tolist()
 
 
 __all__ = ["Completion", "Engine", "Request", "Stats"]

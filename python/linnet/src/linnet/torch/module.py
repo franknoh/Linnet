@@ -151,6 +151,9 @@ class LinnetModule(nn.Module):
         super().__init__()
         self.plan = plan
         self.generics = dict(generics)  # the root block's, as given
+        # Mixed precision: the dtype entries run in under `torch.autocast`,
+        # the weights staying in theirs (`load(amp=...)`).
+        self.amp: torch.dtype | None = None
         root = plan.root
         env = Env()
         for generic in root["generics"]:
@@ -204,10 +207,23 @@ class LinnetModule(nn.Module):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
+        **options: Any,
     ) -> Any:
         """Runs the entry `name`. Its generic parameters are bound from the
         input shapes, or from `generics` by name for those the inputs do not
-        determine (an output length such as `Steps`)."""
+        determine (an output length such as `Steps`). With `amp` set (see
+        `load`), the entry runs under `torch.autocast` in that dtype."""
+        if self.amp is None:
+            return self._run_entry(name, inputs, generics, **options)
+        with torch.autocast(self.interpreter.device.type, dtype=self.amp):
+            return self._run_entry(name, inputs, generics, **options)
+
+    def _run_entry(
+        self,
+        name: str,
+        inputs: list[torch.Tensor],
+        generics: Mapping[str, int | str] | None = None,
+    ) -> Any:
         function = self.entries[name]
         params = function["body"]["args"][1:]  # after `self`
         if len(params) != len(inputs):

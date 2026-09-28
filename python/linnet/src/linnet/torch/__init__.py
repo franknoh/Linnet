@@ -49,6 +49,7 @@ def load(
     max_memory: Mapping[int | str, int | str] | None = None,
     offload: bool = True,
     cast_dtype: bool = False,
+    amp: str | None = None,
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
 
@@ -88,6 +89,13 @@ def load(
         generics ask for as they are read, so a checkpoint published in f32 runs
         in bf16 (or the reverse) without a converted copy on disk.
 
+        `amp="bf16"` (or `"f16"`) is mixed precision: the weights stay in the
+        model's dtype (keep `T=f32` for f32 master weights) and every entry runs
+        under `torch.autocast`, so matrix products, convolutions, and attention
+        compute in 16 bits while softmax and normalization stay in f32. Trained
+        this way, gradients arrive in f32 on the f32 weights; with `"f16"`, scale
+        the loss with `torch.amp.GradScaler` as for any autocast model.
+
         `trainable=True` makes the parameters require gradients: every entry is
         ordinary differentiable PyTorch arithmetic (interpreted or generated), so
         `loss.backward()` and any `torch.optim` optimizer train the model without
@@ -95,8 +103,11 @@ def load(
         calls.
     """
     plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
+    if amp not in (None, "bf16", "f16"):
+        raise PlanError('amp must be "bf16", "f16", or None')
+    precision = {None: None, "bf16": torch.bfloat16, "f16": torch.float16}[amp]
     if device_map is not None:
-        return _load_placed(
+        placed = _load_placed(
             plan,
             source,
             generics,
@@ -112,6 +123,8 @@ def load(
             offload=offload,
             cast_dtype=cast_dtype,
         )
+        placed.amp = precision
+        return placed
     if compile is None:
         compile = torch.device(device).type == "cuda"
     module: LinnetModule
@@ -132,6 +145,7 @@ def load(
     if trainable:
         for parameter in module.parameters():
             parameter.requires_grad_(True)
+    module.amp = precision
     return module
 
 

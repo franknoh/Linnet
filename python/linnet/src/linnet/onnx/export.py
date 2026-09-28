@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,8 @@ class Exported:
     inputs: tuple[Port, ...]
     outputs: tuple[Port, ...]
     parameters: tuple[str, ...]  # the paths now embedded
+    # With `embed=False`: the checked weights as initializers-to-be, by input name.
+    weights: dict[str, Any] = field(default_factory=dict)  # pyright: ignore[reportUnknownVariableType]
 
     def save(self, path: str | Path, *, external_threshold: int = 1 << 30) -> Path:
         """Writes the model; weights beyond `external_threshold` bytes go next to it."""
@@ -87,6 +89,8 @@ def export_model(
     numerics: str = "equivalent",
     bindings: str | Path | None = None,
     optionals: str = "auto",
+    cast_dtype: bool = False,
+    embed: bool = True,
 ) -> Exported:
     """Compiles one entry to ONNX and embeds the checkpoint as initializers.
 
@@ -99,6 +103,13 @@ def export_model(
     with a bias beside ones without, convolutions without one before a
     classifier with one -- so neither `"present"` nor `"absent"` for the whole
     model is right in general; those two remain for a caller who knows.
+
+    `cast_dtype=True` converts floating-point weights to the dtype the graph
+    declares for them (the generics' `T`), so a checkpoint published in f32
+    exports as an f16 or bf16 model. `embed=False` checks the weights but
+    leaves them graph inputs, for a runtime that binds one copy to several
+    entries' graphs (`linnet.onnx.load_model`); `Exported.weights` then holds
+    them by input name.
     """
     import onnx
     from onnx import parser
@@ -158,15 +169,20 @@ def export_model(
                 f"`{tensor.name}` has shape {list(tensor.shape)}, `{path}` needs {list(shape)}"
             )
             continue
+        data = tensor.data
         if ONNX_DTYPES.get(tensor.dtype) != info.elem_type:
-            needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
-            problems.append(f"`{tensor.name}` is {tensor.dtype}, `{path}` needs {needs}")
-            continue
+            wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
+            if cast_dtype and tensor.dtype in FLOATS and wanted_dtype in FLOATS:
+                data = _cast_float(data, tensor.dtype, wanted_dtype)
+            else:
+                needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
+                problems.append(f"`{tensor.name}` is {tensor.dtype}, `{path}` needs {needs}")
+                continue
         initializer = onnx.TensorProto()
         initializer.name = input_name
         initializer.data_type = info.elem_type
         initializer.dims.extend(tensor.shape)
-        initializer.raw_data = tensor.data
+        initializer.raw_data = data
         found[input_name] = initializer
     missing = [path for input_name, path in wanted.values() if input_name not in found]
     if missing:
@@ -174,6 +190,15 @@ def export_model(
     if problems:
         raise LinnetError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
 
+    if not embed:
+        onnx.checker.check_model(model)
+        return Exported(
+            model=model,
+            inputs=tuple(_port(i) for i in model.graph.input if i.name not in found),
+            outputs=tuple(_port(o) for o in model.graph.output),
+            parameters=tuple(paths.values()),
+            weights={name: found[name] for name in paths if name in found},
+        )
     model.graph.initializer.extend(found[name] for name in paths if name in found)
     remaining = [i for i in model.graph.input if i.name not in found]
     del model.graph.input[:]
@@ -185,6 +210,31 @@ def export_model(
         outputs=tuple(_port(o) for o in model.graph.output),
         parameters=tuple(paths.values()),
     )
+
+
+FLOATS = ("F32", "F16", "BF16", "F64")
+
+
+def _cast_float(data: bytes, source: str, target: str) -> bytes:
+    """Floating-point bytes from one dtype to another. NumPy has no bf16, so
+    it is decoded as the top half of an f32 and encoded by rounding to
+    nearest, ties to even, as every framework's cast does."""
+    import numpy as np
+
+    if source == "BF16":
+        wide = (np.frombuffer(data, dtype=np.uint16).astype(np.uint32) << 16).view(np.float32)
+    else:
+        wide = np.frombuffer(
+            data, dtype={"F32": np.float32, "F16": np.float16, "F64": np.float64}[source]
+        )
+    values = wide.astype(np.float32)
+    if target == "BF16":
+        bits = values.view(np.uint32)
+        rounded = bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))
+        return (rounded >> 16).astype(np.uint16).tobytes()
+    return values.astype(
+        {"F32": np.float32, "F16": np.float16, "F64": np.float64}[target]
+    ).tobytes()
 
 
 def _port(value: Any) -> Port:

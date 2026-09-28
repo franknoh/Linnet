@@ -107,8 +107,13 @@ def load_source(
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
     numerics: str = "fast",
+    cast_dtype: bool = False,
 ) -> SourceFunction:
-    """`load`, with entries running as generated JAX source (differentiable)."""
+    """`load`, with entries running as generated JAX source (differentiable).
+
+    With `cast_dtype=True` and the generics asking for a 16-bit `T`, this is
+    mixed precision: `apply` takes master parameters in f32, casts them to
+    `T` on every call, and `jax.grad` returns f32 gradients for them."""
     function = load(
         source,
         generics=generics,
@@ -118,6 +123,7 @@ def load_source(
         bindings=bindings,
         std_root=std_root,
         numerics=numerics,
+        cast_dtype=cast_dtype,
     )
     return SourceFunction(
         function._source,  # pyright: ignore[reportPrivateUsage]
@@ -128,4 +134,5 @@ def load_source(
         function.root,
         function.entry,
         function.numerics,
+        function.cast_dtype,
     )

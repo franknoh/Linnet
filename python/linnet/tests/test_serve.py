@@ -214,3 +214,43 @@ def test_jax(model_files: tuple[Path, Path]) -> None:
         and not isinstance(first.weights[path], np.ndarray)
     ]
     assert len(shared) == len(first.weights)
+
+
+def test_onnx(model_files: tuple[Path, Path]) -> None:
+    """ONNX Runtime serves the same tokens, over one copy of each weight
+    bound to every entry's session, with the caches kept between calls."""
+    pytest.importorskip("onnxruntime")
+    from linnet.onnx import load_model as load_onnx
+
+    source, weights = model_files
+    torch_model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    model = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    requests = _requests()
+    done, _ = Engine(model, buckets=[8, 16, 32]).run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(torch_model, completion.request)
+    # prefill_slots at several shapes and decode_rows, all over six weights.
+    assert len(model._sessions) > 2  # pyright: ignore[reportPrivateUsage]
+    assert len(model._weights) == 6  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("dtype", ["f16", "bf16"])
+def test_onnx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> None:
+    """An f32 checkpoint exported as a 16-bit model (`cast_dtype=True`):
+    the same logits within the narrower type's rounding."""
+    onnxruntime = pytest.importorskip("onnxruntime")
+    from linnet.onnx import load_model as load_onnx
+
+    if dtype == "bf16" and "CUDAExecutionProvider" not in onnxruntime.get_available_providers():
+        pytest.skip("ONNX Runtime's CPU kernels have no bf16 arithmetic")
+    source, weights = model_files
+    wide = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    narrow = load_onnx(
+        source, generics={**GENERICS, "T": dtype}, weights=weights, std_root=STDLIB, cast_dtype=True
+    )
+    tokens = np.array([[3, 1, 4, 1, 5, 9, 2, 6]], dtype=np.int32)
+    expected = wide.run_entry("forward", [tokens])
+    got = np.asarray(narrow.run_entry("forward", [tokens]))
+    if dtype == "bf16":
+        got = (got.astype(np.uint32) << 16).view(np.float32)
+    np.testing.assert_allclose(got.astype(np.float32), expected, atol=0.15, rtol=0.05)

@@ -64,7 +64,36 @@ The output is the ONNX text format (`onnx.parser.parse_model` reads it,
 | tuple results | one output per element |
 
 The model carries no weights; a runtime binds them by name and feeds each
-call's `next_state` outputs back as the next call's `state` inputs.
+call's `next_state` outputs back as the next call's `state` inputs. A KV
+cache write (`std.nn.cache::write_at`, `write_span`, `write_rows`,
+`write_slot`, `write_slots`) is one `ScatterND` over the positions it
+changes.
+
+`linnet.onnx.export_model(source, generics=..., weights=..., entry=...)`
+embeds a checkpoint as initializers; `cast_dtype=True` converts its
+floating-point tensors to the dtype the graph declares, so an f32
+checkpoint exports as an `f16` or `bf16` model (`--bind T=f16`).
+
+## Running on ONNX Runtime
+
+```python
+from linnet.onnx import load_model
+
+model = load_model("model.linnet", generics={..., "T": "f16"},
+                   weights="model.safetensors", cast_dtype=True)
+logits = model.run_entry("prefill", [tokens, np.int32(0)])
+logits = model.run_entry("decode", [token, np.int32(position)])
+```
+
+`load_model` runs every entry of the root block on ONNX Runtime (CUDA where
+it has it, else the CPU), each entry exported for the shapes it is called
+with. No graph embeds the weights: they go to the device once, as
+`OrtValue`s, and are bound to every entry's session, so a prompt entry and
+a step entry share one copy, and a model past ONNX's 2 GB file limit loads
+all the same. The block's state stays on the device between calls.
+`linnet.serve.Engine` takes such a model, and `nest.load(...,
+backend="onnx_model")` loads a zoo card this way. ONNX Runtime's CPU
+kernels have no `bf16` arithmetic; use `f16` or `f32` there.
 
 ## Tests
 

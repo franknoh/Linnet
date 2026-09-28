@@ -64,7 +64,7 @@ class CompiledLinnetModule(LinnetModule):
         self._prepared: dict[str, torch.Tensor] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
 
-    def run_entry(
+    def _run_entry(
         self,
         name: str,
         inputs: list[torch.Tensor],
