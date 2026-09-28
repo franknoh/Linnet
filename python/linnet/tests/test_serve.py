@@ -251,7 +251,12 @@ def test_onnx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> Non
     tokens = np.array([[3, 1, 4, 1, 5, 9, 2, 6]], dtype=np.int32)
     expected = wide.run_entry("forward", [tokens])
     got = np.asarray(narrow.run_entry("forward", [tokens]))
-    np.testing.assert_allclose(got.astype(np.float32), expected, atol=0.15, rtol=0.05)
+    # Two steps of the type at the logits' own scale: bf16's step at 32 is
+    # already 0.25.
+    step = {"f16": 2.0**-10, "bf16": 2.0**-7}[dtype] * float(np.abs(expected).max())
+    np.testing.assert_allclose(
+        got.astype(np.float32), expected, atol=max(0.15, 2 * step), rtol=0.05
+    )
 
 
 def test_onnx_bf16_values_cross_as_bits() -> None:

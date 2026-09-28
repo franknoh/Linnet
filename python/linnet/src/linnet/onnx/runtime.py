@@ -6,7 +6,10 @@ its own inference session, but the weights are not embedded in any of them.
 They are placed on the device once, as `OrtValue`s, and bound to every
 session by I/O binding; the block's `state` (a decoder's KV caches) stays on
 the device between calls, each call's new state bound as the next call's
-input.
+input. An entry with no state -- an encoder's, a classifier's -- takes them
+as initializers instead, from the same host copy, so ONNX Runtime can fold
+what depends only on them (a batch norm into its convolution); each such
+session keeps its own device copy.
 
     from linnet.onnx import load_model
 
@@ -72,6 +75,7 @@ class OnnxModel:
         self.generics = dict(options["generics"])
         self._sessions: dict[tuple[Any, ...], _Session] = {}
         self._weights: dict[str, Any] = {}  # path -> OrtValue on the device
+        self._host: dict[str, tuple[np.ndarray, Any]] = {}  # path -> (bytes, CPU OrtValue)
         self.state: dict[str, Any] = {}  # path -> OrtValue on the device
 
     # ---- entries
@@ -87,7 +91,15 @@ class OnnxModel:
         session = self._sessions[key]
         binding = session.session.io_binding()
         for port, array in zip(session.inputs, arrays, strict=True):
-            binding.bind_cpu_input(port, _encode(array, session.elements[port]))
+            element = session.elements[port]
+            if element == 16:
+                # bf16 inputs travel as their bits, typed as bf16.
+                value = self._ort.OrtValue.ortvalue_from_numpy_with_onnx_type(
+                    _encode(array, element), 16
+                )
+                binding.bind_ortvalue_input(port, value)
+            else:
+                binding.bind_cpu_input(port, _encode(array, element))
         for port, path in session.parameters.items():
             binding.bind_ortvalue_input(port, self._weights[path])
         for port, (path, shape, element) in session.states.items():
@@ -95,15 +107,23 @@ class OnnxModel:
                 zeros = np.zeros(shape, dtype=_NUMPY[element])
                 self.state[path] = _to_device(self._ort, zeros, element, self._device)
             binding.bind_ortvalue_input(port, self.state[path])
-        for port in session.results:
-            binding.bind_output(port, "cpu")
+        # bf16 results land in host buffers of their bits: ONNX Runtime has
+        # no NumPy type to hand them back as.
+        buffers: dict[int, np.ndarray] = {}
+        for i, port in enumerate(session.results):
+            if session.result_elements[i] == 16:
+                buffers[i] = np.empty(session.result_shapes[i], dtype=np.uint16)
+                target = self._ort.OrtValue.ortvalue_from_numpy_with_onnx_type(buffers[i], 16)
+                binding.bind_ortvalue_output(port, target)
+            else:
+                binding.bind_output(port, "cpu")
         for port in session.next_states:
             binding.bind_output(port, self._device, 0)
         session.session.run_with_iobinding(binding)
         outputs = binding.get_outputs()
         # bf16 results arrive as their bits; they are returned as f32.
         results = [
-            _decode(outputs[i].numpy(), session.result_elements[i])
+            _decode(buffers[i], 16) if i in buffers else outputs[i].numpy()
             for i in range(len(session.results))
         ]
         for i, path in enumerate(session.next_states.values()):
@@ -135,6 +155,14 @@ class OnnxModel:
             for key, path in metadata.items()
             if key.startswith("linnet.path.")
         }
+        stateless = not any(
+            key.startswith(("linnet.state.", "linnet.next_state.")) for key in metadata
+        )
+        settings = self._ort.SessionOptions()
+        settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if stateless:
+            self._fold_weights(exported, parameters, settings)
+            parameters = {}
         for port, path in parameters.items():
             if path not in self._weights:
                 tensor = exported.weights[port]
@@ -162,17 +190,68 @@ class OnnxModel:
             for i in exported.model.graph.input
             if i.name not in parameters and i.name not in states
         ]
-        settings = self._ort.SessionOptions()
-        settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         session = self._ort.InferenceSession(
             exported.model.SerializeToString(), settings, providers=self.providers
         )
         elements = {port: graph_inputs[port].elem_type for port in inputs}
-        graph_outputs = {o.name: o.type.tensor_type.elem_type for o in exported.model.graph.output}
-        result_elements = [graph_outputs[port] for port in results]
+        graph_outputs = {o.name: o.type.tensor_type for o in exported.model.graph.output}
+        result_elements = [graph_outputs[port].elem_type for port in results]
+        result_shapes = [
+            tuple(d.dim_value for d in graph_outputs[port].shape.dim) for port in results
+        ]
         return _Session(
-            session, inputs, elements, parameters, states, results, result_elements, next_states
+            session,
+            inputs,
+            elements,
+            parameters,
+            states,
+            results,
+            result_elements,
+            result_shapes,
+            next_states,
         )
+
+    def _fold_weights(self, exported: Any, parameters: Mapping[str, str], settings: Any) -> None:
+        """Makes the graph's parameters initializers, their bytes the shared
+        host copy: ONNX Runtime folds and fuses what reads only constants,
+        which it cannot do for inputs bound at run time."""
+        import onnx
+
+        graph = exported.model.graph
+        used = _consumed(graph)
+        kept = [i for i in graph.input if i.name not in parameters]
+        del graph.input[:]
+        graph.input.extend(kept)
+        names: list[str] = []
+        values: list[Any] = []
+        for port, path in parameters.items():
+            if port not in used:
+                continue
+            tensor = exported.weights[port]
+            if path not in self._host:
+                array = np.frombuffer(tensor.raw_data, dtype=_NUMPY[tensor.data_type]).reshape(
+                    tuple(tensor.dims)
+                )
+                self._host[path] = (array, _to_device(self._ort, array, tensor.data_type, "cpu"))
+            # An initializer whose data is external: the session takes it
+            # from `values`, not from a file.
+            placeholder = onnx.TensorProto()
+            placeholder.name = port
+            placeholder.data_type = tensor.data_type
+            placeholder.dims.extend(tensor.dims)
+            placeholder.data_location = onnx.TensorProto.EXTERNAL
+            for key, value in (
+                ("location", "linnet-weights"),
+                ("offset", "0"),
+                ("length", str(len(tensor.raw_data))),
+            ):
+                entry = placeholder.external_data.add()
+                entry.key, entry.value = key, value
+            graph.initializer.append(placeholder)
+            names.append(port)
+            values.append(self._host[path][1])
+        if names:
+            settings.add_external_initializers(names, values)
 
     def _bindings(self, name: str, inputs: Sequence[np.ndarray]) -> dict[str, int]:
         """The entry's own generics, from the shapes of its inputs."""
@@ -205,16 +284,31 @@ class _Session:
         states: dict[str, tuple[str, tuple[int, ...], int]],
         results: list[str],
         result_elements: list[int],
+        result_shapes: list[tuple[int, ...]],
         next_states: dict[str, str],
     ) -> None:
         self.session = session
         self.inputs = inputs
         self.elements = elements  # graph input -> ONNX element type
         self.result_elements = result_elements
+        self.result_shapes = result_shapes
         self.parameters = parameters  # graph input -> parameter path
         self.states = states  # graph input -> (state path, shape, element type)
         self.results = results  # graph outputs, in order
         self.next_states = next_states  # graph output -> state path
+
+
+def _consumed(graph: Any) -> set[str]:
+    """Every name a node of `graph` or of its subgraphs reads."""
+    names: set[str] = set()
+    for node in graph.node:
+        names.update(node.input)
+        for attribute in node.attribute:
+            if attribute.g.node:
+                names |= _consumed(attribute.g)
+            for subgraph in attribute.graphs:
+                names |= _consumed(subgraph)
+    return names
 
 
 def _encode(array: np.ndarray, element: int) -> np.ndarray:
