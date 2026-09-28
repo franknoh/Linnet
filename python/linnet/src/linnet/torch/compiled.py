@@ -55,6 +55,13 @@ class CompiledLinnetModule(LinnetModule):
         self._backend = backend
         self._generic_arguments = dict(generics)
         self._compiled: dict[tuple[Any, ...], _Generated] = {}
+        # Per call signature (entry, input shapes and dtypes, generics, backend):
+        # the compiled entry and where its parameters and states live, so a
+        # decoding step does not re-derive them. `bind_weights` clears it.
+        self._fast: dict[tuple[Any, ...], _Prepared] = {}
+        # Weight-only work the generated entries share (`prepare`), by key:
+        # computed once per bound weights, whichever entry asks first.
+        self._prepared: dict[str, torch.Tensor] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
 
     def run_entry(
@@ -72,24 +79,25 @@ class CompiledLinnetModule(LinnetModule):
             self._backend if compile is None else compile if isinstance(compile, str) else None
         )
         cuda_graphs = backend in ("reduce-overhead", "cudagraphs")
-        function = self.entries[name]
-        params = function["body"]["args"][1:]
-        if len(params) != len(inputs):
-            raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
-        bindings = self._bindings(function, inputs, generics or {})
-        key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend)
-        if key not in self._compiled:
-            self._compiled[key] = self._compile(name, bindings, backend)
-        generated = self._compiled[key]
-        parameters = dict(self.named_parameters())
-        buffers = dict(self.named_buffers())
+        signature = (
+            name,
+            tuple((tuple(value.shape), value.dtype) for value in inputs),
+            tuple(sorted((generics or {}).items())),
+            backend,
+        )
+        prepared = self._fast.get(signature)
+        if prepared is None:
+            prepared = self._prepare(name, inputs, generics or {}, backend)
+            self._fast[signature] = prepared
+        generated = prepared.generated
         if self.placement is not None:
             # Inputs enter where the first unit runs.
             inputs = [value.to(self.placement.devices[0]) for value in inputs]
         arguments: list[Any] = list(inputs)
-        arguments += [parameters[f"root.{path}"] for path in generated.parameters]
-        arguments += [buffers[f"root.{path}"] for path in generated.states]
+        arguments += [getattr(owner, leaf) for owner, leaf in prepared.parameters]
+        arguments += [getattr(owner, leaf) for owner, leaf in prepared.states]
         arguments += generated.constants
+        arguments += prepared.prepared
         if generated.placed:
             assert self.placement is not None
             arguments.append(self.placement.devices)
@@ -100,6 +108,10 @@ class CompiledLinnetModule(LinnetModule):
             # CUDA graphs allow only at an address that never changes.
             for path in generated.in_place:
                 _mark_static(by_path[path])
+            # Prepared values and constants never change between calls either;
+            # unmarked, a replay would copy each of them in first.
+            for value in (*generated.constants, *prepared.prepared):
+                _mark_static(value)
         outputs = list(generated.main(*arguments))
         if cuda_graphs:
             # Graph outputs are overwritten by the next replay; keep copies
@@ -117,12 +129,57 @@ class CompiledLinnetModule(LinnetModule):
             # Results come back where they were computed; hand them over on
             # the first device, where the inputs went in.
             results = [value.to(self.placement.devices[0]) for value in results]
-        for path, value in zip(generated.next_states, outputs[generated.results :], strict=True):
+        for (owner, leaf), path, value in zip(
+            prepared.next_states, generated.next_states, outputs[generated.results :], strict=True
+        ):
             if _same(value, by_path.get(path)):
                 continue  # written in place: the buffer already holds it
-            owner, leaf = owner_of(self, path)
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
+
+    def _prepare(
+        self,
+        name: str,
+        inputs: list[torch.Tensor],
+        generics: Mapping[str, int | str],
+        backend: str | None,
+    ) -> _Prepared:
+        function = self.entries[name]
+        params = function["body"]["args"][1:]
+        if len(params) != len(inputs):
+            raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
+        bindings = self._bindings(function, inputs, generics)
+        key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend)
+        if key not in self._compiled:
+            self._compiled[key] = self._compile(name, bindings, backend)
+        generated = self._compiled[key]
+        return _Prepared(
+            generated,
+            [owner_of(self, path) for path in generated.parameters],
+            [owner_of(self, path) for path in generated.states],
+            [owner_of(self, path) for path in generated.next_states],
+            self._prepared_values(generated),
+        )
+
+    def _prepared_values(self, generated: _Generated) -> list[torch.Tensor]:
+        """The entry's weight-only values: shared with every entry that
+        computes the same thing, and computed here when none has yet."""
+        if not generated.prepared_keys:
+            return []
+        if not all(key in self._prepared for key in generated.prepared_keys):
+            inputs: list[Any] = []
+            for name in generated.prepare_inputs:
+                if name.startswith("p"):
+                    owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
+                    inputs.append(getattr(owner, leaf))
+                else:
+                    inputs.append(generated.constants[generated.constant_names.index(name)])
+            assert generated.prepare is not None
+            with torch.no_grad():
+                values = generated.prepare(*inputs, self.interpreter.device)
+            for key, value in zip(generated.prepared_keys, values, strict=True):
+                self._prepared.setdefault(key, value)
+        return [self._prepared[key] for key in generated.prepared_keys]
 
     # ---- one compilation per entry and shape
 
@@ -185,6 +242,10 @@ class CompiledLinnetModule(LinnetModule):
             command += ["--bind", f"{name}={value}"]
         if self.placement is not None and not self.placement.trivial:
             command += self.placement.flags()
+        elif not any(parameter.requires_grad for parameter in self.parameters()):
+            # Weight-only work once at load; a model being trained keeps it
+            # in the graph, where gradients flow through it.
+            command.append("--prepare")
         completed = subprocess.run(
             [*command, str(self._source)], capture_output=True, text=True, check=False
         )
@@ -224,6 +285,11 @@ class CompiledLinnetModule(LinnetModule):
             constants,
             placed,
             list(getattr(module, "IN_PLACE", [])),
+            list(getattr(module, "PREPARED", [])),
+            list(getattr(module, "PREPARE_INPUTS", [])),
+            getattr(module, "prepare", None),
+            list(module.PARAMETERS),
+            list(getattr(module, "CONSTANTS", [])),
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -232,6 +298,17 @@ class CompiledLinnetModule(LinnetModule):
             if entry is None or key[0] == entry:
                 return self._compiled[key].path.read_text(encoding="utf-8")
         raise PlanError("no entry has been compiled yet")
+
+
+@dataclass
+class _Prepared:
+    """A compiled entry and where its arguments live, for one call signature."""
+
+    generated: _Generated
+    parameters: list[tuple[Any, str]]  # (module, attribute) of each parameter
+    states: list[tuple[Any, str]]
+    next_states: list[tuple[Any, str]]
+    prepared: list[torch.Tensor]  # the entry's weight-only values, after the constants
 
 
 def _mark_static(tensor: torch.Tensor) -> None:
@@ -263,3 +340,8 @@ class _Generated:
     constants: list[torch.Tensor]  # `constants(device)`, after the states
     placed: bool = False  # `main` also takes the device of every slot
     in_place: list[str] = field(default_factory=list[str])  # states `main` writes into
+    prepared_keys: list[str] = field(default_factory=list[str])  # `PREPARED`
+    prepare_inputs: list[str] = field(default_factory=list[str])  # `PREPARE_INPUTS`
+    prepare: Callable[..., Any] | None = None
+    all_parameters: list[str] = field(default_factory=list[str])  # `PARAMETERS`
+    constant_names: list[str] = field(default_factory=list[str])  # `CONSTANTS`

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <charconv>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -1825,6 +1826,362 @@ std::string release_dead_values(const std::string& body, const std::string& live
         }
     }
     return out;
+}
+
+namespace {
+
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::string current;
+    for (const char c : text) {
+        if (c == '\n') {
+            lines.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    if (!current.empty()) {
+        lines.push_back(current);
+    }
+    return lines;
+}
+
+bool word_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+// `vN`, `pN`, `sN`, `wN`: a generated name with this prefix.
+bool numbered(const std::string& word, char prefix) {
+    return word.size() > 1 && word[0] == prefix &&
+           word.find_first_not_of("0123456789", 1) == std::string::npos;
+}
+
+// Every identifier-like word in `text`, in order, with its position.
+std::vector<std::pair<std::size_t, std::string>> words_of(const std::string& text) {
+    std::vector<std::pair<std::size_t, std::string>> words;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (word_char(text[i]) && (i == 0 || !word_char(text[i - 1]))) {
+            std::size_t j = i;
+            while (j < text.size() && word_char(text[j])) {
+                ++j;
+            }
+            // Numbers are not words.
+            if (std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
+                words.emplace_back(i, text.substr(i, j - i));
+            }
+            i = j;
+            continue;
+        }
+        ++i;
+    }
+    return words;
+}
+
+// `name = expr` of a top-level generated assignment, if `line` is one.
+std::optional<std::pair<std::string, std::string>> top_level_assignment(const std::string& line) {
+    if (line.size() < 6 || line.compare(0, 4, "    ") != 0 || line[4] != 'v') {
+        return std::nullopt;
+    }
+    const std::size_t equals = line.find(" = ", 4);
+    if (equals == std::string::npos) {
+        return std::nullopt;
+    }
+    const std::string name = line.substr(4, equals - 4);
+    if (!numbered(name, 'v')) {
+        return std::nullopt;
+    }
+    return std::pair{name, line.substr(equals + 3)};
+}
+
+// A parameter or value seen through views and casts only: `p3.permute(1, 0)`,
+// `v9.float()`, `p1.reshape(4, 5).to(torch.bfloat16)`, `p2[0]`.
+bool view_or_cast(const std::string& expression) {
+    static const std::set<std::string> methods{"float",
+                                               "half",
+                                               "bfloat16",
+                                               "contiguous",
+                                               "t",
+                                               "to",
+                                               "permute",
+                                               "reshape",
+                                               "view",
+                                               "transpose",
+                                               "expand",
+                                               "unsqueeze",
+                                               "squeeze",
+                                               "flatten",
+                                               "astype"};
+    std::size_t i = 0;
+    while (i < expression.size() && word_char(expression[i])) {
+        ++i;
+    }
+    const std::string head = expression.substr(0, i);
+    if (!numbered(head, 'v') && !numbered(head, 'p')) {
+        return false;
+    }
+    while (i < expression.size()) {
+        if (expression[i] == '[') {
+            const std::size_t close = expression.find(']', i);
+            if (close == std::string::npos) {
+                return false;
+            }
+            for (const auto& [at, word] : words_of(expression.substr(i, close - i))) {
+                if (word != "None") {
+                    return false; // an index computed from something
+                }
+            }
+            i = close + 1;
+            continue;
+        }
+        if (expression[i] != '.') {
+            return false;
+        }
+        std::size_t j = i + 1;
+        while (j < expression.size() && word_char(expression[j])) {
+            ++j;
+        }
+        if (!methods.contains(expression.substr(i + 1, j - i - 1)) || j >= expression.size() ||
+            expression[j] != '(') {
+            return false;
+        }
+        // The arguments: shapes, axes, and dtypes, perhaps in a tuple.
+        static const std::set<std::string> argument_words{"torch",
+                                                          "jnp",
+                                                          "float32",
+                                                          "float16",
+                                                          "bfloat16",
+                                                          "float64",
+                                                          "int32",
+                                                          "int64",
+                                                          "bool",
+                                                          "None"};
+        std::size_t close = j;
+        int depth = 0;
+        do {
+            depth += expression[close] == '(' ? 1 : expression[close] == ')' ? -1 : 0;
+            ++close;
+        } while (close < expression.size() && depth > 0);
+        if (depth != 0) {
+            return false;
+        }
+        for (const auto& [at, word] : words_of(expression.substr(j, close - j))) {
+            if (!argument_words.contains(word)) {
+                return false;
+            }
+        }
+        i = close;
+    }
+    return true;
+}
+
+std::string fnv1a(const std::string& text) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const char c : text) {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 1099511628211ULL;
+    }
+    static const char* digits = "0123456789abcdef";
+    std::string out(16, '0');
+    for (int i = 15; i >= 0; --i) {
+        out[static_cast<std::size_t>(i)] = digits[hash & 15U];
+        hash >>= 4U;
+    }
+    return out;
+}
+
+} // namespace
+
+PreparedSplit split_prepared(const std::string& body,
+                             const std::string& live_tail,
+                             const std::vector<std::string>& parameter_paths,
+                             const std::string& constants) {
+    PreparedSplit split;
+    const std::vector<std::string> lines = split_lines(body);
+    // Constants the target hoisted: `name -> expression`, in order.
+    std::vector<std::pair<std::string, std::string>> constant_lines;
+    std::set<std::string> constant_names;
+    for (const std::string& line : split_lines(constants)) {
+        if (const auto assignment = top_level_assignment(line)) {
+            constant_lines.push_back(*assignment);
+            constant_names.insert(assignment->first);
+        }
+    }
+    const auto reads = [](const std::string& expression) {
+        std::vector<std::string> names;
+        for (const auto& [at, word] : words_of(expression)) {
+            if (numbered(word, 'v') || numbered(word, 'p')) {
+                names.push_back(word);
+            }
+        }
+        return names;
+    };
+    // Pass one: the weight-only lines, and which of them compute something.
+    std::map<std::string, std::size_t> defined_at; // prepared name -> line
+    std::map<std::string, bool> computes;
+    // Whether a value reads a parameter at all: one that reads only literals
+    // is a constant, which the target folds or hoists itself.
+    std::map<std::string, bool> reads_weights;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const auto assignment = top_level_assignment(lines[i]);
+        if (!assignment) {
+            continue;
+        }
+        const auto& [name, expression] = *assignment;
+        bool weight_only = true;
+        bool heavy = !view_or_cast(expression);
+        bool weights = false;
+        for (const auto& [at, word] : words_of(expression)) {
+            if (numbered(word, 'p')) {
+                weights = true;
+                continue;
+            }
+            if (numbered(word, 'v')) {
+                if (defined_at.contains(word)) {
+                    heavy = heavy || computes[word];
+                    weights = weights || reads_weights[word];
+                } else if (!constant_names.contains(word)) {
+                    weight_only = false;
+                }
+                continue;
+            }
+            if (numbered(word, 's') || numbered(word, 'w') || word.starts_with("in_") ||
+                word == "_dev") {
+                weight_only = false;
+            }
+        }
+        if (weight_only) {
+            defined_at[name] = i;
+            computes[name] = heavy;
+            reads_weights[name] = weights;
+        }
+    }
+    // Pass two: keep what computes something and is read outside, with
+    // everything it reads; the rest goes back to the body where it was.
+    std::set<std::string> read_outside = mentioned_values(live_tail);
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const auto assignment = top_level_assignment(lines[i]);
+        if (assignment && defined_at.contains(assignment->first)) {
+            continue;
+        }
+        for (const std::string& name : reads(lines[i])) {
+            read_outside.insert(name);
+        }
+    }
+    std::set<std::string> keep;
+    std::vector<std::string> pending;
+    for (const auto& [name, line] : defined_at) {
+        if (read_outside.contains(name) && computes[name] && reads_weights[name]) {
+            pending.push_back(name);
+        }
+    }
+    while (!pending.empty()) {
+        const std::string name = pending.back();
+        pending.pop_back();
+        if (!keep.insert(name).second) {
+            continue;
+        }
+        for (const std::string& read :
+             reads(top_level_assignment(lines[defined_at[name]])->second)) {
+            if (defined_at.contains(read)) {
+                pending.push_back(read);
+            }
+        }
+    }
+    std::vector<std::string> body_lines;
+    std::vector<std::string> kept_lines;
+    for (const std::string& line : lines) {
+        const auto assignment = top_level_assignment(line);
+        if (assignment && keep.contains(assignment->first)) {
+            kept_lines.push_back(line);
+        } else {
+            body_lines.push_back(line);
+        }
+    }
+    std::set<std::string> read_by_body = mentioned_values(live_tail);
+    for (const std::string& line : body_lines) {
+        for (const std::string& name : reads(line)) {
+            read_by_body.insert(name);
+        }
+    }
+    for (const std::string& line : kept_lines) {
+        const std::string name = top_level_assignment(line)->first;
+        if (read_by_body.contains(name)) {
+            split.outputs.push_back(name);
+        }
+    }
+    for (const std::string& line : body_lines) {
+        split.body += line + "\n";
+    }
+    if (split.outputs.empty()) {
+        split.body = body;
+        split.outputs.clear();
+        return split;
+    }
+    std::set<std::string> seen_inputs;
+    for (const std::string& line : kept_lines) {
+        split.prepare += line + "\n";
+        for (const std::string& name : reads(top_level_assignment(line)->second)) {
+            if ((numbered(name, 'p') || constant_names.contains(name)) &&
+                seen_inputs.insert(name).second) {
+                split.inputs.push_back(name);
+            }
+        }
+    }
+    // Keys: each output's computation over parameter paths, its values
+    // renamed in order of definition, so equal computations hash equal.
+    std::map<std::string, std::string> expressions;
+    for (const auto& [name, expression] : constant_lines) {
+        expressions[name] = expression;
+    }
+    for (const std::string& line : kept_lines) {
+        const auto assignment = top_level_assignment(line);
+        expressions[assignment->first] = assignment->second;
+    }
+    for (const std::string& output : split.outputs) {
+        std::vector<std::string> order; // definitions, dependencies first
+        std::set<std::string> visited;
+        std::function<void(const std::string&)> visit = [&](const std::string& name) {
+            if (!visited.insert(name).second) {
+                return;
+            }
+            for (const std::string& read : reads(expressions[name])) {
+                if (expressions.contains(read)) {
+                    visit(read);
+                }
+            }
+            order.push_back(name);
+        };
+        visit(output);
+        std::map<std::string, std::string> renamed;
+        for (const std::string& name : order) {
+            renamed[name] = "t" + std::to_string(renamed.size());
+        }
+        std::string canonical;
+        for (const std::string& name : order) {
+            const std::string& expression = expressions[name];
+            std::string text;
+            std::size_t last = 0;
+            for (const auto& [at, word] : words_of(expression)) {
+                text += expression.substr(last, at - last);
+                if (renamed.contains(word)) {
+                    text += renamed[word];
+                } else if (numbered(word, 'p')) {
+                    const std::size_t index = std::stoul(word.substr(1));
+                    text += "P<" +
+                            (index < parameter_paths.size() ? parameter_paths[index] : word) + ">";
+                } else {
+                    text += word;
+                }
+                last = at + word.size();
+            }
+            text += expression.substr(last);
+            canonical += renamed[name] + " = " + text + "\n";
+        }
+        split.keys.push_back(fnv1a(canonical + "-> " + renamed[output]));
+    }
+    return split;
 }
 
 std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes) {

@@ -247,6 +247,10 @@ struct GraphExportOptions {
     // Blocks whose parameters stay on the host: each is transferred to the
     // block's slot when first used and released when the block returns.
     std::vector<std::string> offload;
+    // Generated Python only: split computation that reads nothing but
+    // parameters (dequantizing MXFP4 experts, say) into a `prepare` function
+    // the runtime calls once per loaded model rather than on every call.
+    bool prepare = false;
 };
 
 std::expected<std::string, std::string>
@@ -268,6 +272,28 @@ std::string release_dead_values(const std::string& body, const std::string& live
 
 // `"ik,kj->ij"` for a contraction whose operands and result name grid axes:
 // one letter per axis, in order of first appearance.
+// Weight-only computation split out of a generated Python body so that it
+// runs once, at load, rather than on every call (see `GraphExportOptions::
+// prepare`). A top-level `vN = ...` line is weight-only when it reads nothing
+// but parameters (`pN`), constants defined in `constants` (the lines the
+// target already hoisted), other weight-only values, and library names. Only
+// chains that compute something are split out: a value that is a parameter
+// seen through views and casts stays inline, since preparing it would just
+// copy the weights.
+struct PreparedSplit {
+    std::string prepare;              // the weight-only lines, as they were written
+    std::vector<std::string> inputs;  // what they read: `pN` and constant `vN` names
+    std::vector<std::string> outputs; // the values the rest reads, which `prepare` returns
+    // One per output: a hash of the computation over parameter paths, equal
+    // for equal computations in any entry, so a runtime shares the result.
+    std::vector<std::string> keys;
+    std::string body; // everything else, in order
+};
+PreparedSplit split_prepared(const std::string& body,
+                             const std::string& live_tail,
+                             const std::vector<std::string>& parameter_paths,
+                             const std::string& constants);
+
 std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes);
 
 } // namespace linnet::backend

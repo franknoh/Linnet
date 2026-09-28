@@ -27,7 +27,7 @@ SOURCE = """\
 module tests.rows
 
 use std.nn.attention::{grouped_attention_rows}
-use std.nn.cache::{write_rows, write_slot}
+use std.nn.cache::{write_rows, write_slot, write_slots}
 
 pub block Model<B: Dim, Hk: Dim, H: Dim, S: Dim, D: Dim, N: Dim, T: Float = f32>
 where
@@ -51,6 +51,15 @@ where
 
     pub entry store(value: Tensor[1, Hk, N, D; T], slot: i32, at: i32) -> Tensor[B, Hk, S, D; T] {
         cache = write_slot(cache, value, slot, at)
+        return cache
+    }
+
+    pub entry store_many(
+        value: Tensor[2, Hk, N, D; T],
+        slots: Tensor[2; i32],
+        at: i32,
+    ) -> Tensor[B, Hk, S, D; T] {
+        cache = write_slots(cache, value, slots, at)
         return cache
     }
 }
@@ -119,6 +128,36 @@ def test_torch(source: Path, compile: bool, numerics: str) -> None:
     inputs = [torch.tensor(case[k]) for k in ("value", "at", "query")]
     got = model.run_entry("step", inputs)
     np.testing.assert_allclose(got.numpy(), mixed, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("compile", [False, True])
+def test_several_rows_at_once(source: Path, compile: bool) -> None:
+    """`write_slots`: two prompts into rows 2 and 0 of a cache, one pass."""
+    rng = np.random.default_rng(1)
+    value = rng.standard_normal((2, 2, 3, 4)).astype(np.float32)
+    expected = np.zeros((3, 2, 8, 4), np.float32)
+    expected[2, :, 1:4] = value[0]
+    expected[0, :, 1:4] = value[1]
+    model = load(source, generics=GENERICS, std_root=STDLIB, compile=compile)
+    got = model.run_entry(
+        "store_many",
+        [
+            torch.tensor(value),
+            torch.tensor([2, 0], dtype=torch.int32),
+            torch.tensor(1, dtype=torch.int32),
+        ],
+    )
+    np.testing.assert_allclose(got.numpy(), expected, atol=1e-6)
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from linnet.jax import load as load_jax
+    from linnet.jax import load_source
+
+    for loader in (load_jax, load_source):
+        many = loader(source, generics=GENERICS, weights={}, std_root=STDLIB, entry="store_many")
+        out, _ = many(jnp.asarray(value), jnp.asarray([2, 0], dtype=jnp.int32), jnp.int32(1))
+        np.testing.assert_allclose(np.asarray(out), expected, atol=1e-6)
 
 
 def test_the_cache_is_written_in_place(source: Path) -> None:

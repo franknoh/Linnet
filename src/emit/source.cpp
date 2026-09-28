@@ -752,8 +752,21 @@ private:
     std::string define(const ir::Operation& op) {
         const ir::Attributes& a = op.attributes;
         const ir::ValueId result = op.results.front();
+        // A reduction's body runs to the end of the expression, so one written
+        // inline as an operand is parenthesized: `(sum[m] h[b, m]) > 0`, not
+        // `sum[m] h[b, m] > 0`, which sums the comparison.
+        const auto operand = [&](ir::ValueId id) {
+            const ir::OpId producer = module_.value(id).producer;
+            std::string text = expr(id);
+            if (producer != ir::no_id && module_.op(producer).kind == ir::OpKind::Reduce &&
+                text != name_of(id)) {
+                return "(" + text + ")";
+            }
+            return text;
+        };
         const auto binary = [&](const char* symbol) {
-            return "(" + expr(op.operands[0]) + " " + symbol + " " + expr(op.operands[1]) + ")";
+            return "(" + operand(op.operands[0]) + " " + symbol + " " + operand(op.operands[1]) +
+                   ")";
         };
         const auto call = [&](const std::string& name) {
             return name + "(" + operand_list(op) + ")";

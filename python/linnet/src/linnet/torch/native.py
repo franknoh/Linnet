@@ -38,8 +38,14 @@ def _index_put(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
         return cache.index_put(
             (rows[:, None], lanes[None, :], args[2].long()[:, None]), value[:, :, 0]
         )
-    # `write_slot`: one row, a span of positions.
     slot, at = args[2], args[3]
+    if slot.dim() == 1:
+        # `write_slots`: a span in each of several rows.
+        span = at.long() + torch.arange(value.shape[2], device=cache.device)
+        return cache.index_put(
+            (slot.long()[:, None, None], lanes[None, :, None], span[None, None, :]), value
+        )
+    # `write_slot`: one row, a span of positions.
     span = at.long() + torch.arange(value.shape[2], device=cache.device)
     return cache.index_put((slot.long().reshape(1, 1), lanes[:, None], span[None, :]), value[0])
 

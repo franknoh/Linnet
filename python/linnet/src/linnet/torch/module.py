@@ -413,6 +413,12 @@ def bind_weights(
             owner, leaf = owner_of(module, path)
             getattr(owner, leaf).copy_(loaded)
             owner.absent_params.discard(leaf)
+    # Which optional parameters are bound decides what a compiled entry
+    # computes; entries prepared before this binding are prepared again.
+    for cache in ("_fast", "_prepared"):
+        entries = getattr(module, cache, None)
+        if isinstance(entries, dict):
+            entries.clear()
 
 
 def _all_tensors(module: LinnetModule) -> list[tuple[str, torch.Tensor]]:

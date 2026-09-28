@@ -75,6 +75,8 @@ std::string real_text(double value) {
 // The generated module: straight-line PyTorch over static shapes.
 class TorchTarget : public GraphTarget {
 public:
+    explicit TorchTarget(bool prepare) : prepare_(prepare) {}
+
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
@@ -532,7 +534,7 @@ public:
             for (const std::optional<TensorInfo>& operand : operands) {
                 at.push_back(operand.has_value() ? &*operand : nullptr);
             }
-            if (at[0] == nullptr || at[1] == nullptr) {
+            if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
                 return std::nullopt;
             }
             // Every index spelled out, one per axis but the last, so the
@@ -550,6 +552,13 @@ public:
                 return define(name(0) + ".index_put((torch.arange(" + std::to_string(cache[0]) +
                               ", device=" + device + ")[:, None], " + heads + "[None, :], " +
                               name(2) + ".long()[:, None]), " + name(1) + "[:, :, 0])");
+            }
+            if (!at[2]->shape.empty()) {
+                // `write_slots`: a span in each of several rows; [M, H, N] indices.
+                return define(name(0) + ".index_put((" + name(2) + ".long()[:, None, None], " +
+                              heads + "[None, :, None], (" + name(3) + ".long() + torch.arange(" +
+                              std::to_string(value[2]) + ", device=" + device +
+                              "))[None, None, :]), " + name(1) + ")");
             }
             // `write_slot`: one row, a span of positions; [H, N] indices.
             return define(name(0) + ".index_put((" + name(2) + ".long().reshape(1, 1), " + heads +
@@ -671,6 +680,41 @@ public:
             const bool heads_differ = query != nullptr && key != nullptr &&
                                       query->shape.size() > 1 && key->shape.size() > 1 &&
                                       key->shape[1] != query->shape[1];
+            // One query per sequence against a masked cache -- a decoding
+            // step -- as two batched matrix products around a softmax. PyTorch
+            // sends a masked single query to its memory-efficient kernel, which
+            // does not split the keys across blocks: 5x slower for 64 rows of
+            // 640 cached positions. Grouped key/value heads are a reshape of
+            // the query, never a copy of the cache.
+            if (query != nullptr && key != nullptr && attn_mask != nullptr &&
+                !causal_masks_.contains(attn_mask->name) && query->shape.size() == 4 &&
+                key->shape.size() == 4 && query->shape[2] == 1 && key->shape[1] > 0 &&
+                query->shape[1] % key->shape[1] == 0) {
+                const Dims& q = query->shape;
+                const Dims& k = key->shape;
+                const std::string heads = std::to_string(k[1]);
+                const std::string group = std::to_string(q[1] / k[1]);
+                const std::string width = std::to_string(q[3]);
+                const std::string rows = attn_mask->shape.size() == 3
+                                             ? std::to_string(attn_mask->shape[0])
+                                             : std::string("1");
+                const std::string keys = std::to_string(k[2]);
+                const std::string grouped_query =
+                    define(up(name(0)) + ".reshape(" + std::to_string(q[0]) + ", " + heads + ", " +
+                           group + ", " + width + ")");
+                const std::string scores =
+                    define("torch.matmul(" + grouped_query + ", " + up(name(1)) +
+                           ".transpose(-1, -2)).float() * " + scalar(3));
+                const std::string masked =
+                    define(scores + ".masked_fill(~" + name(4) + ".reshape(" + rows + ", 1, 1, " +
+                           keys + "), -1e30)");
+                const std::string weights =
+                    define("torch.softmax(" + masked + ", dim=-1).to(" + up(name(2)) + ".dtype)");
+                return define(down("torch.matmul(" + weights + ", " + up(name(2)) + ").reshape(" +
+                                       std::to_string(q[0]) + ", " + std::to_string(q[1]) +
+                                       ", 1, " + width + ")",
+                                   name(0)));
+            }
             const std::string groups = grouped && heads_differ ? ", enable_gqa=True" : "";
             return define(down("F.scaled_dot_product_attention(" + up(name(0)) + ", " +
                                    up(name(1)) + ", " + up(name(2)) + mask +
@@ -718,11 +762,23 @@ public:
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         const Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
         out += "CONSTANTS = " + string_list(hoisted.names) + "\n";
+        // Weight-only work, run once per loaded model rather than per call.
+        // Streamed (offloaded) weights are not resident, so placement keeps
+        // everything in `main`.
+        PreparedSplit prepared;
+        prepared.body = hoisted.body;
+        if (prepare_ && !placed_) {
+            prepared = split_prepared(hoisted.body, tail, parameters_, hoisted.constants);
+        }
+        if (!prepared.outputs.empty()) {
+            out += "PREPARED = " + string_list(prepared.keys) + "\n";
+            out += "PREPARE_INPUTS = " + string_list(prepared.inputs) + "\n";
+        }
         // The states `main` writes into the tensor it was given: CUDA graphs
         // must be told their addresses are fixed, or they are skipped.
         std::vector<std::string> in_place;
         const std::string body =
-            write_states_in_place(release_dead_values(hoisted.body, tail), tail, in_place);
+            write_states_in_place(release_dead_values(prepared.body, tail), tail, in_place);
         std::vector<std::string> in_place_paths;
         in_place_paths.reserve(in_place.size());
         for (const std::string& argument : in_place) {
@@ -745,9 +801,28 @@ public:
             out += (i == 0 ? "" : ", ") + hoisted.names[i];
         }
         out += hoisted.names.size() == 1 ? ",)\n\n\n" : ")\n\n\n";
+        if (!prepared.outputs.empty()) {
+            // `PREPARE_INPUTS` names parameters (`pN`, PARAMETERS order) and
+            // constants (`vN`, from `constants`); `PREPARED` keys each result
+            // by its computation, so entries share what they compute alike.
+            out += "def prepare(";
+            for (const std::string& input : prepared.inputs) {
+                out += input + ", ";
+            }
+            std::string returned = "    return (";
+            for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
+                returned += (i == 0 ? "" : ", ") + prepared.outputs[i];
+            }
+            returned += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
+            // Intermediates are released as soon as they are dead: a model's
+            // worth of dequantization scratch at once would not fit.
+            out +=
+                "_device):\n" + release_dead_values(prepared.prepare, returned) + returned + "\n\n";
+        }
         out += "def main(";
         std::vector<std::string> arguments = arguments_;
         arguments.insert(arguments.end(), hoisted.names.begin(), hoisted.names.end());
+        arguments.insert(arguments.end(), prepared.outputs.begin(), prepared.outputs.end());
         if (placed_) {
             arguments.emplace_back("_dev");
         }
@@ -1036,7 +1111,8 @@ private:
         return "0";
     }
 
-    bool placed_ = false; // with placement, `main` and `constants` take `_dev`
+    bool placed_ = false;  // with placement, `main` and `constants` take `_dev`
+    bool prepare_ = false; // split weight-only work into `prepare`
     int slots_ = 1;
     int slot_ = 0;
     std::vector<std::string> arguments_;
@@ -1058,7 +1134,7 @@ private:
 
 std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                                             const TorchSourceOptions& options) {
-    TorchTarget target;
+    TorchTarget target(options.prepare);
     return export_graph(module, options, target);
 }
 
