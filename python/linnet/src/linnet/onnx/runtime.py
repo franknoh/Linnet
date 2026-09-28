@@ -48,7 +48,7 @@ class OnnxModel:
         source: Path,
         plan: dict[str, Any],
         options: dict[str, Any],
-        providers: Sequence[str],
+        providers: Sequence[Any],
     ) -> None:
         import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
 
@@ -57,7 +57,11 @@ class OnnxModel:
         self.plan = plan
         self._options = options
         self.providers = list(providers)
-        self._device = "cuda" if self.providers[0] == "CUDAExecutionProvider" else "cpu"
+        # Providers are names or (name, options); a GPU one keeps the
+        # weights and state in GPU memory.
+        names = [p if isinstance(p, str) else p[0] for p in self.providers]
+        gpu = {"CUDAExecutionProvider", "TensorrtExecutionProvider"}
+        self._device = "cuda" if gpu & set(names) else "cpu"
         root = str(plan["root"]["name"])
         self._signatures = {
             str(f["name"]).rsplit(".", 1)[1]: f
@@ -226,12 +230,14 @@ def load_model(
     std_root: str | Path | None = None,
     numerics: str = "fast",
     cast_dtype: bool = False,
-    providers: Sequence[str] | None = None,
+    providers: Sequence[Any] | None = None,
 ) -> OnnxModel:
     """Every entry of the root block on ONNX Runtime over one copy of the
     weights, with its state kept on the device. `providers` defaults to CUDA
-    where ONNX Runtime has it, else the CPU. `cast_dtype=True` converts the
-    checkpoint to the dtype the generics ask for (`T`)."""
+    where ONNX Runtime has it, else the CPU; it takes what `InferenceSession`
+    does (names, or `(name, options)` pairs, TensorRT's among them).
+    `cast_dtype=True` converts the checkpoint to the dtype the generics ask
+    for (`T`)."""
     import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
 
     arguments = ["plan", "--no-optimize", *(["--root", root] if root is not None else [])]
