@@ -44,6 +44,14 @@ pub block Model<E: Dim, I: Dim, T: Float = f32> {
         return y
     }
 
+    // The same value read flattened, as a batched entry reads experts a
+    // decoding step reads whole: the view stays here, the value is shared.
+    pub entry flat(x: Tensor[E * I; T]) -> Tensor[E * I; T] {
+        let w = reshape(weights(), [E * I])
+        let y[k] = w[k] * x[k]
+        return y
+    }
+
     // Only a view of a weight: nothing to prepare.
     pub entry viewed(x: Tensor[E; T]) -> Tensor[I; T] {
         let t = permute(blocks, [1, 0])
@@ -86,6 +94,8 @@ def files(tmp_path: Path) -> tuple[Path, Path, dict[str, np.ndarray]]:
 
 def _expected(arrays: dict[str, np.ndarray], x: np.ndarray, entry: str) -> np.ndarray:
     w = np.exp(arrays["blocks"] * arrays["scale"][:, None]) + 1.0
+    if entry == "flat":
+        return w.reshape(-1) * x
     return w @ x * (2.0 if entry == "second" else 1.0)
 
 
@@ -116,7 +126,11 @@ def test_torch_shares_prepared_values(files: tuple[Path, Path, dict[str, np.ndar
     for entry in ("first", "second"):
         got = model.run_entry(entry, [torch.tensor(x)]).numpy()
         np.testing.assert_allclose(got, _expected(arrays, x, entry), rtol=1e-5, atol=1e-5)
-    # Both entries prepare the same `weights()`: computed once, kept once.
+    flat = np.arange(15, dtype=np.float32) * 0.1
+    got = model.run_entry("flat", [torch.tensor(flat)]).numpy()
+    np.testing.assert_allclose(got, _expected(arrays, flat, "flat"), rtol=1e-5, atol=1e-5)
+    # Every entry prepares the same `weights()`, one of them read flattened:
+    # computed once, kept once.
     assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
 
 
@@ -147,4 +161,7 @@ def test_jax_shares_prepared_values(files: tuple[Path, Path, dict[str, np.ndarra
     for entry in ("first", "second"):
         got = np.asarray(model.run_entry(entry, [jnp.asarray(x)]))
         np.testing.assert_allclose(got, _expected(arrays, x, entry), rtol=1e-5, atol=1e-5)
+    flat = np.arange(15, dtype=np.float32) * 0.1
+    got = np.asarray(model.run_entry("flat", [jnp.asarray(flat)]))
+    np.testing.assert_allclose(got, _expected(arrays, flat, "flat"), rtol=1e-5, atol=1e-5)
     assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
