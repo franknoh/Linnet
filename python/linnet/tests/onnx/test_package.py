@@ -72,3 +72,40 @@ def test_export_rejects_a_mismatched_checkpoint(tmp_path: Path) -> None:
             weights=tmp_path / "bad.safetensors",
             std_root=STDLIB,
         )
+
+
+TIED = """\
+module tests.tied
+
+pub block Model {
+    param embedding: Tensor[3, 4; f32]
+    param head: Tensor[3, 4; f32]
+
+    pub entry forward(x: Tensor[4; f32]) -> Tensor[3; f32] {
+        let y[v] = sum[d] (embedding[v, d] + 2.0 * head[v, d]) * x[d]
+        return y
+    }
+}
+"""
+
+
+def test_one_tensor_serves_two_parameters(tmp_path: Path) -> None:
+    """An output head tied to the embedding: both parameters read the one
+    checkpoint tensor, and each gets an initializer of it."""
+    onnxruntime = pytest.importorskip("onnxruntime")
+    source = tmp_path / "tied.linnet"
+    source.write_text(TIED, encoding="utf-8")
+    shared = torch.randn(3, 4)
+    save_file({"shared": shared}, str(tmp_path / "model.safetensors"))
+    bindings = tmp_path / "bindings.json"
+    bindings.write_text('{"embedding": "shared", "head": "shared"}', encoding="utf-8")
+    exported = export_model(
+        source, generics={}, weights=tmp_path / "model.safetensors", bindings=bindings
+    )
+    assert len(exported.model.graph.initializer) == 2
+    session = onnxruntime.InferenceSession(
+        exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
+    )
+    x = np.arange(4, dtype=np.float32)
+    (got,) = session.run(None, {session.get_inputs()[0].name: x})
+    np.testing.assert_allclose(got, (3.0 * shared.numpy()) @ x, rtol=1e-5, atol=1e-5)
