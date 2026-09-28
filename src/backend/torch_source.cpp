@@ -537,34 +537,31 @@ public:
             if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
                 return std::nullopt;
             }
-            // Every index spelled out, one per axis but the last, so the
-            // write is one kernel over the positions it changes.
+            // Rows and positions as index tensors, the heads as a full slice
+            // (`None`): one kernel over the positions it changes, and a cache
+            // split by heads across devices (a DTensor) keeps its split.
             const Dims& cache = at[0]->shape;
             const Dims& value = at[1]->shape;
             if (cache.size() != 4 || value.size() != 4) {
                 return std::nullopt;
             }
             const std::string device = name(0) + ".device";
-            const std::string heads =
-                "torch.arange(" + std::to_string(cache[1]) + ", device=" + device + ")";
+            const std::string put = "torch.ops.aten.index_put(" + name(0) + ", [";
             if (operands.size() == 3) {
-                // `write_rows`: row b at at[b]; the indices broadcast to [B, H].
-                return define(name(0) + ".index_put((torch.arange(" + std::to_string(cache[0]) +
-                              ", device=" + device + ")[:, None], " + heads + "[None, :], " +
-                              name(2) + ".long()[:, None]), " + name(1) + "[:, :, 0])");
+                // `write_rows`: row b at at[b]; the values are [B, H, D].
+                return define(put + "torch.arange(" + std::to_string(cache[0]) +
+                              ", device=" + device + "), None, " + name(2) + ".long()], " +
+                              name(1) + "[:, :, 0])");
             }
-            if (!at[2]->shape.empty()) {
-                // `write_slots`: a span in each of several rows; [M, H, N] indices.
-                return define(name(0) + ".index_put((" + name(2) + ".long()[:, None, None], " +
-                              heads + "[None, :, None], (" + name(3) + ".long() + torch.arange(" +
-                              std::to_string(value[2]) + ", device=" + device +
-                              "))[None, None, :]), " + name(1) + ")");
-            }
-            // `write_slot`: one row, a span of positions; [H, N] indices.
-            return define(name(0) + ".index_put((" + name(2) + ".long().reshape(1, 1), " + heads +
-                          "[:, None], (" + name(3) + ".long() + torch.arange(" +
-                          std::to_string(value[2]) + ", device=" + device + "))[None, :]), " +
-                          name(1) + "[0])");
+            const std::string span = "(" + name(3) + ".long() + torch.arange(" +
+                                     std::to_string(value[2]) + ", device=" + device +
+                                     "))[None, :]";
+            // `write_slots` (rows `slots`) or `write_slot` (one row): [M, N]
+            // indices, the values [M, N, H, D].
+            const std::string rows = at[2]->shape.empty() ? name(2) + ".long().reshape(1, 1)"
+                                                          : name(2) + ".long()[:, None]";
+            return define(put + rows + ", None, " + span + "], " + name(1) +
+                          ".permute(0, 2, 1, 3))");
         }
         if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
             operands[0] && operands[1]) {
@@ -901,6 +898,25 @@ public:
                         line.insert(dot + call.size() - 1, "_");
                         written.push_back(state);
                     }
+                }
+            }
+            // `vN = torch.ops.aten.index_put(sK, [...], ...)`: the same, spelled
+            // as an ATen call (it takes `None` for a full slice).
+            const std::string aten = " = torch.ops.aten.index_put(s";
+            const std::size_t call = line.find(aten);
+            if (line.starts_with("    v") && call != std::string::npos) {
+                const std::size_t start = call + aten.size() - 1;
+                const std::size_t comma = line.find(',', start);
+                const std::string state = line.substr(start, comma - start);
+                const bool digits = state.size() > 1 &&
+                                    state.find_first_not_of("0123456789", 1) == std::string::npos;
+                bool read_later = false;
+                for (std::size_t j = 0; j < lines.size() && !read_later; ++j) {
+                    read_later = j != i && mentions(lines[j], state);
+                }
+                if (digits && !read_later) {
+                    line.insert(start - 1, "_");
+                    written.push_back(state);
                 }
             }
             out += line + "\n";

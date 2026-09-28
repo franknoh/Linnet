@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -50,6 +51,8 @@ def load(
     offload: bool = True,
     cast_dtype: bool = False,
     amp: str | None = None,
+    tensor_parallel: Any = None,
+    tp_rules: Mapping[str, int | None] | None = None,
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
 
@@ -95,6 +98,12 @@ def load(
         compute in 16 bits while softmax and normalization stay in f32. Trained
         this way, gradients arrive in f32 on the f32 weights; with `"f16"`, scale
         the loss with `torch.amp.GradScaler` as for any autocast model.
+
+        `tensor_parallel=mesh` (a one-dimensional `DeviceMesh`, in every process
+        of a `torch.distributed` job) splits the weights over the mesh as
+        `linnet.parallel` says (`tp_rules` overrides it by path pattern) and the
+        KV caches by heads, as DTensors; entries run the same code on every
+        process and DTensor adds the collectives. Results come back whole.
 
         `trainable=True` makes the parameters require gradients: every entry is
         ordinary differentiable PyTorch arithmetic (interpreted or generated), so
@@ -146,6 +155,10 @@ def load(
         for parameter in module.parameters():
             parameter.requires_grad_(True)
     module.amp = precision
+    if tensor_parallel is not None:
+        from .parallel import distribute
+
+        distribute(module, tensor_parallel, tp_rules)
     return module
 
 

@@ -154,6 +154,8 @@ class LinnetModule(nn.Module):
         # Mixed precision: the dtype entries run in under `torch.autocast`,
         # the weights staying in theirs (`load(amp=...)`).
         self.amp: torch.dtype | None = None
+        # The DeviceMesh weights are split over (`load(tensor_parallel=...)`).
+        self.tensor_parallel: Any = None
         root = plan.root
         env = Env()
         for generic in root["generics"]:
@@ -213,6 +215,24 @@ class LinnetModule(nn.Module):
         input shapes, or from `generics` by name for those the inputs do not
         determine (an output length such as `Steps`). With `amp` set (see
         `load`), the entry runs under `torch.autocast` in that dtype."""
+        if self.tensor_parallel is not None:
+            from torch.distributed.tensor.experimental import implicit_replication
+
+            from .parallel import whole
+
+            # Plain tensors the entry makes (masks, tables, its inputs) meet
+            # split weights as replicated values; results come back whole.
+            with implicit_replication():
+                return whole(self._run_entry_precision(name, inputs, generics, **options))
+        return self._run_entry_precision(name, inputs, generics, **options)
+
+    def _run_entry_precision(
+        self,
+        name: str,
+        inputs: list[torch.Tensor],
+        generics: Mapping[str, int | str] | None,
+        **options: Any,
+    ) -> Any:
         if self.amp is None:
             return self._run_entry(name, inputs, generics, **options)
         with torch.autocast(self.interpreter.device.type, dtype=self.amp):

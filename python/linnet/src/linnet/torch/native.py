@@ -29,25 +29,18 @@ def _index_copy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
 
 
 def _index_put(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """The cache writes, heads as a full slice as the generated code writes
+    them (see `linnet torch`)."""
     cache, value = args[0], args[1]
-    batch, heads = cache.shape[0], cache.shape[1]
-    rows = torch.arange(batch, device=cache.device)
-    lanes = torch.arange(heads, device=cache.device)
     if len(args) == 3:
         # `write_rows`: row b at at[b].
-        return cache.index_put(
-            (rows[:, None], lanes[None, :], args[2].long()[:, None]), value[:, :, 0]
-        )
+        rows = torch.arange(cache.shape[0], device=cache.device)
+        return torch.ops.aten.index_put(cache, [rows, None, args[2].long()], value[:, :, 0])
+    # `write_slot` (one row) or `write_slots` (rows `slots`): a span each.
     slot, at = args[2], args[3]
-    if slot.dim() == 1:
-        # `write_slots`: a span in each of several rows.
-        span = at.long() + torch.arange(value.shape[2], device=cache.device)
-        return cache.index_put(
-            (slot.long()[:, None, None], lanes[None, :, None], span[None, None, :]), value
-        )
-    # `write_slot`: one row, a span of positions.
-    span = at.long() + torch.arange(value.shape[2], device=cache.device)
-    return cache.index_put((slot.long().reshape(1, 1), lanes[:, None], span[None, :]), value[0])
+    rows = slot.long().reshape(1, 1) if slot.dim() == 0 else slot.long()[:, None]
+    span = (at.long() + torch.arange(value.shape[2], device=cache.device))[None, :]
+    return torch.ops.aten.index_put(cache, [rows, None, span], value.permute(0, 2, 1, 3))
 
 
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:

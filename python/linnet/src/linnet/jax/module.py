@@ -46,6 +46,7 @@ class LinnetModel:
         self.state: dict[str, Any] = {}
         # Weight-only values (`prepare`), shared by every entry by key.
         self._prepared: dict[str, Any] = {}
+        self.mesh: Any = None  # set by `shard`
 
     def _function(self, name: str) -> LinnetFunction:
         if name not in self._functions:
@@ -83,10 +84,56 @@ class LinnetModel:
         if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):
             return outcome
         result, state = outcome
+        if self.mesh is not None:
+            state = {path: self._shard_state(value) for path, value in state.items()}
         self.state = state
         return result
 
+    def _shard_state(self, value: Any) -> Any:
+        """A state array split by heads over the mesh, as the key and value
+        projections that fill a KV cache are; others stay as XLA left them."""
+        import jax
+        from jax.sharding import NamedSharding, PartitionSpec
+
+        from ..parallel import state_axis
+
+        axis = state_axis(value.shape, self.mesh.devices.size)
+        if axis is None:
+            return value
+        spec = [None] * value.ndim
+        spec[axis] = self.mesh.axis_names[0]
+        wanted = NamedSharding(self.mesh, PartitionSpec(*spec))
+        return value if value.sharding == wanted else jax.device_put(value, wanted)
+
     def reset_state(self) -> None:
+        self.state = {}
+
+    def shard(self, mesh: Any, rules: Mapping[str, int | None] | None = None) -> None:
+        """Splits the weights over `mesh` (a one-axis `Mesh`, or a device
+        count) as `rules` say; entries then run partitioned across it."""
+        import jax
+        import numpy as np
+        from jax.sharding import Mesh, NamedSharding, PartitionSpec
+
+        from ..parallel import split_axis
+
+        if isinstance(mesh, int):
+            mesh = Mesh(np.array(jax.devices()[:mesh]), ("model",))
+        axis_name = mesh.axis_names[0]
+        devices = mesh.devices.size
+        self.mesh = mesh
+        manifest = self._first.parameter_paths
+        for path, value in list(self.weights.items()):
+            # Checkpoint names the bindings map from stay on the host; only
+            # the model's own paths go to the devices.
+            if not any(LinnetFunction._matches(pattern, path) for pattern in manifest):  # pyright: ignore[reportPrivateUsage]
+                continue
+            shape = tuple(np.shape(value))
+            axis = split_axis(path, shape, devices, rules)
+            spec = [None] * len(shape)
+            if axis is not None:
+                spec[axis] = axis_name
+            self.weights[path] = jax.device_put(value, NamedSharding(mesh, PartitionSpec(*spec)))
         self.state = {}
 
 
@@ -101,12 +148,20 @@ def load_model(
     numerics: str = "fast",
     cast_dtype: bool = False,
     generated: bool = True,
+    mesh: Any = None,
+    rules: Mapping[str, int | None] | None = None,
 ) -> LinnetModel:
     """Every entry of the root block over one copy of the weights, with its
     state kept on the device. `generated=True` runs the entries as generated
     JAX source (`linnet jax`), whose cache writes are scatters and slice
     updates; `False` runs the StableHLO export. The other arguments are
-    `load`'s."""
+    `load`'s.
+
+    `mesh` runs the model tensor-parallel: a `jax.sharding.Mesh` with one
+    axis, or a number of devices to make one from. Each weight is split over
+    it along the axis `rules` give (`linnet.parallel.DEFAULT_RULES` unless
+    given) and XLA partitions every entry, adding the collectives the split
+    needs; a KV cache is split by heads."""
     # Any entry will do for `load`, which checks the weights against the
     # plan; the model builds a function for each entry it is asked to run.
     plan = json.loads(
@@ -137,4 +192,7 @@ def load_model(
         numerics=numerics,
         cast_dtype=cast_dtype,
     )
-    return LinnetModel(first, generated)
+    model = LinnetModel(first, generated)
+    if mesh is not None:
+        model.shard(mesh, rules)
+    return model
