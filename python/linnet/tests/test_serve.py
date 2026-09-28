@@ -251,6 +251,19 @@ def test_onnx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> Non
     tokens = np.array([[3, 1, 4, 1, 5, 9, 2, 6]], dtype=np.int32)
     expected = wide.run_entry("forward", [tokens])
     got = np.asarray(narrow.run_entry("forward", [tokens]))
-    if dtype == "bf16":
-        got = (got.astype(np.uint32) << 16).view(np.float32)
     np.testing.assert_allclose(got.astype(np.float32), expected, atol=0.15, rtol=0.05)
+
+
+def test_onnx_bf16_values_cross_as_bits() -> None:
+    """ONNX Runtime has no NumPy type for bf16: inputs go in as rounded bits
+    and results come back widened to f32, never truncated like integers."""
+    from linnet.onnx.runtime import (
+        _decode,  # pyright: ignore[reportPrivateUsage]
+        _encode,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    values = np.array([0.1, -2.5, 3.14159, 1e-3], dtype=np.float32)
+    bits = _encode(values, 16)
+    assert bits.dtype == np.uint16
+    back = _decode(bits, 16)
+    np.testing.assert_allclose(back, values, rtol=4e-3)

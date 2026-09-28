@@ -87,7 +87,7 @@ class OnnxModel:
         session = self._sessions[key]
         binding = session.session.io_binding()
         for port, array in zip(session.inputs, arrays, strict=True):
-            binding.bind_cpu_input(port, np.ascontiguousarray(array.astype(session.dtypes[port])))
+            binding.bind_cpu_input(port, _encode(array, session.elements[port]))
         for port, path in session.parameters.items():
             binding.bind_ortvalue_input(port, self._weights[path])
         for port, (path, shape, element) in session.states.items():
@@ -101,7 +101,11 @@ class OnnxModel:
             binding.bind_output(port, self._device, 0)
         session.session.run_with_iobinding(binding)
         outputs = binding.get_outputs()
-        results = [outputs[i].numpy() for i in range(len(session.results))]
+        # bf16 results arrive as their bits; they are returned as f32.
+        results = [
+            _decode(outputs[i].numpy(), session.result_elements[i])
+            for i in range(len(session.results))
+        ]
         for i, path in enumerate(session.next_states.values()):
             self.state[path] = outputs[len(session.results) + i]
         return results[0] if len(results) == 1 else tuple(results)
@@ -163,8 +167,12 @@ class OnnxModel:
         session = self._ort.InferenceSession(
             exported.model.SerializeToString(), settings, providers=self.providers
         )
-        dtypes = {port: _NUMPY[graph_inputs[port].elem_type] for port in inputs}
-        return _Session(session, inputs, dtypes, parameters, states, results, next_states)
+        elements = {port: graph_inputs[port].elem_type for port in inputs}
+        graph_outputs = {o.name: o.type.tensor_type.elem_type for o in exported.model.graph.output}
+        result_elements = [graph_outputs[port] for port in results]
+        return _Session(
+            session, inputs, elements, parameters, states, results, result_elements, next_states
+        )
 
     def _bindings(self, name: str, inputs: Sequence[np.ndarray]) -> dict[str, int]:
         """The entry's own generics, from the shapes of its inputs."""
@@ -192,19 +200,37 @@ class _Session:
         self,
         session: Any,
         inputs: list[str],
-        dtypes: dict[str, Any],
+        elements: dict[str, int],
         parameters: dict[str, str],
         states: dict[str, tuple[str, tuple[int, ...], int]],
         results: list[str],
+        result_elements: list[int],
         next_states: dict[str, str],
     ) -> None:
         self.session = session
         self.inputs = inputs
-        self.dtypes = dtypes
+        self.elements = elements  # graph input -> ONNX element type
+        self.result_elements = result_elements
         self.parameters = parameters  # graph input -> parameter path
         self.states = states  # graph input -> (state path, shape, element type)
         self.results = results  # graph outputs, in order
         self.next_states = next_states  # graph output -> state path
+
+
+def _encode(array: np.ndarray, element: int) -> np.ndarray:
+    """An input as the graph's element type; bf16 as its rounded bits."""
+    if element == 16:
+        bits = np.ascontiguousarray(array, dtype=np.float32).view(np.uint32)
+        rounded = bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))
+        return (rounded >> 16).astype(np.uint16)
+    return np.ascontiguousarray(array.astype(_NUMPY[element]))
+
+
+def _decode(array: np.ndarray, element: int) -> np.ndarray:
+    """A result as NumPy can hold it: bf16 bits widened to f32."""
+    if element == 16:
+        return (np.asarray(array).view(np.uint16).astype(np.uint32) << 16).view(np.float32)
+    return array
 
 
 def _to_device(ort: Any, array: np.ndarray, element: int, device: str) -> Any:
