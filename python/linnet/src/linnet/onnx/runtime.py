@@ -34,7 +34,18 @@ from .export import export_model
 
 # ONNX element types and the NumPy dtypes their bytes are read as. bf16 has
 # no NumPy type; its bytes travel as uint16.
-_NUMPY = {1: np.float32, 10: np.float16, 16: np.uint16, 6: np.int32, 7: np.int64, 9: np.bool_}
+_NUMPY = {
+    1: np.float32,
+    2: np.uint8,
+    3: np.int8,
+    5: np.int16,
+    6: np.int32,
+    7: np.int64,
+    9: np.bool_,
+    10: np.float16,
+    11: np.float64,
+    16: np.uint16,
+}
 _ELEMENTS = {"f32": 1, "f16": 10, "bf16": 16, "i32": 6, "i64": 7, "bool": 9}
 
 
