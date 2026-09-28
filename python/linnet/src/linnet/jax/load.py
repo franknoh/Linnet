@@ -14,6 +14,7 @@ has no VJP.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import re
 import tempfile
@@ -24,6 +25,8 @@ from typing import Any, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.core import Tracer
+from jax.sharding import SingleDeviceSharding
 
 from ..compiler import LinnetError, run_compiler, std_arguments
 from ..weights import apply_bindings, read_arrays
@@ -294,11 +297,23 @@ class LinnetFunction:
                     for array, aval in zip(arrays, declared, strict=True)
                 ]
         given: Mapping[str, Any] = state or {}
+        # Zeros placed where the weights are: a call's new state comes back
+        # committed to that device, and jit compiles again for committed
+        # arrays where the first call had uncommitted ones. Weights split
+        # over a mesh leave the placement to the model (`shard`).
+        shardings = {
+            a.sharding for a in arrays if isinstance(a, jax.Array) and not isinstance(a, Tracer)
+        }
+        placement = None
+        if len(shardings) == 1 and isinstance(next(iter(shardings)), SingleDeviceSharding):
+            placement = next(iter(shardings))
+        missing = [p for p in compiled.state_inputs if p not in given]
+        shapes = tuple(
+            (tuple(compiled.state_avals[p].shape), compiled.state_avals[p].dtype) for p in missing
+        )
+        zeros = dict(zip(missing, _zeros(shapes, placement)(), strict=True)) if missing else {}
         for path in compiled.state_inputs:
-            aval = compiled.state_avals[path]
-            arrays.append(
-                _device_array(given[path]) if path in given else jnp.zeros(aval.shape, aval.dtype)
-            )
+            arrays.append(_device_array(given[path]) if path in given else zeros[path])
         outputs = compiled.call(*inputs, *arrays)
         if not compiled.state_inputs and not compiled.state_outputs:
             return outputs
@@ -334,6 +349,16 @@ class CompiledEntry:
     call: Any  # `exported.call` under `jax.jit`
     arrays: list[Any]  # the loaded weights as device arrays, in `parameters` order
     source_path: Path | None = None  # generated JAX source, when the entry runs as code
+
+
+@functools.cache
+def _zeros(shapes: tuple[tuple[tuple[int, ...], Any], ...], placement: Any) -> Any:
+    """One compiled function making every missing state member's zeros:
+    one dispatch rather than one per cache."""
+    return jax.jit(
+        lambda: tuple(jnp.zeros(shape, dtype) for shape, dtype in shapes),
+        out_shardings=None if placement is None else tuple(placement for _ in shapes),
+    )
 
 
 def _device_array(value: Any) -> Any:

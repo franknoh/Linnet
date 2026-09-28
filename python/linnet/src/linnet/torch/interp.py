@@ -25,7 +25,7 @@ import torch
 
 from ..plan import Env, Plan, PlanError
 from .dtypes import torch_dtype
-from .native import NATIVE, causal_mask, conv2d, upsample_nearest2d
+from .native import NATIVE, causal_mask, conv2d, max_pool2d, upsample_nearest2d
 
 Value = Any
 
@@ -289,6 +289,15 @@ class Interpreter:
                 stride = self._generic_dim(callee, callee_env, "Stride")
                 pad = self._generic_dim(callee, callee_env, "Pad")
                 return [conv2d(operands, stride, pad)]
+            if selected == "torch.nn.functional.max_pool2d":
+                callee = self.plan.functions[attrs["callee"]]
+                callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
+                window = self._generic_dim(callee, callee_env, "K")
+                stride = self._generic_dim(callee, callee_env, "Stride")
+                pad = self._generic_dim(callee, callee_env, "Pad")
+                if 2 * pad <= window:
+                    return [max_pool2d(operands, window, stride, pad)]
+                return [self.call(callee, callee_env, operands)]
             if selected == "torch.nn.functional.interpolate(nearest)":
                 assert result_type is not None
                 return [upsample_nearest2d(operands, env.shape(result_type["shape"]))]

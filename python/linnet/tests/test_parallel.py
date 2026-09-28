@@ -68,7 +68,11 @@ prompts = [jnp.asarray([[3, 1, 4, 1], [5, 9, 2, 6], [2, 7, 1, 8]], jnp.int32),
 step = [jnp.asarray([[7], [8], [9]], jnp.int32), jnp.asarray([4, 3, 2], jnp.int32)]
 for m in (one, two):
     m.run_entry("prefill_slots", prompts)
-diff = jnp.abs(one.run_entry("decode_rows", step) - two.run_entry("decode_rows", step)).max()
+# One model's state lives on one device, the other's on the mesh: compare
+# on the host.
+import numpy as np
+single, split = (np.asarray(m.run_entry("decode_rows", step)) for m in (one, two))
+diff = np.abs(single - split).max()
 assert float(diff) < 1e-4
 assert "'model'" in str(two.state["cache_k"].sharding.spec)
 print("ok")

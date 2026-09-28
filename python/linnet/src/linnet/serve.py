@@ -152,78 +152,108 @@ class Engine:
     def run(self, requests: Iterable[Request]) -> tuple[list[Completion], Stats]:
         """Completes every request, all of them waiting from the start, and
         returns them in the order given with the run's totals."""
-        waiting = deque(Completion(r) for r in requests)
-        order = list(waiting)
-        for completion in order:
-            request = completion.request
-            if not request.prompt:
-                raise ValueError("a request needs at least one prompt token")
-            if len(request.prompt) >= self.backend.max_seq:
-                raise ValueError(
-                    f"a prompt of {len(request.prompt)} tokens does not fit a cache of "
-                    f"{self.backend.max_seq} positions"
-                )
-        rows: list[Completion | None] = [None] * self.slots
-        positions = [0] * self.slots
-        last = [self.pad] * self.slots
-        steps = prefills = 0
-        start = time.perf_counter()
-        while waiting or any(row is not None for row in rows):
-            # Admit whoever fits into the free rows, their prompts in passes
-            # of a power of two, similar lengths together.
-            free = [slot for slot in range(self.slots) if rows[slot] is None]
-            admitted = [waiting.popleft() for _ in range(min(len(free), len(waiting)))]
-            admitted.sort(key=lambda c: len(c.request.prompt))
-            placed = list(zip(free, admitted, strict=False))
-            while placed:
-                group = 1
-                while group * 2 <= min(len(placed), self.max_group):
-                    group *= 2
-                batch, placed = placed[:group], placed[group:]
-                now = time.perf_counter() - start
-                prompts = [list(c.request.prompt) for _, c in batch]
-                bucket = self._bucket(max(len(p) for p in prompts))
-                tokens = self.backend.prefill(
-                    [p + [self.pad] * (bucket - len(p)) for p in prompts],
-                    [slot for slot, _ in batch],
-                    [len(p) for p in prompts],
-                )
-                prefills += 1
-                first = time.perf_counter() - start
-                for (slot, completion), prompt, token in zip(batch, prompts, tokens, strict=True):
-                    completion.admitted = now
-                    completion.first_token = first
-                    completion.tokens.append(token)
-                    rows[slot], positions[slot], last[slot] = completion, len(prompt), token
-                    if self._finished(completion, positions[slot]):
-                        completion.finished = first
-                        rows[slot] = None
-            if not any(row is not None for row in rows):
-                continue
-            # One step for the whole batch; empty rows compute along.
-            produced = self.backend.decode(last, positions)
-            steps += 1
-            now = time.perf_counter() - start
-            for slot, completion in enumerate(rows):
-                if completion is None:
-                    continue
-                token = produced[slot]
-                completion.tokens.append(token)
-                positions[slot] += 1
-                last[slot] = token
-                if self._finished(completion, positions[slot]):
-                    completion.finished = now
-                    rows[slot] = None
-        seconds = time.perf_counter() - start
+        self.reset()
+        order = [self.submit(request) for request in requests]
+        while self.busy:
+            self.step()
+        seconds = time.perf_counter() - self._start
         stats = Stats(
             requests=len(order),
             prompt_tokens=sum(len(c.request.prompt) for c in order),
             generated_tokens=sum(len(c.tokens) for c in order),
             seconds=seconds,
-            steps=steps,
-            prefills=prefills,
+            steps=self._steps,
+            prefills=self._prefills,
         )
         return order, stats
+
+    # ---- step by step, for a server whose requests arrive while it runs
+
+    def reset(self) -> None:
+        """Forgets every request, waiting or in a row, and restarts the clock
+        the completions' times count from."""
+        self._waiting: deque[Completion] = deque()
+        self._rows: list[Completion | None] = [None] * self.slots
+        self._positions = [0] * self.slots
+        self._last = [self.pad] * self.slots
+        self._steps = self._prefills = 0
+        self._start = time.perf_counter()
+
+    def submit(self, request: Request) -> Completion:
+        """Queues a request; the next `step` admits it when a row is free.
+        The returned completion fills in as the request runs."""
+        if not request.prompt:
+            raise ValueError("a request needs at least one prompt token")
+        if len(request.prompt) >= self.backend.max_seq:
+            raise ValueError(
+                f"a prompt of {len(request.prompt)} tokens does not fit a cache of "
+                f"{self.backend.max_seq} positions"
+            )
+        if not hasattr(self, "_waiting"):
+            self.reset()
+        completion = Completion(request)
+        self._waiting.append(completion)
+        return completion
+
+    @property
+    def busy(self) -> bool:
+        """Whether any request is waiting or in a row."""
+        return bool(getattr(self, "_waiting", None)) or any(
+            row is not None for row in getattr(self, "_rows", [])
+        )
+
+    def step(self) -> list[Completion]:
+        """Admits waiting requests into free rows, their prompts in passes of
+        a power of two, similar lengths together, then takes one decoding
+        step for every row. Returns the requests that finished."""
+        rows, positions, last = self._rows, self._positions, self._last
+        finished: list[Completion] = []
+        free = [slot for slot in range(self.slots) if rows[slot] is None]
+        admitted = [self._waiting.popleft() for _ in range(min(len(free), len(self._waiting)))]
+        admitted.sort(key=lambda c: len(c.request.prompt))
+        placed = list(zip(free, admitted, strict=False))
+        while placed:
+            group = 1
+            while group * 2 <= min(len(placed), self.max_group):
+                group *= 2
+            batch, placed = placed[:group], placed[group:]
+            now = time.perf_counter() - self._start
+            prompts = [list(c.request.prompt) for _, c in batch]
+            bucket = self._bucket(max(len(p) for p in prompts))
+            tokens = self.backend.prefill(
+                [p + [self.pad] * (bucket - len(p)) for p in prompts],
+                [slot for slot, _ in batch],
+                [len(p) for p in prompts],
+            )
+            self._prefills += 1
+            first = time.perf_counter() - self._start
+            for (slot, completion), prompt, token in zip(batch, prompts, tokens, strict=True):
+                completion.admitted = now
+                completion.first_token = first
+                completion.tokens.append(token)
+                rows[slot], positions[slot], last[slot] = completion, len(prompt), token
+                if self._finished(completion, positions[slot]):
+                    completion.finished = first
+                    rows[slot] = None
+                    finished.append(completion)
+        if not any(row is not None for row in rows):
+            return finished
+        # One step for the whole batch; empty rows compute along.
+        produced = self.backend.decode(last, positions)
+        self._steps += 1
+        now = time.perf_counter() - self._start
+        for slot, completion in enumerate(rows):
+            if completion is None:
+                continue
+            token = produced[slot]
+            completion.tokens.append(token)
+            positions[slot] += 1
+            last[slot] = token
+            if self._finished(completion, positions[slot]):
+                completion.finished = now
+                rows[slot] = None
+                finished.append(completion)
+        return finished
 
     def _bucket(self, length: int) -> int:
         for bucket in self.buckets:

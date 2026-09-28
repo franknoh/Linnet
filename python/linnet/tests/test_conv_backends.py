@@ -105,3 +105,62 @@ def test_onnx_conv_is_f_conv2d(
     (got,) = session.run(None, {session.get_inputs()[0].name: x.numpy()})
     np.testing.assert_allclose(got, expected.numpy(), atol=1e-5, rtol=1e-5)
     assert any(node.op_type == "Conv" for node in exported.model.graph.node)
+
+
+BATCH_NORM_SOURCE = """\
+module tests.convolve_norm
+
+use std.nn.conv::{conv2d}
+use std.nn.norm::{batch_norm}
+
+pub block Model<T: Float = f32> {
+    param weight: Tensor[4, 3, 3, 3; T]
+    param mean: Tensor[4; T]
+    param variance: Tensor[4; T]
+    param scale: Tensor[4; T]
+    param shift: Tensor[4; T]
+    param unused: Tensor[2; T]
+
+    pub entry forward<B: Dim>(x: Tensor[B, 3, 8, 8; T]) -> Tensor[B, 4, 8, 8; T] {
+        let y = conv2d<B, 3, 4, 8, 8, 3, 1, 1, T>(x, weight, none)
+        return batch_norm<B, 4, 8, 8, T>(y, mean, variance, scale, shift)
+    }
+}
+"""
+
+
+def test_onnx_runtime_folds_batch_norm_into_the_convolution(tmp_path: Path) -> None:
+    """A batch norm is ONNX's `BatchNormalization`, and an entry without
+    state takes the weights as initializers, so ONNX Runtime can fold one
+    into the other -- still computing what `F.batch_norm` does."""
+    pytest.importorskip("onnxruntime")
+    from linnet.onnx import export_model, load_model
+
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    source = tmp_path / "convolve_norm.linnet"
+    source.write_text(BATCH_NORM_SOURCE, encoding="utf-8")
+    tensors = {
+        "weight": torch.randn(4, 3, 3, 3),
+        "mean": torch.randn(4),
+        "variance": torch.rand(4) + 0.5,
+        "scale": torch.randn(4),
+        "shift": torch.randn(4),
+        "unused": torch.randn(2),
+    }
+    weights = tmp_path / "model.safetensors"
+    save_file(tensors, str(weights))
+    x = torch.randn(2, 3, 8, 8)
+    expected = functional.batch_norm(
+        functional.conv2d(x, tensors["weight"], padding=1),
+        tensors["mean"],
+        tensors["variance"],
+        tensors["scale"],
+        tensors["shift"],
+    )
+    exported = export_model(source, generics={"B": 2}, weights=weights, std_root=STDLIB)
+    assert any(node.op_type == "BatchNormalization" for node in exported.model.graph.node)
+    model = load_model(
+        source, generics={}, weights=weights, std_root=STDLIB, providers=["CPUExecutionProvider"]
+    )
+    got = model.run_entry("forward", [x.numpy()])
+    np.testing.assert_allclose(got, expected.numpy(), atol=1e-5, rtol=1e-5)

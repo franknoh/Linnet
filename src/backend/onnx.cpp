@@ -175,11 +175,23 @@ public:
                                         const Dims& out_axes,
                                         const Dims& shape,
                                         ScalarKind dtype) override {
-        return node("Einsum",
-                    {lhs, rhs},
-                    "equation = \"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\"",
-                    shape,
-                    dtype);
+        const std::string equation =
+            "equation = \"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\"";
+        if (dtype == ScalarKind::BF16) {
+            // ONNX's Einsum takes no bf16: contract in f32 and round back,
+            // which is what a bf16 matrix product accumulates in anyway.
+            const auto wide = [&](const TensorInfo& t) {
+                return t.dtype == ScalarKind::F32
+                           ? t
+                           : TensorInfo{convert(t, ScalarKind::F32), t.shape, ScalarKind::F32};
+            };
+            const TensorInfo product{
+                node("Einsum", {wide(lhs), wide(rhs)}, equation, shape, ScalarKind::F32),
+                shape,
+                ScalarKind::F32};
+            return convert(product, dtype);
+        }
+        return node("Einsum", {lhs, rhs}, equation, shape, dtype);
     }
 
     std::optional<std::string> native_call(const std::string& implementation,
@@ -219,16 +231,71 @@ public:
             if (!stride || !pad) {
                 return std::nullopt;
             }
-            std::vector<TensorInfo> inputs{*at[0], *at[1]};
+            // ONNX Runtime has no bf16 convolution: convolve in f32 and
+            // round back, as the contraction does.
+            const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
+            const auto as_kind = [&](const TensorInfo& t) {
+                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
+            };
+            std::vector<TensorInfo> inputs{as_kind(*at[0]), as_kind(*at[1])};
             if (at[2] != nullptr) {
-                inputs.push_back(*at[2]);
+                inputs.push_back(as_kind(*at[2]));
             }
-            return node("Conv",
-                        inputs,
-                        "strides = [" + int_list({*stride, *stride}) + "], pads = [" +
-                            int_list({*pad, *pad, *pad, *pad}) + "]",
-                        shape,
-                        dtype);
+            const std::string out =
+                node("Conv",
+                     inputs,
+                     "strides = [" + int_list({*stride, *stride}) + "], pads = [" +
+                         int_list({*pad, *pad, *pad, *pad}) + "]",
+                     shape,
+                     kind);
+            return kind == dtype ? out : convert({out, shape, kind}, dtype);
+        }
+        if (implementation_base == "torch.nn.functional.batch_norm" && operands.size() == 6 &&
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr &&
+            at[4] != nullptr && at[5] != nullptr) {
+            // The operator, not its arithmetic: ONNX Runtime folds a
+            // `BatchNormalization` into the convolution before it.
+            const std::string epsilon = literal_of(at[5]->name);
+            if (epsilon.empty()) {
+                return std::nullopt;
+            }
+            const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
+            const auto as_kind = [&](const TensorInfo& t) {
+                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
+            };
+            const std::string out = node("BatchNormalization",
+                                         {as_kind(*at[0]),
+                                          as_kind(*at[3]),
+                                          as_kind(*at[4]),
+                                          as_kind(*at[1]),
+                                          as_kind(*at[2])},
+                                         "epsilon = " + epsilon,
+                                         shape,
+                                         kind);
+            return kind == dtype ? out : convert({out, shape, kind}, dtype);
+        }
+        if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
+            at[0] != nullptr) {
+            const auto window = call_generic("K");
+            const auto stride = call_generic("Stride");
+            const auto pad = call_generic("Pad");
+            if (!window || !stride || !pad || 2 * *pad > *window) {
+                return std::nullopt;
+            }
+            // No bf16 pooling in ONNX Runtime either: pool in f32.
+            const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
+            const TensorInfo x = at[0]->dtype == kind
+                                     ? *at[0]
+                                     : TensorInfo{convert(*at[0], kind), at[0]->shape, kind};
+            const std::string out =
+                node("MaxPool",
+                     {x},
+                     "kernel_shape = [" + int_list({*window, *window}) + "], strides = [" +
+                         int_list({*stride, *stride}) + "], pads = [" +
+                         int_list({*pad, *pad, *pad, *pad}) + "]",
+                     shape,
+                     kind);
+            return kind == dtype ? out : convert({out, shape, kind}, dtype);
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
@@ -539,6 +606,9 @@ public:
         if (is_logical) {
             // Boolean reductions go through integers: ONNX reduces numbers.
             source = {convert(body, ScalarKind::I32), body.shape, ScalarKind::I32};
+        } else if (body.dtype == ScalarKind::BF16) {
+            // ONNX Runtime has no bf16 reductions: reduce in f32.
+            source = {convert(body, ScalarKind::F32), body.shape, ScalarKind::F32};
         }
         const char* op = kind == Reduction::Sum    ? "ReduceSum"
                          : kind == Reduction::Prod ? "ReduceProd"
@@ -547,8 +617,8 @@ public:
                          : kind == Reduction::Any  ? "ReduceMax"
                                                    : "ReduceMin";
         std::string reduced = node(op, {source, axes}, "keepdims = 0", shape, source.dtype);
-        if (is_logical) {
-            return convert({reduced, shape, ScalarKind::I32}, ScalarKind::Bool);
+        if (source.dtype != body.dtype) {
+            return convert({reduced, shape, source.dtype}, body.dtype);
         }
         return reduced;
     }

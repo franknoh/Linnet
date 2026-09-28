@@ -99,6 +99,12 @@ def conv2d(args: list[Any], stride: int, pad: int) -> torch.Tensor:
     return functional.conv2d(x, weight, bias, stride=stride, padding=pad)
 
 
+def max_pool2d(args: list[Any], window: int, stride: int, pad: int) -> torch.Tensor:
+    """`std.nn.pool::max_pool2d` as `F.max_pool2d`, with the call's own
+    geometry, as for the convolution."""
+    return functional.max_pool2d(args[0], window, stride=stride, padding=pad)
+
+
 def upsample_nearest2d(args: list[Any], shape: list[int]) -> torch.Tensor:
     """`std.nn.resize::upsample_nearest2d` as `F.interpolate`; the scale is
     the ratio of the shapes, as the exporters recover it."""

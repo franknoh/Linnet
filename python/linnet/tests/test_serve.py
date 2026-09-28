@@ -13,7 +13,7 @@ import pytest
 import torch
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
-from linnet.serve import Engine, Request
+from linnet.serve import Completion, Engine, Request
 from linnet.torch import load
 
 REPO = Path(__file__).resolve().parents[3]
@@ -251,6 +251,44 @@ def test_onnx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> Non
     tokens = np.array([[3, 1, 4, 1, 5, 9, 2, 6]], dtype=np.int32)
     expected = wide.run_entry("forward", [tokens])
     got = np.asarray(narrow.run_entry("forward", [tokens]))
-    if dtype == "bf16":
-        got = (got.astype(np.uint32) << 16).view(np.float32)
-    np.testing.assert_allclose(got.astype(np.float32), expected, atol=0.15, rtol=0.05)
+    # Two steps of the type at the logits' own scale: bf16's step at 32 is
+    # already 0.25.
+    step = {"f16": 2.0**-10, "bf16": 2.0**-7}[dtype] * float(np.abs(expected).max())
+    np.testing.assert_allclose(
+        got.astype(np.float32), expected, atol=max(0.15, 2 * step), rtol=0.05
+    )
+
+
+def test_onnx_bf16_values_cross_as_bits() -> None:
+    """ONNX Runtime has no NumPy type for bf16: inputs go in as rounded bits
+    and results come back widened to f32, never truncated like integers."""
+    from linnet.onnx.runtime import (
+        _decode,  # pyright: ignore[reportPrivateUsage]
+        _encode,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    values = np.array([0.1, -2.5, 3.14159, 1e-3], dtype=np.float32)
+    bits = _encode(values, 16)
+    assert bits.dtype == np.uint16
+    back = _decode(bits, 16)
+    np.testing.assert_allclose(back, values, rtol=4e-3)
+
+
+def test_requests_arriving_while_others_run(model_files: tuple[Path, Path]) -> None:
+    """`submit` and `step`, as a server uses them: a request that arrives
+    mid-decode joins a free row and gets the same tokens as on its own."""
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, buckets=[8, 16, 32])
+    early = [engine.submit(r) for r in _requests()[:2]]
+    engine.step()
+    engine.step()
+    late = engine.submit(Request(prompt=[9, 8, 7], max_new_tokens=5))
+    finished: list[Completion] = []
+    while engine.busy:
+        finished += engine.step()
+    # `step` reported every request once, when it finished.
+    assert sorted(id(c) for c in finished) == sorted(id(c) for c in [*early, late])
+    for completion in [*early, late]:
+        assert completion.tokens == _greedy(model, completion.request)
+    assert late.admitted > 0 and late.reason == "length"

@@ -379,21 +379,25 @@ public:
             break;
         }
         const TensorInfo initial{constant(init, body.dtype), {}, body.dtype};
-        const std::string a = fresh();
-        const std::string b = fresh();
-        const std::string scalar = tensor_type({}, body.dtype);
-        const std::string combined = fresh();
-        const std::string region =
-            "{\n" + indent_ + "  ^bb0(" + a + ": " + scalar + ", " + b + ": " + scalar + "):\n" +
-            indent_ + "    " + combined + " = \"stablehlo." + combine + "\"(" + a + ", " + b +
-            ") : (" + scalar + ", " + scalar + ") -> " + scalar + "\n" + indent_ +
-            "    \"stablehlo.return\"(" + combined + ") : (" + scalar + ") -> ()\n" + indent_ + "}";
         return emit("reduce",
                     {body, initial},
                     "dimensions = " + i64_array(dims),
                     shape,
                     body.dtype,
-                    region);
+                    combiner(combine, body.dtype));
+    }
+
+    // The region a reduction combines two scalars with: `stablehlo.<op>`.
+    std::string combiner(const std::string& op, ScalarKind dtype) {
+        const std::string a = fresh();
+        const std::string b = fresh();
+        const std::string scalar = tensor_type({}, dtype);
+        const std::string combined = fresh();
+        return "{\n" + indent_ + "  ^bb0(" + a + ": " + scalar + ", " + b + ": " + scalar + "):\n" +
+               indent_ + "    " + combined + " = \"stablehlo." + op + "\"(" + a + ", " + b +
+               ") : (" + scalar + ", " + scalar + ") -> " + scalar + "\n" + indent_ +
+               "    \"stablehlo.return\"(" + combined + ") : (" + scalar + ") -> ()\n" + indent_ +
+               "}";
     }
 
     std::optional<std::string> native_call(const std::string& implementation,
@@ -490,6 +494,32 @@ public:
                     Elementwise::Add, {{out, shape, dtype}, {spread, shape, dtype}}, shape, dtype);
             }
             return out;
+        }
+        if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
+            at[0] != nullptr) {
+            const auto window = call_generic("K");
+            const auto stride = call_generic("Stride");
+            const auto pad = call_generic("Pad");
+            if (!window || !stride || !pad) {
+                return std::nullopt;
+            }
+            // The padding holds the initial value, the lowest there is, so
+            // it never wins a window.
+            Literal lowest;
+            lowest.kind = Literal::Kind::Lowest;
+            const TensorInfo initial{constant(lowest, dtype), {}, dtype};
+            const std::string p = std::to_string(*pad);
+            const std::string attributes =
+                "padding = dense<[[0, 0], [0, 0], [" + p + ", " + p + "], [" + p + ", " + p +
+                "]]> : tensor<4x2xi64>, window_dimensions = " +
+                i64_array({1, 1, *window, *window}) +
+                ", window_strides = " + i64_array({1, 1, *stride, *stride});
+            return emit("reduce_window",
+                        {*at[0], initial},
+                        attributes,
+                        shape,
+                        dtype,
+                        combiner("maximum", dtype));
         }
         if (implementation == "torch.nn.functional.linear" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
