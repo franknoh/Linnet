@@ -259,6 +259,10 @@ class CompiledLinnetModule(LinnetModule):
         module: Any = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        if self.tensor_parallel is not None:
+            from .parallel import SplitFunctional
+
+            module.F = SplitFunctional()
         main: Callable[..., Any] = module.main
         if backend in ("reduce-overhead", "cudagraphs"):
             main = torch.compile(main, mode="reduce-overhead")

@@ -42,6 +42,29 @@ def distribute(
     module.tensor_parallel = mesh
 
 
+class SplitFunctional:
+    """`torch.nn.functional` for a generated module whose weights are split.
+
+    DTensor splits an attention mask the way it splits the heads, along
+    axis 1, which for a mask of `[queries, keys]` is the keys. The mask
+    goes in expanded to the query's `[batch, heads, queries, keys]` (a view,
+    no copy), so axis 1 is the heads. Everything else is `F` itself.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(torch.nn.functional, name)
+
+    @staticmethod
+    def scaled_dot_product_attention(
+        query: Any, key: Any, value: Any, attn_mask: Any = None, **options: Any
+    ) -> Any:
+        if attn_mask is not None and attn_mask.dim() < query.dim():
+            attn_mask = attn_mask.expand(*query.shape[:-1], key.shape[-2])
+        return torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=attn_mask, **options
+        )
+
+
 def whole(value: Any) -> Any:
     """A DTensor result as a whole tensor on every process; anything else as it is."""
     from torch.distributed.tensor import DTensor
