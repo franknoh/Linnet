@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
@@ -151,3 +152,31 @@ def test_torch_on_two_processes(files: tuple[Path, Path]) -> None:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     torch.multiprocessing.spawn(_torch_rank, args=(2, port, str(source), str(weights)), nprocs=2)
+
+
+def test_split_attention_gives_the_mask_the_heads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DTensor splits an attention mask along axis 1 as it splits the heads;
+    under tensor parallelism the mask reaches SDPA as `[batch, heads,
+    queries, keys]`, so axis 1 is the heads, with the same result."""
+    import torch.nn.functional as functional
+
+    from linnet.torch.parallel import SplitFunctional
+
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    q, k, v = torch.randn(2, 4, 3, 8), torch.randn(2, 2, 5, 8), torch.randn(2, 2, 5, 8)
+    mask = torch.rand(3, 5) > 0.3
+    mask[:, 0] = True
+    expected = functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=True)
+    seen: list[tuple[int, ...]] = []
+    real = functional.scaled_dot_product_attention
+
+    def spy(*args: Any, attn_mask: Any = None, **options: Any) -> Any:
+        seen.append(tuple(attn_mask.shape))
+        return real(*args, attn_mask=attn_mask, **options)
+
+    monkeypatch.setattr(functional, "scaled_dot_product_attention", spy)
+    split = SplitFunctional()
+    got = split.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=True)
+    torch.testing.assert_close(got, expected)
+    assert seen == [(2, 4, 3, 5)]
+    assert split.softmax is functional.softmax
