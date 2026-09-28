@@ -84,6 +84,7 @@ What `load` does:
 | `trainable=True` | parameters require gradients |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 | `cast_dtype=True` | converts floating-point weights to the model's dtype as they are read: an f32 checkpoint in a bf16 model, or the reverse |
+| `amp="bf16"` (or `"f16"`) | mixed precision: weights stay in the model's dtype (`T=f32` keeps f32 masters) and entries run under `torch.autocast`, so products, convolutions, and attention compute in 16 bits; gradients arrive in f32. With `"f16"`, scale the loss with `torch.amp.GradScaler` |
 | `device_map="auto"` | spreads the model over the visible GPUs and streams what does not fit from the host; see below |
 
 Entries with generics the inputs do not determine take them by name:

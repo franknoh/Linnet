@@ -278,6 +278,21 @@ class LinnetFunction:
             if missing:
                 raise LinnetError("missing parameters: " + ", ".join(missing))
             arrays = [_device_array(parameters[path]) for path in compiled.parameters]
+            if self.cast_dtype:
+                # Mixed precision: master parameters (f32, say) cast to the
+                # dtype the export declares on every call, so `jax.grad`
+                # returns gradients in the masters' own dtype.
+                avals = compiled.exported.in_avals
+                first = len(avals) - len(compiled.state_inputs) - len(compiled.parameters)
+                declared = avals[first : first + len(compiled.parameters)]
+                arrays = [
+                    array.astype(aval.dtype)
+                    if array.dtype != aval.dtype
+                    and jnp.issubdtype(array.dtype, jnp.floating)
+                    and jnp.issubdtype(aval.dtype, jnp.floating)
+                    else array
+                    for array, aval in zip(arrays, declared, strict=True)
+                ]
         given: Mapping[str, Any] = state or {}
         for path in compiled.state_inputs:
             aval = compiled.state_avals[path]

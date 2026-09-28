@@ -80,6 +80,11 @@ Because it is plain JAX, `jax.grad`, `jax.vmap`, and any optimizer over the
 operations become `jax.nn` calls, and state is threaded as with `load`. The
 generated module turns on `jax_enable_x64`, which Linnet's `i64` needs.
 
+Mixed precision takes f32 master parameters and computes in bf16:
+`load_source(..., generics={..., "T": "bf16"}, cast_dtype=True)` casts the
+parameters given to `apply` to `bf16` on every call, so `jax.grad` returns
+gradients in f32 for an f32 optimizer state. `numerics="equivalent"` keeps
+softmax, normalization, and attention accumulating in f32.
 ## Flax NNX
 
 ```python
