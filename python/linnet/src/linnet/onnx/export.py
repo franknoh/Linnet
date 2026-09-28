@@ -153,38 +153,21 @@ def export_model(
         for p in model.metadata_props
         if p.key.startswith("linnet.path.")
     }
-    wanted = {mapping.get(path, path): (input_name, path) for input_name, path in paths.items()}
+    # A checkpoint tensor may serve several parameters (an output head tied
+    # to the embedding): each gets its own initializer.
+    wanted: dict[str, list[tuple[str, str]]] = {}
+    for input_name, path in paths.items():
+        wanted.setdefault(mapping.get(path, path), []).append((input_name, path))
     declared = {i.name: i for i in model.graph.input}
 
     found: dict[str, Any] = {}
     problems: list[str] = []
     for tensor in iter_safetensors(weights):
-        if tensor.name not in wanted:
-            continue
-        input_name, path = wanted[tensor.name]
-        info = declared[input_name].type.tensor_type
-        shape = tuple(d.dim_value for d in info.shape.dim)
-        if shape != tensor.shape:
-            problems.append(
-                f"`{tensor.name}` has shape {list(tensor.shape)}, `{path}` needs {list(shape)}"
-            )
-            continue
-        data = tensor.data
-        if ONNX_DTYPES.get(tensor.dtype) != info.elem_type:
-            wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
-            if cast_dtype and tensor.dtype in FLOATS and wanted_dtype in FLOATS:
-                data = _cast_float(data, tensor.dtype, wanted_dtype)
-            else:
-                needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
-                problems.append(f"`{tensor.name}` is {tensor.dtype}, `{path}` needs {needs}")
-                continue
-        initializer = onnx.TensorProto()
-        initializer.name = input_name
-        initializer.data_type = info.elem_type
-        initializer.dims.extend(tensor.shape)
-        initializer.raw_data = data
-        found[input_name] = initializer
-    missing = [path for input_name, path in wanted.values() if input_name not in found]
+        for input_name, path in wanted.get(tensor.name, []):
+            _take(tensor, input_name, path, declared, cast_dtype, found, problems)
+    missing = [
+        path for users in wanted.values() for input_name, path in users if input_name not in found
+    ]
     if missing:
         problems += [f"missing tensor for `{path}`" for path in missing]
     if problems:
@@ -213,6 +196,43 @@ def export_model(
 
 
 FLOATS = ("F32", "F16", "BF16", "F64")
+
+
+def _take(
+    tensor: Any,
+    input_name: str,
+    path: str,
+    declared: dict[str, Any],
+    cast_dtype: bool,
+    found: dict[str, Any],
+    problems: list[str],
+) -> None:
+    """`tensor` as the initializer for graph input `input_name` (parameter
+    `path`), checked against its declared shape and dtype."""
+    import onnx
+
+    info = declared[input_name].type.tensor_type
+    shape = tuple(d.dim_value for d in info.shape.dim)
+    if shape != tensor.shape:
+        problems.append(
+            f"`{tensor.name}` has shape {list(tensor.shape)}, `{path}` needs {list(shape)}"
+        )
+        return
+    data = tensor.data
+    if ONNX_DTYPES.get(tensor.dtype) != info.elem_type:
+        wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
+        if cast_dtype and tensor.dtype in FLOATS and wanted_dtype in FLOATS:
+            data = _cast_float(data, tensor.dtype, wanted_dtype)
+        else:
+            needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
+            problems.append(f"`{tensor.name}` is {tensor.dtype}, `{path}` needs {needs}")
+            return
+    initializer = onnx.TensorProto()
+    initializer.name = input_name
+    initializer.data_type = info.elem_type
+    initializer.dims.extend(tensor.shape)
+    initializer.raw_data = data
+    found[input_name] = initializer
 
 
 def _cast_float(data: bytes, source: str, target: str) -> bytes:
