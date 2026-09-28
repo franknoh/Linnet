@@ -297,21 +297,25 @@ class LinnetFunction:
                     for array, aval in zip(arrays, declared, strict=True)
                 ]
         given: Mapping[str, Any] = state or {}
-        # Zeros placed where the weights are: a call's new state comes back
-        # committed to that device, and jit compiles again for committed
-        # arrays where the first call had uncommitted ones. Weights split
-        # over a mesh leave the placement to the model (`shard`).
-        shardings = {
-            a.sharding for a in arrays if isinstance(a, jax.Array) and not isinstance(a, Tracer)
-        }
-        placement = None
-        if len(shardings) == 1 and isinstance(next(iter(shardings)), SingleDeviceSharding):
-            placement = next(iter(shardings))
         missing = [p for p in compiled.state_inputs if p not in given]
-        shapes = tuple(
-            (tuple(compiled.state_avals[p].shape), compiled.state_avals[p].dtype) for p in missing
-        )
-        zeros = dict(zip(missing, _zeros(shapes, placement)(), strict=True)) if missing else {}
+        zeros: dict[str, Any] = {}
+        if missing:
+            # Zeros placed where the weights are: a call's new state comes
+            # back committed to that device, and jit compiles again for
+            # committed arrays where the first call had uncommitted ones.
+            # Weights split over a mesh leave the placement to the model
+            # (`shard`).
+            shardings = {
+                a.sharding for a in arrays if isinstance(a, jax.Array) and not isinstance(a, Tracer)
+            }
+            placement = None
+            if len(shardings) == 1 and isinstance(next(iter(shardings)), SingleDeviceSharding):
+                placement = next(iter(shardings))
+            shapes = tuple(
+                (tuple(compiled.state_avals[p].shape), compiled.state_avals[p].dtype)
+                for p in missing
+            )
+            zeros = dict(zip(missing, _zeros(shapes, placement)(), strict=True))
         for path in compiled.state_inputs:
             arrays.append(_device_array(given[path]) if path in given else zeros[path])
         outputs = compiled.call(*inputs, *arrays)
