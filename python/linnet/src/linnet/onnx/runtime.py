@@ -35,13 +35,16 @@ from .export import export_model
 # ONNX element types and the NumPy dtypes their bytes are read as. bf16 has
 # no NumPy type; its bytes travel as uint16.
 _NUMPY = {1: np.float32, 10: np.float16, 16: np.uint16, 6: np.int32, 7: np.int64, 9: np.bool_}
+_ELEMENTS = {"f32": 1, "f16": 10, "bf16": 16, "i32": 6, "i64": 7, "bool": 9}
 
 
 class OnnxModel:
     """A root block's entries on ONNX Runtime, sharing weights and state.
 
-    `run_entry(name, inputs)` runs one entry on NumPy inputs and returns its
-    results as NumPy arrays (one result bare, several as a tuple). `state`
+    `run_entry(name, inputs)` runs one entry on NumPy inputs, or on
+    `OrtValue`s already on the device, and returns its results as NumPy
+    arrays (one result bare, several as a tuple); with `keep_on_device=True`,
+    as `OrtValue`s left on the device. `state`
     holds the block's state members by path, on the device; `reset_state()`
     clears it.
     """
@@ -80,10 +83,10 @@ class OnnxModel:
 
     # ---- entries
 
-    def run_entry(self, name: str, inputs: Sequence[Any]) -> Any:
+    def run_entry(self, name: str, inputs: Sequence[Any], keep_on_device: bool = False) -> Any:
         if name not in self._signatures:
             raise LinnetError(f"the block has no entry `{name}`")
-        arrays = [np.asarray(value) for value in inputs]
+        arrays = [v if isinstance(v, self._ort.OrtValue) else np.asarray(v) for v in inputs]
         bindings = self._bindings(name, arrays)
         key = (name, tuple(sorted(bindings.items())))
         if key not in self._sessions:
@@ -92,7 +95,10 @@ class OnnxModel:
         binding = session.session.io_binding()
         for port, array in zip(session.inputs, arrays, strict=True):
             element = session.elements[port]
-            if element == 16:
+            if isinstance(array, self._ort.OrtValue):
+                # Already where it runs, in the graph's type.
+                binding.bind_ortvalue_input(port, array)
+            elif element == 16:
                 # bf16 inputs travel as their bits, typed as bf16.
                 value = self._ort.OrtValue.ortvalue_from_numpy_with_onnx_type(
                     _encode(array, element), 16
@@ -111,7 +117,9 @@ class OnnxModel:
         # no NumPy type to hand them back as.
         buffers: dict[int, np.ndarray] = {}
         for i, port in enumerate(session.results):
-            if session.result_elements[i] == 16:
+            if keep_on_device:
+                binding.bind_output(port, self._device, 0)
+            elif session.result_elements[i] == 16:
                 buffers[i] = np.empty(session.result_shapes[i], dtype=np.uint16)
                 target = self._ort.OrtValue.ortvalue_from_numpy_with_onnx_type(buffers[i], 16)
                 binding.bind_ortvalue_output(port, target)
@@ -123,7 +131,11 @@ class OnnxModel:
         outputs = binding.get_outputs()
         # bf16 results arrive as their bits; they are returned as f32.
         results = [
-            _decode(buffers[i], 16) if i in buffers else outputs[i].numpy()
+            outputs[i]
+            if keep_on_device
+            else _decode(buffers[i], 16)
+            if i in buffers
+            else outputs[i].numpy()
             for i in range(len(session.results))
         ]
         for i, path in enumerate(session.next_states.values()):
@@ -132,6 +144,13 @@ class OnnxModel:
 
     def reset_state(self) -> None:
         self.state = {}
+
+    def place(self, array: Any, dtype: str) -> Any:
+        """`array` as an `OrtValue` on the model's device in `dtype` (`f32`,
+        `f16`, `bf16`, `i32`, ...): an input reused call after call, bound
+        without a copy from the host each time."""
+        element = _ELEMENTS[dtype]
+        return _to_device(self._ort, _encode(np.asarray(array), element), element, self._device)
 
     # ---- compilation
 
@@ -160,6 +179,12 @@ class OnnxModel:
         )
         settings = self._ort.SessionOptions()
         settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if self._device == "cuda":
+            # Every session allocates from one arena: each of its own grows
+            # to the largest call it has seen and keeps it, which for a
+            # server's dozen shapes is gigabytes held apart.
+            _share_cuda_arena(self._ort)
+            settings.add_session_config_entry("session.use_env_allocators", "1")
         if stateless:
             self._fold_weights(exported, parameters, settings)
             parameters = {}
@@ -253,7 +278,7 @@ class OnnxModel:
         if names:
             settings.add_external_initializers(names, values)
 
-    def _bindings(self, name: str, inputs: Sequence[np.ndarray]) -> dict[str, int]:
+    def _bindings(self, name: str, inputs: Sequence[Any]) -> dict[str, int]:
         """The entry's own generics, from the shapes of its inputs."""
         arguments = self._signatures[name]["body"]["args"][1:]
         if len(arguments) != len(inputs):
@@ -263,7 +288,8 @@ class OnnxModel:
             declared = argument["type"]
             if declared.get("kind") != "tensor":
                 continue
-            for unit, size in zip(declared["shape"], value.shape, strict=True):
+            shape = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
+            for unit, size in zip(declared["shape"], shape, strict=True):
                 if isinstance(unit, dict) and "sym" in unit and unit["name"] not in self.generics:
                     previous = bindings.get(unit["name"])
                     if previous is not None and previous != size:
@@ -296,6 +322,22 @@ class _Session:
         self.states = states  # graph input -> (state path, shape, element type)
         self.results = results  # graph outputs, in order
         self.next_states = next_states  # graph output -> state path
+
+
+_SHARED_ARENA: list[bool] = []
+
+
+def _share_cuda_arena(ort: Any) -> None:
+    """Registers one CUDA arena for the process, growing only by what is
+    asked (not to the next power of two); sessions opt in to it."""
+    if _SHARED_ARENA:
+        return
+    memory = ort.OrtMemoryInfo(
+        "Cuda", ort.OrtAllocatorType.ORT_ARENA_ALLOCATOR, 0, ort.OrtMemType.DEFAULT
+    )
+    arena = ort.OrtArenaCfg({"arena_extend_strategy": 1})
+    ort.create_and_register_allocator_v2("CUDAExecutionProvider", memory, {}, arena)
+    _SHARED_ARENA.append(True)
 
 
 def _consumed(graph: Any) -> set[str]:
