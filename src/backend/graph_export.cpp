@@ -1897,22 +1897,9 @@ std::optional<std::pair<std::string, std::string>> top_level_assignment(const st
 
 // A parameter or value seen through views and casts only: `p3.permute(1, 0)`,
 // `v9.float()`, `p1.reshape(4, 5).to(torch.bfloat16)`, `p2[0]`.
-bool view_or_cast(const std::string& expression) {
-    static const std::set<std::string> methods{"float",
-                                               "half",
-                                               "bfloat16",
-                                               "contiguous",
-                                               "t",
-                                               "to",
-                                               "permute",
-                                               "reshape",
-                                               "view",
-                                               "transpose",
-                                               "expand",
-                                               "unsqueeze",
-                                               "squeeze",
-                                               "flatten",
-                                               "astype"};
+// Whether `expression` is a chain of `methods` calls on one value, their
+// arguments shapes, axes, and dtypes.
+bool method_chain(const std::string& expression, const std::set<std::string>& methods) {
     std::size_t i = 0;
     while (i < expression.size() && word_char(expression[i])) {
         ++i;
@@ -1946,7 +1933,6 @@ bool view_or_cast(const std::string& expression) {
             expression[j] != '(') {
             return false;
         }
-        // The arguments: shapes, axes, and dtypes, perhaps in a tuple.
         static const std::set<std::string> argument_words{"torch",
                                                           "jnp",
                                                           "float32",
@@ -1974,6 +1960,39 @@ bool view_or_cast(const std::string& expression) {
         i = close;
     }
     return true;
+}
+
+// A view of one value: the same memory, read another way.
+bool pure_view(const std::string& expression) {
+    static const std::set<std::string> methods{"t",
+                                               "permute",
+                                               "reshape",
+                                               "view",
+                                               "transpose",
+                                               "expand",
+                                               "unsqueeze",
+                                               "squeeze",
+                                               "flatten"};
+    return method_chain(expression, methods);
+}
+
+bool view_or_cast(const std::string& expression) {
+    static const std::set<std::string> methods{"float",
+                                               "half",
+                                               "bfloat16",
+                                               "contiguous",
+                                               "t",
+                                               "to",
+                                               "permute",
+                                               "reshape",
+                                               "view",
+                                               "transpose",
+                                               "expand",
+                                               "unsqueeze",
+                                               "squeeze",
+                                               "flatten",
+                                               "astype"};
+    return method_chain(expression, methods);
 }
 
 std::string fnv1a(const std::string& text) {
@@ -2073,7 +2092,20 @@ PreparedSplit split_prepared(const std::string& body,
     std::vector<std::string> pending;
     for (const auto& [name, line] : defined_at) {
         if (read_outside.contains(name) && computes[name] && reads_weights[name]) {
-            pending.push_back(name);
+            // A view of a prepared value stays in the body: the value is
+            // what is kept, so entries that read it another way (flattened
+            // for one, whole for another) share it.
+            std::string root = name;
+            while (true) {
+                const std::string expression =
+                    top_level_assignment(lines[defined_at[root]])->second;
+                const std::vector<std::string> read = reads(expression);
+                if (!pure_view(expression) || read.size() != 1 || !defined_at.contains(read[0])) {
+                    break;
+                }
+                root = read[0];
+            }
+            pending.push_back(root);
         }
     }
     while (!pending.empty()) {
