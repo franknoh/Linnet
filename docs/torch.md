@@ -138,6 +138,32 @@ Placement needs the generated path (it is always used with `device_map`), and
 CUDA graphs cannot replay streamed weights, so `compile="reduce-overhead"`
 requires `offload=False`.
 
+### Tensor parallelism
+
+```python
+# torchrun --nproc-per-node 2 serve.py
+import torch.distributed as dist
+from torch.distributed.device_mesh import init_device_mesh
+
+dist.init_process_group("nccl")
+mesh = init_device_mesh("cuda", (dist.get_world_size(),))
+model = linnet.torch.load("model.linnet", generics=generics, weights="weights/",
+                          device=f"cuda:{dist.get_rank()}", tensor_parallel=mesh)
+```
+
+`device_map` puts whole blocks on different GPUs, which then take turns;
+tensor parallelism splits every large weight across them, so they work on
+each layer at once. With `tensor_parallel=mesh`, each process of a
+`torch.distributed` job holds its slice of the weights as DTensors: the
+projections into the heads and the feed-forward width split by output, the
+projections back by input, the KV caches by heads, and everything else
+copied to each (`linnet.parallel.DEFAULT_RULES`; `tp_rules={"*.experts.*": 0}`
+adds or overrides rules by path pattern). Every process runs the same
+entries and DTensor adds the collectives the splits need; results come back
+whole on each. Any split computes the same numbers -- the rules only decide
+how much crosses between GPUs -- and an axis a device count does not divide
+is copied instead.
+
 ## Training
 
 ```python

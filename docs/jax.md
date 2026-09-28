@@ -59,6 +59,14 @@ memory. The entries run as generated JAX source (`generated=False` runs
 the StableHLO export instead). `linnet.serve.Engine` takes such a model for
 continuous batching.
 
+`load_model(..., mesh=2)` (or a one-axis `jax.sharding.Mesh`) runs the model
+tensor-parallel: each weight is placed split over the devices as
+`linnet.parallel` says -- projections into heads and feed-forward widths by
+output, projections back by input, everything else copied -- and XLA
+partitions every entry, adding the collectives the split needs. KV caches
+are split by heads. `rules={"*.lm_head.weight": 0}` adds or overrides rules by
+path pattern.
+
 ## load_source and training
 
 ```python
