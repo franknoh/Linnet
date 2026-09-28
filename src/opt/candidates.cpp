@@ -16,6 +16,11 @@ std::vector<NativeCandidate> torch_candidates() {
         {"std.nn.embedding::embedding", "torch.nn.functional.embedding", Legality::Exact, {}},
         {"std.nn.attention::causal_mask", "torch.tril", Legality::Exact, {}},
         {"std.nn.conv::conv2d", "torch.nn.functional.conv2d", equivalent, {"a square kernel"}},
+        // A maximum is one of its inputs, however it is found.
+        {"std.nn.pool::max_pool2d",
+         "torch.nn.functional.max_pool2d",
+         Legality::Exact,
+         {"the padding is at most half the window"}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.resize::upsample_nearest2d",

@@ -578,6 +578,20 @@ public:
             return define("F.conv2d(" + name(0) + ", " + name(1) + ", " + name(2) + ", stride=" +
                           std::to_string(*stride) + ", padding=" + std::to_string(*pad) + ")");
         }
+        if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
+            operands[0]) {
+            // The geometry is the call's own, as for the convolution;
+            // `F.max_pool2d` pads with minus infinity and takes at most half
+            // a window of it.
+            const auto window = call_generic("K");
+            const auto stride = call_generic("Stride");
+            const auto pad = call_generic("Pad");
+            if (!window || !stride || !pad || 2 * *pad > *window) {
+                return std::nullopt;
+            }
+            return define("F.max_pool2d(" + name(0) + ", " + std::to_string(*window) + ", stride=" +
+                          std::to_string(*stride) + ", padding=" + std::to_string(*pad) + ")");
+        }
         if (implementation_base == "torch.nn.functional.interpolate(nearest)" &&
             operands.size() == 1 && shape.size() == 4) {
             // Like the convolution, the scale is recovered from the shapes.
