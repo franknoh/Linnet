@@ -229,6 +229,7 @@ class CompiledLinnetModule(LinnetModule):
         if not generated.prepared_keys:
             return []
         if not all(key in self._prepared for key in generated.prepared_keys):
+            self._lay_out(generated.fused)
             inputs: list[Any] = []
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
@@ -242,6 +243,33 @@ class CompiledLinnetModule(LinnetModule):
             for key, value in zip(generated.prepared_keys, values, strict=True):
                 self._prepared.setdefault(key, value)
         return [self._prepared[key] for key in generated.prepared_keys]
+
+    def _lay_out(self, groups: list[list[str]]) -> None:
+        """Puts each group of parameters `prepare` joins (`FUSED`: a layer's
+        query, key, and value weights, say) one after another in one buffer,
+        the parameters slices of it, so that the joined weight is a view and
+        the fused product costs no memory. Copied once; a group already so
+        laid out stays as it is."""
+        for paths in groups:
+            owners = [owner_of(self, path) for path in paths]
+            tensors: list[torch.Tensor] = [getattr(owner, leaf) for owner, leaf in owners]
+            first = tensors[0]
+            if _adjacent(tensors) or any(
+                t.dtype != first.dtype or t.device != first.device or t.shape[1:] != first.shape[1:]
+                for t in tensors
+            ):
+                continue
+            rows = sum(t.shape[0] for t in tensors)
+            buffer = torch.empty((rows, *first.shape[1:]), dtype=first.dtype, device=first.device)
+            offset = 0
+            with torch.no_grad():
+                for (owner, leaf), tensor in zip(owners, tensors, strict=True):
+                    part = buffer[offset : offset + tensor.shape[0]]
+                    part.copy_(tensor)
+                    if isinstance(tensor, torch.nn.Parameter):
+                        part = torch.nn.Parameter(part, requires_grad=tensor.requires_grad)
+                    setattr(owner, leaf, part)
+                    offset += tensor.shape[0]
 
     # ---- one compilation per entry and shape
 
@@ -371,6 +399,7 @@ class CompiledLinnetModule(LinnetModule):
             list(module.PARAMETERS),
             list(getattr(module, "CONSTANTS", [])),
             captured,
+            [list(group) for group in getattr(module, "FUSED", [])],
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -420,6 +449,24 @@ def _mark_static(tensor: Any) -> None:
         tensor._linnet_static = True  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
 
+def _adjacent(tensors: list[torch.Tensor]) -> bool:
+    """Whether `tensors` lie one after another in one buffer, as `_adjacent`
+    in generated source joins them without a copy."""
+    first = tensors[0]
+    storage = first.untyped_storage().data_ptr()
+    offset = first.storage_offset()
+    for tensor in tensors:
+        if (
+            not tensor.is_contiguous()
+            or tensor.dtype != first.dtype
+            or tensor.untyped_storage().data_ptr() != storage
+            or tensor.storage_offset() != offset
+        ):
+            return False
+        offset += tensor.numel()
+    return True
+
+
 def _same(value: torch.Tensor, state: torch.Tensor | None) -> bool:
     """Whether `value` is `state` itself, as a state written in place comes back."""
     return (
@@ -449,3 +496,4 @@ class _Generated:
     all_parameters: list[str] = field(default_factory=list[str])  # `PARAMETERS`
     constant_names: list[str] = field(default_factory=list[str])  # `CONSTANTS`
     captured: bool = False  # replayed as a CUDA graph captured by hand
+    fused: list[list[str]] = field(default_factory=list[list[str]])  # `FUSED`
