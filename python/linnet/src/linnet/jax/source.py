@@ -82,11 +82,15 @@ class SourceFunction(LinnetFunction):
         keys = list(getattr(module, "PREPARED", []))
         if not keys:
             return []
-        if not all(key in self.prepared for key in keys):
+        missing = [i for i, key in enumerate(keys) if key not in self.prepared]
+        if missing:
+            # Only the values not already kept: XLA drops the rest of
+            # `prepare`, so a second copy of what another entry prepared
+            # (a mixture's dequantized experts) is never made.
             inputs = [arrays[int(name[1:])] for name in module.PREPARE_INPUTS]
-            values = jax.jit(module.prepare)(*inputs)
-            for key, value in zip(keys, values, strict=True):
-                self.prepared.setdefault(key, value)
+            values = jax.jit(lambda *xs: tuple(module.prepare(*xs)[i] for i in missing))(*inputs)
+            for i, value in zip(missing, values, strict=True):
+                self.prepared[keys[i]] = value
         return [self.prepared[key] for key in keys]
 
     def generated_source(self) -> str:
