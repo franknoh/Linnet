@@ -127,6 +127,11 @@ def _embedding(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return functional.embedding(ids.long(), table)
 
 
+def _index_select(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, order = args
+    return x.index_select(-1, order.long())
+
+
 def causal_mask(shape: list[int], device: torch.device) -> torch.Tensor:
     """`causal_mask<Q, K>()` as a boolean `tril`; a square one is tagged so the
     attention kernels can use `is_causal` instead of reading it."""
@@ -205,6 +210,7 @@ def _int4_groups_linear(args: list[Any], _result: torch.dtype | None) -> torch.T
 NATIVE: dict[str, Native] = {
     "torch.ops.aten._weight_int4pack_mm": _int4_groups_linear,
     "torch.nn.functional.embedding": _embedding,
+    "torch.index_select": _index_select,
     "torch.nn.functional.batch_norm": _batch_norm,
     "torch.Tensor.mean": _spatial_mean,
     "torch.Tensor.index_copy": _index_copy,

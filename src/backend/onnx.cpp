@@ -224,6 +224,10 @@ public:
             at[0] != nullptr && at[1] != nullptr) {
             return node("Gather", {*at[1], *at[0]}, "axis = 0", shape, dtype);
         }
+        if (implementation_base == "torch.index_select" && operands.size() == 2 &&
+            at[0] != nullptr && at[1] != nullptr) {
+            return node("Gather", {*at[0], *at[1]}, "axis = -1", shape, dtype);
+        }
         if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
             const auto stride = call_generic("Stride");

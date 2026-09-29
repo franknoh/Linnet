@@ -496,6 +496,9 @@ public:
         if (implementation_base == "torch.nn.functional.embedding" && operands.size() == 2) {
             return define("F.embedding(" + name(0) + ".long(), " + name(1) + ")");
         }
+        if (implementation_base == "torch.index_select" && operands.size() == 2) {
+            return define(name(0) + ".index_select(-1, " + name(1) + ".long())");
+        }
         if (implementation_base == "torch.tril" && operands.empty() && shape.size() == 2) {
             // `keys[k] <= queries[q] + (K - Q)`: ones below the diagonal K - Q.
             std::string mask =

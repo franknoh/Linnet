@@ -27,7 +27,7 @@ where Inner % 2 == 0 {
 | `unpack_uint4<R, H>(packed)` | two unsigned nibbles per byte (low = even element, high = odd) |
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit in groups: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
-| `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional bias |
+| `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
 
 ## Group-wise 4-bit weights
 
@@ -59,6 +59,33 @@ The tensors land under Linnet paths (`bindings` maps them from the
 checkpoint's names), `proj.weight` becoming `proj.weight`, `proj.scale`, and
 `proj.zero`, and everything the patterns do not match is copied as it is.
 Declaring `Int4GroupLinear` where the source had `Linear` then loads it.
+
+Rounding to nearest is the plainest scheme. A checkpoint someone quantized
+with calibration repacks into the same layout: `linnet.quant.import_quantized`
+reads a 4-bit GPTQ or AWQ checkpoint (the `quantization_config` in its
+`config.json` says which), unpacks its int32 words (GPTQ's zero points stored
+less one, AWQ's interleaved outputs), and writes `Int4GroupLinear`'s tensors
+under Linnet paths, the rest copied as it is:
+
+```python
+from linnet.quant import import_quantized
+
+import_quantized("Meta-Llama-3.1-8B-Instruct-GPTQ-INT4/", "model-int4.safetensors",
+                 bindings="bindings.json")
+```
+
+A GPTQ checkpoint in activation order (`desc_act`) formed its groups over
+the inputs in another order than their own, given by `g_idx`. Its inputs are
+sorted by group, which makes each group contiguous, and the permutation is
+written as the layer's `order`: `Int4GroupLinear` takes its inputs in that
+order first (`std.quant::take_inputs`, a gather: `index_select` in PyTorch,
+`Gather` in ONNX, `jnp.take` in JAX), so no weight is rounded again.
+
+On Llama 3.1 8B Instruct (WikiText-2, eight windows of 1024 tokens), bf16 has
+a perplexity of 9.55 and rounding to nearest 10.28. The hugging-quants GPTQ
+checkpoint (activation order) imports to 9.98, and the AWQ one to 9.98. Both
+decode on the tinygemm path in 10.3 GiB, at 192 and 214 tokens per second
+(the gather costs GPTQ's order), against 134 in bf16.
 
 ## Checkpoints
 

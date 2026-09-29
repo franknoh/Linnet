@@ -98,8 +98,20 @@ pub op linear_int4_groups<*S: Shape, Out: Dim, Groups: Dim, Half: Dim, T: Float>
     return linear(x, dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero), bias)
 }
 
+// `x`'s last axis in `order`: element `k` of the result is input `order[k]`.
+pub op take_inputs<*S: Shape, N: Dim, T: Float>(
+    x: Tensor[*S, N; T],
+    order: Tensor[N; i32],
+) -> Tensor[*S, N; T] {
+    let taken[*s, k] = x[*s, cast<i64>(order[k])]
+    return taken
+}
+
 // A linear layer whose weight is stored as group-wise asymmetric int4, in
-// groups of `Group` inputs.
+// groups of `Group` inputs. With `order`, the groups were formed over the
+// inputs taken in that order (GPTQ's activation order): the packed row's
+// `k`-th weight is input `order[k]`'s, so the inputs are taken in that order
+// first.
 pub block Int4GroupLinear<In: Dim, Out: Dim, Group: Dim = 128, T: Float = bf16>
 where
     Group > 0,
@@ -109,9 +121,14 @@ where
     param weight: Tensor[Out, In / Group, Group / 2; u8]
     param scale: Tensor[Out, In / Group; T]
     param zero: Tensor[Out, In / Group; u8]
+    param order: Tensor[In; i32]? = none
     param bias: Tensor[Out; T]? = none
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
-        return linear_int4_groups(x, weight, scale, zero, bias)
+        let taken = match order {
+            some(o) => take_inputs(x, o)
+            none => x
+        }
+        return linear_int4_groups(taken, weight, scale, zero, bias)
     }
 }
