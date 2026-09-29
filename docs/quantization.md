@@ -24,6 +24,41 @@ where Inner % 2 == 0 {
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out; f32]`, optional bias |
 | `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale`, optional bias |
+| `unpack_uint4<R, H>(packed)` | two unsigned nibbles per byte (low = even element, high = odd) |
+| `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit in groups: `(q - zero) * scale` per group |
+| `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
+| `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional bias |
+
+## Group-wise 4-bit weights
+
+`Int4GroupLinear` stores a weight as 16 levels per group of `Group`
+consecutive inputs, each group with its own scale and zero point, the scheme
+GPTQ and AWQ checkpoints use. Its weight is `[Out, In / Group, Group / 2]`
+bytes, two values a byte with the even one in the low nibble. That layout is
+ONNX Runtime's `MatMulNBits` as it is. Under `numerics="fast"` a backend runs a
+fused kernel in place of dequantize-then-multiply:
+
+| Backend | `linear_int4_groups` |
+| --- | --- |
+| PyTorch, CUDA, `bf16`, groups of 32 to 256 | tinygemm (`_weight_int4pack_mm`); the weights are repacked for it once, at load (`--prepare`) |
+| ONNX Runtime | `com.microsoft.MatMulNBits` (`f32` and `f16`; `bf16` goes through `f32`) |
+| everywhere else | the body: unpack, dequantize, `linear` |
+
+`linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
+rounding each group to the nearest level:
+
+```python
+from linnet.quant import quantize_checkpoint
+
+quantize_checkpoint("model.safetensors", "model-int4.safetensors",
+                    patterns=["*_proj.weight"], group=128, dtype="bf16",
+                    bindings="bindings.json")
+```
+
+The tensors land under Linnet paths (`bindings` maps them from the
+checkpoint's names), `proj.weight` becoming `proj.weight`, `proj.scale`, and
+`proj.zero`, and everything the patterns do not match is copied as it is.
+Declaring `Int4GroupLinear` where the source had `Linear` then loads it.
 
 ## Checkpoints
 
@@ -34,5 +69,5 @@ Unpacking is `shr` and `&`, dequantization a broadcast multiply, so the same
 source runs in PyTorch, XLA, and ONNX Runtime. `linnet explain` shows where a
 backend replaced the arithmetic with a kernel.
 
-Not written yet: activation quantization, per-group scales, asymmetric
-(zero-point) schemes. Each is a few more lines of the same library.
+Not written yet: activation quantization, and per-group scales for 8-bit
+weights.
