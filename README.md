@@ -71,7 +71,7 @@ where Linnet loses, is on the
 | vLLM and other transformers-checkpoint servers | `linnet.hf.export` | Llama and GPT-2 families |
 | llama.cpp, Ollama | `linnet.gguf.export`: GGUF and a Modelfile | Llama and GPT-2 families |
 | ComfyUI | [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) | PyTorch |
-| Serving | `linnet.serve.Engine`: continuous batching | decoders with `prefill_slots` and `decode_rows` |
+| Serving | `linnet.serve`: continuous batching with sampling, and `python -m linnet.serve`, an OpenAI-compatible HTTP server | decoders with `prefill_slots` and `decode_rows` |
 | Importers | `linnet.torch.export_linnet`, `linnet.jax.export_linnet`, `linnet.jax.import_stablehlo`, `linnet.onnx.import_onnx` | |
 
 [Nest](https://github.com/franknoh/nest) is a registry of checked

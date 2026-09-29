@@ -163,7 +163,7 @@ takes every model:
 | vLLM and other transformers-checkpoint servers | `linnet.hf`: a transformers checkpoint | Llama, Qwen2, Qwen3, Phi-3, and GPT-2 families |
 | llama.cpp, Ollama | `linnet.gguf`: GGUF and a Modelfile | the same families |
 | ComfyUI | [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) custom nodes | PyTorch |
-| Serving | `linnet.serve`: continuous batching over PyTorch, JAX, or ONNX | decoders with `prefill_slots` and `decode_rows` |
+| Serving | `linnet.serve`: continuous batching over PyTorch, JAX, or ONNX, with sampling and an OpenAI-compatible HTTP server | decoders with `prefill_slots` and `decode_rows` |
 
 Models also come the other way: `torch.export`, `jax.export`, StableHLO text,
 and ONNX graphs import into `.linnet` source. The

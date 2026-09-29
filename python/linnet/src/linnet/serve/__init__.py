@@ -35,26 +35,48 @@ along and the token is dropped.
 
 With the PyTorch backend the step is replayed as a CUDA graph and prompts
 run as generated source; with `linnet.jax.load_model` both are XLA programs.
-Decoding is greedy.
+
+Decoding is greedy unless a request sets a `temperature`; then its tokens
+are drawn on the device, from its `top_k` and `top_p` tokens when it sets
+those (see `linnet.serve.sampling`), and a request with the same `seed`
+draws the same tokens whatever else is in the batch. A request's
+`on_token` is called with its completion as each token is read, which is
+how a server streams. `python -m linnet.serve` serves a Nest model over
+HTTP (`linnet.serve.server`).
 """
 
 from __future__ import annotations
 
+import random
 import time
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from .sampling import Sampling, draw_jax, draw_numpy, draw_torch, mode
 
 
 @dataclass
 class Request:
-    """One prompt to complete: `prompt` is token ids, at least one."""
+    """One prompt to complete: `prompt` is token ids, at least one.
+
+    `temperature` 0 decodes greedily; above it, tokens are drawn from the
+    softmax of the logits over it, from the `top_k` most likely (0 for all)
+    and then the fewest whose probabilities reach `top_p`. `seed` (its low
+    32 bits) fixes the draws; without one the engine picks one. `on_token`
+    is called with the completion each time a token of it is read, with
+    `reason` set on its last."""
 
     prompt: Sequence[int]
     max_new_tokens: int
     eos: frozenset[int] = frozenset()
     id: int = -1
+    temperature: float = 0.0
+    top_k: int = 0
+    top_p: float = 1.0
+    seed: int | None = None
+    on_token: Callable[[Completion], None] | None = None
 
 
 @dataclass
@@ -66,7 +88,8 @@ class Completion:
     admitted: float = 0.0  # its prompt pass began
     first_token: float = 0.0  # its first token existed
     finished: float = 0.0
-    reason: str = ""  # "length", "eos", or "cache"
+    reason: str = ""  # "length", "eos", "cache", or what `Engine.cancel` gave
+    sampling: Sampling = field(default_factory=Sampling)  # its seed chosen
 
     @property
     def ttft(self) -> float:
@@ -102,16 +125,23 @@ class _Tokens(Protocol):
 
 
 class _Backend(Protocol):
-    """Holds each row's next token and position on the device. `prefill`
-    queues a prompt pass and sets its rows to the token after each prompt, at
-    the position after it; `decode` queues a step for every row and advances
-    them all."""
+    """Holds each row's next token, position, and sampling on the device.
+    `prefill` queues a prompt pass, sets its rows' sampling, and sets them to
+    the token drawn after each prompt, at the position after it; `decode`
+    queues a step for every row and advances them all, `need` saying what
+    drawing the rows in use takes (`sampling.mode`)."""
 
     slots: int
     max_seq: int
 
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens: ...
-    def decode(self) -> _Tokens: ...
+    def prefill(
+        self,
+        tokens: list[list[int]],
+        slots: list[int],
+        lengths: list[int],
+        sampling: list[Sampling],
+    ) -> _Tokens: ...
+    def decode(self, need: int) -> _Tokens: ...
 
 
 @dataclass
@@ -159,6 +189,7 @@ class Engine:
         self.buckets = sorted({b for b in buckets if b <= limit})
         self.pad = pad
         self.max_group = max(1, max_group)
+        self._seeds = random.Random()
 
     @property
     def slots(self) -> int:
@@ -171,11 +202,16 @@ class Engine:
         for bucket in sorted(lengths):
             group = 1
             while group <= min(self.max_group, self.slots):
-                self.backend.prefill([[self.pad] * bucket] * group, list(range(group)), [1] * group)
+                self.backend.prefill(
+                    [[self.pad] * bucket] * group,
+                    list(range(group)),
+                    [1] * group,
+                    [Sampling()] * group,
+                )
                 group *= 2
         for _ in range(2):
-            self.backend.decode()
-        self.backend.decode().tolist()
+            self.backend.decode(mode([]))
+        self.backend.decode(mode([])).tolist()
 
     def run(self, requests: Iterable[Request]) -> tuple[list[Completion], Stats]:
         """Completes every request, all of them waiting from the start, and
@@ -217,11 +253,27 @@ class Engine:
                 f"a prompt of {len(request.prompt)} tokens does not fit a cache of "
                 f"{self.backend.max_seq} positions"
             )
+        seed = request.seed if request.seed is not None else self._seeds.getrandbits(32)
+        sampling = Sampling(request.temperature, request.top_k, request.top_p, seed)
+        sampling.check()
         if not hasattr(self, "_waiting"):
             self.reset()
-        completion = Completion(request)
+        completion = Completion(request, sampling=sampling)
         self._waiting.append(completion)
         return completion
+
+    def cancel(self, completion: Completion, reason: str = "cancelled") -> None:
+        """Ends a request that is waiting or in a row, with `reason`; its row
+        is free for the next `step`. A request already finished is left as
+        it is."""
+        if completion.reason:
+            return
+        completion.reason = reason
+        completion.finished = time.perf_counter() - self._start
+        self._waiting = deque(c for c in self._waiting if c is not completion)
+        for slot, row in enumerate(self._rows):
+            if row is completion:
+                self._rows[slot] = None
 
     @property
     def busy(self) -> bool:
@@ -255,6 +307,7 @@ class Engine:
                 [p + [self.pad] * (bucket - len(p)) for p in prompts],
                 [slot for slot, _ in batch],
                 [len(p) for p in prompts],
+                [c.sampling for _, c in batch],
             )
             self._prefills += 1
             for slot, completion in batch:
@@ -267,7 +320,8 @@ class Engine:
             # One step for the whole batch; empty rows compute along. It
             # stays queued while the passes before it are read.
             owners = [(slot, slot, c) for slot, c in enumerate(rows) if c is not None]
-            self._queued.append(_Queued(self.backend.decode(), owners, prompts=False))
+            need = mode(c.sampling for _, _, c in owners)
+            self._queued.append(_Queued(self.backend.decode(need), owners, prompts=False))
             self._steps += 1
             ahead = 1
         finished: list[Completion] = []
@@ -292,6 +346,8 @@ class Engine:
                 completion.finished = now
                 self._rows[slot] = None
                 finished.append(completion)
+            if completion.request.on_token is not None:
+                completion.request.on_token(completion)
         return finished
 
     def _bucket(self, length: int) -> int:
@@ -346,29 +402,67 @@ class _TorchBackend:
         self.step_compile: bool | str = "reduce-overhead" if graphs else True
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
+        self.sampling = [Sampling()] * self.slots
+        self._hold([], [])
+        # Compiled, drawing reads the logits a few times, not once for each
+        # step of the hash; the batch dimension varies without recompiling.
+        self._draw: Any = draw_torch
+        if self.device.type == "cuda":
+            self._draw = torch.compile(draw_torch, dynamic=None)
 
-    def _put(self, values: list[Any]) -> Any:
-        host = self.torch.tensor(values, dtype=self.torch.int32)
+    def _put(self, values: list[Any], dtype: Any = None) -> Any:
+        host = self.torch.tensor(values, dtype=dtype or self.torch.int32)
         if self.device.type != "cuda":
             return host.to(self.device)
         # From pinned memory the copy is queued behind the work before it;
         # from pageable memory it would wait for that work to finish.
         return host.pin_memory().to(self.device, non_blocking=True)
 
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
+    def _hold(self, slots: list[int], sampling: list[Sampling]) -> None:
+        """Puts rows' sampling on the device, all of it, when any changed."""
+        torch = self.torch
+        if slots and all(self.sampling[s] == x for s, x in zip(slots, sampling, strict=True)):
+            return
+        for slot, row in zip(slots, sampling, strict=True):
+            self.sampling[slot] = row
+        rows = self.sampling
+        self.temperature = self._put([r.temperature for r in rows], torch.float32)
+        self.top_k = self._put([r.top_k for r in rows], torch.int64)
+        self.top_p = self._put([r.top_p for r in rows], torch.float32)
+        self.keys = self._put([r.key for r in rows], torch.int64)
+
+    def prefill(
+        self,
+        tokens: list[list[int]],
+        slots: list[int],
+        lengths: list[int],
+        sampling: list[Sampling],
+    ) -> _Tokens:
         torch = self.torch
         rows, at = self._put(slots), self._put(lengths)
         logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at], compile=True)
-        first = logits.argmax(-1)
-        self.tokens[rows.long(), 0] = first.to(torch.int32)
-        self.positions[rows.long()] = at
+        self._hold(slots, sampling)
+        index = rows.long()
+        first = self._draw(
+            logits,
+            self.temperature[index],
+            self.top_k[index],
+            self.top_p[index],
+            self.keys[index],
+            at,
+            mode(sampling),
+        )
+        self.tokens[index, 0] = first.to(torch.int32)
+        self.positions[index] = at
         return _TorchTokens(first)
 
-    def decode(self) -> _Tokens:
+    def decode(self, need: int) -> _Tokens:
         logits = self.model.run_entry(
             "decode_rows", [self.tokens, self.positions], compile=self.step_compile
         )
-        produced = logits.argmax(-1)
+        produced = self._draw(
+            logits, self.temperature, self.top_k, self.top_p, self.keys, self.positions + 1, need
+        )
         self.tokens.copy_(produced.reshape(self.slots, 1))
         # A row whose request has finished computes along until the engine
         # reads that it has; its position stays inside the cache.
@@ -413,33 +507,66 @@ class _JaxBackend:
         self.slots, self.max_seq = _cache_generics(model)
         self.tokens: Any = jnp.zeros((self.slots, 1), jnp.int32)
         self.positions: Any = jnp.zeros((self.slots,), jnp.int32)
+        self.sampling = [Sampling()] * self.slots
+        self._hold([], [])
         last = self.max_seq - 1
 
-        def admit(tokens: Any, positions: Any, logits: Any, rows: Any, lengths: Any) -> Any:
-            first = jnp.argmax(logits, -1).astype(jnp.int32)
+        # `held` is each row's temperature, top-k, top-p, and seed key.
+        def admit(
+            tokens: Any, positions: Any, logits: Any, rows: Any, lengths: Any, held: Any, need: int
+        ) -> Any:
+            temperature, top_k, top_p, keys = held
+            first = draw_jax(
+                logits, temperature[rows], top_k[rows], top_p[rows], keys[rows], lengths, need
+            )
             return tokens.at[rows, 0].set(first), positions.at[rows].set(lengths), first
 
-        def advance(logits: Any, positions: Any) -> Any:
-            produced = jnp.argmax(logits, -1).astype(jnp.int32)
+        def advance(logits: Any, positions: Any, held: Any, need: int) -> Any:
+            temperature, top_k, top_p, keys = held
+            produced = draw_jax(logits, temperature, top_k, top_p, keys, positions + 1, need)
             return produced.reshape(-1, 1), jnp.minimum(positions + 1, last), produced
 
-        self._admit: Any = jax.jit(admit)
-        self._advance: Any = jax.jit(advance)
+        self._admit: Any = jax.jit(admit, static_argnames="need")
+        self._advance: Any = jax.jit(advance, static_argnames="need")
 
-    def _put(self, values: list[Any]) -> Any:
-        return self.jnp.asarray(self.np.asarray(values, dtype=self.np.int32))
+    def _put(self, values: list[Any], dtype: Any = None) -> Any:
+        return self.jnp.asarray(self.np.asarray(values, dtype=dtype or self.np.int32))
 
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
+    def _hold(self, slots: list[int], sampling: list[Sampling]) -> None:
+        """Puts rows' sampling on the device, all of it, when any changed."""
+        np = self.np
+        if slots and all(self.sampling[s] == x for s, x in zip(slots, sampling, strict=True)):
+            return
+        for slot, row in zip(slots, sampling, strict=True):
+            self.sampling[slot] = row
+        rows = self.sampling
+        self.held = (
+            self._put([r.temperature for r in rows], np.float32),
+            self._put([r.top_k for r in rows], np.int32),
+            self._put([r.top_p for r in rows], np.float32),
+            self._put([r.key for r in rows], np.uint32),
+        )
+
+    def prefill(
+        self,
+        tokens: list[list[int]],
+        slots: list[int],
+        lengths: list[int],
+        sampling: list[Sampling],
+    ) -> _Tokens:
         rows, at = self._put(slots), self._put(lengths)
         logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at])
+        self._hold(slots, sampling)
         self.tokens, self.positions, first = self._admit(
-            self.tokens, self.positions, logits, rows, at
+            self.tokens, self.positions, logits, rows, at, self.held, need=mode(sampling)
         )
         return _JaxTokens(first)
 
-    def decode(self) -> _Tokens:
+    def decode(self, need: int) -> _Tokens:
         logits = self.model.run_entry("decode_rows", [self.tokens, self.positions])
-        self.tokens, self.positions, produced = self._advance(logits, self.positions)
+        self.tokens, self.positions, produced = self._advance(
+            logits, self.positions, self.held, need=need
+        )
         return _JaxTokens(produced)
 
 
@@ -457,7 +584,9 @@ class _JaxTokens:
 class _OnnxBackend:
     """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device,
     the step replayed as a CUDA graph on a GPU. Each call returns when its
-    results exist, so nothing overlaps."""
+    results exist, so nothing overlaps. Greedy passes take the argmax in the
+    graph, so only each row's token leaves the device; a pass that samples
+    takes the logits to the host and draws there."""
 
     def __init__(self, model: Any) -> None:
         import numpy as np
@@ -470,31 +599,45 @@ class _OnnxBackend:
         self.slots, self.max_seq = _cache_generics(model)
         self.tokens: Any = np.zeros((self.slots, 1), dtype=np.int32)
         self.positions: Any = np.zeros(self.slots, dtype=np.int32)
+        self.sampling = [Sampling()] * self.slots
 
-    # The argmax runs in the graph: only each row's token leaves the device.
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
+    def prefill(
+        self,
+        tokens: list[list[int]],
+        slots: list[int],
+        lengths: list[int],
+        sampling: list[Sampling],
+    ) -> _Tokens:
         np = self.np
-        first = self.model.run_entry(
+        need = mode(sampling)
+        out = self.model.run_entry(
             "prefill_slots",
             [
                 np.asarray(tokens, dtype=np.int32),
                 np.asarray(slots, dtype=np.int32),
                 np.asarray(lengths, dtype=np.int32),
             ],
-            argmax=True,
-        ).reshape(-1)
+            argmax=not need,
+        )
+        first = out.reshape(-1) if not need else draw_numpy(out, sampling, lengths, need)
+        for slot, row in zip(slots, sampling, strict=True):
+            self.sampling[slot] = row
         self.tokens[slots, 0] = first
         self.positions[slots] = lengths
         return first
 
-    def decode(self) -> _Tokens:
+    def decode(self, need: int) -> _Tokens:
         np = self.np
-        produced = self.model.run_entry(
-            "decode_rows", [self.tokens, self.positions], argmax=True, cuda_graph=True
-        ).reshape(-1)
+        out = self.model.run_entry(
+            "decode_rows", [self.tokens, self.positions], argmax=not need, cuda_graph=True
+        )
+        if need:
+            produced = draw_numpy(out, self.sampling, self.positions + 1, need)
+        else:
+            produced = out.reshape(-1)
         self.tokens = produced.astype(np.int32).reshape(self.slots, 1)
         self.positions = np.minimum(self.positions + 1, self.max_seq - 1)
         return produced
 
 
-__all__ = ["Completion", "Engine", "Request", "Stats"]
+__all__ = ["Completion", "Engine", "Request", "Sampling", "Stats"]

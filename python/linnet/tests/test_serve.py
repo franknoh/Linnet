@@ -4,9 +4,15 @@ greedy decoding over the whole sequence gives them -- on both backends."""
 
 from __future__ import annotations
 
+import json
 import os
 import random
+import threading
+import urllib.error
+import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -354,3 +360,232 @@ def test_requests_arriving_while_others_run(model_files: tuple[Path, Path]) -> N
     for completion in [*early, late]:
         assert completion.tokens == _greedy(model, completion.request)
     assert late.admitted > 0 and late.reason == "length"
+
+
+def _sampled() -> list[Request]:
+    """`_requests`, most of them sampled, each with a seed of its own."""
+    kinds = [(0.9, 0, 1.0), (1.2, 8, 1.0), (0.8, 0, 0.9), (0.0, 0, 1.0)]
+    return [
+        Request(
+            prompt=r.prompt,
+            max_new_tokens=r.max_new_tokens + 4,
+            id=r.id,
+            temperature=kinds[r.id % 4][0],
+            top_k=kinds[r.id % 4][1],
+            top_p=kinds[r.id % 4][2],
+            seed=100 + r.id,
+        )
+        for r in _requests()
+    ]
+
+
+def _alone(engine: Engine, requests: list[Request]) -> list[list[int]]:
+    return [engine.run([request])[0][0].tokens for request in requests]
+
+
+def test_sampled_requests_draw_alike_in_any_batch(model_files: tuple[Path, Path]) -> None:
+    """A seeded request draws the same tokens alone as in a batch with
+    others, greedy or not, whichever row it lands in."""
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, buckets=[8, 16, 32])
+    requests = _sampled()
+    together, _ = engine.run(requests)
+    backwards, _ = engine.run(requests[::-1])
+    alone = _alone(engine, requests)
+    for completion, reversed_, single in zip(together, backwards[::-1], alone, strict=True):
+        assert completion.tokens == reversed_.tokens == single
+        assert completion.sampling.seed == completion.request.seed
+    greedy = [c for c in together if c.request.temperature == 0]
+    assert greedy and all(c.tokens == _greedy(model, c.request) for c in greedy)
+    drawn = [c for c in together if c.request.temperature > 0]
+    assert any(c.tokens != _greedy(model, c.request) for c in drawn)
+    # Without a seed, the engine picks one per request.
+    unseeded = Request(prompt=[1, 2, 3], max_new_tokens=12, temperature=1.0)
+    first, second = engine.run([unseeded, unseeded])[0]
+    assert first.sampling.seed != second.sampling.seed
+
+
+@pytest.mark.parametrize("backend", ["jax", "onnx"])
+def test_backends_sample_as_torch_does(model_files: tuple[Path, Path], backend: str) -> None:
+    source, weights = model_files
+    torch_model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    if backend == "jax":
+        pytest.importorskip("jax")
+        from linnet.jax import load_model
+
+        model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    else:
+        pytest.importorskip("onnxruntime")
+        from linnet.onnx import load_model as load_onnx
+
+        model = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    requests = _sampled()
+    expected, _ = Engine(torch_model, graphs=False, buckets=[8, 16, 32]).run(requests)
+    engine = Engine(model, buckets=[8, 16, 32])
+    done, _ = engine.run(requests)
+    assert [c.tokens for c in done] == [c.tokens for c in expected]
+    assert _alone(engine, requests[:3]) == [c.tokens for c in expected[:3]]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_torch_cuda_graphs_sample(model_files: tuple[Path, Path]) -> None:
+    source, weights = model_files
+    reference = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    model = load(
+        source, generics=GENERICS, std_root=STDLIB, weights=weights, device="cuda", compile=True
+    )
+    requests = _sampled()
+    expected, _ = Engine(reference, graphs=False, buckets=[8, 16, 32]).run(requests)
+    done, _ = Engine(model, buckets=[8, 16, 32]).run(requests)
+    assert [c.tokens for c in done] == [c.tokens for c in expected]
+
+
+def test_tokens_stream_and_requests_cancel(model_files: tuple[Path, Path]) -> None:
+    """`on_token` sees every token as it is read, `reason` set on the last;
+    `cancel` ends a request mid-decode and frees its row for the next."""
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, buckets=[8, 16, 32])
+    seen: dict[int, list[tuple[int, str]]] = {0: [], 1: [], 2: []}
+
+    def record(completion: Completion) -> None:
+        seen[completion.request.id].append((completion.tokens[-1], completion.reason))
+
+    requests = [
+        Request(prompt=[3, 4, 5], max_new_tokens=20, id=0, on_token=record),
+        Request(prompt=[6, 7], max_new_tokens=6, id=1, on_token=record),
+        Request(prompt=[8, 9, 10, 11], max_new_tokens=5, id=2, on_token=record),
+    ]
+    running = [engine.submit(r) for r in requests]
+    waiting = engine.submit(Request(prompt=[1, 2], max_new_tokens=4, id=3))
+    while len(running[0].tokens) < 3:
+        engine.step()
+    engine.cancel(running[0])
+    kept = len(running[0].tokens)
+    while engine.busy:
+        engine.step()
+    assert running[0].reason == "cancelled" and len(running[0].tokens) == kept
+    assert [t for t, _ in seen[0]] == running[0].tokens and not any(r for _, r in seen[0])
+    for completion in [*running[1:], waiting]:
+        assert completion.tokens == _greedy(model, completion.request)
+    for completion in running[1:]:
+        tokens = [t for t, _ in seen[completion.request.id]]
+        reasons = [r for _, r in seen[completion.request.id]]
+        assert tokens == completion.tokens and reasons[-1] == "length" and not any(reasons[:-1])
+    engine.cancel(waiting)  # finished already: left as it is
+    assert waiting.reason == "length"
+
+
+ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ."
+
+
+class _Letters:
+    """A tokenizer of one letter per token, over the test model's 64."""
+
+    eos_token_id = None
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        return [ALPHABET.index(c) for c in text]
+
+    def decode(self, token_ids: Sequence[int], skip_special_tokens: bool = False) -> str:
+        return "".join(ALPHABET[i] for i in token_ids)
+
+    def apply_chat_template(self, conversation: Any, **options: Any) -> str:
+        turns = "".join(f"{m['role'][0].upper()} {m['content']}." for m in conversation)
+        return turns + "A "
+
+
+def _post(url: str, body: dict[str, Any]) -> tuple[int, str]:
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode()
+
+
+def _events(text: str) -> list[Any]:
+    lines = [part.removeprefix("data: ") for part in text.split("\n\n") if part]
+    assert lines[-1] == "[DONE]"
+    return [json.loads(line) for line in lines[:-1]]
+
+
+def test_server_speaks_openai(model_files: tuple[Path, Path]) -> None:
+    from linnet.serve.server import Server
+
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    letters = _Letters()
+    server = Server(
+        Engine(model, graphs=False, buckets=[8, 16, 32, 48]), letters, name="tiny", port=0
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.address
+    base = f"http://{host}:{port}/v1"
+    try:
+        with urllib.request.urlopen(f"{base}/models", timeout=60) as response:
+            assert json.loads(response.read())["data"][0]["id"] == "tiny"
+
+        prompt = "Hello"
+        expected = letters.decode(
+            _greedy(model, Request(prompt=letters.encode(prompt), max_new_tokens=8))
+        )
+        greedy = {"prompt": prompt, "max_tokens": 8, "temperature": 0}
+        status, text = _post(f"{base}/completions", greedy)
+        answer = json.loads(text)
+        assert status == 200 and answer["object"] == "text_completion"
+        assert answer["choices"][0]["text"] == expected
+        assert answer["choices"][0]["finish_reason"] == "length"
+        assert answer["usage"] == {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13}
+
+        status, text = _post(
+            f"{base}/completions",
+            {**greedy, "stream": True, "stream_options": {"include_usage": True}},
+        )
+        events = _events(text)
+        assert "".join(e["choices"][0]["text"] for e in events if e["choices"]) == expected
+        assert events[-2]["choices"][0]["finish_reason"] == "length"
+        assert events[-1]["usage"]["completion_tokens"] == 8
+
+        # Stopped where a stop string begins, which is not sent.
+        stop = expected[3:5]
+        status, text = _post(f"{base}/completions", {**greedy, "stop": [stop, "never"]})
+        choice = json.loads(text)["choices"][0]
+        assert choice["text"] == expected[: expected.index(stop)]
+        assert choice["finish_reason"] == "stop"
+        status, text = _post(f"{base}/completions", {**greedy, "stop": stop, "stream": True})
+        pieces = [e["choices"][0]["text"] for e in _events(text)]
+        assert "".join(pieces) == expected[: expected.index(stop)]
+
+        messages = [{"role": "user", "content": "Hi"}]
+        chat_prompt = letters.encode(letters.apply_chat_template(messages))
+        expected = letters.decode(_greedy(model, Request(prompt=chat_prompt, max_new_tokens=6)))
+        chat = {"messages": messages, "max_completion_tokens": 6, "temperature": 0}
+        status, text = _post(f"{base}/chat/completions", chat)
+        answer = json.loads(text)
+        assert answer["object"] == "chat.completion"
+        assert answer["choices"][0]["message"] == {"role": "assistant", "content": expected}
+        status, text = _post(f"{base}/chat/completions", {**chat, "stream": True})
+        events = _events(text)
+        assert events[0]["choices"][0]["delta"] == {"role": "assistant", "content": ""}
+        content = "".join(e["choices"][0]["delta"].get("content", "") for e in events)
+        assert content == expected and events[-1]["choices"][0]["finish_reason"] == "length"
+
+        # A seeded draw is the same every time.
+        drawn = {"prompt": prompt, "max_tokens": 8, "temperature": 1.0, "top_k": 10, "seed": 5}
+        assert (
+            _post(f"{base}/completions", drawn)[1].split('"text"')[1]
+            == _post(f"{base}/completions", drawn)[1].split('"text"')[1]
+        )
+
+        assert _post(f"{base}/completions", {**greedy, "n": 2})[0] == 400
+        assert _post(f"{base}/completions", {**greedy, "top_p": 0})[0] == 400
+        assert _post(f"{base}/completions", {"prompt": "x" * 60})[0] == 400
+        assert _post(f"{base}/embeddings", {})[0] == 404
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)

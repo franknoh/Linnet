@@ -41,7 +41,22 @@ entries are XLA programs over one copy of the weights, with the caches
 donated so XLA updates them in place. The tokens a step produces feed the
 next step on the device, and the engine queues each step before reading
 the previous one's tokens back, so the GPU does not wait on the host
-between steps. Decoding is greedy.
+between steps.
+
+Decoding is greedy unless a request sets `temperature`:
+`Request(prompt=ids, max_new_tokens=256, temperature=0.8, top_p=0.95,
+top_k=50, seed=7)` draws from the softmax of the logits over the
+temperature, from the `top_k` most likely tokens and then the fewest whose
+probabilities reach `top_p` (the order Transformers filters in), on the
+device. A token is drawn as the argmax of the logits plus Gumbel noise
+hashed from the request's seed, the token's position, and the token id, so
+a seeded request completes the same way alone or in any batch, and on
+PyTorch, JAX, or ONNX Runtime alike; without a seed the engine picks one
+(`completion.sampling.seed`). Rows that decode greedily cost what they did
+before; for Llama 3.1 8B at 64 rows, a temperature costs under 1% of
+throughput and top-p, which sorts every row's logits, about 6% (PyTorch)
+and 8% (JAX). On ONNX Runtime a sampled step's logits cross to the host,
+where NumPy draws.
 
 A server whose requests arrive while it runs drives the same engine step by
 step: `engine.submit(request)` queues one and returns its `Completion`, which
@@ -49,7 +64,45 @@ fills in as it runs; `engine.step()` admits waiting requests into free rows,
 queues one decoding step, reads the one before it, and returns the requests
 that finished (a request is seen to finish one step after it does);
 `engine.busy` says whether anything is left. `run` is `submit` for every
-request, then `step` until nothing is.
+request, then `step` until nothing is. A request's `on_token` is called
+with its completion as each token is read (its `reason` set on the last),
+which is how a server streams, and `engine.cancel(completion)` ends a
+request early -- at a stop string, or when its client has gone -- freeing
+its row for the next step.
+
+### Over HTTP
+
+```bash
+python -m linnet.serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
+```
+
+serves a Nest decoder with OpenAI's API: `GET /v1/models`,
+`POST /v1/completions`, and `POST /v1/chat/completions`, streamed as
+server-sent events with `"stream": true` (and `stream_options.include_usage`),
+plus `GET /health`. OpenAI's clients work against it as they are:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+reply = client.chat.completions.create(
+    model="llama-3.1-8b-instruct",
+    messages=[{"role": "user", "content": "Name three primary colors."}],
+    max_tokens=64,
+)
+```
+
+The tokenizer and its chat template come from Transformers, from the card's
+checkpoint repository unless `--tokenizer` names another, and the
+end-of-sequence tokens from it and the checkpoint's generation config.
+`--backend jax` or `--backend onnx` serves through those runtimes, and
+`--warmup 128 512` compiles those prompt lengths before the first request
+(others compile when first seen). Requests take `max_tokens`
+(`max_completion_tokens`), `temperature` (1 unless given, as OpenAI has it),
+`top_p`, `top_k`, `seed`, and `stop` (up to four strings, cut from the text
+and never streamed); more than one choice (`n`), log probabilities, and
+`echo` are refused. `linnet.serve.server.Server(engine, tokenizer, name=...)`
+is the same server around an engine of one's own.
 
 Work that reads nothing but weights -- dequantizing a quantized
 checkpoint, say -- runs once when a model is loaded for inference, not on
