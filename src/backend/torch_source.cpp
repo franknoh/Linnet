@@ -75,7 +75,7 @@ std::string real_text(double value) {
 // The generated module: straight-line PyTorch over static shapes.
 class TorchTarget : public GraphTarget {
 public:
-    explicit TorchTarget(bool prepare) : prepare_(prepare) {}
+    TorchTarget(bool prepare, bool fuse) : prepare_(prepare), fuse_(fuse) {}
 
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         (void)shape;
@@ -802,7 +802,7 @@ public:
         // Sibling linear layers become one product only where their joined
         // weight is prepared once, not rebuilt every call.
         std::vector<std::vector<std::string>> fused;
-        if (prepare_ && !placed_) {
+        if (prepare_ && fuse_ && !placed_) {
             hoisted.body = fuse_linears(hoisted.body, fused);
         }
         if (!fused.empty()) {
@@ -1436,6 +1436,7 @@ private:
 
     bool placed_ = false;  // with placement, `main` and `constants` take `_dev`
     bool prepare_ = false; // split weight-only work into `prepare`
+    bool fuse_ = true;     // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
     std::vector<std::string> arguments_;
@@ -1459,7 +1460,7 @@ private:
 
 std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                                             const TorchSourceOptions& options) {
-    TorchTarget target(options.prepare);
+    TorchTarget target(options.prepare, options.fuse);
     return export_graph(module, options, target);
 }
 

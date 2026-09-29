@@ -251,6 +251,11 @@ struct GraphExportOptions {
     // parameters (dequantizing MXFP4 experts, say) into a `prepare` function
     // the runtime calls once per loaded model rather than on every call.
     bool prepare = false;
+    // Generated PyTorch only, with `prepare`: sibling linear layers run as
+    // one product over their joined weights. Weights split over devices
+    // (tensor parallelism) are joined only by gathering them, so a runtime
+    // that splits them turns this off.
+    bool fuse = true;
 };
 
 std::expected<std::string, std::string>

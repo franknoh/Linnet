@@ -80,7 +80,7 @@ What `load` does:
 | | `torch.softmax` and `torch.rms_norm` are in neither tier: their kernels accumulate in f32 whatever the input dtype, so every policy calls them without casts |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape; input-independent values (rotary tables, masks) are computed once and reused. The default on CUDA; `compile=False` is the interpreter, the default elsewhere |
 | `compile="inductor"` | the same, passed through `torch.compile` |
-| `compile="reduce-overhead"` | CUDA graphs, for decoding: the first call runs through `torch.compile`, the second captures the whole step as one graph, and every later call copies its inputs into the graph's and replays it, with no per-argument checks. A KV cache the entry writes is written in place, at an address the graph keeps; a state or weight replaced since (`reset_state`) is captured again. On several devices, or with gradients, `torch.compile`'s own CUDA graphs run instead |
+| `compile="reduce-overhead"` | CUDA graphs, for decoding: the first call runs through `torch.compile`, the second captures the whole step as one graph, and every later call copies its inputs into the graph's and replays it, with no per-argument checks. A KV cache the entry writes is written in place, at an address the graph keeps; a state or weight replaced since (`reset_state`) is captured again. Split over a mesh (`tensor_parallel`), each process captures its step with the collectives in it. With blocks placed on several devices, or with gradients, `torch.compile`'s own CUDA graphs run instead |
 | `trainable=True` | parameters require gradients |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 | `cast_dtype=True` | converts floating-point weights to the model's dtype as they are read: an f32 checkpoint in a bf16 model, or the reverse |
@@ -170,7 +170,12 @@ adds or overrides rules by path pattern). Every process runs the same
 entries and DTensor adds the collectives the splits need; results come back
 whole on each. Any split computes the same numbers -- the rules only decide
 how much crosses between GPUs -- and an axis a device count does not divide
-is copied instead.
+is copied instead. Sibling linear layers stay apart, since joining split
+weights would gather them onto every GPU. With `compile="reduce-overhead"`
+the decoding step replays as one CUDA graph per process, all-reduces
+included; those graphs hold the process group's communicators, so a
+process lets go of the model (`del model`) before
+`dist.destroy_process_group()`, which otherwise waits on them.
 
 ## Training
 

@@ -336,6 +336,9 @@ class CompiledLinnetModule(LinnetModule):
             # Weight-only work once at load; a model being trained keeps it
             # in the graph, where gradients flow through it.
             command.append("--prepare")
+            if self.tensor_parallel is not None:
+                # Joining split weights would gather them onto every process.
+                command.append("--no-fuse")
         completed = subprocess.run(
             [*command, str(self._source)], capture_output=True, text=True, check=False
         )
@@ -355,14 +358,15 @@ class CompiledLinnetModule(LinnetModule):
             module.F = SplitFunctional()
         main: Callable[..., Any] = module.main
         # CUDA graphs are captured by hand around the whole step, unless the
-        # model is spread over devices or trains: replaying one graph costs
-        # a copy per input, where `torch.compile`'s own checks every
-        # argument of hundreds on every call.
+        # model is spread over devices by placement or trains: replaying one
+        # graph costs a copy per input, where `torch.compile`'s own checks
+        # every argument of hundreds on every call. Split over a mesh, every
+        # process captures the same step, collectives included, and replays
+        # it in step with the others.
         captured = (
             backend in ("reduce-overhead", "cudagraphs")
             and self.interpreter.device.type == "cuda"
             and (self.placement is None or self.placement.trivial)
-            and self.tensor_parallel is None
             and not any(parameter.requires_grad for parameter in self.parameters())
         )
         if captured:
