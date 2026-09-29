@@ -385,9 +385,10 @@ public:
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
         (void)shape;
         // `indices[..., k]` selects along axis k of the source: advanced
-        // indexing with one index tensor per source axis.
+        // indexing with one index tensor per leading source axis, the
+        // trailing ones taken whole.
         std::string index;
-        for (std::size_t k = 0; k < source.shape.size(); ++k) {
+        for (std::size_t k = 0; k < static_cast<std::size_t>(indices.shape.back()); ++k) {
             index += (k == 0 ? "" : ", ") + indices.name + "[..., " + std::to_string(k) + "]";
         }
         return define(source.name + "[" + index + "]");

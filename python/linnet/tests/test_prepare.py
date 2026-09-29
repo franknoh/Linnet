@@ -52,6 +52,14 @@ pub block Model<E: Dim, I: Dim, T: Float = f32> {
         return y
     }
 
+    // The same value transposed: JAX writes `jnp.transpose(...)`, still a
+    // view of the prepared value rather than a copy of it.
+    pub entry turned(x: Tensor[E; T]) -> Tensor[I; T] {
+        let t = permute(weights(), [1, 0])
+        let y[i] = sum[e] t[i, e] * x[e]
+        return y
+    }
+
     // Only a view of a weight: nothing to prepare.
     pub entry viewed(x: Tensor[E; T]) -> Tensor[I; T] {
         let t = permute(blocks, [1, 0])
@@ -96,6 +104,8 @@ def _expected(arrays: dict[str, np.ndarray], x: np.ndarray, entry: str) -> np.nd
     w = np.exp(arrays["blocks"] * arrays["scale"][:, None]) + 1.0
     if entry == "flat":
         return w.reshape(-1) * x
+    if entry == "turned":
+        return w.T @ x
     return w @ x * (2.0 if entry == "second" else 1.0)
 
 
@@ -129,6 +139,9 @@ def test_torch_shares_prepared_values(files: tuple[Path, Path, dict[str, np.ndar
     flat = np.arange(15, dtype=np.float32) * 0.1
     got = model.run_entry("flat", [torch.tensor(flat)]).numpy()
     np.testing.assert_allclose(got, _expected(arrays, flat, "flat"), rtol=1e-5, atol=1e-5)
+    three = np.arange(3, dtype=np.float32) * 0.1
+    got = model.run_entry("turned", [torch.tensor(three)]).numpy()
+    np.testing.assert_allclose(got, _expected(arrays, three, "turned"), rtol=1e-5, atol=1e-5)
     # Every entry prepares the same `weights()`, one of them read flattened:
     # computed once, kept once.
     assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
@@ -164,6 +177,9 @@ def test_jax_shares_prepared_values(files: tuple[Path, Path, dict[str, np.ndarra
     flat = np.arange(15, dtype=np.float32) * 0.1
     got = np.asarray(model.run_entry("flat", [jnp.asarray(flat)]))
     np.testing.assert_allclose(got, _expected(arrays, flat, "flat"), rtol=1e-5, atol=1e-5)
+    three = np.arange(3, dtype=np.float32) * 0.1
+    got = np.asarray(model.run_entry("turned", [jnp.asarray(three)]))
+    np.testing.assert_allclose(got, _expected(arrays, three, "turned"), rtol=1e-5, atol=1e-5)
     assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
 
 
