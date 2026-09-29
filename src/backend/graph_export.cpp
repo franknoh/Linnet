@@ -1732,10 +1732,9 @@ private:
         const std::size_t prefix = grid_.size() - tail;
         for (std::size_t i = 1; i <= gathered; ++i) {
             const Val& index = value(op.operands[i]);
-            const bool fits =
-                (index.kind == Val::Kind::Index && index.axes.front() < prefix) ||
-                (index.kind == Val::Kind::Tensor && index.shape.size() <= prefix &&
-                 index.grid_rank >= index.shape.size());
+            const bool fits = (index.kind == Val::Kind::Index && index.axes.front() < prefix) ||
+                              (index.kind == Val::Kind::Tensor && index.shape.size() <= prefix &&
+                               index.grid_rank >= index.shape.size());
             if (!fits) {
                 return std::nullopt;
             }
@@ -2097,26 +2096,10 @@ bool pure_view(const std::string& expression) {
 }
 
 bool view_or_cast(const std::string& expression) {
-    static const std::set<std::string> methods{"float",
-                                               "half",
-                                               "bfloat16",
-                                               "contiguous",
-                                               "t",
-                                               "to",
-                                               "permute",
-                                               "reshape",
-                                               "view",
-                                               "transpose",
-                                               "expand",
-                                               "unsqueeze",
-                                               "squeeze",
-                                               "flatten",
-                                               "astype",
-                                               "asarray",
-                                               "broadcast_to",
-                                               "expand_dims",
-                                               "swapaxes",
-                                               "moveaxis"};
+    static const std::set<std::string> methods{
+        "float",   "half",    "bfloat16",     "contiguous",  "t",         "to",      "permute",
+        "reshape", "view",    "transpose",    "expand",      "unsqueeze", "squeeze", "flatten",
+        "astype",  "asarray", "broadcast_to", "expand_dims", "swapaxes",  "moveaxis"};
     return method_chain(expression, methods);
 }
 

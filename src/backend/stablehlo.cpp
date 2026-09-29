@@ -344,16 +344,14 @@ public:
                 sizes.push_back(source.shape[i]);
             }
         }
-        return emit(
-            "gather",
-            {source, indices},
-            "dimension_numbers = #stablehlo.gather<offset_dims = " + index_list(offsets) +
-                ", collapsed_slice_dims = " + index_list(leading) +
-                ", start_index_map = " + index_list(leading) +
-                ", index_vector_dim = " + std::to_string(batch) +
-                ">, indices_are_sorted = false, slice_sizes = " + i64_array(sizes),
-            shape,
-            source.dtype);
+        return emit("gather",
+                    {source, indices},
+                    "dimension_numbers = #stablehlo.gather<offset_dims = " + index_list(offsets) +
+                        ", collapsed_slice_dims = " + index_list(leading) + ", start_index_map = " +
+                        index_list(leading) + ", index_vector_dim = " + std::to_string(batch) +
+                        ">, indices_are_sorted = false, slice_sizes = " + i64_array(sizes),
+                    shape,
+                    source.dtype);
     }
 
     std::string
