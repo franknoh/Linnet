@@ -90,10 +90,9 @@ public:
     }
 
     std::string parameter(const std::string& path, const Dims& shape, ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
         const std::string argument = "p" + std::to_string(parameters_.size());
         parameters_.push_back(path);
+        parameter_types_.emplace_back(shape, dtype);
         arguments_.push_back(argument);
         return argument;
     }
@@ -786,7 +785,16 @@ public:
             tail += (i == 0 ? "" : ", ") + outputs[i];
         }
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
-        const Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
+        Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
+        // Sibling linear layers become one product only where their joined
+        // weight is prepared once, not rebuilt every call.
+        std::vector<std::vector<std::string>> fused;
+        if (prepare_ && !placed_) {
+            hoisted.body = fuse_linears(hoisted.body, fused);
+        }
+        if (!fused.empty()) {
+            out += adjacent_helper();
+        }
         out += "CONSTANTS = " + string_list(hoisted.names) + "\n";
         // Weight-only work, run once per loaded model rather than per call.
         // Streamed (offloaded) weights are not resident, so placement keeps
@@ -799,6 +807,15 @@ public:
         if (!prepared.outputs.empty()) {
             out += "PREPARED = " + string_list(prepared.keys) + "\n";
             out += "PREPARE_INPUTS = " + string_list(prepared.inputs) + "\n";
+        }
+        if (!fused.empty()) {
+            // Parameters `_adjacent` joins, which the runtime lays out one
+            // after another so that the joined weight is a view of them.
+            out += "FUSED = [";
+            for (std::size_t i = 0; i < fused.size(); ++i) {
+                out += (i == 0 ? "" : ", ") + string_list(fused[i]);
+            }
+            out += "]\n";
         }
         // The states `main` writes into the tensor it was given: CUDA graphs
         // must be told their addresses are fixed, or they are skipped.
@@ -1106,6 +1123,192 @@ private:
     // `std.quant::linear_int4_groups` natively. tinygemm reads the high
     // nibble first and dequantizes `(q - 8) * scale + zero`, so the weights
     // are repacked and `(q - z) * s` becomes the zero `(8 - z) * s`.
+    // Linear layers that read one input with parameter weights of their own
+    // -- a layer's query, key, and value projections, its gate and up --
+    // become one product over their weights side by side, sliced after: at
+    // a decoding step's few rows, one kernel where there were three. The
+    // weights are joined by `_adjacent`, weight-only work that `prepare`
+    // does once; the runtime lays each group out contiguously (`FUSED`), so
+    // the joined weight is a view and costs no memory.
+    std::string fuse_linears(const std::string& body,
+                             std::vector<std::vector<std::string>>& fused) {
+        struct Linear {
+            std::size_t line;
+            std::string out;
+            std::string input;
+            std::size_t weight;
+            std::optional<std::size_t> bias;
+        };
+        std::vector<std::string> lines;
+        std::size_t highest = 0;
+        {
+            std::string current;
+            for (const char c : body) {
+                if (c == '\n') {
+                    lines.push_back(current);
+                    current.clear();
+                } else {
+                    current += c;
+                }
+            }
+            if (!current.empty()) {
+                lines.push_back(current);
+            }
+        }
+        const auto parameter_index = [&](const std::string& word) -> std::optional<std::size_t> {
+            if (word.size() < 2 || word[0] != 'p' ||
+                !std::all_of(word.begin() + 1, word.end(), [](char c) {
+                    return std::isdigit(static_cast<unsigned char>(c)) != 0;
+                })) {
+                return std::nullopt;
+            }
+            const std::size_t index = std::stoul(word.substr(1));
+            return index < parameter_types_.size() ? std::optional(index) : std::nullopt;
+        };
+        std::vector<Linear> linears;
+        const std::string prefix = "    ";
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            const std::string& line = lines[i];
+            for (std::size_t at = 0; at + 1 < line.size(); ++at) {
+                if (line[at] == 'v' &&
+                    (at == 0 || !std::isalnum(static_cast<unsigned char>(line[at - 1])))) {
+                    std::size_t end = at + 1;
+                    while (end < line.size() &&
+                           std::isdigit(static_cast<unsigned char>(line[end])) != 0) {
+                        ++end;
+                    }
+                    if (end > at + 1) {
+                        highest = std::max(highest,
+                                           static_cast<std::size_t>(
+                                               std::stoul(line.substr(at + 1, end - at - 1))));
+                    }
+                }
+            }
+            // `    vN = F.linear(x, pW, pB | None)`, at the top level.
+            const std::string call = " = F.linear(";
+            const std::size_t equals = line.find(call);
+            if (!line.starts_with(prefix) || line[prefix.size()] == ' ' ||
+                equals == std::string::npos || !line.ends_with(")")) {
+                continue;
+            }
+            const std::string out = line.substr(prefix.size(), equals - prefix.size());
+            const std::string arguments =
+                line.substr(equals + call.size(), line.size() - equals - call.size() - 1);
+            std::vector<std::string> parts;
+            std::size_t start = 0;
+            for (std::size_t comma = arguments.find(", "); comma != std::string::npos;
+                 comma = arguments.find(", ", start)) {
+                parts.push_back(arguments.substr(start, comma - start));
+                start = comma + 2;
+            }
+            parts.push_back(arguments.substr(start));
+            if (parts.size() != 3 || out.find_first_of(" ,") != std::string::npos) {
+                continue;
+            }
+            const auto weight = parameter_index(parts[1]);
+            const auto bias = parameter_index(parts[2]);
+            if (!weight || (!bias && parts[2] != "None")) {
+                continue;
+            }
+            const auto& [shape, dtype] = parameter_types_[*weight];
+            if (shape.size() != 2) {
+                continue;
+            }
+            linears.push_back({i, out, parts[0], *weight, bias});
+        }
+        // Groups: one input, all biased or none, the same input width and
+        // dtype, distinct weights.
+        std::map<std::string, std::vector<std::size_t>> groups;
+        for (std::size_t i = 0; i < linears.size(); ++i) {
+            const Linear& linear = linears[i];
+            const auto& [shape, dtype] = parameter_types_[linear.weight];
+            const std::string key = linear.input + "|" + (linear.bias ? "b" : "-") + "|" +
+                                    std::to_string(shape[1]) + "|" +
+                                    std::to_string(static_cast<int>(dtype));
+            auto& members = groups[key];
+            const bool repeated = std::any_of(members.begin(), members.end(), [&](std::size_t j) {
+                return linears[j].weight == linear.weight;
+            });
+            if (!repeated) {
+                members.push_back(i);
+            }
+        }
+        std::map<std::size_t, std::string> replaced; // first line -> the fused lines
+        std::set<std::size_t> removed;
+        for (const auto& [key, members] : groups) {
+            if (members.size() < 2) {
+                continue;
+            }
+            const auto join = [&](const std::vector<std::size_t>& indices) {
+                std::string list;
+                std::vector<std::string> paths;
+                for (std::size_t j = 0; j < indices.size(); ++j) {
+                    list += (j == 0 ? "" : ", ") + std::string("p") + std::to_string(indices[j]);
+                    paths.push_back(parameters_[indices[j]]);
+                }
+                fused.push_back(paths);
+                return list;
+            };
+            std::vector<std::size_t> weights;
+            std::vector<std::size_t> biases;
+            for (const std::size_t i : members) {
+                weights.push_back(linears[i].weight);
+                if (linears[i].bias) {
+                    biases.push_back(*linears[i].bias);
+                }
+            }
+            const Linear& first = linears[members.front()];
+            const std::string weight = "v" + std::to_string(++highest);
+            std::string text = prefix + weight + " = _adjacent(" + join(weights) + ")\n";
+            std::string bias = "None";
+            if (!biases.empty()) {
+                bias = "v" + std::to_string(++highest);
+                text += prefix + bias + " = _adjacent(" + join(biases) + ")\n";
+            }
+            const std::string product = "v" + std::to_string(++highest);
+            text += prefix + product + " = F.linear(" + first.input + ", " + weight + ", " + bias +
+                    ")\n";
+            std::int64_t offset = 0;
+            for (const std::size_t i : members) {
+                const std::int64_t rows = parameter_types_[linears[i].weight].first[0];
+                text += prefix + linears[i].out + " = " + product + "[..., " +
+                        std::to_string(offset) + ":" + std::to_string(offset + rows) + "]\n";
+                offset += rows;
+                removed.insert(linears[i].line);
+            }
+            replaced[first.line] = text;
+        }
+        if (replaced.empty()) {
+            return body;
+        }
+        std::string out;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (const auto found = replaced.find(i); found != replaced.end()) {
+                out += found->second;
+            } else if (!removed.contains(i)) {
+                out += lines[i] + "\n";
+            }
+        }
+        return out;
+    }
+
+    static std::string adjacent_helper() {
+        return "\n\ndef _adjacent(*parts):\n"
+               "    \"\"\"`torch.cat(parts)`, as a view when the parts lie one after\n"
+               "    another in one buffer, as the runtime lays out the groups in FUSED.\"\"\"\n"
+               "    first = parts[0]\n"
+               "    storage = first.untyped_storage().data_ptr()\n"
+               "    offset = first.storage_offset()\n"
+               "    for part in parts:\n"
+               "        if (not part.is_contiguous() or part.dtype != first.dtype\n"
+               "                or part.untyped_storage().data_ptr() != storage\n"
+               "                or part.storage_offset() != offset):\n"
+               "            return torch.cat(parts)\n"
+               "        offset += part.numel()\n"
+               "    rows = sum(part.shape[0] for part in parts)\n"
+               "    return first.as_strided((rows, *first.shape[1:]), first.stride())\n\n\n";
+    }
+
     static std::string int4_helpers() {
         return "def _int4_pack(packed, scale, zero):\n"
                "    out_features, groups, half = packed.shape\n"
@@ -1222,6 +1425,7 @@ private:
     std::vector<std::vector<std::string>> loop_names_;
     std::size_t loops_ = 0;
     std::size_t next_ = 0;
+    std::vector<std::pair<Dims, ScalarKind>> parameter_types_; // shape and dtype, PARAMETERS order
 };
 
 } // namespace

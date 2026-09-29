@@ -119,6 +119,34 @@ def test_decode_replays_as_one_cuda_graph() -> None:
     assert len(captured) == 1 and captured[0].graph is not None
 
 
+def test_sibling_linears_run_as_one_product() -> None:
+    """A layer's query, key, and value projections (and its gate and up)
+    read one input: the generated source multiplies by their weights side
+    by side. The runtime lays each group out one after another in one
+    buffer, so the joined weight `prepare` makes is a view, not a copy."""
+    reference = load(LLAMA, generics=GENERICS, std_root=STDLIB)
+    compiled = load(LLAMA, generics=GENERICS, std_root=STDLIB, compile=True)
+    weights = _weights(reference)
+    reference.load_state_dict(weights, strict=False)
+    compiled.load_state_dict(weights, strict=False)
+    tokens = torch.randint(0, 11, (2, 5), dtype=torch.int32)
+    torch.testing.assert_close(compiled(tokens), reference(tokens), atol=1e-5, rtol=1e-5)
+    assert isinstance(compiled, CompiledLinnetModule)
+    assert "_adjacent(" in compiled.generated_source("forward")
+    parameters = dict(compiled.named_parameters())
+    projections = [
+        parameters[f"root.layers.0.attention.{name}.weight"]
+        for name in ("q_proj", "k_proj", "v_proj")
+    ]
+    storage = projections[0].untyped_storage().data_ptr()
+    assert all(p.untyped_storage().data_ptr() == storage for p in projections)
+    prepared = compiled._prepared.values()  # pyright: ignore[reportPrivateUsage]
+    assert any(
+        isinstance(value, torch.Tensor) and value.untyped_storage().data_ptr() == storage
+        for value in prepared
+    )
+
+
 def test_native_kernels_and_torch_compile() -> None:
     reference = load(LLAMA, generics=GENERICS, std_root=STDLIB)
     compiled = load(
