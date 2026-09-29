@@ -5,11 +5,16 @@ an extra. The core needs only NumPy: it runs the compiler, reads plans and
 SafeTensors checkpoints, and gives you the compiled program as typed objects.
 
 ```bash
-pip install "linnet-lang[torch]"     # linnet.torch
-pip install "linnet-lang[jax]"       # linnet.jax
-pip install "linnet-lang[flax]"      # linnet.jax.load_nnx
-pip install "linnet-lang[onnx]"      # linnet.onnx
+cd python/linnet
+pip install ".[torch]"     # linnet.torch
+pip install ".[jax]"       # linnet.jax
+pip install ".[flax]"      # linnet.jax.load_nnx
+pip install ".[onnx]"      # linnet.onnx (add onnxruntime or onnxruntime-gpu to run models)
 ```
+
+The package is not on PyPI yet; from outside a checkout, pip installs it from
+the repository with
+`"linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`.
 
 | Module | |
 | --- | --- |

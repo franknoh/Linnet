@@ -248,13 +248,65 @@ private:
     Substitution root_bindings(EntityId root) {
         Substitution subst;
         bind_generics(model_.decls.at(root).generics, subst, "root block");
+        check_constraints(root, subst, "root block");
         return subst;
     }
 
     Substitution entry_bindings(const ir::Function& entry, const Substitution& root_subst) {
         Substitution subst = root_subst;
         bind_generics(entry.generics, subst, "entry");
+        if (entry.entity != sema::no_entity && model_.decls.contains(entry.entity)) {
+            check_constraints(entry.entity, subst, "entry");
+        }
         return subst;
+    }
+
+    // The declaration's `where` clause under the bound values. The checker
+    // proves every constraint at each call inside the program; the values
+    // a caller binds from outside are checked here, before anything is
+    // built from shapes the declaration rules out (`H % Heads == 0` with
+    // `H = 5, Heads = 2` would split 5 features into 2 heads of 2).
+    void check_constraints(EntityId decl, const Substitution& subst, const char* owner) {
+        for (const ConstraintInfo& constraint : model_.decls.at(decl).constraints) {
+            const auto lhs = types_.substitute(constraint.lhs, subst).constant();
+            const auto rhs = types_.substitute(constraint.rhs, subst).constant();
+            if (!lhs || !rhs) {
+                continue;
+            }
+            bool holds = true;
+            const char* symbol = "==";
+            switch (constraint.relation) {
+            case shape::Relation::Equal:
+                holds = *lhs == *rhs;
+                break;
+            case shape::Relation::NotEqual:
+                holds = *lhs != *rhs;
+                symbol = "!=";
+                break;
+            case shape::Relation::Less:
+                holds = *lhs < *rhs;
+                symbol = "<";
+                break;
+            case shape::Relation::LessEqual:
+                holds = *lhs <= *rhs;
+                symbol = "<=";
+                break;
+            case shape::Relation::Greater:
+                holds = *lhs > *rhs;
+                symbol = ">";
+                break;
+            case shape::Relation::GreaterEqual:
+                holds = *lhs >= *rhs;
+                symbol = ">=";
+                break;
+            }
+            if (!holds) {
+                fail(std::string(owner) + " constraint `" + model_.dims.to_string(constraint.lhs) +
+                     " " + symbol + " " + model_.dims.to_string(constraint.rhs) +
+                     "` does not hold for the bound " + "values (" + std::to_string(*lhs) + " " +
+                     symbol + " " + std::to_string(*rhs) + " is false)");
+            }
+        }
     }
 
     // A `while` loop: the target's loop form over the carried values — the

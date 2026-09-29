@@ -5,7 +5,7 @@ exports an entry as an ONNX model. Together they round-trip: an exported
 model imports back with its parameters intact.
 
 ```bash
-cd python/linnet && uv sync --extra onnx    # or: pip install "linnet-lang[onnx]"
+cd python/linnet && uv sync --extra onnx    # or: pip install ".[onnx]"
 ```
 
 ## Importing
@@ -113,8 +113,8 @@ in `f32` and round back, and 8- and 16-bit integer arithmetic runs in
 
 ## Tests
 
-`tests/test_export.py` exports the tiny transformer, runs it under
+`tests/onnx/test_export.py` exports the tiny transformer, runs it under
 onnxruntime with the PyTorch materializer's weights, compares the outputs,
-and imports it back. `tests/test_import.py` imports a GPT-style graph built
+and imports it back. `tests/onnx/test_import.py` imports a GPT-style graph built
 with `onnx.helper` and a model from `torch.onnx.export(..., dynamo=True)`,
 and compares both against PyTorch references.

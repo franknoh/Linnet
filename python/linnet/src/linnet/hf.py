@@ -89,7 +89,29 @@ def _llama_config(
         "tie_word_embeddings": False,
         "torch_dtype": TORCH_DTYPE_NAMES.get(dtype, dtype),
         "transformers_version": "4.0.0",
+        **_rope_scaling(constants),
     }
+
+
+# Llama 3.1's `llama3` rope scaling, when the program defines all four of
+# its constants (the Nest card's `crate.rope` does); without it a server
+# would rotate with the base frequency alone and drift past 8192 positions.
+_LLAMA3_SCALING = {
+    "factor": "FACTOR",
+    "low_freq_factor": "LOW_FREQ_FACTOR",
+    "high_freq_factor": "HIGH_FREQ_FACTOR",
+    "original_max_position_embeddings": "ORIGINAL_MAX_POSITION_EMBEDDINGS",
+}
+
+
+def _rope_scaling(constants: Mapping[str, float]) -> dict[str, Any]:
+    if not all(name in constants for name in _LLAMA3_SCALING.values()):
+        return {}
+    scaling: dict[str, Any] = {"rope_type": "llama3"}
+    for key, name in _LLAMA3_SCALING.items():
+        value = constants[name]
+        scaling[key] = int(value) if key == "original_max_position_embeddings" else value
+    return {"rope_scaling": scaling}
 
 
 def _gpt2_config(
@@ -296,6 +318,7 @@ def export(
         if entry.kind != "param":
             continue
         shape = ir.evaluate_shape(entry.shape, bound)
+        dtype = ir.evaluate_dtype(entry.dtype, bound)
         for linnet_path in nest.expand_paths(entry, bound):
             source_name = mapping.get(linnet_path, linnet_path)
             location = index.get(source_name)
@@ -306,6 +329,13 @@ def export(
             if location.shape != shape:
                 found, needs = list(location.shape), list(shape)
                 problems.append(f"`{source_name}` has shape {found}, `{linnet_path}` needs {needs}")
+                continue
+            # The tensors are copied as they are, and `config.json` declares
+            # the program's dtype: they must agree.
+            if nest.SAFETENSORS_DTYPES.get(location.dtype) != dtype:
+                problems.append(
+                    f"`{source_name}` is {location.dtype}, `{linnet_path}` needs {dtype}"
+                )
                 continue
             hf_name = family.hf_name(linnet_path)
             if hf_name is None:

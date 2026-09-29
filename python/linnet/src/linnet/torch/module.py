@@ -186,6 +186,14 @@ class LinnetModule(nn.Module):
         for name in generics:
             if all(generic["name"] != name for generic in root["generics"]):
                 raise PlanError(f"`{root['name']}` has no generic parameter `{name}`")
+        # The block's `where` clause under the values given: the checker
+        # proves it at every call inside the program, not for the caller's.
+        for constraint in root.get("constraints", []):
+            if not env.relation_holds(constraint):
+                raise PlanError(
+                    f"the generics given to `{root['name']}` break its `where` clause "
+                    f"({constraint['relation']} does not hold)"
+                )
         self.root = BlockModule(plan, root["name"], env, device)
         self.interpreter = Interpreter(plan, device)
         self.entries = {

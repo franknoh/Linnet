@@ -5,7 +5,7 @@ functions as Linnet. Like the PyTorch adapter, it has no model-specific
 code.
 
 ```bash
-cd python/linnet && uv sync --extra flax    # or: pip install "linnet-lang[flax]"
+cd python/linnet && uv sync --extra flax    # or: pip install ".[flax]"
 ```
 
 | Function | Runs the entry as | Differentiable |
@@ -28,8 +28,8 @@ Each new combination of input shapes asks the compiler for the entry's
 StableHLO with those dimensions bound (`linnet stablehlo`), checks that every
 parameter it names is in the weights, and wraps the module as an `Exported`
 that runs on any XLA backend. Weights are device arrays passed as arguments,
-bound by the `linnet.path` names. Optional parameters must be all present or
-all absent.
+bound by the `linnet.path` names. Each optional parameter is compiled in
+when the weights have it and out when they do not, one parameter at a time.
 
 An entry that touches `state` is called with `state=` and returns the new
 state: `out, state = f(x, state=state)`, both mappings by parameter path,

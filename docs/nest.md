@@ -20,7 +20,7 @@ through the card's `bindings.json`, and returns the backend's object:
 `load_source` for `"jax_source"`, `load_nnx` for `"nnx"`. Keyword arguments
 go to that loader; `generics=` overrides the card's values. A local model
 directory works in place of a name. Install with the `nest` extra
-(`pip install "linnet-lang[nest]"`).
+(the `nest` extra: `pip install ".[nest]"` in `python/linnet`).
 
 ## A model
 

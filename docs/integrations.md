@@ -106,10 +106,13 @@ that directory for a Linnet model whose structure is one of them: it
 recognizes the family from the parameter paths and generics of the typed
 program (`llama`: grouped-query attention, RMS norms, SwiGLU; `gpt2`), derives
 `config.json` from the generics and the module constants (`THETA` becomes
-`rope_theta`), streams the checkpoint into `model.safetensors` under the
-Transformers tensor names, and copies the tokenizer files from the card's
-Hub repository. vLLM, SGLang, TGI, and `transformers` load the result as
-they load any model of that family.
+`rope_theta`, `EPS` `rms_norm_eps`, and `FACTOR`, `LOW_FREQ_FACTOR`,
+`HIGH_FREQ_FACTOR`, and `ORIGINAL_MAX_POSITION_EMBEDDINGS`, when all four are
+defined, Llama 3.1's `llama3` `rope_scaling`), checks each tensor's shape and
+dtype against the program, streams the checkpoint into `model.safetensors`
+under the Transformers tensor names, and copies the tokenizer files from the
+card's Hub repository. The result is an ordinary checkpoint of that family,
+in the layout vLLM, SGLang, TGI, and `transformers` read.
 
 The same command takes a `.linnet` file with `--weights`, `--bind`, and
 `--tokenizer <repo>`, so a model trained or modified in Linnet ships the
@@ -119,10 +122,12 @@ out-of-tree vLLM model class for arbitrary Linnet programs is not part of
 this release.
 
 `transformers` agrees with the Linnet interpreter on the exported model to
-1e-4 (the tests export tiny GPT-2 and Llama configurations and compare
-logits). The export of `tinyllama-1.1b-chat` from Nest was served by vLLM
-0.30 on an H100 as it is: `/v1/completions` and `/v1/chat/completions`
-answer with the model's chat template applied.
+1e-4 (the tests export tiny GPT-2, Llama, and Llama 3.1 configurations, the
+last with its `rope_scaling`, and compare logits). The export of
+`tinyllama-1.1b-chat` from Nest was served by vLLM 0.30 on an H100 as it is:
+`/v1/completions` and `/v1/chat/completions` answer with the model's chat
+template applied, and the benchmarks serve the Llama-family exports through
+vLLM. SGLang and TGI have not been run on an export.
 
 ## llama.cpp and Ollama
 
