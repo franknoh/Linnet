@@ -110,7 +110,7 @@ takes the argmax of the first result in the graph, and `cuda_graph=True`
 captures the entry as a CUDA graph and replays it, its inputs copied into
 buffers that stay put, when every state it writes is updated in place and
 no result is `bf16` (it runs as usual otherwise). `linnet.serve` does both
-for its decoding step.
+for its decoding step (a step that samples takes the logits instead).
 
 `model.place(array, "f16")` puts an input on the device once, for a call
 that repeats; `run_entry(..., keep_on_device=True)` leaves the results there
