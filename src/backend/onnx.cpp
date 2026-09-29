@@ -391,6 +391,53 @@ public:
                 node("LayerNormalization", inputs, "axis = -1, epsilon = " + epsilon, shape, acc);
             return back(normalized, shape);
         }
+        if (implementation_base == "torch.rms_norm" && operands.size() == 3 && at[0] != nullptr &&
+            at[1] != nullptr && at[2] != nullptr && !at[0]->shape.empty()) {
+            // In f32, spelled as ONNX Runtime's `SimplifiedLayerNormFusion`
+            // matches it (`Pow`, `ReduceMean`, `Add`, `Sqrt`, `Div`), so the
+            // session runs one kernel for the whole norm.
+            const std::string epsilon = literal_of(at[2]->name);
+            if (epsilon.empty()) {
+                return std::nullopt;
+            }
+            const Dims& full = at[0]->shape;
+            Dims reduced = full;
+            reduced.back() = 1;
+            const TensorInfo x =
+                at[0]->dtype == ScalarKind::F32
+                    ? *at[0]
+                    : TensorInfo{convert(*at[0], ScalarKind::F32), full, ScalarKind::F32};
+            Literal two;
+            two.kind = Literal::Kind::Real;
+            two.real = 2.0;
+            const TensorInfo exponent{constant(two, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo squares{
+                node("Pow", {x, exponent}, "", full, ScalarKind::F32), full, ScalarKind::F32};
+            const TensorInfo mean{node("ReduceMean",
+                                       {squares, int64_vector({-1})},
+                                       "keepdims = 1",
+                                       reduced,
+                                       ScalarKind::F32),
+                                  reduced,
+                                  ScalarKind::F32};
+            Literal small;
+            small.kind = Literal::Kind::Real;
+            small.real = std::stod(epsilon);
+            const TensorInfo eps{constant(small, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo shifted{
+                node("Add", {mean, eps}, "", reduced, ScalarKind::F32), reduced, ScalarKind::F32};
+            const TensorInfo root{
+                node("Sqrt", {shifted}, "", reduced, ScalarKind::F32), reduced, ScalarKind::F32};
+            TensorInfo normalized{
+                node("Div", {x, root}, "", full, ScalarKind::F32), full, ScalarKind::F32};
+            if (dtype != ScalarKind::F32) {
+                normalized = {convert(normalized, dtype), full, dtype};
+            }
+            const TensorInfo weight = at[1]->dtype == dtype
+                                          ? *at[1]
+                                          : TensorInfo{convert(*at[1], dtype), at[1]->shape, dtype};
+            return node("Mul", {normalized, weight}, "", shape, dtype);
+        }
         if (implementation_base == "torch.nn.functional.gelu" && operands.size() == 1 &&
             at[0] != nullptr) {
             return node("Gelu", {*at[0]}, "approximate = \"none\"", shape, dtype);

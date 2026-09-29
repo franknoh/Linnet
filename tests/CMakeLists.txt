@@ -141,7 +141,7 @@ add_test(NAME cli_onnx_transformer
             --bind Inner=16 --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5
             ${PROJECT_SOURCE_DIR}/examples/04-tiny-transformer/src/lib.linnet)
 set_tests_properties(cli_onnx_transformer PROPERTIES
-    PASS_REGULAR_EXPRESSION "metadata_props: \\[\"linnet.path.param0\": \"embedding.weight\".*main \\(int32\\[2,5\\] tokens.*ReduceSum")
+    PASS_REGULAR_EXPRESSION "metadata_props: \\[\"linnet.path.param0\": \"embedding.weight\".*main \\(int32\\[2,5\\] tokens.*ReduceMean")
 add_test(NAME cli_stablehlo_state
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind B=1 --bind Max=4 --bind D=3
             ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet)
