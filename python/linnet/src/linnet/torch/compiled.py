@@ -62,6 +62,8 @@ class CompiledLinnetModule(LinnetModule):
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
         self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
+        # The memory every hand-captured CUDA graph allocates from.
+        self._graph_pool: Any = None
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
 
     def _run_entry(
@@ -89,6 +91,11 @@ class CompiledLinnetModule(LinnetModule):
         if prepared is None:
             prepared = self._prepare(name, inputs, generics or {}, backend)
             self._fast[signature] = prepared
+        if prepared.generated.captured:
+            return self._replay(prepared, inputs)
+        return self._call(prepared, inputs, cuda_graphs)
+
+    def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Any:
         generated = prepared.generated
         if self.placement is not None:
             # Inputs enter where the first unit runs.
@@ -136,6 +143,61 @@ class CompiledLinnetModule(LinnetModule):
                 continue  # written in place: the buffer already holds it
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
+
+    def _replay(self, prepared: _Prepared, inputs: list[torch.Tensor]) -> Any:
+        """A call of an entry replayed as one CUDA graph captured by hand: the
+        first call runs as it is (compiling what it needs), the second
+        captures the step and replays it, and every later one copies its
+        inputs into the graph's and replays. No guard or argument is checked
+        per call but that the states and weights the graph read are still
+        the module's."""
+        if not all(value.is_cuda for value in inputs):
+            return self._call(prepared, inputs, cuda_graphs=False)
+        graph = prepared.graph
+        if graph is not None and not graph.current():
+            graph = prepared.graph = None  # a state or weight was replaced
+        if prepared.static is None:
+            # The first call runs as it is, on the buffers the graph will
+            # read, so what it compiles is what the capture then traces.
+            prepared.static = [value.contiguous().clone() for value in inputs]
+            return self._call(prepared, prepared.static, cuda_graphs=False)
+        for static, value in zip(prepared.static, inputs, strict=True):
+            static.copy_(value)
+        if graph is None:
+            graph = prepared.graph = self._capture(prepared, prepared.static)
+        graph.graph.replay()
+        results = [value.clone() for value in graph.results]
+        return results[0] if len(results) == 1 else tuple(results)
+
+    def _capture(self, prepared: _Prepared, static: list[torch.Tensor]) -> _Graph:
+        generated = prepared.generated
+        parameters = [getattr(owner, leaf) for owner, leaf in prepared.parameters]
+        states = [getattr(owner, leaf) for owner, leaf in prepared.states]
+        arguments = [*static, *parameters, *states, *generated.constants, *prepared.prepared]
+        by_path = dict(zip(generated.states, states, strict=True))
+        if self._graph_pool is None:
+            self._graph_pool = torch.cuda.graph_pool_handle()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, pool=self._graph_pool):
+            outputs = list(generated.main(*arguments))
+            # A state the step returns rather than writes in place goes into
+            # its own buffer, inside the graph, so it stays where it is.
+            for (owner, leaf), path, value in zip(
+                prepared.next_states,
+                generated.next_states,
+                outputs[generated.results :],
+                strict=True,
+            ):
+                state = by_path.get(path)
+                if state is None:
+                    setattr(owner, leaf, value.detach())
+                elif not _same(value, state):
+                    state.copy_(value)
+        watched = [
+            (owner, leaf, getattr(owner, leaf))
+            for owner, leaf in (*prepared.parameters, *prepared.states)
+        ]
+        return _Graph(graph, outputs[: generated.results], watched)
 
     def _prepare(
         self,
@@ -264,7 +326,21 @@ class CompiledLinnetModule(LinnetModule):
 
             module.F = SplitFunctional()
         main: Callable[..., Any] = module.main
-        if backend in ("reduce-overhead", "cudagraphs"):
+        # CUDA graphs are captured by hand around the whole step, unless the
+        # model is spread over devices or trains: replaying one graph costs
+        # a copy per input, where `torch.compile`'s own checks every
+        # argument of hundreds on every call.
+        captured = (
+            backend in ("reduce-overhead", "cudagraphs")
+            and self.interpreter.device.type == "cuda"
+            and (self.placement is None or self.placement.trivial)
+            and self.tensor_parallel is None
+            and not any(parameter.requires_grad for parameter in self.parameters())
+        )
+        if captured:
+            if backend == "reduce-overhead":
+                main = torch.compile(main)
+        elif backend in ("reduce-overhead", "cudagraphs"):
             main = torch.compile(main, mode="reduce-overhead")
         elif backend is not None:
             main = torch.compile(main, backend=backend)
@@ -294,6 +370,7 @@ class CompiledLinnetModule(LinnetModule):
             getattr(module, "prepare", None),
             list(module.PARAMETERS),
             list(getattr(module, "CONSTANTS", [])),
+            captured,
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -313,6 +390,21 @@ class _Prepared:
     states: list[tuple[Any, str]]
     next_states: list[tuple[Any, str]]
     prepared: list[torch.Tensor]  # the entry's weight-only values, after the constants
+    static: list[torch.Tensor] | None = None  # inputs a hand-captured graph reads
+    graph: _Graph | None = None  # the step captured by hand, after one call
+
+
+@dataclass
+class _Graph:
+    """One step captured as a CUDA graph: the results it writes, and the
+    weights and states it was captured over."""
+
+    graph: Any  # torch.cuda.CUDAGraph
+    results: list[torch.Tensor]
+    watched: list[tuple[Any, str, torch.Tensor]]  # (module, attribute, tensor)
+
+    def current(self) -> bool:
+        return all(getattr(owner, leaf) is tensor for owner, leaf, tensor in self.watched)
 
 
 def _mark_static(tensor: Any) -> None:
@@ -356,3 +448,4 @@ class _Generated:
     prepare: Callable[..., Any] | None = None
     all_parameters: list[str] = field(default_factory=list[str])  # `PARAMETERS`
     constant_names: list[str] = field(default_factory=list[str])  # `CONSTANTS`
+    captured: bool = False  # replayed as a CUDA graph captured by hand
