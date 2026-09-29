@@ -88,7 +88,12 @@ class SourceFunction(LinnetFunction):
             # `prepare`, so a second copy of what another entry prepared
             # (a mixture's dequantized experts) is never made.
             inputs = [arrays[int(name[1:])] for name in module.PREPARE_INPUTS]
-            values = jax.jit(lambda *xs: tuple(module.prepare(*xs)[i] for i in missing))(*inputs)
+
+            def only_missing(*values: Any) -> tuple[Any, ...]:
+                prepared = module.prepare(*values)
+                return tuple(prepared[i] for i in missing)
+
+            values = jax.jit(only_missing)(*inputs)
             for i, value in zip(missing, values, strict=True):
                 self.prepared[keys[i]] = value
         return [self.prepared[key] for key in keys]
