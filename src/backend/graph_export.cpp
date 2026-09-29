@@ -2247,6 +2247,11 @@ PreparedSplit split_prepared(const std::string& body,
         const auto assignment = top_level_assignment(line);
         if (assignment && keep.contains(assignment->first)) {
             kept_lines.push_back(line);
+            // A constant both sides read is made on both: as a prepared
+            // value it would key one entry's set apart from another's.
+            if (!reads_weights[assignment->first]) {
+                body_lines.push_back(line);
+            }
         } else {
             body_lines.push_back(line);
         }
@@ -2259,7 +2264,7 @@ PreparedSplit split_prepared(const std::string& body,
     }
     for (const std::string& line : kept_lines) {
         const std::string name = top_level_assignment(line)->first;
-        if (read_by_body.contains(name)) {
+        if (read_by_body.contains(name) && reads_weights[name]) {
             split.outputs.push_back(name);
         }
     }
