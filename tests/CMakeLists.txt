@@ -203,3 +203,16 @@ add_test(NAME cli_torch_source_fast
 set_tests_properties(cli_torch_source_fast PROPERTIES
     PASS_REGULAR_EXPRESSION "F.scaled_dot_product_attention\\("
     FAIL_REGULAR_EXPRESSION "\\.float\\(\\)")
+add_test(NAME cli_torch_source_fused
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --numerics fast --entry decode --bind Vocab=11
+            --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=1 --bind Batch=2
+            --bind MaxSeq=6 --bind T=bf16 --prepare ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
+set_tests_properties(cli_torch_source_fused PROPERTIES
+    PASS_REGULAR_EXPRESSION "FUSED = \\[\\[\"layers.0.attention.q_proj.weight\".*= _adjacent\\(p2, p3, p4\\)")
+add_test(NAME cli_torch_source_unfused
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --numerics fast --entry decode --bind Vocab=11
+            --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=1 --bind Batch=2
+            --bind MaxSeq=6 --bind T=bf16 --prepare --no-fuse ${PROJECT_SOURCE_DIR}/examples/05-llama/src/lib.linnet)
+set_tests_properties(cli_torch_source_unfused PROPERTIES
+    PASS_REGULAR_EXPRESSION "= F.linear\\(v[0-9]+, p2, None\\)"
+    FAIL_REGULAR_EXPRESSION "_adjacent")
