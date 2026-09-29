@@ -158,8 +158,9 @@ def _greedy(model: torch.nn.Module, request: Request) -> list[int]:
     """Greedy decoding without a cache: the whole sequence every token."""
     ids = list(request.prompt)
     out: list[int] = []
+    device = next(iter(model.parameters())).device
     for _ in range(request.max_new_tokens):
-        tokens = torch.tensor([ids], dtype=torch.int32)
+        tokens = torch.tensor([ids], dtype=torch.int32, device=device)
         token = int(model.run_entry("forward", [tokens])[0, -1].argmax())  # type: ignore[operator]
         out.append(token)
         ids.append(token)
@@ -177,6 +178,22 @@ def test_torch(model_files: tuple[Path, Path]) -> None:
     for completion in done:
         assert completion.tokens == _greedy(model, completion.request)
         assert completion.reason == "length"
+    assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_torch_cuda_graphs(model_files: tuple[Path, Path]) -> None:
+    """On CUDA the step replays as a CUDA graph, its tokens stay on the
+    device, and each step is queued before the last one is read: rows that
+    finish are seen a step late and their extra token is dropped."""
+    source, weights = model_files
+    model = load(
+        source, generics=GENERICS, std_root=STDLIB, weights=weights, device="cuda", compile=True
+    )
+    requests = _requests()
+    done, stats = Engine(model, buckets=[8, 16, 32]).run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
     assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
 
 

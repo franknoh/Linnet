@@ -38,12 +38,16 @@ caches in place, the step is replayed as a CUDA graph, and waiting prompts
 go through in passes of up to 8, each padded to its longest; with
 `linnet.jax.load_model` (or `nest.load(..., backend="jax_model")`) both
 entries are XLA programs over one copy of the weights, with the caches
-donated so XLA updates them in place. Decoding is greedy.
+donated so XLA updates them in place. The tokens a step produces feed the
+next step on the device, and the engine queues each step before reading
+the previous one's tokens back, so the GPU does not wait on the host
+between steps. Decoding is greedy.
 
 A server whose requests arrive while it runs drives the same engine step by
 step: `engine.submit(request)` queues one and returns its `Completion`, which
 fills in as it runs; `engine.step()` admits waiting requests into free rows,
-takes one decoding step, and returns the requests that finished;
+queues one decoding step, reads the one before it, and returns the requests
+that finished (a request is seen to finish one step after it does);
 `engine.busy` says whether anything is left. `run` is `submit` for every
 request, then `step` until nothing is.
 

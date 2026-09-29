@@ -19,6 +19,12 @@ cache's length. Rows are fixed slots of a cache sized by the model's `Batch`
 and `MaxSeq` generics -- no paging -- so `Batch` is the most requests in
 flight and `MaxSeq` the longest prompt plus completion.
 
+The tokens a step produces stay on the device and feed the next step there:
+the engine queues each step before it reads the previous one's tokens back,
+so the accelerator is not left waiting while the host looks at them. A
+request that finishes is seen one step late; its row computes that step
+along and the token is dropped.
+
     from linnet.torch import load
     from linnet.serve import Engine, Request
 
@@ -89,14 +95,33 @@ class Stats:
         return self.generated_tokens / self.seconds if self.seconds > 0 else 0.0
 
 
+class _Tokens(Protocol):
+    """Token ids a queued pass produces; `tolist` waits for them."""
+
+    def tolist(self) -> list[int]: ...
+
+
 class _Backend(Protocol):
+    """Holds each row's next token and position on the device. `prefill`
+    queues a prompt pass and sets its rows to the token after each prompt, at
+    the position after it; `decode` queues a step for every row and advances
+    them all."""
+
     slots: int
     max_seq: int
 
-    def prefill(
-        self, tokens: list[list[int]], slots: list[int], lengths: list[int]
-    ) -> list[int]: ...
-    def decode(self, tokens: list[int], positions: list[int]) -> list[int]: ...
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens: ...
+    def decode(self) -> _Tokens: ...
+
+
+@dataclass
+class _Queued:
+    """A pass the engine has queued and not yet read: `owners` are the
+    `(index, row, completion)` its tokens belong to, as they were queued."""
+
+    tokens: _Tokens
+    owners: list[tuple[int, int, Completion]]
+    prompts: bool
 
 
 class Engine:
@@ -106,9 +131,11 @@ class Engine:
     `linnet.onnx.OnnxModel` with
     `prefill_slots` and `decode_rows` entries. `buckets` are the prompt
     lengths compiled (a pass is padded to the smallest that holds its longest
-    prompt): by default 16, 32, 64, then every 128 up to `MaxSeq`. Prompts are
-    passed `max_group` at a time at most, in groups of powers of two, each a
-    compiled shape. `graphs=True` replays the PyTorch step as a CUDA graph.
+    prompt): by default 16, 32, 48, 64, then four to each doubling (80, 96,
+    112, 128, 160, ...) up to `MaxSeq`, so padding adds less than a quarter
+    to a prompt. Prompts are passed `max_group` at a time at most, in groups
+    of powers of two, each a compiled shape. `graphs=True` replays the
+    PyTorch step as a CUDA graph.
     """
 
     def __init__(
@@ -123,11 +150,11 @@ class Engine:
         self.backend: _Backend = _backend_for(model, graphs)
         limit = self.backend.max_seq
         if buckets is None:
-            buckets = [16, 32, 64]
-            length = 128
+            buckets = []
+            length = 16
             while length < limit:
                 buckets.append(length)
-                length += 128
+                length += max(16, 1 << (length.bit_length() - 3))
             buckets.append(limit)
         self.buckets = sorted({b for b in buckets if b <= limit})
         self.pad = pad
@@ -146,8 +173,9 @@ class Engine:
             while group <= min(self.max_group, self.slots):
                 self.backend.prefill([[self.pad] * bucket] * group, list(range(group)), [1] * group)
                 group *= 2
-        for _ in range(3):
-            self.backend.decode([self.pad] * self.slots, [0] * self.slots)
+        for _ in range(2):
+            self.backend.decode()
+        self.backend.decode().tolist()
 
     def run(self, requests: Iterable[Request]) -> tuple[list[Completion], Stats]:
         """Completes every request, all of them waiting from the start, and
@@ -175,7 +203,7 @@ class Engine:
         self._waiting: deque[Completion] = deque()
         self._rows: list[Completion | None] = [None] * self.slots
         self._positions = [0] * self.slots
-        self._last = [self.pad] * self.slots
+        self._queued: deque[_Queued] = deque()
         self._steps = self._prefills = 0
         self._start = time.perf_counter()
 
@@ -197,17 +225,20 @@ class Engine:
 
     @property
     def busy(self) -> bool:
-        """Whether any request is waiting or in a row."""
-        return bool(getattr(self, "_waiting", None)) or any(
-            row is not None for row in getattr(self, "_rows", [])
+        """Whether any request is waiting or in a row, or a pass is still to
+        be read."""
+        return (
+            bool(getattr(self, "_waiting", None))
+            or any(row is not None for row in getattr(self, "_rows", []))
+            or bool(getattr(self, "_queued", None))
         )
 
     def step(self) -> list[Completion]:
         """Admits waiting requests into free rows, their prompts in passes of
-        a power of two, similar lengths together, then takes one decoding
-        step for every row. Returns the requests that finished."""
-        rows, positions, last = self._rows, self._positions, self._last
-        finished: list[Completion] = []
+        a power of two, similar lengths together, then queues one decoding
+        step for every row and reads what the passes before it produced.
+        Returns the requests that finished."""
+        rows = self._rows
         free = [slot for slot in range(self.slots) if rows[slot] is None]
         admitted = [self._waiting.popleft() for _ in range(min(len(free), len(self._waiting)))]
         admitted.sort(key=lambda c: len(c.request.prompt))
@@ -226,32 +257,40 @@ class Engine:
                 [len(p) for p in prompts],
             )
             self._prefills += 1
-            first = time.perf_counter() - self._start
-            for (slot, completion), prompt, token in zip(batch, prompts, tokens, strict=True):
+            for slot, completion in batch:
                 completion.admitted = now
-                completion.first_token = first
-                completion.tokens.append(token)
-                rows[slot], positions[slot], last[slot] = completion, len(prompt), token
-                if self._finished(completion, positions[slot]):
-                    completion.finished = first
-                    rows[slot] = None
-                    finished.append(completion)
-        if not any(row is not None for row in rows):
-            return finished
-        # One step for the whole batch; empty rows compute along.
-        produced = self.backend.decode(last, positions)
-        self._steps += 1
+                rows[slot] = completion
+            owners = [(i, slot, c) for i, (slot, c) in enumerate(batch)]
+            self._queued.append(_Queued(tokens, owners, prompts=True))
+        ahead = 0
+        if any(row is not None for row in rows):
+            # One step for the whole batch; empty rows compute along. It
+            # stays queued while the passes before it are read.
+            owners = [(slot, slot, c) for slot, c in enumerate(rows) if c is not None]
+            self._queued.append(_Queued(self.backend.decode(), owners, prompts=False))
+            self._steps += 1
+            ahead = 1
+        finished: list[Completion] = []
+        while len(self._queued) > ahead:
+            finished += self._read(self._queued.popleft())
+        return finished
+
+    def _read(self, queued: _Queued) -> list[Completion]:
+        produced = queued.tokens.tolist()
         now = time.perf_counter() - self._start
-        for slot, completion in enumerate(rows):
-            if completion is None:
-                continue
-            token = produced[slot]
-            completion.tokens.append(token)
-            positions[slot] += 1
-            last[slot] = token
-            if self._finished(completion, positions[slot]):
+        finished: list[Completion] = []
+        for index, slot, completion in queued.owners:
+            if completion.reason:
+                continue  # finished a step earlier; this token ran along
+            completion.tokens.append(produced[index])
+            if queued.prompts:
+                completion.first_token = now
+                self._positions[slot] = len(completion.request.prompt)
+            else:
+                self._positions[slot] += 1
+            if self._finished(completion, self._positions[slot]):
                 completion.finished = now
-                rows[slot] = None
+                self._rows[slot] = None
                 finished.append(completion)
         return finished
 
@@ -308,70 +347,116 @@ class _TorchBackend:
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
 
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> list[int]:
-        torch = self.torch
-        device = self.device
-        logits = self.model.run_entry(
-            "prefill_slots",
-            [
-                torch.tensor(tokens, dtype=torch.int32, device=device),
-                torch.tensor(slots, dtype=torch.int32, device=device),
-                torch.tensor(lengths, dtype=torch.int32, device=device),
-            ],
-            compile=True,
-        )
-        return logits.argmax(-1).tolist()
+    def _put(self, values: list[Any]) -> Any:
+        host = self.torch.tensor(values, dtype=self.torch.int32)
+        if self.device.type != "cuda":
+            return host.to(self.device)
+        # From pinned memory the copy is queued behind the work before it;
+        # from pageable memory it would wait for that work to finish.
+        return host.pin_memory().to(self.device, non_blocking=True)
 
-    def decode(self, tokens: list[int], positions: list[int]) -> list[int]:
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
         torch = self.torch
-        # One host-to-device copy each; the step reads them where they are.
-        self.tokens.copy_(torch.tensor(tokens, dtype=torch.int32).reshape(self.slots, 1))
-        self.positions.copy_(torch.tensor(positions, dtype=torch.int32))
+        rows, at = self._put(slots), self._put(lengths)
+        logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at], compile=True)
+        first = logits.argmax(-1)
+        self.tokens[rows.long(), 0] = first.to(torch.int32)
+        self.positions[rows.long()] = at
+        return _TorchTokens(first)
+
+    def decode(self) -> _Tokens:
         logits = self.model.run_entry(
             "decode_rows", [self.tokens, self.positions], compile=self.step_compile
         )
-        return logits.argmax(-1).tolist()
+        produced = logits.argmax(-1)
+        self.tokens.copy_(produced.reshape(self.slots, 1))
+        # A row whose request has finished computes along until the engine
+        # reads that it has; its position stays inside the cache.
+        self.positions.add_(1).clamp_(max=self.max_seq - 1)
+        return _TorchTokens(produced)
+
+
+class _TorchTokens:
+    def __init__(self, values: Any) -> None:
+        import torch
+
+        self.ready: Any = None
+        self.values: Any
+        if values.device.type == "cuda":
+            self.values = torch.empty(values.shape, dtype=values.dtype, pin_memory=True)
+            self.values.copy_(values, non_blocking=True)
+            self.ready = torch.cuda.Event()
+            self.ready.record()
+        else:
+            self.values = values
+
+    def tolist(self) -> list[int]:
+        if self.ready is not None:
+            self.ready.synchronize()
+        return self.values.tolist()
 
 
 class _JaxBackend:
     def __init__(self, model: Any) -> None:
-        import jax.numpy as jnp
+        import jax as jax_module
+        import jax.numpy as jnp_module
         import numpy as np
 
         for entry in ("prefill_slots", "decode_rows"):
             if entry not in model.entries:
                 raise ValueError(f"the model has no `{entry}` entry, which serving needs")
+        jax: Any = jax_module
+        jnp: Any = jnp_module
         self.jnp: Any = jnp
         self.np: Any = np
         self.model = model
         self.slots, self.max_seq = _cache_generics(model)
+        self.tokens: Any = jnp.zeros((self.slots, 1), jnp.int32)
+        self.positions: Any = jnp.zeros((self.slots,), jnp.int32)
+        last = self.max_seq - 1
 
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> list[int]:
-        np, jnp = self.np, self.jnp
-        logits = self.model.run_entry(
-            "prefill_slots",
-            [
-                jnp.asarray(np.asarray(tokens, dtype=np.int32)),
-                jnp.asarray(np.asarray(slots, dtype=np.int32)),
-                jnp.asarray(np.asarray(lengths, dtype=np.int32)),
-            ],
-        )
-        return np.asarray(jnp.argmax(logits, -1)).tolist()
+        def admit(tokens: Any, positions: Any, logits: Any, rows: Any, lengths: Any) -> Any:
+            first = jnp.argmax(logits, -1).astype(jnp.int32)
+            return tokens.at[rows, 0].set(first), positions.at[rows].set(lengths), first
 
-    def decode(self, tokens: list[int], positions: list[int]) -> list[int]:
-        np, jnp = self.np, self.jnp
-        logits = self.model.run_entry(
-            "decode_rows",
-            [
-                jnp.asarray(np.asarray(tokens, dtype=np.int32).reshape(self.slots, 1)),
-                jnp.asarray(np.asarray(positions, dtype=np.int32)),
-            ],
+        def advance(logits: Any, positions: Any) -> Any:
+            produced = jnp.argmax(logits, -1).astype(jnp.int32)
+            return produced.reshape(-1, 1), jnp.minimum(positions + 1, last), produced
+
+        self._admit: Any = jax.jit(admit)
+        self._advance: Any = jax.jit(advance)
+
+    def _put(self, values: list[Any]) -> Any:
+        return self.jnp.asarray(self.np.asarray(values, dtype=self.np.int32))
+
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
+        rows, at = self._put(slots), self._put(lengths)
+        logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at])
+        self.tokens, self.positions, first = self._admit(
+            self.tokens, self.positions, logits, rows, at
         )
-        return np.asarray(jnp.argmax(logits, -1)).tolist()
+        return _JaxTokens(first)
+
+    def decode(self) -> _Tokens:
+        logits = self.model.run_entry("decode_rows", [self.tokens, self.positions])
+        self.tokens, self.positions, produced = self._advance(logits, self.positions)
+        return _JaxTokens(produced)
+
+
+class _JaxTokens:
+    def __init__(self, values: Any) -> None:
+        self.values = values
+        values.copy_to_host_async()
+
+    def tolist(self) -> list[int]:
+        import numpy as np
+
+        return np.asarray(self.values).tolist()
 
 
 class _OnnxBackend:
-    """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device."""
+    """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device.
+    Each call returns when its results exist, so nothing overlaps."""
 
     def __init__(self, model: Any) -> None:
         import numpy as np
@@ -382,8 +467,10 @@ class _OnnxBackend:
         self.np: Any = np
         self.model = model
         self.slots, self.max_seq = _cache_generics(model)
+        self.tokens: Any = np.zeros((self.slots, 1), dtype=np.int32)
+        self.positions: Any = np.zeros(self.slots, dtype=np.int32)
 
-    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> list[int]:
+    def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
         np = self.np
         logits = self.model.run_entry(
             "prefill_slots",
@@ -393,18 +480,18 @@ class _OnnxBackend:
                 np.asarray(lengths, dtype=np.int32),
             ],
         )
-        return np.asarray(logits).argmax(-1).tolist()
+        first = np.asarray(logits).argmax(-1)
+        self.tokens[slots, 0] = first
+        self.positions[slots] = lengths
+        return first
 
-    def decode(self, tokens: list[int], positions: list[int]) -> list[int]:
+    def decode(self) -> _Tokens:
         np = self.np
-        logits = self.model.run_entry(
-            "decode_rows",
-            [
-                np.asarray(tokens, dtype=np.int32).reshape(self.slots, 1),
-                np.asarray(positions, dtype=np.int32),
-            ],
-        )
-        return np.asarray(logits).argmax(-1).tolist()
+        logits = self.model.run_entry("decode_rows", [self.tokens, self.positions])
+        produced = np.asarray(logits).argmax(-1)
+        self.tokens = produced.astype(np.int32).reshape(self.slots, 1)
+        self.positions = np.minimum(self.positions + 1, self.max_seq - 1)
+        return produced
 
 
 __all__ = ["Completion", "Engine", "Request", "Stats"]
