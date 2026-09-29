@@ -19,8 +19,17 @@ it had `Linear` then loads it with the same paths:
                         patterns=["*_proj.weight"], group=128, dtype="bf16",
                         bindings="bindings.json")
 
-Rounding to nearest is the plainest scheme; checkpoints quantized with
-calibration (GPTQ, AWQ) repack into the same layout.
+Rounding to nearest is the plainest scheme. Checkpoints quantized with
+calibration repack into the same layout: `import_quantized` reads a 4-bit
+GPTQ or AWQ checkpoint (its `config.json`'s `quantization_config` says
+which) and writes the same tensors, plus `.order` for a GPTQ checkpoint in
+activation order, whose groups were formed over the inputs in another
+order than their own:
+
+    from linnet.quant import import_quantized
+
+    import_quantized("Llama-3.1-8B-Instruct-GPTQ-INT4/", "model-int4.safetensors",
+                     bindings="bindings.json")
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
@@ -28,13 +37,15 @@ calibration (GPTQ, AWQ) repack into the same layout.
 from __future__ import annotations
 
 import fnmatch
+import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from .compiler import LinnetError
-from .weights import iter_safetensors, read_bindings, write_safetensors
+from .weights import RawTensor, iter_safetensors, read_bindings, write_safetensors
 
 _FLOATS = {"F32": np.float32, "F16": np.float16, "F64": np.float64}
 
@@ -101,6 +112,28 @@ def quantize_checkpoint(
     (`bindings` maps paths to checkpoint names, as for loading), quantizing
     the `.weight` tensors whose path matches one of `patterns` into
     `.weight`, `.scale`, and `.zero`. Returns the quantized paths."""
+    paths_of = _paths_of(bindings)
+    chosen = list(patterns)
+    out: list[tuple[str, str, tuple[int, ...], bytes]] = []
+    quantized: list[str] = []
+    for tensor in iter_safetensors(weights):
+        for path in paths_of.get(tensor.name, [tensor.name]):
+            if path.endswith(".weight") and any(fnmatch.fnmatchcase(path, p) for p in chosen):
+                values = _to_f32(tensor.dtype, tensor.data, tensor.shape)
+                packed, scale, zero = quantize_int4_groups(values, group)
+                out += _int4_tensors(path.removesuffix(".weight"), packed, scale, zero, dtype)
+                quantized.append(path)
+            else:
+                out.append((path, tensor.dtype, tensor.shape, tensor.data))
+    if not quantized:
+        raise LinnetError("no weight matched " + ", ".join(chosen))
+    write_safetensors(output, out, metadata={"format": "pt"})
+    return quantized
+
+
+def _paths_of(bindings: str | Path | Mapping[str, str] | None) -> dict[str, list[str]]:
+    """Checkpoint name -> the Linnet paths bound to it (a tied output head
+    and embedding share one)."""
     mapping = (
         dict(bindings)
         if isinstance(bindings, Mapping)
@@ -108,27 +141,156 @@ def quantize_checkpoint(
         if bindings is not None
         else {}
     )
-    path_of = {name: path for path, name in mapping.items()}
-    chosen = list(patterns)
+    paths_of: dict[str, list[str]] = {}
+    for path, name in mapping.items():
+        paths_of.setdefault(name, []).append(path)
+    return paths_of
+
+
+def _int4_tensors(
+    prefix: str, packed: np.ndarray, scale: np.ndarray, zero: np.ndarray, dtype: str
+) -> list[tuple[str, str, tuple[int, ...], bytes]]:
+    scale_dtype, scale_bytes = _from_f32(scale, dtype)
+    return [
+        (prefix + ".weight", "U8", tuple(packed.shape), packed.tobytes()),
+        (prefix + ".scale", scale_dtype, tuple(scale.shape), scale_bytes),
+        (prefix + ".zero", "U8", tuple(zero.shape), zero.tobytes()),
+    ]
+
+
+# AWQ packs eight outputs to an int32 interleaved: bits `4k` hold output
+# `_AWQ_ORDER[k]` of the eight. Taking them back is this inverse.
+_AWQ_ORDER = (0, 2, 4, 6, 1, 3, 5, 7)
+_AWQ_REVERSE = tuple(_AWQ_ORDER.index(k) for k in range(8))
+
+
+def _nibbles(words: np.ndarray, axis: int) -> np.ndarray:
+    """The eight 4-bit values of each int32, lowest bits first, laid along
+    `axis` (the packed axis grows eightfold)."""
+    bits = words.astype(np.int64) & 0xFFFFFFFF
+    shifts = np.arange(0, 32, 4, dtype=np.int64)
+    values = (np.expand_dims(bits, -1) >> shifts) & 15  # [..., 8]
+    values = np.moveaxis(values, -1, axis + 1)
+    shape = list(words.shape)
+    shape[axis] *= 8
+    return values.reshape(shape).astype(np.uint8)
+
+
+def pack_int4_groups(q: np.ndarray, group: int) -> np.ndarray:
+    """`[Out, In]` values in `0..15` as `Int4GroupLinear`'s `[Out, In /
+    group, group / 2]` bytes, low nibble first."""
+    out_features, in_features = q.shape
+    grouped = q.reshape(out_features, in_features // group, group).astype(np.uint8)
+    return (grouped[..., 0::2] | (grouped[..., 1::2] << 4)).astype(np.uint8)
+
+
+def import_quantized(
+    weights: str | Path,
+    output: str | Path,
+    *,
+    bindings: str | Path | Mapping[str, str] | None = None,
+    dtype: str = "bf16",
+    config: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Writes `output` with a 4-bit GPTQ or AWQ checkpoint's quantized linear
+    layers repacked for `Int4GroupLinear` (`.weight`, `.scale` in `dtype`,
+    `.zero`, and `.order` when a GPTQ layer's groups follow activation
+    order) and every other tensor as it is, all under Linnet paths.
+    `config` is the checkpoint's `quantization_config`; by default it is
+    read from the `config.json` beside `weights`. Returns the quantized
+    paths, as `.weight`."""
+    if config is None:
+        location = Path(weights)
+        directory = location if location.is_dir() else location.parent
+        try:
+            document = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise LinnetError(f"no config.json beside {weights}; pass `config`") from None
+        config = document.get("quantization_config")
+        if not isinstance(config, Mapping):
+            raise LinnetError(f"{directory / 'config.json'} has no quantization_config")
+    method = str(config.get("quant_method", "")).lower()
+    if method not in ("gptq", "awq"):
+        raise LinnetError(f"a {method or 'unnamed'} checkpoint is not GPTQ or AWQ")
+    if int(config.get("bits", config.get("w_bit", 4))) != 4:
+        raise LinnetError("only 4-bit GPTQ and AWQ checkpoints repack into Int4GroupLinear")
+    if method == "awq" and str(config.get("version", "gemm")).lower() != "gemm":
+        raise LinnetError(f"AWQ's {config.get('version')} packing is not read; GEMM's is")
+    group = int(config.get("group_size", config.get("q_group_size", 128)))
+    # GPTQ's first checkpoint format stores each zero point less one.
+    zero_offset = 1 if method == "gptq" and config.get("checkpoint_format", "gptq") == "gptq" else 0
+    tensors: dict[str, RawTensor] = {tensor.name: tensor for tensor in iter_safetensors(weights)}
+    paths_of = _paths_of(bindings)
     out: list[tuple[str, str, tuple[int, ...], bytes]] = []
     quantized: list[str] = []
-    for tensor in iter_safetensors(weights):
-        path = path_of.get(tensor.name, tensor.name)
-        if path.endswith(".weight") and any(fnmatch.fnmatchcase(path, p) for p in chosen):
-            values = _to_f32(tensor.dtype, tensor.data, tensor.shape)
-            packed, scale, zero = quantize_int4_groups(values, group)
-            prefix = path.removesuffix(".weight")
-            scale_dtype, scale_bytes = _from_f32(scale, dtype)
-            out.append((prefix + ".weight", "U8", tuple(packed.shape), packed.tobytes()))
-            out.append((prefix + ".scale", scale_dtype, tuple(scale.shape), scale_bytes))
-            out.append((prefix + ".zero", "U8", tuple(zero.shape), zero.tobytes()))
-            quantized.append(path)
+    parts = (".qweight", ".qzeros", ".scales", ".g_idx")
+    layers = sorted(name.removesuffix(".qweight") for name in tensors if name.endswith(".qweight"))
+    taken = {layer + part for layer in layers for part in parts}
+    for layer in layers:
+        qweight = tensors[layer + ".qweight"]
+        qzeros = tensors[layer + ".qzeros"]
+        scales = _to_f32(
+            tensors[layer + ".scales"].dtype,
+            tensors[layer + ".scales"].data,
+            tensors[layer + ".scales"].shape,
+        )
+        words = np.frombuffer(qweight.data, dtype=np.int32).reshape(qweight.shape)
+        zero_words = np.frombuffer(qzeros.data, dtype=np.int32).reshape(qzeros.shape)
+        order: np.ndarray | None = None
+        if method == "gptq":
+            q = _nibbles(words, 0)  # [In, Out]
+            zero = _nibbles(zero_words, 1).astype(np.int32) + zero_offset  # [Groups, Out]
+            in_features = q.shape[0]
+            group_of = np.arange(in_features) // (in_features if group <= 0 else group)
+            if layer + ".g_idx" in tensors:
+                g_idx = tensors[layer + ".g_idx"]
+                ids = np.frombuffer(g_idx.data, dtype=np.int32).reshape(g_idx.shape)
+                if not np.array_equal(ids, group_of):
+                    # Activation order: the groups hold inputs in another
+                    # order. Taken in that order, each group is contiguous.
+                    order = np.argsort(ids, kind="stable").astype(np.int32)
+                    if not np.array_equal(ids[order], group_of):
+                        raise LinnetError(f"{layer}: its groups are not all the same size")
+                    q = q[order]
         else:
+            columns = np.arange(words.shape[1] * 8).reshape(-1, 8)[:, _AWQ_REVERSE].reshape(-1)
+            q = _nibbles(words, 1)[:, columns]  # [In, Out]
+            zero = _nibbles(zero_words, 1)[:, columns].astype(np.int32)
+        in_features, out_features = q.shape
+        size = in_features if group <= 0 else group
+        if in_features % size != 0 or zero.shape != (in_features // size, out_features):
+            raise LinnetError(f"{layer}: {in_features} inputs do not make groups of {size}")
+        if zero.max(initial=0) > 255:
+            raise LinnetError(f"{layer}: a zero point past 255")
+        packed = pack_int4_groups(np.ascontiguousarray(q.T), size)
+        weight_name = layer + ".weight"
+        for path in paths_of.get(weight_name, [weight_name]):
+            prefix = path.removesuffix(".weight")
+            out += _int4_tensors(
+                prefix,
+                packed,
+                np.ascontiguousarray(scales.T),
+                np.ascontiguousarray(zero.T).astype(np.uint8),
+                dtype,
+            )
+            if order is not None:
+                out.append((prefix + ".order", "I32", (in_features,), order.tobytes()))
+            quantized.append(path)
+    for name, tensor in tensors.items():
+        if name in taken:
+            continue
+        for path in paths_of.get(name, [name]):
             out.append((path, tensor.dtype, tensor.shape, tensor.data))
     if not quantized:
-        raise LinnetError("no weight matched " + ", ".join(chosen))
+        raise LinnetError(f"no {method.upper()} layer (`.qweight`) in {weights}")
     write_safetensors(output, out, metadata={"format": "pt"})
     return quantized
 
 
-__all__ = ["dequantize_int4_groups", "quantize_checkpoint", "quantize_int4_groups"]
+__all__ = [
+    "dequantize_int4_groups",
+    "import_quantized",
+    "pack_int4_groups",
+    "quantize_checkpoint",
+    "quantize_int4_groups",
+]
