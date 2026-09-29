@@ -41,6 +41,9 @@ std::set<std::string> stateful_functions(const Module& module) {
     std::set<std::string> stateful;
     std::map<std::string, std::set<std::string>> callees;
     for (const Function& function : module.functions()) {
+        if (function.body == no_id) {
+            continue; // declared, not defined here
+        }
         std::vector<RegionId> pending{function.body};
         while (!pending.empty()) {
             const RegionId region = pending.back();
