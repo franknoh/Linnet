@@ -301,11 +301,10 @@ private:
                 break;
             }
             if (!holds) {
-                fail(std::string(owner) + " constraint `" +
-                     model_.dims.to_string(constraint.lhs) + " " + symbol + " " +
-                     model_.dims.to_string(constraint.rhs) + "` does not hold for the bound " +
-                     "values (" + std::to_string(*lhs) + " " + symbol + " " +
-                     std::to_string(*rhs) + " is false)");
+                fail(std::string(owner) + " constraint `" + model_.dims.to_string(constraint.lhs) +
+                     " " + symbol + " " + model_.dims.to_string(constraint.rhs) +
+                     "` does not hold for the bound " + "values (" + std::to_string(*lhs) + " " +
+                     symbol + " " + std::to_string(*rhs) + " is false)");
             }
         }
     }
