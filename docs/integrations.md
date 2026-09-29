@@ -126,8 +126,10 @@ this release.
 last with its `rope_scaling`, and compare logits). The export of
 `tinyllama-1.1b-chat` from Nest was served by vLLM 0.30 on an H100 as it is:
 `/v1/completions` and `/v1/chat/completions` answer with the model's chat
-template applied, and the benchmarks serve the Llama-family exports through
-vLLM. SGLang and TGI have not been run on an export.
+template applied. The benchmarks run the Llama-family exports and GPT-2's
+through vLLM, SGLang, and TGI, one request at a time and 256 at once: each
+export gives the same first token as the original checkpoint, at the same
+speed within run-to-run noise.
 
 ## llama.cpp and Ollama
 

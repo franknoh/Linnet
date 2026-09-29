@@ -146,7 +146,7 @@ StableHLO, `MatMul` and `Conv` in ONNX. On one H100, in `bf16`:
 
 Where Linnet loses — vLLM's paged serving, gpt-oss's fused MXFP4 kernels,
 tensor parallelism across GPUs — is on the [benchmarks](/benchmarks) page with
-every other row: 24 models, 468 measurements.
+every other row: 24 models, 516 measurements.
 
 ## One source, many runtimes
 

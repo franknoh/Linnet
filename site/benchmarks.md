@@ -42,7 +42,9 @@ TinyLlama, against vLLM's 7.7 and 7.6).
 
 A model Linnet exports runs on its target as fast as that target's own
 conversion: Llama 3.1 8B decodes at 157 tokens per second in vLLM from
-`linnet.hf` and at 171 in llama.cpp from `linnet.gguf`. The ONNX rows copy
+`linnet.hf` (157 from the original checkpoint), 158 in SGLang (158), 115 in
+Text Generation Inference (112), and 171 in llama.cpp from `linnet.gguf`.
+Every export gives the same first token as the original. The ONNX rows copy
 the logits to the host for every step's argmax, which holds them to 47 to 75
 tokens per second on the 7 and 8 B models.
 
@@ -116,7 +118,7 @@ or the diffusion models, so those have no KerasHub row.
 
 ### What did not run
 
-Nine rows of 468 failed, and are shown as such:
+Nine rows of 516 failed, and are shown as such:
 
 - TensorRT cannot build an engine for gpt-oss's graph (its Myelin compiler
   fails inside NVRTC), or for the 8 B decoders in `f32`.

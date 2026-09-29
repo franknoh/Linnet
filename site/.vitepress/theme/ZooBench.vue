@@ -61,6 +61,10 @@ const LABELS: Record<string, string> = {
   "linnet-tp-jax": "Linnet, tensor parallel (XLA)",
   "vllm-tp": "vLLM, tensor parallel",
   "linnet-vllm": "vLLM, Linnet export",
+  sglang: "SGLang",
+  "linnet-sglang": "SGLang, Linnet export",
+  tgi: "Text Generation Inference",
+  "linnet-tgi": "TGI, Linnet export",
   "linnet-llamacpp": "llama.cpp, Linnet export",
   "keras-hub": "KerasHub (JAX)",
   "onnx-reference": "torch.onnx, ONNX Runtime",
@@ -76,6 +80,10 @@ const LABELS: Record<string, string> = {
   "serve-linnet-onnx": "Linnet serve, ONNX Runtime",
   "serve-triton-linnet": "Triton, Linnet serve",
   "serve-linnet-vllm": "vLLM, Linnet export",
+  "serve-sglang": "SGLang",
+  "serve-linnet-sglang": "SGLang, Linnet export",
+  "serve-tgi": "Text Generation Inference",
+  "serve-linnet-tgi": "TGI, Linnet export",
 };
 const label = (row: Row) => LABELS[row.key] ?? row.method;
 
@@ -165,7 +173,7 @@ const charts = computed(() => {
     const unlike = (r: Row) =>
       v.unit === "GiB" &&
       (r.key === "linnet-offload" ||
-        /vllm/.test(r.key) ||
+        /vllm|sglang|tgi/.test(r.key) ||
         /reserv\w* .*pool|pool .*reserv|gpu_memory_utilization/i.test(r.notes));
     const model = {
       ...whole,
