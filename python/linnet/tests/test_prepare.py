@@ -165,3 +165,65 @@ def test_jax_shares_prepared_values(files: tuple[Path, Path, dict[str, np.ndarra
     got = np.asarray(model.run_entry("flat", [jnp.asarray(flat)]))
     np.testing.assert_allclose(got, _expected(arrays, flat, "flat"), rtol=1e-5, atol=1e-5)
     assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
+
+
+STATEFUL = """\
+module tests.prepare_state
+
+pub block Model<E: Dim, I: Dim, T: Float = f32> {
+    param blocks: Tensor[E, I; T]
+    param scale: Tensor[E; T]
+    state total: Tensor[E; T]
+
+    // Entries with state, as a decoder's prompt and step entries: their
+    // weight-only `weights()` is computed once, outside their graphs.
+    pub entry first(x: Tensor[I; T]) -> Tensor[E; T] {
+        let w = weights()
+        let y[e] = sum[i] w[e, i] * x[i]
+        total = total + y
+        return total
+    }
+
+    pub entry flat(x: Tensor[E * I; T]) -> Tensor[E; T] {
+        let w = reshape(weights(), [E * I])
+        let y[k] = w[k] * x[k]
+        let s[e] = sum[i] reshape(y, [E, I])[e, i]
+        total = total + s
+        return total
+    }
+
+    fn weights() -> Tensor[E, I; T] {
+        let w[e, i] = exp(blocks[e, i] * scale[e]) + 1.0
+        return w
+    }
+}
+"""
+
+
+def test_onnx_prepares_weight_only_values_once(
+    files: tuple[Path, Path, dict[str, np.ndarray]],
+) -> None:
+    """ONNX Runtime entries with state run what reads only weights once, in
+    a session of their own, and share it -- read whole by one entry and
+    flattened by the other -- with the same numbers."""
+    pytest.importorskip("onnxruntime")
+    from linnet.onnx import load_model
+
+    source, weights, arrays = files
+    source.write_text(STATEFUL, encoding="utf-8")
+    model = load_model(
+        source,
+        generics=GENERICS,
+        weights=weights,
+        std_root=STDLIB,
+        providers=["CPUExecutionProvider"],
+    )
+    w = np.exp(arrays["blocks"] * arrays["scale"][:, None]) + 1.0
+    x = np.arange(5, dtype=np.float32) * 0.1
+    flat = np.arange(15, dtype=np.float32) * 0.1
+    first = model.run_entry("first", [x])
+    np.testing.assert_allclose(first, w @ x, rtol=1e-5, atol=1e-5)
+    second = model.run_entry("flat", [flat])
+    expected = w @ x + (w * flat.reshape(3, 5)).sum(axis=1)
+    np.testing.assert_allclose(second, expected, rtol=1e-5, atol=1e-5)
+    assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
