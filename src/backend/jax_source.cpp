@@ -459,7 +459,7 @@ public:
                     ", mask=" + name(4) + (at[4]->shape.size() == 3 ? "[:, None]" : "[None, None]");
             }
             const std::string kernel =
-                cudnn ? ", implementation=_attention_kernel(" + q + ".dtype)" : std::string();
+                cudnn ? ", implementation=_attention_kernel(" + q + ")" : std::string();
             const std::string mixed = define("jax.nn.dot_product_attention(" + q + ", " + k + ", " +
                                              v + ", scale=" + scalar(3) + mask + kernel + ")");
             return define(back("jnp.swapaxes(" + mixed + ", 1, 2)", 0));
@@ -538,11 +538,17 @@ public:
                           "import jax.numpy as jnp\n\n"
                           "jax.config.update(\"jax_enable_x64\", True)\n\n"
                           "\n"
-                          "def _attention_kernel(dtype):\n"
-                          "    # cuDNN's fused attention on a GPU for 16-bit inputs, XLA's own\n"
-                          "    # elsewhere (CPU, f32), where cuDNN has no kernel.\n"
-                          "    if jax.default_backend() == \"gpu\" and dtype in (jnp.bfloat16, "
-                          "jnp.float16):\n"
+                          "def _attention_kernel(query):\n"
+                          "    # cuDNN's fused attention on a GPU for 16-bit inputs and heads\n"
+                          "    # of at most 256 (a multiple of 8), XLA's own elsewhere (CPU,\n"
+                          "    # f32, the 512-wide heads of a VAE), where cuDNN has no kernel.\n"
+                          "    width = query.shape[-1]\n"
+                          "    if (\n"
+                          "        jax.default_backend() == \"gpu\"\n"
+                          "        and query.dtype in (jnp.bfloat16, jnp.float16)\n"
+                          "        and width <= 256\n"
+                          "        and width % 8 == 0\n"
+                          "    ):\n"
                           "        return \"cudnn\"\n"
                           "    return None\n\n";
         out += "PARAMETERS = " + string_list(parameters_) + "\n";

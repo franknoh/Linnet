@@ -90,6 +90,7 @@ class OnnxModel:
         self._sessions: dict[tuple[Any, ...], _Session] = {}
         self._weights: dict[str, Any] = {}  # path -> OrtValue on the device
         self._host: dict[str, tuple[np.ndarray, Any]] = {}  # path -> (bytes, CPU OrtValue)
+        self._prepared: dict[str, Any] = {}  # key -> weight-only value on the device
         self.state: dict[str, Any] = {}  # path -> OrtValue on the device
 
     # ---- entries
@@ -119,6 +120,8 @@ class OnnxModel:
                 binding.bind_cpu_input(port, _encode(array, element))
         for port, path in session.parameters.items():
             binding.bind_ortvalue_input(port, self._weights[path])
+        for port, key in session.prepared.items():
+            binding.bind_ortvalue_input(port, self._prepared[key])
         for port, (path, shape, element) in session.states.items():
             if path not in self.state:
                 zeros = np.zeros(shape, dtype=_NUMPY[element])
@@ -206,6 +209,11 @@ class OnnxModel:
                     tuple(tensor.dims)
                 )
                 self._weights[path] = _to_device(self._ort, array, tensor.data_type, self._device)
+        prepared: dict[str, str] = {}
+        if not stateless:
+            prepared = self._prepare(exported, parameters)
+            used = _consumed(exported.model.graph)
+            parameters = {port: path for port, path in parameters.items() if port in used}
         graph_inputs = {i.name: i.type.tensor_type for i in exported.model.graph.input}
         states = {}
         for key, path in metadata.items():
@@ -224,7 +232,7 @@ class OnnxModel:
         inputs = [
             i.name
             for i in exported.model.graph.input
-            if i.name not in parameters and i.name not in states
+            if i.name not in parameters and i.name not in states and i.name not in prepared
         ]
         session = self._ort.InferenceSession(
             exported.model.SerializeToString(), settings, providers=self.providers
@@ -245,7 +253,85 @@ class OnnxModel:
             result_elements,
             result_shapes,
             next_states,
+            prepared,
         )
+
+    def _prepare(self, exported: Any, parameters: Mapping[str, str]) -> dict[str, str]:
+        """Runs what reads only weights -- a dequantizer's unpacking of
+        every expert -- once, in a session of its own, and makes each such
+        value an input of the entry's graph instead. Values are keyed by
+        their computation, so entries computing the same one share it, as
+        `--prepare` does for torch and JAX. Returns graph input -> key."""
+        import onnx
+
+        model = exported.model
+        graph = model.graph
+        split = _split_weight_only(graph, parameters)
+        if not split.boundary:
+            return {}
+        typed = onnx.shape_inference.infer_shapes(model)
+        types = {v.name: v.type for v in list(typed.graph.value_info) + list(typed.graph.input)}
+        missing = [name for name in split.boundary if split.keys[name] not in self._prepared]
+        if missing:
+            self._run_prepare(model, split, missing, parameters, types)
+        # The entry's graph: without the weight-only nodes it no longer
+        # needs, with each prepared value an input.
+        kept = [node for index, node in enumerate(graph.node) if index in split.main_nodes]
+        del graph.node[:]
+        graph.node.extend(kept)
+        used = _consumed(graph)
+        inputs = [i for i in graph.input if i.name not in parameters or i.name in used]
+        del graph.input[:]
+        graph.input.extend(inputs)
+        for name in split.boundary:
+            value = onnx.ValueInfoProto()
+            value.name = name
+            value.type.CopyFrom(types[name])
+            graph.input.append(value)
+        return {name: split.keys[name] for name in split.boundary}
+
+    def _run_prepare(
+        self,
+        model: Any,
+        split: _WeightOnly,
+        missing: Sequence[str],
+        parameters: Mapping[str, str],
+        types: Mapping[str, Any],
+    ) -> None:
+        import onnx
+
+        needed = _producers(model.graph, missing, set(parameters))
+        graph = onnx.GraphProto()
+        graph.name = "prepare"
+        graph.node.extend(node for index, node in enumerate(model.graph.node) if index in needed)
+        reads = _consumed(graph)
+        graph.input.extend(i for i in model.graph.input if i.name in parameters and i.name in reads)
+        for name in missing:
+            value = onnx.ValueInfoProto()
+            value.name = name
+            value.type.CopyFrom(types[name])
+            graph.output.append(value)
+        prepare = onnx.helper.make_model(graph, opset_imports=model.opset_import)
+        prepare.ir_version = model.ir_version
+        # TensorRT takes no part: the unpacking works on bytes it does not
+        # import, and it runs once.
+        providers = [
+            p
+            for p in self.providers
+            if (p if isinstance(p, str) else p[0]) != "TensorrtExecutionProvider"
+        ]
+        settings = self._ort.SessionOptions()
+        session = self._ort.InferenceSession(
+            prepare.SerializeToString(), settings, providers=providers
+        )
+        binding = session.io_binding()
+        for value in graph.input:
+            binding.bind_ortvalue_input(value.name, self._weights[parameters[value.name]])
+        for name in missing:
+            binding.bind_output(name, self._device, 0)
+        session.run_with_iobinding(binding)
+        for name, value in zip(missing, binding.get_outputs(), strict=True):
+            self._prepared[split.keys[name]] = value
 
     def _fold_weights(self, exported: Any, parameters: Mapping[str, str], settings: Any) -> None:
         """Makes the graph's parameters initializers, their bytes the shared
@@ -323,6 +409,7 @@ class _Session:
         result_elements: list[int],
         result_shapes: list[tuple[int, ...]],
         next_states: dict[str, str],
+        prepared: dict[str, str],
     ) -> None:
         self.session = session
         self.inputs = inputs
@@ -333,6 +420,113 @@ class _Session:
         self.states = states  # graph input -> (state path, shape, element type)
         self.results = results  # graph outputs, in order
         self.next_states = next_states  # graph output -> state path
+        self.prepared = prepared  # graph input -> prepared value key
+
+
+# Operators that only move or relabel what they read: a weight passed
+# through them alone is not worth a prepared copy.
+_MOVES = {
+    "Reshape",
+    "Transpose",
+    "Squeeze",
+    "Unsqueeze",
+    "Flatten",
+    "Identity",
+    "Cast",
+    "Expand",
+    "Slice",
+    "Concat",
+    "Gather",
+    "Constant",
+}
+_VIEWS = {"Reshape", "Transpose", "Squeeze", "Unsqueeze", "Flatten", "Identity"}
+
+
+class _WeightOnly:
+    """The weight-only values an entry's graph reads outside that part:
+    `boundary` (tensor names), their `keys`, and `main_nodes`, the indices of
+    the nodes the entry keeps."""
+
+    def __init__(self, boundary: list[str], keys: dict[str, str], main_nodes: set[int]) -> None:
+        self.boundary = boundary
+        self.keys = keys
+        self.main_nodes = main_nodes
+
+
+def _split_weight_only(graph: Any, parameters: Mapping[str, str]) -> _WeightOnly:
+    import hashlib
+
+    weight_only: set[str] = set(parameters)
+    reads_weights: dict[str, bool] = {port: True for port in parameters}
+    computes: dict[str, bool] = {port: False for port in parameters}
+    digest: dict[str, str] = {port: "param:" + path for port, path in parameters.items()}
+    producer: dict[str, int] = {}
+    nodes = list(graph.node)
+    for index, node in enumerate(nodes):
+        for output in node.output:
+            producer[output] = index
+        inputs = [name for name in node.input if name]
+        subgraphs = any(a.g.node or a.graphs for a in node.attribute)
+        if subgraphs or not all(name in weight_only for name in inputs):
+            continue
+        attributes = b"".join(a.SerializeToString() for a in node.attribute)
+        for index, output in enumerate(node.output):
+            weight_only.add(output)
+            reads_weights[output] = any(reads_weights[name] for name in inputs)
+            computes[output] = node.op_type not in _MOVES or any(computes[name] for name in inputs)
+            text = "|".join(
+                [node.op_type, attributes.hex(), str(index), *(digest[i] for i in inputs)]
+            )
+            digest[output] = hashlib.sha1(text.encode()).hexdigest()
+    outside: set[str] = {o.name for o in graph.output}
+    for node in graph.node:
+        if not all(o in weight_only for o in node.output):
+            outside.update(name for name in node.input if name)
+    boundary: list[str] = []
+    for name in sorted(outside):
+        if name not in weight_only or name in parameters:
+            continue
+        if not (reads_weights[name] and computes[name]):
+            continue
+        # A view of a prepared value stays in the entry, reading the value.
+        while nodes[producer[name]].op_type in _VIEWS and computes[nodes[producer[name]].input[0]]:
+            name = nodes[producer[name]].input[0]
+        if name not in boundary:
+            boundary.append(name)
+    keys = {name: digest[name] for name in boundary}
+    # The entry keeps every node it needs but those behind the boundary.
+    needed: set[int] = set()
+    pending = [name for name in outside]
+    for index, node in enumerate(nodes):
+        if not all(o in weight_only for o in node.output):
+            needed.add(index)
+    stop = set(boundary) | set(parameters)
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen or name in stop or name not in producer:
+            continue
+        seen.add(name)
+        needed.add(producer[name])
+        pending.extend(i for i in nodes[producer[name]].input if i)
+    return _WeightOnly(boundary, keys, needed)
+
+
+def _producers(graph: Any, outputs: Sequence[str], stop: set[str]) -> set[int]:
+    """The indices of the nodes `outputs` are computed by, back to `stop`."""
+    nodes = list(graph.node)
+    producer = {output: index for index, node in enumerate(nodes) for output in node.output}
+    needed: set[int] = set()
+    pending = list(outputs)
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen or name in stop or name not in producer:
+            continue
+        seen.add(name)
+        needed.add(producer[name])
+        pending.extend(i for i in nodes[producer[name]].input if i)
+    return needed
 
 
 _SHARED_ARENA: list[bool] = []

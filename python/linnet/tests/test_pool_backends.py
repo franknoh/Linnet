@@ -129,3 +129,48 @@ def test_onnx_max_pool_is_f_max_pool2d(
     np.testing.assert_allclose(got, expected.numpy(), atol=1e-6, rtol=1e-6)
     assert any(node.op_type == "MaxPool" for node in exported.model.graph.node)
     assert not any(node.op_type == "GatherND" for node in exported.model.graph.node)
+
+
+UPSAMPLE = """\
+module tests.upsample
+
+use std.nn.resize::{upsample_nearest2d}
+
+pub block Model<C: Dim, H: Dim, T: Float = f32> {
+    param scale: Tensor[C; T]
+
+    pub entry forward<B: Dim>(x: Tensor[B, C, H, H; T]) -> Tensor[B, C, 2 * H, 2 * H; T] {
+        let scaled[b, c, h, w] = x[b, c, h, w] * scale[c]
+        return upsample_nearest2d<B, C, H, H, 2, T>(scaled)
+    }
+}
+"""
+
+
+def test_onnx_upsample_is_resize(tmp_path: Path) -> None:
+    """Nearest upsampling is ONNX's `Resize`, not four stacked copies: at a
+    VAE's last stage those were past the 2^31 elements ONNX Runtime's CUDA
+    `Concat` indexes."""
+    onnxruntime = pytest.importorskip("onnxruntime")
+    from linnet.onnx import export_model
+
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    source = tmp_path / "upsample.linnet"
+    source.write_text(UPSAMPLE, encoding="utf-8")
+    scale = torch.randn(3)
+    save_file({"scale": scale}, str(tmp_path / "model.safetensors"))
+    x = torch.randn(2, 3, 4, 4)
+    expected = functional.interpolate(x * scale[:, None, None], scale_factor=2, mode="nearest")
+    exported = export_model(
+        source,
+        generics={"C": 3, "H": 4, "B": 2},
+        weights=tmp_path / "model.safetensors",
+        std_root=STDLIB,
+    )
+    assert any(node.op_type == "Resize" for node in exported.model.graph.node)
+    assert not any(node.op_type == "Concat" for node in exported.model.graph.node)
+    session = onnxruntime.InferenceSession(
+        exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
+    )
+    (got,) = session.run(None, {session.get_inputs()[0].name: x.numpy()})
+    np.testing.assert_array_equal(got, expected.numpy())

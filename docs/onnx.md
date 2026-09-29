@@ -96,15 +96,19 @@ backend="onnx_model")` loads a zoo card this way.
 
 An entry without state (an encoder's, a classifier's) takes the weights as
 initializers instead, from the same host copy, so ONNX Runtime can fold
-what reads only weights, such as a batch norm into its convolution. On
-CUDA, every session allocates from one shared arena.
+what reads only weights, such as a batch norm into its convolution. An
+entry with state runs what reads only weights (a dequantizer unpacking
+every expert) once, in a session of its own, and binds the result; entries
+computing the same value share it. On CUDA, every session allocates from
+one shared arena.
 
 `model.place(array, "f16")` puts an input on the device once, for a call
 that repeats; `run_entry(..., keep_on_device=True)` leaves the results there
 as `OrtValue`s. `providers` takes what `InferenceSession` does, TensorRT's
 `(name, options)` pairs included. Operations ONNX Runtime has no `bf16`
-kernel for (contractions, convolution, pooling, reductions) run in `f32`
-and round back; its CPU kernels have no `bf16` arithmetic at all, so use
+kernel for (contractions, convolution, pooling, reductions, resizing) run
+in `f32` and round back, and 8- and 16-bit integer arithmetic runs in
+`i32`; its CPU kernels have no `bf16` arithmetic at all, so use
 `f16` or `f32` there.
 
 ## Tests

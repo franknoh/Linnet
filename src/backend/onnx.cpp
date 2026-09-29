@@ -250,6 +250,29 @@ public:
                      kind);
             return kind == dtype ? out : convert({out, shape, kind}, dtype);
         }
+        if (implementation_base == "torch.nn.functional.interpolate(nearest)" &&
+            operands.size() == 1 && at[0] != nullptr && at[0]->shape.size() == 4 &&
+            shape.size() == 4) {
+            // `Resize` to the result's shape: the canonical body stacks four
+            // copies, which at a VAE's last stage is past the 2^31 elements
+            // ONNX Runtime's CUDA `Concat` indexes.
+            const Dims& input = at[0]->shape;
+            if (input[2] <= 0 || input[3] <= 0 || shape[2] % input[2] != 0 ||
+                shape[3] % input[3] != 0) {
+                return std::nullopt;
+            }
+            const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
+            const TensorInfo x =
+                at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), input, kind};
+            const TensorInfo none{"", {}, ScalarKind::F32};
+            const std::string out = node("Resize",
+                                         {x, none, none, int64_vector(shape)},
+                                         "mode = \"nearest\", coordinate_transformation_mode = "
+                                         "\"asymmetric\", nearest_mode = \"floor\"",
+                                         shape,
+                                         kind);
+            return kind == dtype ? out : convert({out, shape, kind}, dtype);
+        }
         if (implementation_base == "torch.nn.functional.batch_norm" && operands.size() == 6 &&
             at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr &&
             at[4] != nullptr && at[5] != nullptr) {
@@ -391,10 +414,38 @@ public:
         return found == literals_.end() ? "" : found->second;
     }
 
+    // ONNX Runtime has kernels for arithmetic, comparisons, and `Where` on
+    // 32- and 64-bit integers only: 8- and 16-bit ones compute in i32 and
+    // come back (a dequantizer's bit fiddling over uint8 blocks).
+    static bool narrow_integer(ScalarKind dtype) {
+        return dtype == ScalarKind::U8 || dtype == ScalarKind::I8 || dtype == ScalarKind::U16 ||
+               dtype == ScalarKind::I16;
+    }
+
+    std::vector<TensorInfo> widened(const std::vector<TensorInfo>& operands) {
+        std::vector<TensorInfo> out;
+        out.reserve(operands.size());
+        for (const TensorInfo& operand : operands) {
+            out.push_back(
+                narrow_integer(operand.dtype)
+                    ? TensorInfo{convert(operand, ScalarKind::I32), operand.shape, ScalarKind::I32}
+                    : operand);
+        }
+        return out;
+    }
+
     std::string elementwise(Elementwise kind,
                             const std::vector<TensorInfo>& operands,
                             const Dims& shape,
                             ScalarKind dtype) override {
+        const bool arithmetic =
+            kind == Elementwise::Add || kind == Elementwise::Sub || kind == Elementwise::Mul ||
+            kind == Elementwise::Div || kind == Elementwise::Rem || kind == Elementwise::Min ||
+            kind == Elementwise::Max || kind == Elementwise::Neg || kind == Elementwise::Abs;
+        if (arithmetic && narrow_integer(dtype)) {
+            const std::string wide = elementwise(kind, widened(operands), shape, ScalarKind::I32);
+            return convert({wide, shape, ScalarKind::I32}, dtype);
+        }
         switch (kind) {
         case Elementwise::Add:
             return node("Add", operands, "", shape, dtype);
@@ -478,6 +529,10 @@ public:
                         const TensorInfo& a,
                         const TensorInfo& b,
                         const Dims& shape) override {
+        if (narrow_integer(a.dtype) || narrow_integer(b.dtype)) {
+            const std::vector<TensorInfo> wide = widened({a, b});
+            return compare(kind, wide[0], wide[1], shape);
+        }
         switch (kind) {
         case ir::CompareKind::Eq:
             return node("Equal", {a, b}, "", shape, ScalarKind::Bool);
@@ -503,6 +558,12 @@ public:
                        const TensorInfo& on_false,
                        const Dims& shape,
                        ScalarKind dtype) override {
+        if (narrow_integer(dtype)) {
+            const std::vector<TensorInfo> wide = widened({on_true, on_false});
+            const std::string out =
+                node("Where", {condition, wide[0], wide[1]}, "", shape, ScalarKind::I32);
+            return convert({out, shape, ScalarKind::I32}, dtype);
+        }
         return node("Where", {condition, on_true, on_false}, "", shape, dtype);
     }
 
