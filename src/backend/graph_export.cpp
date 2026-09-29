@@ -1665,6 +1665,18 @@ private:
                 fits = fits && grid_[static_cast<std::size_t>(axes[i])] == source.shape[i];
             }
             if (fits) {
+                // The grid's own leading axes, in order: the tensor as it
+                // is, broadcast only where something needs the whole grid
+                // (`to_grid`); an index stays as small as it is.
+                bool leading = true;
+                for (std::size_t i = 0; i < axes.size(); ++i) {
+                    leading = leading && axes[i] == static_cast<std::int64_t>(i);
+                }
+                if (leading && source.shape.size() < grid_.size()) {
+                    Val lazy = source;
+                    lazy.grid_rank = source.shape.size();
+                    return lazy;
+                }
                 return broadcast(source, grid_, axes);
             }
         }
