@@ -770,9 +770,47 @@ public:
         return node("Range", {start, stop, delta}, "", {length}, ScalarKind::I64);
     }
 
+    // `GatherND`'s result as a `Gather` along one axis: the `K` gathered
+    // leading axes of `source` flattened into it, each index row folded
+    // into one position. ONNX Runtime's `GatherND` stages its strides
+    // through host memory, which a CUDA graph replay reads stale.
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
-        return node("GatherND", {source, indices}, "batch_dims = 0", shape, source.dtype);
+        const std::size_t depth = static_cast<std::size_t>(indices.shape.back());
+        const Dims rows(indices.shape.begin(), indices.shape.end() - 1);
+        const auto column = [&](std::size_t j) -> TensorInfo {
+            Dims starts(indices.shape.size(), 0);
+            Dims limits = indices.shape;
+            const Dims strides(indices.shape.size(), 1);
+            starts.back() = static_cast<std::int64_t>(j);
+            limits.back() = static_cast<std::int64_t>(j) + 1;
+            Dims sliced = rows;
+            sliced.push_back(1);
+            const TensorInfo part{
+                slice(indices, starts, limits, strides, sliced), sliced, ScalarKind::I64};
+            return {reshape(part, rows), rows, ScalarKind::I64};
+        };
+        TensorInfo position = column(0);
+        std::int64_t flat = source.shape.front();
+        for (std::size_t j = 1; j < depth; ++j) {
+            Literal extent;
+            extent.integer = source.shape[j];
+            const TensorInfo size{constant(extent, ScalarKind::I64), {}, ScalarKind::I64};
+            const TensorInfo scaled{
+                node("Mul", {position, size}, "", rows, ScalarKind::I64), rows, ScalarKind::I64};
+            position = {
+                node("Add", {scaled, column(j)}, "", rows, ScalarKind::I64), rows, ScalarKind::I64};
+            flat *= source.shape[j];
+        }
+        TensorInfo table = source;
+        if (depth > 1) {
+            Dims flattened{flat};
+            flattened.insert(flattened.end(),
+                             source.shape.begin() + static_cast<std::ptrdiff_t>(depth),
+                             source.shape.end());
+            table = {reshape(source, flattened), flattened, source.dtype};
+        }
+        return node("Gather", {table, position}, "axis = 0", shape, source.dtype);
     }
 
     std::string
