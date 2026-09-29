@@ -616,7 +616,13 @@ def load_model(
     does (names, or `(name, options)` pairs, TensorRT's among them).
     `cast_dtype=True` converts the checkpoint to the dtype the generics ask
     for (`T`)."""
-    import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
+    try:
+        import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
+    except ImportError:
+        raise LinnetError(
+            "onnxruntime is not installed: pip install onnxruntime, or onnxruntime-gpu "
+            "for CUDA and TensorRT"
+        ) from None
 
     arguments = ["plan", "--no-optimize", *(["--root", root] if root is not None else [])]
     plan = json.loads(run_compiler(*arguments, *std_arguments(std_root), str(source)))
