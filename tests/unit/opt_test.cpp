@@ -88,6 +88,23 @@ TEST("opt: reductions and calls are untouched by CSE across regions") {
     CHECK_EQ(count(text, "reduce sum"), 2U);
 }
 
+TEST("opt: a call that writes state survives DCE and CSE though nothing reads it") {
+    // A layer's method that fills its caches is called for what it writes:
+    // `let _ =` discards the result, and two identical calls are two writes.
+    const std::string text =
+        optimized("module m\nblock B<N: Dim> {\n    state s: Tensor[N; f32]\n"
+                  "    fn fill(x: Tensor[N; f32]) -> Tensor[N; f32] {\n"
+                  "        s = x\n        return x\n    }\n"
+                  "    fn pure(x: Tensor[N; f32]) -> Tensor[N; f32] {\n        return x\n    }\n"
+                  "    pub entry step(x: Tensor[N; f32]) -> Tensor[N; f32] {\n"
+                  "        let _ = fill(x)\n        let _ = fill(x)\n"
+                  "        let _ = pure(x)\n"
+                  "        static for i in 0..2 {\n            let _ = fill(x)\n        }\n"
+                  "        return x\n    }\n}\n");
+    CHECK_EQ(count(text, "@m::B.fill"), 3U); // the loop's body counts once
+    CHECK_EQ(count(text, "@m::B.pure"), 0U); // no effect: still dead
+}
+
 TEST("opt: state reads and writes survive DCE and CSE in order") {
     const std::string text =
         optimized("module m\nblock B<N: Dim> {\n    state s: Tensor[N; f32]\n"

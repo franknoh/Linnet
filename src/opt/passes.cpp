@@ -1,11 +1,14 @@
 #include "linnet/opt/passes.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <tuple>
+#include <vector>
 
 namespace linnet::opt {
 
@@ -30,10 +33,79 @@ bool is_terminator(OpKind kind) {
     return kind == OpKind::Return || kind == OpKind::Yield;
 }
 
-// State reads and writes are ordered effects: never removed as dead, never
-// merged with one another, never moved past each other.
-bool has_effects(OpKind kind) {
-    return kind == OpKind::StateRead || kind == OpKind::StateWrite;
+// The functions that read or write state, directly or through the functions
+// they call: a call to one is an effect like the access itself. A layer's
+// method that fills its caches is called for what it writes, even when
+// nothing reads what it returns.
+std::set<std::string> stateful_functions(const Module& module) {
+    std::set<std::string> stateful;
+    std::map<std::string, std::set<std::string>> callees;
+    for (const Function& function : module.functions()) {
+        std::vector<RegionId> pending{function.body};
+        while (!pending.empty()) {
+            const RegionId region = pending.back();
+            pending.pop_back();
+            for (const BlockId block : module.region(region).blocks) {
+                for (const OpId id : module.block(block).ops) {
+                    const Operation& op = module.op(id);
+                    if (op.kind == OpKind::StateRead || op.kind == OpKind::StateWrite) {
+                        stateful.insert(function.name);
+                    } else if (op.kind == OpKind::Call || op.kind == OpKind::SemanticCall) {
+                        callees[function.name].insert(op.attributes.name);
+                    }
+                    pending.insert(pending.end(), op.regions.begin(), op.regions.end());
+                }
+            }
+        }
+    }
+    bool has_grown = true;
+    while (has_grown) {
+        has_grown = false;
+        for (const auto& [caller, called] : callees) {
+            if (stateful.contains(caller)) {
+                continue;
+            }
+            if (std::any_of(called.begin(), called.end(), [&](const std::string& name) {
+                    return stateful.contains(name);
+                })) {
+                stateful.insert(caller);
+                has_grown = true;
+            }
+        }
+    }
+    return stateful;
+}
+
+// State reads and writes, and calls to functions that make them, are ordered
+// effects: never removed as dead, never merged with one another, never moved
+// past each other.
+bool has_effects(const Operation& op, const std::set<std::string>& stateful) {
+    if (op.kind == OpKind::StateRead || op.kind == OpKind::StateWrite) {
+        return true;
+    }
+    return (op.kind == OpKind::Call || op.kind == OpKind::SemanticCall) &&
+           stateful.contains(op.attributes.name);
+}
+
+// Whether an operation or anything in its regions is an effect: a `static
+// for` over the layers calling each one's cache-filling method has no
+// result of its own, and is kept for what its body does.
+bool contains_effects(const Module& module,
+                      const Operation& op,
+                      const std::set<std::string>& stateful) {
+    if (has_effects(op, stateful)) {
+        return true;
+    }
+    for (const RegionId region : op.regions) {
+        for (const BlockId block : module.region(region).blocks) {
+            for (const OpId id : module.block(block).ops) {
+                if (contains_effects(module, module.op(id), stateful)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 // Integer arithmetic that refuses to overflow, so that folding never changes
@@ -96,6 +168,7 @@ bool same_type(const Module& module, sema::TypeId a, sema::TypeId b) {
 bool eliminate_dead_code(Module& module) {
     bool has_changed = false;
     bool has_progress = true;
+    const std::set<std::string> stateful = stateful_functions(module);
     while (has_progress) {
         has_progress = false;
         const std::map<ValueId, std::size_t> uses = count_uses(module);
@@ -105,7 +178,7 @@ bool eliminate_dead_code(Module& module) {
             for (const OpId id : ops) {
                 const Operation& op = module.op(id);
                 if (is_terminator(op.kind) || op.kind == OpKind::StateWrite ||
-                    op.kind == OpKind::While) {
+                    op.kind == OpKind::While || contains_effects(module, op, stateful)) {
                     continue;
                 }
                 bool is_used = false;
@@ -127,6 +200,7 @@ bool eliminate_dead_code(Module& module) {
 
 bool eliminate_common_subexpressions(Module& module) {
     bool has_changed = false;
+    const std::set<std::string> stateful = stateful_functions(module);
     for (const BlockId block : module.all_blocks()) {
         // Only region-free operations are merged: two comprehensions with
         // equal attributes may still differ in their bodies.
@@ -134,7 +208,7 @@ bool eliminate_common_subexpressions(Module& module) {
         const std::vector<OpId> ops = module.block(block).ops;
         for (const OpId id : ops) {
             const Operation& op = module.op(id);
-            if (is_terminator(op.kind) || has_effects(op.kind) || !op.regions.empty() ||
+            if (is_terminator(op.kind) || has_effects(op, stateful) || !op.regions.empty() ||
                 op.results.size() != 1) {
                 continue;
             }
