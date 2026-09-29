@@ -251,10 +251,12 @@ def test_onnx(model_files: tuple[Path, Path]) -> None:
     assert len(model._weights) == 6  # pyright: ignore[reportPrivateUsage]
 
 
-def test_onnx_step_replays_as_a_cuda_graph(model_files: tuple[Path, Path]) -> None:
+@pytest.mark.parametrize("with_cpu", [False, True])
+def test_onnx_step_replays_as_a_cuda_graph(model_files: tuple[Path, Path], with_cpu: bool) -> None:
     """On a GPU the step is captured once and replayed: the caches are
     scattered into where they lie, so their buffers never move, and the
-    tokens are greedy decoding's."""
+    tokens are greedy decoding's. With the CPU provider listed too, the
+    captured session still runs on CUDA's alone."""
     onnxruntime = pytest.importorskip("onnxruntime")
     if "CUDAExecutionProvider" not in onnxruntime.get_available_providers():
         pytest.skip("CUDA graphs need ONNX Runtime's CUDA provider")
@@ -262,7 +264,10 @@ def test_onnx_step_replays_as_a_cuda_graph(model_files: tuple[Path, Path]) -> No
 
     source, weights = model_files
     torch_model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
-    model = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    providers = ["CUDAExecutionProvider"] + (["CPUExecutionProvider"] if with_cpu else [])
+    model = load_onnx(
+        source, generics=GENERICS, weights=weights, std_root=STDLIB, providers=providers
+    )
     done, _ = Engine(model, buckets=[8, 16, 32]).run(_requests())
     for completion in done:
         assert completion.tokens == _greedy(torch_model, completion.request)
@@ -270,6 +275,7 @@ def test_onnx_step_replays_as_a_cuda_graph(model_files: tuple[Path, Path]) -> No
     graphed = [session for session in sessions if session.graphed]
     assert len(graphed) == 1 and graphed[0].fixed is not None
     assert graphed[0].fixed.current(model)
+    assert graphed[0].session.get_providers() == ["CUDAExecutionProvider"]
 
 
 def test_onnx_reads_the_checkpoint_once(

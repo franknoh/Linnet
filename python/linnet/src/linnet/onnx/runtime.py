@@ -350,15 +350,24 @@ class OnnxModel:
         }
         result_elements = [graph_outputs[port].elem_type for port in results]
         graphed = cuda_graph and set(next_states) <= in_place and 16 not in result_elements
-        providers = self.providers
+        serialized = exported.model.SerializeToString()
+        session: Any = None
         if graphed:
+            # The CUDA provider alone: with the CPU's beside it ONNX Runtime
+            # puts a few shape computations there, and then skips the
+            # capture without saying so. A graph that needs the CPU runs
+            # without a capture instead.
             first = self.providers[0]
             options_cuda = {} if isinstance(first, str) else dict(first[1])
             options_cuda["enable_cuda_graph"] = "1"
-            providers = [("CUDAExecutionProvider", options_cuda), *self.providers[1:]]
-        session = self._ort.InferenceSession(
-            exported.model.SerializeToString(), settings, providers=providers
-        )
+            try:
+                session = self._ort.InferenceSession(
+                    serialized, settings, providers=[("CUDAExecutionProvider", options_cuda)]
+                )
+            except Exception:  # any refusal: run without a capture
+                graphed = False
+        if session is None:
+            session = self._ort.InferenceSession(serialized, settings, providers=self.providers)
         elements = {port: graph_inputs[port].elem_type for port in inputs}
         result_shapes = [
             tuple(d.dim_value for d in graph_outputs[port].shape.dim) for port in results
