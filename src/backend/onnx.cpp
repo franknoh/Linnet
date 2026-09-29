@@ -391,6 +391,53 @@ public:
                 node("LayerNormalization", inputs, "axis = -1, epsilon = " + epsilon, shape, acc);
             return back(normalized, shape);
         }
+        if (implementation_base == "torch.rms_norm" && operands.size() == 3 && at[0] != nullptr &&
+            at[1] != nullptr && at[2] != nullptr && !at[0]->shape.empty()) {
+            // In f32, spelled as ONNX Runtime's `SimplifiedLayerNormFusion`
+            // matches it (`Pow`, `ReduceMean`, `Add`, `Sqrt`, `Div`), so the
+            // session runs one kernel for the whole norm.
+            const std::string epsilon = literal_of(at[2]->name);
+            if (epsilon.empty()) {
+                return std::nullopt;
+            }
+            const Dims& full = at[0]->shape;
+            Dims reduced = full;
+            reduced.back() = 1;
+            const TensorInfo x =
+                at[0]->dtype == ScalarKind::F32
+                    ? *at[0]
+                    : TensorInfo{convert(*at[0], ScalarKind::F32), full, ScalarKind::F32};
+            Literal two;
+            two.kind = Literal::Kind::Real;
+            two.real = 2.0;
+            const TensorInfo exponent{constant(two, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo squares{
+                node("Pow", {x, exponent}, "", full, ScalarKind::F32), full, ScalarKind::F32};
+            const TensorInfo mean{node("ReduceMean",
+                                       {squares, int64_vector({-1})},
+                                       "keepdims = 1",
+                                       reduced,
+                                       ScalarKind::F32),
+                                  reduced,
+                                  ScalarKind::F32};
+            Literal small;
+            small.kind = Literal::Kind::Real;
+            small.real = std::stod(epsilon);
+            const TensorInfo eps{constant(small, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo shifted{
+                node("Add", {mean, eps}, "", reduced, ScalarKind::F32), reduced, ScalarKind::F32};
+            const TensorInfo root{
+                node("Sqrt", {shifted}, "", reduced, ScalarKind::F32), reduced, ScalarKind::F32};
+            TensorInfo normalized{
+                node("Div", {x, root}, "", full, ScalarKind::F32), full, ScalarKind::F32};
+            if (dtype != ScalarKind::F32) {
+                normalized = {convert(normalized, dtype), full, dtype};
+            }
+            const TensorInfo weight = at[1]->dtype == dtype
+                                          ? *at[1]
+                                          : TensorInfo{convert(*at[1], dtype), at[1]->shape, dtype};
+            return node("Mul", {normalized, weight}, "", shape, dtype);
+        }
         if (implementation_base == "torch.nn.functional.gelu" && operands.size() == 1 &&
             at[0] != nullptr) {
             return node("Gelu", {*at[0]}, "approximate = \"none\"", shape, dtype);
@@ -412,41 +459,108 @@ public:
         if (implementation_base == "torch.relu" && operands.size() == 1 && at[0] != nullptr) {
             return node("Relu", {*at[0]}, "", shape, dtype);
         }
-        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
+        if ((implementation_base == "torch.nn.functional.scaled_dot_product_attention" ||
+             implementation_base ==
+                 "torch.nn.functional.scaled_dot_product_attention(enable_gqa)") &&
             operands.size() == 5) {
-            const TensorInfo* query = at[0];
-            const TensorInfo* key = at[1];
-            const TensorInfo* value = at[2];
-            const TensorInfo* scale = at[3];
-            const TensorInfo* mask = at[4];
-            // A mask per sequence ([B, Q, K]) would line its batch axis up
-            // with the heads; the canonical body spells that one out.
-            if (query == nullptr || key == nullptr || value == nullptr || scale == nullptr ||
-                (mask != nullptr && mask->shape.size() != 2)) {
-                return std::nullopt;
-            }
-            // q·kᵀ in f32, scaled, masked, Softmax, ·v: the canonical arithmetic.
-            const TensorInfo q = f32(*query);
-            const TensorInfo k = f32(*key);
-            const TensorInfo v = f32(*value);
-            const Dims kt_shape{k.shape[0], k.shape[1], k.shape[3], k.shape[2]};
-            const TensorInfo kt{transpose(k, {0, 1, 3, 2}, kt_shape), kt_shape, acc};
-            const Dims scores_shape{q.shape[0], q.shape[1], q.shape[2], k.shape[2]};
-            TensorInfo scores{node("MatMul", {q, kt}, "", scores_shape, acc), scores_shape, acc};
-            scores = {node("Mul", {scores, f32(*scale)}, "", scores_shape, acc), scores_shape, acc};
-            if (mask != nullptr) {
-                Literal lowest;
-                lowest.kind = Literal::Kind::Real;
-                lowest.real = -1e30;
-                const TensorInfo fill{constant(lowest, acc), {}, acc};
-                scores = {
-                    node("Where", {*mask, scores, fill}, "", scores_shape, acc), scores_shape, acc};
-            }
-            const TensorInfo weights{
-                node("Softmax", {scores}, "axis = -1", scores_shape, acc), scores_shape, acc};
-            return back(node("MatMul", {weights, v}, "", shape, acc), shape);
+            return attention(at, fast, shape, dtype);
         }
         return std::nullopt;
+    }
+
+    // q·kᵀ, scaled, masked, Softmax, ·v. Grouped query heads are folded
+    // under their key/value head (`[B, Hk, G * Q, D]`, row `g * Q + q`), so
+    // each key and value is read once, not broadcast to every query head.
+    // The mask is shared (`[Q, K]`) or per sequence (`[B, Q, K]`). The
+    // products run in f32, or in the input dtype for `(input dtype)` (f32
+    // for bf16, which ONNX Runtime's `MatMul` lacks); scores and `Softmax`
+    // are f32 either way.
+    std::optional<std::string> attention(const std::vector<const TensorInfo*>& at,
+                                         bool fast,
+                                         const Dims& shape,
+                                         ScalarKind dtype) {
+        const TensorInfo* query = at[0];
+        const TensorInfo* key = at[1];
+        const TensorInfo* value = at[2];
+        const TensorInfo* scale = at[3];
+        const TensorInfo* mask = at[4];
+        if (query == nullptr || key == nullptr || value == nullptr || scale == nullptr ||
+            query->shape.size() != 4 || key->shape.size() != 4 || value->shape.size() != 4 ||
+            shape.size() != 4) {
+            return std::nullopt;
+        }
+        const std::int64_t batch = query->shape[0];
+        const std::int64_t heads = query->shape[1];
+        const std::int64_t queries = query->shape[2];
+        const std::int64_t width = query->shape[3];
+        const std::int64_t kv_heads = key->shape[1];
+        const std::int64_t keys = key->shape[2];
+        const std::int64_t value_width = value->shape[3];
+        if (kv_heads <= 0 || heads % kv_heads != 0 || key->shape[0] != batch ||
+            value->shape[1] != kv_heads || value->shape[2] != keys) {
+            return std::nullopt;
+        }
+        if (mask != nullptr &&
+            !(mask->shape == Dims{queries, keys} || mask->shape == Dims{batch, queries, keys})) {
+            return std::nullopt;
+        }
+        const std::int64_t group = heads / kv_heads;
+        const std::int64_t rows = group * queries;
+        const ScalarKind product =
+            fast ? (dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype) : ScalarKind::F32;
+        const auto as = [&](const TensorInfo& t, ScalarKind kind) -> TensorInfo {
+            return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
+        };
+        TensorInfo q = as(*query, product);
+        if (group > 1) {
+            const Dims folded{batch, kv_heads, rows, width};
+            q = {reshape(q, folded), folded, product};
+        }
+        const TensorInfo k = as(*key, product);
+        const Dims kt_shape{batch, kv_heads, width, keys};
+        const TensorInfo kt{transpose(k, {0, 1, 3, 2}, kt_shape), kt_shape, product};
+        const Dims scores_shape{batch, kv_heads, rows, keys};
+        TensorInfo scores =
+            as({node("MatMul", {q, kt}, "", scores_shape, product), scores_shape, product},
+               ScalarKind::F32);
+        scores = {
+            node("Mul", {scores, as(*scale, ScalarKind::F32)}, "", scores_shape, ScalarKind::F32),
+            scores_shape,
+            ScalarKind::F32};
+        if (mask != nullptr) {
+            // `[B or 1, 1, Q, K]` against the heads; repeated over the group
+            // when a group holds several query rows.
+            const std::int64_t mask_batch = mask->shape.size() == 3 ? batch : 1;
+            const Dims lifted{mask_batch, 1, queries, keys};
+            TensorInfo m{reshape(*mask, lifted), lifted, mask->dtype};
+            if (group > 1 && queries > 1) {
+                const Dims repeated{mask_batch, group, queries, keys};
+                m = {node("Expand", {m, int64_vector(repeated)}, "", repeated, mask->dtype),
+                     repeated,
+                     mask->dtype};
+                const Dims flat{mask_batch, 1, rows, keys};
+                m = {reshape(m, flat), flat, mask->dtype};
+            }
+            Literal lowest;
+            lowest.kind = Literal::Kind::Real;
+            lowest.real = -1e30;
+            const TensorInfo fill{constant(lowest, ScalarKind::F32), {}, ScalarKind::F32};
+            scores = {node("Where", {m, scores, fill}, "", scores_shape, ScalarKind::F32),
+                      scores_shape,
+                      ScalarKind::F32};
+        }
+        const TensorInfo weights =
+            as({node("Softmax", {scores}, "axis = -1", scores_shape, ScalarKind::F32),
+                scores_shape,
+                ScalarKind::F32},
+               product);
+        const Dims mixed_shape{batch, kv_heads, rows, value_width};
+        std::string mixed =
+            node("MatMul", {weights, as(*value, product)}, "", mixed_shape, product);
+        if (group > 1) {
+            mixed = reshape({mixed, mixed_shape, product}, shape);
+        }
+        return product == dtype ? mixed : convert({mixed, shape, product}, dtype);
     }
 
     std::string literal_of(const std::string& name) const {
@@ -703,9 +817,47 @@ public:
         return node("Range", {start, stop, delta}, "", {length}, ScalarKind::I64);
     }
 
+    // `GatherND`'s result as a `Gather` along one axis: the `K` gathered
+    // leading axes of `source` flattened into it, each index row folded
+    // into one position. ONNX Runtime's `GatherND` stages its strides
+    // through host memory, which a CUDA graph replay reads stale.
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
-        return node("GatherND", {source, indices}, "batch_dims = 0", shape, source.dtype);
+        const std::size_t depth = static_cast<std::size_t>(indices.shape.back());
+        const Dims rows(indices.shape.begin(), indices.shape.end() - 1);
+        const auto column = [&](std::size_t j) -> TensorInfo {
+            Dims starts(indices.shape.size(), 0);
+            Dims limits = indices.shape;
+            const Dims strides(indices.shape.size(), 1);
+            starts.back() = static_cast<std::int64_t>(j);
+            limits.back() = static_cast<std::int64_t>(j) + 1;
+            Dims sliced = rows;
+            sliced.push_back(1);
+            const TensorInfo part{
+                slice(indices, starts, limits, strides, sliced), sliced, ScalarKind::I64};
+            return {reshape(part, rows), rows, ScalarKind::I64};
+        };
+        TensorInfo position = column(0);
+        std::int64_t flat = source.shape.front();
+        for (std::size_t j = 1; j < depth; ++j) {
+            Literal extent;
+            extent.integer = source.shape[j];
+            const TensorInfo size{constant(extent, ScalarKind::I64), {}, ScalarKind::I64};
+            const TensorInfo scaled{
+                node("Mul", {position, size}, "", rows, ScalarKind::I64), rows, ScalarKind::I64};
+            position = {
+                node("Add", {scaled, column(j)}, "", rows, ScalarKind::I64), rows, ScalarKind::I64};
+            flat *= source.shape[j];
+        }
+        TensorInfo table = source;
+        if (depth > 1) {
+            Dims flattened{flat};
+            flattened.insert(flattened.end(),
+                             source.shape.begin() + static_cast<std::ptrdiff_t>(depth),
+                             source.shape.end());
+            table = {reshape(source, flattened), flattened, source.dtype};
+        }
+        return node("Gather", {table, position}, "axis = 0", shape, source.dtype);
     }
 
     std::string
@@ -813,21 +965,39 @@ public:
                        const std::string& module_path,
                        const std::string& block_name,
                        const std::string& entry_name) override {
-        // Outputs need names of their own: `Identity` gives the results
-        // stable ones, and `next_state<N>` names each assigned state member,
-        // mapped to its path by `linnet.next_state.<name>`.
+        // Outputs need names of their own: `output<N>` for the results, and
+        // `next_state<N>` for each assigned state member, mapped to its path
+        // by `linnet.next_state.<name>`. A value a node computes takes the
+        // output's name itself; an `Identity` would copy it, which for a
+        // KV cache the graph also reads is the whole cache every call. An
+        // input returned as it is, or a value returned twice, goes through
+        // `Identity`.
+        std::map<std::string, std::string> renamed;
+        const auto name_output = [&](const std::string& value, const std::string& name) {
+            const bool computed = value.size() > 1 && value[0] == 'v' &&
+                                  std::all_of(value.begin() + 1, value.end(), [](char c) {
+                                      return c >= '0' && c <= '9';
+                                  });
+            if (computed && renamed.emplace(value, name).second) {
+                return;
+            }
+            body_ += "    " + name + " = Identity(" + value + ")\n";
+        };
         std::vector<std::string> outputs;
         for (std::size_t i = 0; i < results.size(); ++i) {
             const std::string name = "output" + std::to_string(i);
-            body_ += "    " + name + " = Identity(" + results[i].name + ")\n";
+            name_output(results[i].name, name);
             outputs.push_back(tensor_type(results[i].shape, results[i].dtype) + " " + name);
         }
         for (std::size_t i = 0; i < states.size(); ++i) {
             const std::string name = "next_state" + std::to_string(i);
-            body_ += "    " + name + " = Identity(" + states[i].second.name + ")\n";
+            name_output(states[i].second.name, name);
             outputs.push_back(tensor_type(states[i].second.shape, states[i].second.dtype) + " " +
                               name);
             metadata_.push_back("\"linnet.next_state." + name + "\": \"" + states[i].first + "\"");
+        }
+        if (!renamed.empty()) {
+            body_ = rename_values(body_, renamed);
         }
         const std::string opsets =
             microsoft_ ? "[\"\" : 20, \"com.microsoft\" : 1]" : "[\"\" : 20]";
@@ -858,6 +1028,33 @@ public:
 
 private:
     std::string fresh() { return "v" + std::to_string(next_++); }
+
+    // `text` with every identifier in `renamed` replaced, whole words only.
+    static std::string rename_values(const std::string& text,
+                                     const std::map<std::string, std::string>& renamed) {
+        const auto identifier = [](char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                   c == '_';
+        };
+        std::string out;
+        out.reserve(text.size());
+        std::size_t i = 0;
+        while (i < text.size()) {
+            if (!identifier(text[i])) {
+                out += text[i++];
+                continue;
+            }
+            std::size_t end = i;
+            while (end < text.size() && identifier(text[end])) {
+                ++end;
+            }
+            const std::string word = text.substr(i, end - i);
+            const auto found = renamed.find(word);
+            out += found == renamed.end() ? word : found->second;
+            i = end;
+        }
+        return out;
+    }
 
     static std::string literal_text(const Literal& literal, ScalarKind dtype) {
         const bool is_real = sema::is_float(dtype);
@@ -961,9 +1158,6 @@ private:
             const Dims last{rows, heads, span, 1};
             return TensorInfo{reshape(full, last), last, ScalarKind::I64};
         };
-        const TensorInfo head_ids{iota(heads), {heads}, ScalarKind::I64};
-        TensorInfo row_ids{iota(rows), {rows}, ScalarKind::I64};
-        TensorInfo positions;
         const auto span_from = [&](const TensorInfo& start) {
             const TensorInfo offsets{iota(span), {span}, ScalarKind::I64};
             const TensorInfo first = as_i64(start);
@@ -972,26 +1166,38 @@ private:
                 {span},
                 ScalarKind::I64};
         };
-        if (every_row) {
-            positions = span_from(*at[2]);
-        } else if (at.size() == 3) {
-            positions = as_i64(*at[2]); // one position per row
-        } else {
-            positions = span_from(*at[3]);
-            const TensorInfo slots = as_i64(*at[2]);
-            row_ids =
-                slots.shape.empty() ? TensorInfo{reshape(slots, {1}), {1}, ScalarKind::I64} : slots;
+        if (every_row || at.size() == 3) {
+            // Every row of the cache, so each element of `value` scatters
+            // along the sequence axis alone (`ScatterElements`, a thread per
+            // element): its position, the span's start plus its offset or
+            // its row's own. `ScatterND` would take a thread per `[D]` slice
+            // and copy it element by element.
+            const Dims& full = value.shape;
+            const TensorInfo along = every_row ? span_from(*at[2]) : as_i64(*at[2]);
+            const Dims placed = every_row ? Dims{1, 1, span, 1} : Dims{rows, 1, 1, 1};
+            const TensorInfo shaped{reshape(along, placed), placed, ScalarKind::I64};
+            const TensorInfo spread_out{
+                node("Expand", {shaped, int64_vector(full)}, "", full, ScalarKind::I64),
+                full,
+                ScalarKind::I64};
+            return node("ScatterElements", {cache, spread_out, value}, "axis = 2", shape, dtype);
         }
+        // Rows `slots` (one or several), a span each: an index per `[D]`
+        // slice, `(row, head, position)`.
+        const TensorInfo head_ids{iota(heads), {heads}, ScalarKind::I64};
+        const TensorInfo positions = span_from(*at[3]);
+        const TensorInfo slots = as_i64(*at[2]);
+        const TensorInfo row_ids =
+            slots.shape.empty() ? TensorInfo{reshape(slots, {1}), {1}, ScalarKind::I64} : slots;
         const Dims index_shape{rows, heads, span, 3};
-        const TensorInfo indices{node("Concat",
-                                      {spread(row_ids, 0),
-                                       spread(head_ids, 1),
-                                       spread(positions, at.size() == 3 && !every_row ? 0 : 2)},
-                                      "axis = 3",
-                                      index_shape,
-                                      ScalarKind::I64),
-                                 index_shape,
-                                 ScalarKind::I64};
+        const TensorInfo indices{
+            node("Concat",
+                 {spread(row_ids, 0), spread(head_ids, 1), spread(positions, 2)},
+                 "axis = 3",
+                 index_shape,
+                 ScalarKind::I64),
+            index_shape,
+            ScalarKind::I64};
         return node("ScatterND", {cache, indices, value}, "", shape, dtype);
     }
 

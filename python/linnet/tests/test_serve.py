@@ -251,6 +251,51 @@ def test_onnx(model_files: tuple[Path, Path]) -> None:
     assert len(model._weights) == 6  # pyright: ignore[reportPrivateUsage]
 
 
+def test_onnx_step_replays_as_a_cuda_graph(model_files: tuple[Path, Path]) -> None:
+    """On a GPU the step is captured once and replayed: the caches are
+    scattered into where they lie, so their buffers never move, and the
+    tokens are greedy decoding's."""
+    onnxruntime = pytest.importorskip("onnxruntime")
+    if "CUDAExecutionProvider" not in onnxruntime.get_available_providers():
+        pytest.skip("CUDA graphs need ONNX Runtime's CUDA provider")
+    from linnet.onnx import load_model as load_onnx
+
+    source, weights = model_files
+    torch_model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    model = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    done, _ = Engine(model, buckets=[8, 16, 32]).run(_requests())
+    for completion in done:
+        assert completion.tokens == _greedy(torch_model, completion.request)
+    sessions = model._sessions.values()  # pyright: ignore[reportPrivateUsage]
+    graphed = [session for session in sessions if session.graphed]
+    assert len(graphed) == 1 and graphed[0].fixed is not None
+    assert graphed[0].fixed.current(model)
+
+
+def test_onnx_reads_the_checkpoint_once(
+    model_files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every prompt length is a session of its own; each tensor is read for
+    the first that needs it and only checked against the header after."""
+    pytest.importorskip("onnxruntime")
+    from linnet import weights as weights_module
+    from linnet.onnx import load_model as load_onnx
+
+    source, weights = model_files
+    model = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    reads: list[str] = []
+    original = weights_module.TensorLocation.read
+
+    def counted(location: weights_module.TensorLocation) -> bytes:
+        reads.append(f"{location.file}:{location.start}")
+        return original(location)
+
+    monkeypatch.setattr(weights_module.TensorLocation, "read", counted)
+    Engine(model, buckets=[8, 16, 32]).warmup([4, 12, 20])
+    assert len(model._sessions) > 3  # pyright: ignore[reportPrivateUsage]
+    assert sorted(reads) == sorted(set(reads)) and len(reads) == 6
+
+
 @pytest.mark.parametrize("dtype", ["f16", "bf16"])
 def test_onnx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> None:
     """An f32 checkpoint exported as a 16-bit model (`cast_dtype=True`):

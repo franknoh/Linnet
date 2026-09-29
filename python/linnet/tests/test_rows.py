@@ -196,8 +196,9 @@ def test_xla(source: Path, target: str) -> None:
 
 
 def test_onnx(source: Path, tmp_path: Path) -> None:
-    """Cache writes become ONNX's ScatterND; a per-sequence mask takes the
-    canonical body. Both must be right."""
+    """Cache writes become ONNX scatters (`ScatterElements` for a row per
+    sequence, `ScatterND` for a slot's span), and attention with a mask per
+    sequence two `MatMul`s around a `Softmax`. Both must be right."""
     onnxruntime = pytest.importorskip("onnxruntime")
     from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
@@ -219,8 +220,9 @@ def test_onnx(source: Path, tmp_path: Path) -> None:
     feeds = dict(zip(names, [case["value"], case["at"], case["query"], cache], strict=True))
     got = session.run(None, feeds)[0]
     np.testing.assert_allclose(got, mixed, atol=1e-5, rtol=1e-5)
-    # Every cache write is one ScatterND, not a pass over the whole cache.
-    assert any(node.op_type == "ScatterND" for node in exported.model.graph.node)
+    # Every cache write is one scatter, not a pass over the whole cache.
+    ops = [node.op_type for node in exported.model.graph.node]
+    assert ops.count("ScatterElements") == 1 and ops.count("MatMul") == 2
     rng = np.random.default_rng(2)
     one = rng.standard_normal((1, 2, 3, 4)).astype(np.float32)
     two = rng.standard_normal((2, 2, 3, 4)).astype(np.float32)

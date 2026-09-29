@@ -455,8 +455,9 @@ class _JaxTokens:
 
 
 class _OnnxBackend:
-    """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device.
-    Each call returns when its results exist, so nothing overlaps."""
+    """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device,
+    the step replayed as a CUDA graph on a GPU. Each call returns when its
+    results exist, so nothing overlaps."""
 
     def __init__(self, model: Any) -> None:
         import numpy as np
@@ -470,25 +471,27 @@ class _OnnxBackend:
         self.tokens: Any = np.zeros((self.slots, 1), dtype=np.int32)
         self.positions: Any = np.zeros(self.slots, dtype=np.int32)
 
+    # The argmax runs in the graph: only each row's token leaves the device.
     def prefill(self, tokens: list[list[int]], slots: list[int], lengths: list[int]) -> _Tokens:
         np = self.np
-        logits = self.model.run_entry(
+        first = self.model.run_entry(
             "prefill_slots",
             [
                 np.asarray(tokens, dtype=np.int32),
                 np.asarray(slots, dtype=np.int32),
                 np.asarray(lengths, dtype=np.int32),
             ],
-        )
-        first = np.asarray(logits).argmax(-1)
+            argmax=True,
+        ).reshape(-1)
         self.tokens[slots, 0] = first
         self.positions[slots] = lengths
         return first
 
     def decode(self) -> _Tokens:
         np = self.np
-        logits = self.model.run_entry("decode_rows", [self.tokens, self.positions])
-        produced = np.asarray(logits).argmax(-1)
+        produced = self.model.run_entry(
+            "decode_rows", [self.tokens, self.positions], argmax=True, cuda_graph=True
+        ).reshape(-1)
         self.tokens = produced.astype(np.int32).reshape(self.slots, 1)
         self.positions = np.minimum(self.positions + 1, self.max_seq - 1)
         return produced
