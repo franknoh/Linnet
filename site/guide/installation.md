@@ -5,18 +5,12 @@ optional Python adapters for PyTorch, JAX, and ONNX.
 
 ## Compiler
 
-### Release archive
+### Release archives
 
-The [releases page](https://github.com/franknoh/Linnet/releases) has
-archives for Linux x86-64, macOS arm64, and Windows x86-64. Each contains
-`bin/linnet` and `share/linnet/stdlib`; the executable finds the standard
-library next to itself.
-
-```bash
-tar -xzf linnet-<version>-linux-x86_64.tar.gz
-export PATH="$PWD/linnet-<version>-linux-x86_64/bin:$PATH"
-linnet --version
-```
+Tagging a version builds archives for Linux x86-64, macOS arm64, and Windows
+x86-64 (`bin/linnet` and `share/linnet/stdlib`) on the
+[releases page](https://github.com/franknoh/Linnet/releases). No version has
+been tagged yet; until one is, build from source.
 
 ### From source
 
@@ -42,10 +36,6 @@ The extension highlights `.linnet` files and runs `linnet lsp` for
 diagnostics as you type, hover with types and shapes, go to definition,
 references, rename, symbols, completion, formatting, semantic tokens, and
 inlay hints.
-
-```bash
-code --install-extension linnet-<version>.vsix        # from a release
-```
 
 ```bash
 cd editors/vscode && npm install && npm run check      # from a checkout
@@ -90,9 +80,11 @@ read TextMate grammars; this site uses it too.
 
 ## Python adapters
 
-Each adapter is a [uv](https://docs.astral.sh/uv/) project under `python/`.
-They call the compiler as a subprocess and read its JSON; none links against
-C++.
+The adapters are one package, `linnet-lang` (imported as `linnet`), a
+[uv](https://docs.astral.sh/uv/) project under `python/linnet`. It calls the
+compiler as a subprocess and reads its JSON; nothing links against C++. It is
+not on PyPI yet: install it from a checkout, or with pip from the repository
+(`pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`).
 
 ```bash
 export LINNET_BIN=/path/to/linnet      # or put `linnet` on PATH
@@ -100,8 +92,11 @@ export LINNET_BIN=/path/to/linnet      # or put `linnet` on PATH
 cd python/linnet && uv sync --extra torch    # linnet.torch: load, bind_weights, export_linnet
 cd python/linnet && uv sync --extra jax      # linnet.jax: load, load_source, export_linnet, import_stablehlo
 cd python/linnet && uv sync --extra flax     # linnet.jax.load_nnx
-cd python/linnet && uv sync --extra onnx     # linnet.onnx: import_onnx
+cd python/linnet && uv sync --extra onnx     # linnet.onnx: export_model, load_model, import_onnx
 ```
+
+`linnet.onnx.load_model` runs on ONNX Runtime, which the `onnx` extra does not
+install: add `onnxruntime`, or `onnxruntime-gpu` for CUDA and TensorRT.
 
 Next: the [Quickstart](/docs/getting-started), or [Coming from
 PyTorch](/guide/from-pytorch) if you already have models.

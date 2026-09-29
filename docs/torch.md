@@ -5,7 +5,7 @@ a `torch.nn.Module` into Linnet source. The adapter knows nothing about any
 model; everything comes from the compiler.
 
 ```bash
-cd python/linnet && uv sync --extra torch    # or: pip install "linnet-lang[torch]"
+cd python/linnet && uv sync --extra torch    # or: pip install ".[torch]"
 export LINNET_BIN=/path/to/build/release/linnet     # or put `linnet` on PATH
 ```
 
@@ -213,7 +213,7 @@ never does.
 
 ```bash
 uv run pytest                       # references, round trips, state, training
-LINNET_HF_TESTS=1 uv run pytest tests/test_hf_checkpoints.py   # TinyLlama and GPT-2 vs transformers
+LINNET_HF_TESTS=1 uv run pytest tests/torch/test_hf_checkpoints.py   # TinyLlama and GPT-2 vs transformers
 uv run pyright
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
