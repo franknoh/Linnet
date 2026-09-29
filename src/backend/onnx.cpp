@@ -880,21 +880,39 @@ public:
                        const std::string& module_path,
                        const std::string& block_name,
                        const std::string& entry_name) override {
-        // Outputs need names of their own: `Identity` gives the results
-        // stable ones, and `next_state<N>` names each assigned state member,
-        // mapped to its path by `linnet.next_state.<name>`.
+        // Outputs need names of their own: `output<N>` for the results, and
+        // `next_state<N>` for each assigned state member, mapped to its path
+        // by `linnet.next_state.<name>`. A value a node computes takes the
+        // output's name itself; an `Identity` would copy it, which for a
+        // KV cache the graph also reads is the whole cache every call. An
+        // input returned as it is, or a value returned twice, goes through
+        // `Identity`.
+        std::map<std::string, std::string> renamed;
+        const auto name_output = [&](const std::string& value, const std::string& name) {
+            const bool computed = value.size() > 1 && value[0] == 'v' &&
+                                  std::all_of(value.begin() + 1, value.end(), [](char c) {
+                                      return c >= '0' && c <= '9';
+                                  });
+            if (computed && renamed.emplace(value, name).second) {
+                return;
+            }
+            body_ += "    " + name + " = Identity(" + value + ")\n";
+        };
         std::vector<std::string> outputs;
         for (std::size_t i = 0; i < results.size(); ++i) {
             const std::string name = "output" + std::to_string(i);
-            body_ += "    " + name + " = Identity(" + results[i].name + ")\n";
+            name_output(results[i].name, name);
             outputs.push_back(tensor_type(results[i].shape, results[i].dtype) + " " + name);
         }
         for (std::size_t i = 0; i < states.size(); ++i) {
             const std::string name = "next_state" + std::to_string(i);
-            body_ += "    " + name + " = Identity(" + states[i].second.name + ")\n";
+            name_output(states[i].second.name, name);
             outputs.push_back(tensor_type(states[i].second.shape, states[i].second.dtype) + " " +
                               name);
             metadata_.push_back("\"linnet.next_state." + name + "\": \"" + states[i].first + "\"");
+        }
+        if (!renamed.empty()) {
+            body_ = rename_values(body_, renamed);
         }
         const std::string opsets =
             microsoft_ ? "[\"\" : 20, \"com.microsoft\" : 1]" : "[\"\" : 20]";
@@ -925,6 +943,33 @@ public:
 
 private:
     std::string fresh() { return "v" + std::to_string(next_++); }
+
+    // `text` with every identifier in `renamed` replaced, whole words only.
+    static std::string rename_values(const std::string& text,
+                                     const std::map<std::string, std::string>& renamed) {
+        const auto identifier = [](char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                   c == '_';
+        };
+        std::string out;
+        out.reserve(text.size());
+        std::size_t i = 0;
+        while (i < text.size()) {
+            if (!identifier(text[i])) {
+                out += text[i++];
+                continue;
+            }
+            std::size_t end = i;
+            while (end < text.size() && identifier(text[end])) {
+                ++end;
+            }
+            const std::string word = text.substr(i, end - i);
+            const auto found = renamed.find(word);
+            out += found == renamed.end() ? word : found->second;
+            i = end;
+        }
+        return out;
+    }
 
     static std::string literal_text(const Literal& literal, ScalarKind dtype) {
         const bool is_real = sema::is_float(dtype);
