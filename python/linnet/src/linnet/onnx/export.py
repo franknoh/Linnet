@@ -12,13 +12,13 @@ when it is too large for one protobuf.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..compiler import LinnetError, run_compiler, std_arguments
-from ..weights import iter_safetensors, read_bindings, safetensors_index
+from ..weights import RawTensor, read_bindings, safetensors_index
 
 # SafeTensors dtype names to ONNX TensorProto data types.
 ONNX_DTYPES = {
@@ -91,6 +91,7 @@ def export_model(
     optionals: str = "auto",
     cast_dtype: bool = False,
     embed: bool = True,
+    held: Collection[str] = (),
 ) -> Exported:
     """Compiles one entry to ONNX and embeds the checkpoint as initializers.
 
@@ -109,7 +110,10 @@ def export_model(
     exports as an f16 or bf16 model. `embed=False` checks the weights but
     leaves them graph inputs, for a runtime that binds one copy to several
     entries' graphs (`linnet.onnx.load_model`); `Exported.weights` then holds
-    them by input name.
+    them by input name. With it, `held` names parameter paths whose weights
+    the caller already has: they are checked against the checkpoint's
+    header and not read, so a runtime compiling one more shape does not read
+    the checkpoint again.
     """
     import onnx
     from onnx import parser
@@ -125,11 +129,12 @@ def export_model(
         arguments += ["--bind", f"{name}={value}"]
     text = run_compiler(*arguments, *std_arguments(std_root), str(source))
     model = parser.parse_model(text)
+    index = safetensors_index(weights)
     if optionals == "auto":
         # Every optional was compiled in; the ones the checkpoint lacks are
         # compiled out again, by path. A required parameter the checkpoint
         # lacks stays in the graph and is reported as missing below.
-        available = set(safetensors_index(weights))
+        available = set(index)
         missing = sorted(
             p.value
             for p in model.metadata_props
@@ -155,21 +160,36 @@ def export_model(
     }
     # A checkpoint tensor may serve several parameters (an output head tied
     # to the embedding): each gets its own initializer.
-    wanted: dict[str, list[tuple[str, str]]] = {}
-    for input_name, path in paths.items():
-        wanted.setdefault(mapping.get(path, path), []).append((input_name, path))
     declared = {i.name: i for i in model.graph.input}
-
+    skipped = set(held) if not embed else set()
+    wanted: dict[str, list[tuple[str, str]]] = {}
     found: dict[str, Any] = {}
+    checked: set[str] = set()  # held: header checked, bytes not read
     problems: list[str] = []
-    for tensor in iter_safetensors(weights):
-        for input_name, path in wanted.get(tensor.name, []):
+    for input_name, path in paths.items():
+        name = mapping.get(path, path)
+        location = index.get(name)
+        if location is None:
+            problems.append(f"missing tensor for `{path}`")
+        elif path in skipped:
+            if _matches(
+                location.dtype,
+                location.shape,
+                name,
+                input_name,
+                path,
+                declared,
+                cast_dtype,
+                problems,
+            ):
+                checked.add(input_name)
+        else:
+            wanted.setdefault(name, []).append((input_name, path))
+    # Only the tensors the graph reads, in file order.
+    for name, location in index.items():
+        for input_name, path in wanted.get(name, []):
+            tensor = RawTensor(name, location.dtype, location.shape, location.read())
             _take(tensor, input_name, path, declared, cast_dtype, found, problems)
-    missing = [
-        path for users in wanted.values() for input_name, path in users if input_name not in found
-    ]
-    if missing:
-        problems += [f"missing tensor for `{path}`" for path in missing]
     if problems:
         raise LinnetError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
 
@@ -177,7 +197,9 @@ def export_model(
         onnx.checker.check_model(model)
         return Exported(
             model=model,
-            inputs=tuple(_port(i) for i in model.graph.input if i.name not in found),
+            inputs=tuple(
+                _port(i) for i in model.graph.input if i.name not in found and i.name not in checked
+            ),
             outputs=tuple(_port(o) for o in model.graph.output),
             parameters=tuple(paths.values()),
             weights={name: found[name] for name in paths if name in found},
@@ -198,6 +220,32 @@ def export_model(
 FLOATS = ("F32", "F16", "BF16", "F64")
 
 
+def _matches(
+    dtype: str,
+    shape: tuple[int, ...],
+    name: str,
+    input_name: str,
+    path: str,
+    declared: dict[str, Any],
+    cast_dtype: bool,
+    problems: list[str],
+) -> bool:
+    """Whether checkpoint tensor `name` (`dtype`, `shape`) can be graph input
+    `input_name` (parameter `path`); if not, why is added to `problems`."""
+    info = declared[input_name].type.tensor_type
+    wanted = tuple(d.dim_value for d in info.shape.dim)
+    if wanted != shape:
+        problems.append(f"`{name}` has shape {list(shape)}, `{path}` needs {list(wanted)}")
+        return False
+    if ONNX_DTYPES.get(dtype) != info.elem_type:
+        wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
+        if not (cast_dtype and dtype in FLOATS and wanted_dtype in FLOATS):
+            needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
+            problems.append(f"`{name}` is {dtype}, `{path}` needs {needs}")
+            return False
+    return True
+
+
 def _take(
     tensor: Any,
     input_name: str,
@@ -211,22 +259,15 @@ def _take(
     `path`), checked against its declared shape and dtype."""
     import onnx
 
-    info = declared[input_name].type.tensor_type
-    shape = tuple(d.dim_value for d in info.shape.dim)
-    if shape != tensor.shape:
-        problems.append(
-            f"`{tensor.name}` has shape {list(tensor.shape)}, `{path}` needs {list(shape)}"
-        )
+    if not _matches(
+        tensor.dtype, tensor.shape, tensor.name, input_name, path, declared, cast_dtype, problems
+    ):
         return
+    info = declared[input_name].type.tensor_type
     data = tensor.data
     if ONNX_DTYPES.get(tensor.dtype) != info.elem_type:
         wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
-        if cast_dtype and tensor.dtype in FLOATS and wanted_dtype in FLOATS:
-            data = _cast_float(data, tensor.dtype, wanted_dtype)
-        else:
-            needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
-            problems.append(f"`{tensor.name}` is {tensor.dtype}, `{path}` needs {needs}")
-            return
+        data = _cast_float(data, tensor.dtype, wanted_dtype)
     initializer = onnx.TensorProto()
     initializer.name = input_name
     initializer.data_type = info.elem_type
