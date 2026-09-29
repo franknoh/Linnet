@@ -180,6 +180,12 @@ class CompiledLinnetModule(LinnetModule):
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=self._graph_pool):
             outputs = list(generated.main(*arguments))
+            if self.tensor_parallel is not None:
+                from .parallel import whole
+
+                # Gathered inside the graph: a replay hands back whole
+                # tensors, with no collective or DTensor dispatch after it.
+                outputs[: generated.results] = [whole(v) for v in outputs[: generated.results]]
             # A state the step returns rather than writes in place goes into
             # its own buffer, inside the graph, so it stays where it is.
             for (owner, leaf), path, value in zip(
@@ -194,8 +200,10 @@ class CompiledLinnetModule(LinnetModule):
                 elif not _same(value, state):
                     state.copy_(value)
         watched = [
-            (owner, leaf, getattr(owner, leaf))
-            for owner, leaf in (*prepared.parameters, *prepared.states)
+            (table, leaf, table[leaf])
+            for table, leaf in (
+                _table(owner, leaf) for owner, leaf in (*prepared.parameters, *prepared.states)
+            )
         ]
         return _Graph(graph, outputs[: generated.results], watched)
 
@@ -434,10 +442,19 @@ class _Graph:
 
     graph: Any  # torch.cuda.CUDAGraph
     results: list[torch.Tensor]
-    watched: list[tuple[Any, str, torch.Tensor]]  # (module, attribute, tensor)
+    # (a module's parameter or buffer table, name, tensor): checked on every
+    # replay, which a lookup in the table itself keeps to a few microseconds
+    # for hundreds of weights, where `getattr` on the module takes a hundred.
+    watched: list[tuple[dict[str, Any], str, torch.Tensor]]
 
     def current(self) -> bool:
-        return all(getattr(owner, leaf) is tensor for owner, leaf, tensor in self.watched)
+        return all(table.get(leaf) is tensor for table, leaf, tensor in self.watched)
+
+
+def _table(owner: Any, leaf: str) -> tuple[dict[str, Any], str]:
+    """Where a module keeps `leaf`: its parameters, or its buffers (states)."""
+    parameters: dict[str, Any] = owner._parameters
+    return (parameters if leaf in parameters else owner._buffers), leaf
 
 
 def _mark_static(tensor: Any) -> None:
