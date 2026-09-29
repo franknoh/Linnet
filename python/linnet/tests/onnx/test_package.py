@@ -179,7 +179,9 @@ pub block Model<H: Dim, T: Float = f32> {
 def test_entries_with_state_read_their_own_weights(tmp_path: Path) -> None:
     """An entry with state that reads only some weights (an encoder filling
     a decoder's caches) runs beside one that reads the others, over the
-    same state, on ONNX Runtime as in the interpreter."""
+    same state, on ONNX Runtime as in the interpreter. The state it writes
+    without reading keeps its buffer, which a CUDA graph over the other
+    entry has captured."""
     pytest.importorskip("onnxruntime")
     from linnet.onnx import load_model
 
@@ -208,3 +210,6 @@ def test_entries_with_state_read_their_own_weights(tmp_path: Path) -> None:
     model.run_entry("remember", [x])
     expected = reference.run_entry("recall", [torch.from_numpy(y)]).detach().numpy()
     np.testing.assert_allclose(model.run_entry("recall", [y]), expected, rtol=1e-5, atol=1e-5)
+    buffer = model.state["memory"]
+    model.run_entry("remember", [y])
+    assert model.state["memory"] is buffer
