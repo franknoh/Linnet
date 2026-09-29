@@ -442,6 +442,62 @@ public:
                                           : TensorInfo{convert(*at[1], dtype), at[1]->shape, dtype};
             return node("Mul", {normalized, weight}, "", shape, dtype);
         }
+        if (implementation_base == "torch.nn.functional.group_norm" && operands.size() == 4 &&
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr &&
+            at[0]->shape.size() == 4) {
+            // Each group's channels and positions as one row of `[B, G, L]`,
+            // which `InstanceNormalization` normalizes in one kernel (with a
+            // unit scale and no shift); the channels' own scale and shift
+            // follow in the model's dtype, as in the body. ONNX Runtime has
+            // no bf16 instance norm: bf16 goes through f32.
+            const auto groups = call_generic("Groups");
+            const std::string epsilon = literal_of(at[3]->name);
+            const Dims& full = at[0]->shape;
+            if (!groups || *groups <= 0 || full[1] % *groups != 0 || epsilon.empty()) {
+                return std::nullopt;
+            }
+            const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
+            const Dims rows{full[0], *groups, full[1] / *groups * full[2] * full[3]};
+            const TensorInfo x =
+                at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), full, kind};
+            const TensorInfo grouped{reshape(x, rows), rows, kind};
+            Literal one;
+            one.kind = Literal::Kind::Real;
+            one.real = 1.0;
+            const Literal zero_value;
+            const Dims per_group{*groups};
+            const TensorInfo ones{node("Expand",
+                                       {{constant(one, kind), {}, kind}, int64_vector(per_group)},
+                                       "",
+                                       per_group,
+                                       kind),
+                                  per_group,
+                                  kind};
+            const TensorInfo zeros{
+                node("Expand",
+                     {{constant(zero_value, kind), {}, kind}, int64_vector(per_group)},
+                     "",
+                     per_group,
+                     kind),
+                per_group,
+                kind};
+            const TensorInfo normalized{node("InstanceNormalization",
+                                             {grouped, ones, zeros},
+                                             "epsilon = " + epsilon,
+                                             rows,
+                                             kind),
+                                        rows,
+                                        kind};
+            TensorInfo restored{reshape(normalized, full), full, kind};
+            if (kind != dtype) {
+                restored = {convert(restored, dtype), full, dtype};
+            }
+            const Dims channel{full[1], 1, 1};
+            const TensorInfo weight{reshape(*at[1], channel), channel, at[1]->dtype};
+            const TensorInfo bias{reshape(*at[2], channel), channel, at[2]->dtype};
+            const TensorInfo scaled{node("Mul", {restored, weight}, "", full, dtype), full, dtype};
+            return node("Add", {scaled, bias}, "", shape, dtype);
+        }
         if (implementation_base == "torch.nn.functional.gelu" && operands.size() == 1 &&
             at[0] != nullptr) {
             return node("Gelu", {*at[0]}, "approximate = \"none\"", shape, dtype);
