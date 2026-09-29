@@ -131,9 +131,11 @@ class Engine:
     `linnet.onnx.OnnxModel` with
     `prefill_slots` and `decode_rows` entries. `buckets` are the prompt
     lengths compiled (a pass is padded to the smallest that holds its longest
-    prompt): by default 16, 32, 64, then every 128 up to `MaxSeq`. Prompts are
-    passed `max_group` at a time at most, in groups of powers of two, each a
-    compiled shape. `graphs=True` replays the PyTorch step as a CUDA graph.
+    prompt): by default 16, 32, 48, 64, then four to each doubling (80, 96,
+    112, 128, 160, ...) up to `MaxSeq`, so padding adds less than a quarter
+    to a prompt. Prompts are passed `max_group` at a time at most, in groups
+    of powers of two, each a compiled shape. `graphs=True` replays the
+    PyTorch step as a CUDA graph.
     """
 
     def __init__(
@@ -148,11 +150,11 @@ class Engine:
         self.backend: _Backend = _backend_for(model, graphs)
         limit = self.backend.max_seq
         if buckets is None:
-            buckets = [16, 32, 64]
-            length = 128
+            buckets = []
+            length = 16
             while length < limit:
                 buckets.append(length)
-                length += 128
+                length += max(16, 1 << (length.bit_length() - 3))
             buckets.append(limit)
         self.buckets = sorted({b for b in buckets if b <= limit})
         self.pad = pad
