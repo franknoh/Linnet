@@ -27,7 +27,7 @@ features:
   - title: Portable, not interpreted
     details: Each backend gets its own native path — generated PyTorch under torch.compile or CUDA graphs, XLA, ONNX Runtime and TensorRT.
   - title: One checked source, many runtimes
-    details: The same file loads in PyTorch, JAX, and ONNX Runtime, deploys to Triton, and exports to vLLM and llama.cpp for the Llama and GPT-2 families.
+    details: The same file loads in PyTorch, JAX, and ONNX Runtime, deploys to Triton, and exports to vLLM and llama.cpp for the Llama, Qwen2, Qwen3, Phi-3, and GPT-2 families.
 ---
 
 ## Weights got SafeTensors. Structure deserves the same.
@@ -160,8 +160,8 @@ takes every model:
 | StableHLO | `linnet stablehlo` | static shapes |
 | ONNX Runtime | `linnet onnx`, `linnet.onnx.export_model` and `load_model`, CUDA or TensorRT | static shapes |
 | Triton Inference Server | `linnet.triton`: a model repository over ONNX or a Python backend | ONNX: entries without state |
-| vLLM and other transformers-checkpoint servers | `linnet.hf`: a transformers checkpoint | Llama and GPT-2 families |
-| llama.cpp, Ollama | `linnet.gguf`: GGUF and a Modelfile | Llama and GPT-2 families |
+| vLLM and other transformers-checkpoint servers | `linnet.hf`: a transformers checkpoint | Llama, Qwen2, Qwen3, Phi-3, and GPT-2 families |
+| llama.cpp, Ollama | `linnet.gguf`: GGUF and a Modelfile | the same families |
 | ComfyUI | [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) custom nodes | PyTorch |
 | Serving | `linnet.serve`: continuous batching over PyTorch, JAX, or ONNX | decoders with `prefill_slots` and `decode_rows` |
 
