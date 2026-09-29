@@ -8,9 +8,19 @@ SafeTensors is a recommended first-class weight format because it naturally sepa
 
 ## 10.2 Binding manifest
 
-A binding manifest maps canonical Linnet parameter paths to external tensor keys.
+A binding manifest maps canonical Linnet parameter paths to external tensor keys. A path absent from the manifest binds to the tensor of the same name.
 
-Example human-facing YAML representation:
+The representation Linnet's tools read is a flat JSON object from expanded parameter paths (one entry per element of a block array) to tensor keys:
+
+```json
+{
+  "embedding.weight": "model.embed_tokens.weight",
+  "layers.0.attention.q_proj.weight": "model.layers.0.self_attn.q_proj.weight",
+  "layers.1.attention.q_proj.weight": "model.layers.1.self_attn.q_proj.weight"
+}
+```
+
+A richer serialization of the same abstract model, naming several sources and templating array indices, MAY be supported, for example as YAML:
 
 ```yaml
 sources:
@@ -28,6 +38,8 @@ bindings:
     key: "model.layers.{i}.self_attn.q_proj.weight"
 ```
 
+The reference implementation reads only the JSON form.
+
 ## 10.3 Binding manifests are not programs
 
 Binding manifests MUST NOT contain executable expressions, arbitrary transformations, imports, shell interpolation, Python tags, custom YAML object tags, callbacks, or conditions.
@@ -40,7 +52,7 @@ Tensor transformations such as transpose, reshape, dequantization, or concatenat
 
 If YAML is accepted, implementations MUST parse it in a safe mode that permits only ordinary scalar, mapping, and sequence nodes. Arbitrary tagged object construction is forbidden.
 
-A JSON representation MAY be supported as an equivalent serialization of the same abstract binding model.
+Any serialization, JSON or YAML, represents the same abstract binding model.
 
 ## 10.5 Validation
 
@@ -54,4 +66,4 @@ When weight metadata is available, a binder SHOULD validate:
 - optional parameter absence;
 - unexpected external tensors according to configured strictness.
 
-Shape or dtype mismatch is an error by default.
+Shape or dtype mismatch is an error by default. The reference binders ignore external tensors no parameter names.

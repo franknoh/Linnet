@@ -54,11 +54,6 @@ A future low-level kernel DSL may target the same or a lower IR and allow Triton
 
 ## 15.10 Importers
 
-Future importers may translate:
-
-- `torch.export` graphs;
-- JAX/Jaxpr or StableHLO;
-- ONNX;
-- other semantic tensor formats.
+Importers already translate `torch.export` graphs, JAX programs through StableHLO, and ONNX graphs into Linnet source. Future importers may translate other semantic tensor formats.
 
 Importers are frontends. They do not redefine Linnet source semantics.
