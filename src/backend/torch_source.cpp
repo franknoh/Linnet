@@ -587,7 +587,8 @@ public:
             int4_helpers_ = true;
             const std::string packed =
                 define("_int4_pack(" + name(1) + ", " + name(2) + ", " + name(3) + ")");
-            return define("_int4_linear(" + name(0) + ", " + packed + ", " + name(4) + ")");
+            return define("_int4_linear(" + name(0) + ", " + packed + ", " + name(4) + ", " +
+                          name(1) + ", " + name(2) + ", " + name(3) + ")");
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             operands[0]) {
@@ -1129,14 +1130,23 @@ private:
                "    weight = (q.float() - zero.float()[..., None]) * scale.float()[..., None]\n"
                "    return (weight.reshape(out_features, in_features).to(scale.dtype),)\n"
                "\n\n"
-               "def _int4_linear(x, packed, bias):\n"
-               "    if len(packed) == 3:\n"
+               "def _int4_linear(x, packed, bias, raw, scale, zero):\n"
+               "    flat = x.reshape(-1, x.shape[-1])\n"
+               "    if len(packed) == 3 and flat.shape[0] <= 16:\n"
                "        weight, pairs, group = packed\n"
-               "        flat = x.reshape(-1, x.shape[-1])\n"
                "        y = torch.ops.aten._weight_int4pack_mm(flat, weight, group, pairs)\n"
-               "        y = y.reshape(*x.shape[:-1], y.shape[-1])\n"
+               "    elif len(packed) == 3:\n"
+               "        # tinygemm is built for a few rows; a prompt's many rows\n"
+               "        # multiply the weight dequantized for this call instead.\n"
+               "        out_features, groups, half = raw.shape\n"
+               "        q = torch.stack([raw & 15, raw >> 4], dim=-1).reshape(out_features, "
+               "groups, 2 * half)\n"
+               "        w = ((q.to(scale.dtype) - zero.to(scale.dtype)[..., None]) * scale[..., "
+               "None])\n"
+               "        y = F.linear(flat, w.reshape(out_features, groups * 2 * half))\n"
                "    else:\n"
-               "        y = F.linear(x, packed[0])\n"
+               "        y = F.linear(flat, packed[0])\n"
+               "    y = y.reshape(*x.shape[:-1], y.shape[-1])\n"
                "    return y if bias is None else y + bias\n"
                "\n\n";
     }

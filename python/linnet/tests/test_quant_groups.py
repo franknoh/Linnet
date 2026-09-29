@@ -148,3 +148,8 @@ def test_cuda_bf16_runs_tinygemm(
     assert isinstance(prepared, tuple) and len(prepared) == 3
     expected = x.float().cpu().numpy() @ weight.T
     np.testing.assert_allclose(got, expected, rtol=3e-2, atol=3e-1)
+    # A prompt's many rows take the dequantized weight instead: the same numbers.
+    many = torch.randn(40, IN, device="cuda", dtype=torch.bfloat16)
+    got = model.run_entry("forward", [many]).float().cpu().numpy()
+    expected = many.float().cpu().numpy() @ weight.T
+    np.testing.assert_allclose(got, expected, rtol=3e-2, atol=3e-1)
