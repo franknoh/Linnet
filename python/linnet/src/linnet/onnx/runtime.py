@@ -299,6 +299,13 @@ class OnnxModel:
         if not stateless:
             prepared = self._prepare(exported, parameters)
             used = _consumed(exported.model.graph)
+            # An entry that reads only some weights (an encoder's, of a
+            # model with a decoder too) leaves the rest as inputs nothing
+            # reads: they go, rather than being taken for the entry's own.
+            graph = exported.model.graph
+            kept = [i for i in graph.input if i.name not in parameters or i.name in used]
+            del graph.input[:]
+            graph.input.extend(kept)
             parameters = {port: path for port, path in parameters.items() if port in used}
         graph_inputs = {i.name: i.type.tensor_type for i in exported.model.graph.input}
         states = {}

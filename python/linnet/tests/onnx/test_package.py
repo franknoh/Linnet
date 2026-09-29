@@ -151,3 +151,60 @@ def test_types_onnx_runtime_lacks_kernels_for_are_widened(tmp_path: Path) -> Non
             assert all(types[i] == onnx.TensorProto.FLOAT for i in node.input)
         if node.op_type in ("Add", "Sub", "Where"):
             assert all(types.get(i) != onnx.TensorProto.UINT8 for i in node.input if i in types)
+
+
+PARTS = """\
+module tests.parts
+
+use std.nn.linear::{Linear}
+
+pub block Model<H: Dim, T: Float = f32> {
+    sub first: Linear<H, H, T>
+    sub second: Linear<H, H, T>
+
+    state memory: Tensor[1, H; T]
+
+    pub entry remember(x: Tensor[1, H; T]) -> Tensor[1, H; T] {
+        memory = first.forward(x)
+        return memory
+    }
+
+    pub entry recall(x: Tensor[1, H; T]) -> Tensor[1, H; T] {
+        return second.forward(x) + memory
+    }
+}
+"""
+
+
+def test_entries_with_state_read_their_own_weights(tmp_path: Path) -> None:
+    """An entry with state that reads only some weights (an encoder filling
+    a decoder's caches) runs beside one that reads the others, over the
+    same state, on ONNX Runtime as in the interpreter."""
+    pytest.importorskip("onnxruntime")
+    from linnet.onnx import load_model
+
+    source = tmp_path / "parts.linnet"
+    source.write_text(PARTS, encoding="utf-8")
+    generics: dict[str, int | str] = {"H": 4}
+    torch.manual_seed(0)
+    skeleton = load(source, generics=generics, std_root=STDLIB)
+    save_file(
+        {
+            name.removeprefix("root."): torch.randn(parameter.shape)
+            for name, parameter in skeleton.named_parameters()
+            if not name.endswith(".bias")
+        },
+        str(tmp_path / "parts.safetensors"),
+    )
+    reference = load(
+        source, generics=generics, std_root=STDLIB, weights=tmp_path / "parts.safetensors"
+    )
+    model = load_model(
+        source, generics=generics, weights=tmp_path / "parts.safetensors", std_root=STDLIB
+    )
+    x = np.random.default_rng(0).standard_normal((1, 4)).astype(np.float32)
+    y = np.random.default_rng(1).standard_normal((1, 4)).astype(np.float32)
+    reference.run_entry("remember", [torch.from_numpy(x)])
+    model.run_entry("remember", [x])
+    expected = reference.run_entry("recall", [torch.from_numpy(y)]).detach().numpy()
+    np.testing.assert_allclose(model.run_entry("recall", [y]), expected, rtol=1e-5, atol=1e-5)
