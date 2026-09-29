@@ -192,7 +192,18 @@ def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
     return _sdpa(query, key, value, scale, mask, fast=True)
 
 
+def _int4_groups_linear(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`std.quant::linear_int4_groups`: dequantized, then `F.linear`."""
+    x, packed, scale, zero, bias = args
+    out_features, groups, half = packed.shape
+    q = torch.stack([packed & 15, packed >> 4], dim=-1).reshape(out_features, groups, 2 * half)
+    weight = (q.float() - zero.float()[..., None]) * scale.float()[..., None]
+    y = functional.linear(x, weight.reshape(out_features, groups * 2 * half).to(x.dtype))
+    return y if bias is None else y + bias
+
+
 NATIVE: dict[str, Native] = {
+    "torch.ops.aten._weight_int4pack_mm": _int4_groups_linear,
     "torch.nn.functional.embedding": _embedding,
     "torch.nn.functional.batch_norm": _batch_norm,
     "torch.Tensor.mean": _spatial_mean,

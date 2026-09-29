@@ -21,6 +21,12 @@ std::vector<NativeCandidate> torch_candidates() {
          "torch.nn.functional.max_pool2d",
          Legality::Exact,
          {"the padding is at most half the window"}},
+        // tinygemm's 4-bit matrix product (and ONNX Runtime's MatMulNBits):
+        // the scales and zero points meet the weights in the input dtype.
+        {"std.quant::linear_int4_groups",
+         "torch.ops.aten._weight_int4pack_mm",
+         fast,
+         {"CUDA, bf16, and a group size the kernel takes; otherwise the body runs"}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.resize::upsample_nearest2d",

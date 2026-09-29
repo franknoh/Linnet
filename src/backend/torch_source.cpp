@@ -579,6 +579,16 @@ public:
             return define("F.conv2d(" + name(0) + ", " + name(1) + ", " + name(2) + ", stride=" +
                           std::to_string(*stride) + ", padding=" + std::to_string(*pad) + ")");
         }
+        if (implementation_base == "torch.ops.aten._weight_int4pack_mm" && operands.size() == 5 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            // Packing reads only weights, so `--prepare` does it once; the
+            // helpers pick tinygemm where it runs (CUDA, bf16, its group
+            // sizes) and the dequantized weight elsewhere.
+            int4_helpers_ = true;
+            const std::string packed =
+                define("_int4_pack(" + name(1) + ", " + name(2) + ", " + name(3) + ")");
+            return define("_int4_linear(" + name(0) + ", " + packed + ", " + name(4) + ")");
+        }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             operands[0]) {
             // The geometry is the call's own, as for the convolution;
@@ -750,6 +760,9 @@ public:
                           "# RESULTS results followed by the states in NEXT_STATES order.\n"
                           "import torch\n"
                           "import torch.nn.functional as F\n\n";
+        if (int4_helpers_) {
+            out += int4_helpers();
+        }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
         std::vector<std::string> next_states;
@@ -1089,6 +1102,45 @@ public:
     }
 
 private:
+    // `std.quant::linear_int4_groups` natively. tinygemm reads the high
+    // nibble first and dequantizes `(q - 8) * scale + zero`, so the weights
+    // are repacked and `(q - z) * s` becomes the zero `(8 - z) * s`.
+    static std::string int4_helpers() {
+        return "def _int4_pack(packed, scale, zero):\n"
+               "    out_features, groups, half = packed.shape\n"
+               "    group = 2 * half\n"
+               "    in_features = groups * group\n"
+               "    packed = packed.reshape(out_features, groups * half)\n"
+               "    if (\n"
+               "        packed.is_cuda\n"
+               "        and scale.dtype == torch.bfloat16\n"
+               "        and group in (32, 64, 128, 256)\n"
+               "        and in_features % 128 == 0\n"
+               "        and out_features % 8 == 0\n"
+               "    ):\n"
+               "        swapped = ((packed & 15) << 4) | (packed >> 4)\n"
+               "        weight = torch.ops.aten._convert_weight_to_int4pack(swapped.contiguous(), "
+               "8)\n"
+               "        zeros = (8.0 - zero.float()) * scale.float()\n"
+               "        pairs = torch.stack([scale.float(), zeros], dim=-1).transpose(0, 1)\n"
+               "        return (weight, pairs.contiguous().to(torch.bfloat16), group)\n"
+               "    q = torch.stack([packed & 15, packed >> 4], dim=-1).reshape(out_features, "
+               "groups, group)\n"
+               "    weight = (q.float() - zero.float()[..., None]) * scale.float()[..., None]\n"
+               "    return (weight.reshape(out_features, in_features).to(scale.dtype),)\n"
+               "\n\n"
+               "def _int4_linear(x, packed, bias):\n"
+               "    if len(packed) == 3:\n"
+               "        weight, pairs, group = packed\n"
+               "        flat = x.reshape(-1, x.shape[-1])\n"
+               "        y = torch.ops.aten._weight_int4pack_mm(flat, weight, group, pairs)\n"
+               "        y = y.reshape(*x.shape[:-1], y.shape[-1])\n"
+               "    else:\n"
+               "        y = F.linear(x, packed[0])\n"
+               "    return y if bias is None else y + bias\n"
+               "\n\n";
+    }
+
     std::string device() const {
         return placed_ ? "_dev[" + std::to_string(slot_) + "]" : std::string("_device");
     }
@@ -1147,10 +1199,11 @@ private:
     int slots_ = 1;
     int slot_ = 0;
     std::vector<std::string> arguments_;
-    std::vector<std::string> parameters_;                    // paths, in argument order
-    std::vector<std::string> states_;                        // paths, in argument order
-    std::map<std::string, std::string> literals_;            // constant name -> Python literal
-    std::set<std::string> causal_masks_;                     // square masks from `causal_mask`
+    std::vector<std::string> parameters_;         // paths, in argument order
+    std::vector<std::string> states_;             // paths, in argument order
+    std::map<std::string, std::string> literals_; // constant name -> Python literal
+    std::set<std::string> causal_masks_;          // square masks from `causal_mask`
+    bool int4_helpers_ = false;                   // `_int4_pack` and `_int4_linear` are used
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value
     std::map<ScalarKind, std::string> zeros_;                // per-dtype zero constants
