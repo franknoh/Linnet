@@ -13,84 +13,117 @@ Every model in the zoo was measured on one H100 80GB (SXM), in `bf16`, each
 method in a process of its own, against the stacks people already run these
 checkpoints with: transformers, diffusers, sentence-transformers, vLLM,
 KerasHub (the maintained JAX implementation of these architectures), ONNX
-Runtime on the reference model's own `torch.onnx` export, and Triton
-Inference Server over that export, over Linnet's, and in front of vLLM.
-Linnet runs as generated PyTorch, as the same source replayed as CUDA
-graphs, as XLA through `linnet.jax`, and as ONNX. Every output is checked
-against the reference stack's, and peak GPU memory is read from the driver
-(for JAX rows, from JAX's allocator: the driver sees its pool, which grows
-in whole regions). Each model's page in the zoo has the samples it produced
-and every number.
+Runtime on the reference model's own `torch.onnx` export, llama.cpp, and
+Triton Inference Server over those exports, over Linnet's, and in front of
+vLLM. Linnet runs every way it can:
+
+- generated PyTorch, as it is, under `torch.compile` (inductor), and
+  replayed as CUDA graphs;
+- XLA through `linnet.jax`, from StableHLO and from generated JAX source;
+- ONNX Runtime in `f32`, `f16`, and `bf16`, on its CUDA kernels and on
+  TensorRT;
+- Triton Inference Server, over Linnet's ONNX export and as a Python backend;
+- vLLM and llama.cpp, loading what `linnet.hf` and `linnet.gguf` export.
+
+Every output is checked against the reference stack's, and peak GPU memory is
+read from the driver (for JAX rows, from JAX's allocator: the driver sees its
+pool, which grows in whole regions). Each model's page in the zoo has the
+samples it produced and every number.
 
 ### Decoders, one request at a time
 
 A 512-token prompt, then 128 tokens greedily, batch 1. From 1.7 B
-parameters up, Linnet under XLA decodes as fast as vLLM or a little faster:
-170 against 158 tokens per second for Llama 3.1 8B, 178 against 166 for
-Mistral 7B, 161 against 153 for Qwen3 8B, 296 against 249 for Phi-3 mini.
-KerasHub on JAX lands between the two (159 for Llama). On the smallest
-models KerasHub is ahead of everyone (1399 tokens per second for GPT-2).
-vLLM has the shortest first token from 4 B up; below that Linnet's CUDA
-graphs do (1.8 ms for GPT-2, 4.0 ms for Qwen2.5 0.5B).
+parameters up, Linnet under XLA decodes faster than vLLM: 169 against 157
+tokens per second for Llama 3.1 8B, 178 against 165 for Mistral 7B, 162
+against 153 for Qwen3 8B, 298 against 249 for Phi-3 mini. Below that vLLM
+leads (814 against 611 for Qwen2.5 0.5B), and Linnet's CUDA graphs have the
+shortest first token on the small models (1.0 ms for GPT-2, 3.2 ms for
+TinyLlama, against vLLM's 7.7 and 7.6).
+
+A model Linnet exports runs on its target as fast as that target's own
+conversion: Llama 3.1 8B decodes at 157 tokens per second in vLLM from
+`linnet.hf` and at 171 in llama.cpp from `linnet.gguf`. The ONNX rows copy
+the logits to the host for every step's argmax, which holds them to 47 to 75
+tokens per second on the 7 and 8 B models.
 
 <ZooBench part="decoders" />
 
+gpt-oss 20B stores its experts in MXFP4. Linnet unpacks them once, when the
+model loads (`--prepare`), and each step then gathers the four experts a
+token routes to: 217 tokens per second from generated JAX source, 145 from
+StableHLO, and 79 as CUDA graphs, against vLLM's 303 (fused MXFP4 kernels)
+and transformers' 45. On ONNX Runtime it runs at 20.
+
+On two GPUs, four ways of splitting a model (decode tokens per second):
+
+| | Llama 3.1 8B | Qwen3 8B |
+| --- | --- | --- |
+| vLLM, tensor parallel | 247 | 229 |
+| Linnet XLA, tensor parallel | 95 | 69 |
+| Linnet PyTorch (DTensor), tensor parallel | 87 | 82 |
+| Linnet, layers split across the two | 72 | 68 |
+
+One request at a time, Linnet's tensor parallelism is bound by NCCL's
+latency: a step makes 72 all-reduces, where vLLM uses its own one-shot
+kernel.
+
 The offloaded rows run Llama 3.1 8B and Qwen3 8B on a GPU capped at 8 GiB:
 half the layers stay on the device and the rest stream in from host memory
-as they are needed (`device_map="auto", max_memory=...`). Llama peaks at
-8.9 GiB and decodes 4.4 tokens per second, bound by the host link, where
-otherwise it would not load at all. It answers a different question from the
-other rows -- what a small GPU can do -- so it is never marked best, and it
-and vLLM (which reserves 85% of the GPU for its cache pool before it runs)
-are left out of the memory view; both are in the table.
-
-gpt-oss 20B is where Linnet is furthest behind: 54 tokens per second under
-XLA and 7 as CUDA graphs, against vLLM's 303. Its experts are stored in
-MXFP4 and Linnet dequantizes them in the graph on every step (the chosen
-four when decoding one request, all of them for a batch); vLLM runs fused
-MXFP4 kernels.
+as they are needed. Llama peaks at 8.9 GiB and decodes 5.7 tokens per
+second, bound by the host link, where otherwise it would not load at all. It
+answers a different question from the other rows -- what a small GPU can do
+-- so it is never marked best. It and every row that starts vLLM (which
+reserves 85% of the GPU for its cache pool before it runs) are left out of
+the memory view; all of them are in the table.
 
 ### Serving: many requests at once
 
 256 requests of 128 to 512 prompt tokens, each wanting 128 new tokens, all
-waiting from the start, at most 64 in flight. This is where a server spends
-its GPU, and where vLLM's paged attention and scheduler are well ahead:
-5697 tokens per second for Llama 3.1 8B against 3227 for Linnet's own
-continuous batching (`linnet.serve`) under XLA and 2967 as CUDA graphs,
-and 20241 against 6183 for TinyLlama. Linnet is ahead of Triton Inference
-Server's vLLM backend on the smallest models (it adds HTTP and a Python
-backend in front of vLLM; 3769 for Llama), and three to four times ahead of
-transformers' own continuous batching (`generate_batch`, 840) and about eight of
-KerasHub, which has only static batches (391).
+waiting from the start, at most 64 in flight. vLLM's paged attention and
+scheduler lead from 0.5 B up: 5658 tokens per second for Llama 3.1 8B against
+4476 for Linnet's own continuous batching (`linnet.serve`) as CUDA graphs and
+3243 under XLA. On GPT-2 Linnet is ahead (33202 against 25858). A Linnet
+model served by vLLM through `linnet.hf` matches vLLM (5607), Triton over
+`linnet.serve` adds its HTTP front (4035), and Linnet is ahead of Triton's own
+vLLM backend (2998) on every model but gpt-oss, and of transformers'
+`generate_batch` and KerasHub's static batches on all of them.
 
 <ZooBench part="serving" />
 
 `linnet.serve` keeps each request in a fixed row of a cache compiled for the
 longest prompt plus completion, with no paging, and every decoding step runs
-all 64 rows; the time to first token is mostly time spent waiting for a
-free row, for every stack. Memory here is again a setting for vLLM and for
-transformers' paged pool, so the memory view shows the others.
+all 64 rows; the time to first token is mostly time spent waiting for a free
+row, for every stack. Its ONNX Runtime path is the slow one (376 tokens per
+second for Llama 3.1 8B): every step's logits cross to the host.
 
 ### Encoders, vision, audio, and diffusion
 
 One forward pass at batch 1 (latency) and at a large batch (throughput).
-XLA gives the largest gains on the text encoders, where one compiled program
-replaces a long chain of small kernels: 0.85 ms for BERT against 3.65 eager
-and 2.18 for ONNX Runtime, 0.75 for RoBERTa. The SD VAE decoder takes 7.2 ms
-against 22.4, SAM's image encoder 14.0 against 39.5. The convolutional
-models and SDXL's UNet are where `torch.compile` or ONNX Runtime win, and
-Whisper large's encoder is slower under XLA than eager. KerasHub is slower
-than eager on every encoder it loads. The ONNX rows run in f32, the
-checkpoints' own precision, against `bf16` for the rest; Triton adds HTTP to
-them.
+Linnet's CUDA graphs are the fastest way to run the text encoders at batch 1
+(0.74 ms for BERT against 3.60 eager and 1.67 under `torch.compile`), and
+TensorRT over Linnet's `f16` ONNX export is faster still (0.53 ms), as it is
+for every convolutional model (0.21 ms for ResNet-18). XLA leads where one
+program replaces many large kernels: SAM's image encoder takes 14 ms against
+39 eager, and the SD VAE decoder 7.4 against 22. SDXL's UNet step is where
+`torch.compile` and Linnet's CUDA graphs tie (35 ms). KerasHub is slower
+than eager on every encoder it loads, and Triton adds its HTTP front to the
+rows it serves.
 
 <ZooBench part="others" />
 
-Two ONNX rows failed and are shown as such: the SD VAE's export trips
-ONNX Runtime's CUDA `Concat`, and Whisper large is past the 2 GB a single
-ONNX file can hold without external data. Nothing in JAX loads Phi-3,
-ModernBERT, DINOv2, SigLIP, ResNet, Whisper, SAM, or the diffusion models,
-so those have no KerasHub row.
+Nothing in JAX loads Phi-3, ModernBERT, DINOv2, SigLIP, ResNet, Whisper, SAM,
+or the diffusion models, so those have no KerasHub row.
+
+### What did not run
+
+Nine rows of 468 failed, and are shown as such:
+
+- TensorRT cannot build an engine for gpt-oss's graph (its Myelin compiler
+  fails inside NVRTC), or for the 8 B decoders in `f32`.
+- gpt-oss in `f32` is 84 GB of weights, more than the GPU holds, and its
+  ONNX serving row runs out of memory in the batched expert contraction.
+- transformers' `generate_batch` returns no tokens for gpt-oss, and KerasHub's
+  batched gpt-oss fails in XLA's autotuner.
 
 ### Every row
 
