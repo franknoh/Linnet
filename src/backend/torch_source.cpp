@@ -1253,8 +1253,8 @@ private:
             std::vector<std::size_t> biases;
             for (const std::size_t i : members) {
                 weights.push_back(linears[i].weight);
-                if (linears[i].bias) {
-                    biases.push_back(*linears[i].bias);
+                if (const std::optional<std::size_t>& bias = linears[i].bias; bias.has_value()) {
+                    biases.push_back(bias.value());
                 }
             }
             const Linear& first = linears[members.front()];
@@ -1266,13 +1266,27 @@ private:
                 text += prefix + bias + " = _adjacent(" + join(biases) + ")\n";
             }
             const std::string product = "v" + std::to_string(++highest);
-            text += prefix + product + " = F.linear(" + first.input + ", " + weight + ", " + bias +
-                    ")\n";
+            text += prefix;
+            text += product;
+            text += " = F.linear(";
+            text += first.input;
+            text += ", ";
+            text += weight;
+            text += ", ";
+            text += bias;
+            text += ")\n";
             std::int64_t offset = 0;
             for (const std::size_t i : members) {
                 const std::int64_t rows = parameter_types_[linears[i].weight].first[0];
-                text += prefix + linears[i].out + " = " + product + "[..., " +
-                        std::to_string(offset) + ":" + std::to_string(offset + rows) + "]\n";
+                text += prefix;
+                text += linears[i].out;
+                text += " = ";
+                text += product;
+                text += "[..., ";
+                text += std::to_string(offset);
+                text += ":";
+                text += std::to_string(offset + rows);
+                text += "]\n";
                 offset += rows;
                 removed.insert(linears[i].line);
             }
