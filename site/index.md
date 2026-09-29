@@ -240,7 +240,7 @@ slice that no longer fits.
 | Standard library | linear, attention, norms, RoPE, KV caches, convolution, pooling, quantized linears, a counter-based PRNG — all written in Linnet |
 | Compiler | C++23, no external dependencies; Core IR, an optimizer, and a JSON [plan](/docs/plan-format) for materializers |
 | Tooling | `linnet fmt`, a language server for VS Code and Neovim, architecture diagrams, `linnet explain` for kernel choices |
-| Specification | a normative [spec](/spec/) and grammar, with executable spec tests |
+| Specification | a normative [spec](/spec/00-overview) and grammar, with executable spec tests |
 
 Not in the language: Python inside the model, data-dependent shapes, hidden
 mutation, tensor data in source. Tokenizers, data loading, optimizers, and
