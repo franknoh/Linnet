@@ -102,17 +102,33 @@ vllm serve serve/tinyllama
 
 The LLM serving stacks implement a fixed set of architectures and load
 them from Transformers checkpoint directories. `linnet.hf.export` writes
-that directory for a Linnet model whose structure is one of them: it
-recognizes the family from the parameter paths and generics of the typed
-program (`llama`: grouped-query attention, RMS norms, SwiGLU; `gpt2`), derives
-`config.json` from the generics and the module constants (`THETA` becomes
-`rope_theta`, `EPS` `rms_norm_eps`, and `FACTOR`, `LOW_FREQ_FACTOR`,
-`HIGH_FREQ_FACTOR`, and `ORIGINAL_MAX_POSITION_EMBEDDINGS`, when all four are
-defined, Llama 3.1's `llama3` `rope_scaling`), checks each tensor's shape and
-dtype against the program, streams the checkpoint into `model.safetensors`
-under the Transformers tensor names, and copies the tokenizer files from the
-card's Hub repository. The result is an ordinary checkpoint of that family,
-in the layout vLLM, SGLang, TGI, and `transformers` read.
+that directory for a Linnet model whose structure is one of them. It
+recognizes the family from the typed program's parameter paths and generics
+and from which optional tensors (biases) the checkpoint has:
+
+| Family | Structure |
+| --- | --- |
+| `llama` | grouped-query attention, RMS norms, SwiGLU; biases on all four attention projections or none, on all three MLP projections or none |
+| `qwen2` | Llama's layout with biases on the query, key, and value projections only |
+| `qwen3` | an RMS norm over each query and key head, and a head width of its own (`HeadDim`) |
+| `phi3` | one projection for query, key, and value, one for gate and up; as many key/value heads as query heads |
+| `gpt2` | learned positions, biased LayerNorm, GELU MLP |
+
+`config.json` comes from the generics, the module constants (`THETA`
+becomes `rope_theta`, and `FACTOR`, `LOW_FREQ_FACTOR`, `HIGH_FREQ_FACTOR`, and
+`ORIGINAL_MAX_POSITION_EMBEDDINGS`, when all four are defined, Llama 3.1's
+`llama3` `rope_scaling`), and the epsilon the program's norms actually pass
+(a literal at each call, or passed down to it; they must all agree). An
+output head bound to the embedding's own tensor is written once, with
+`tie_word_embeddings`. The export checks each tensor's shape and dtype
+against the program, streams the checkpoint into `model.safetensors` under
+the Transformers tensor names, and copies the tokenizer files from the
+card's Hub repository, whose `generation_config.json` supplies the
+`bos_token_id` and `eos_token_id`. The result is an ordinary checkpoint of
+that family, in the layout vLLM, SGLang, TGI, and `transformers` read.
+Every layer attends over the whole sequence, as the programs do: Phi-3's
+own config slides a 2047-position window, the Nest card does not, and its
+export says `sliding_window: null`.
 
 The same command takes a `.linnet` file with `--weights`, `--bind`, and
 `--tokenizer <repo>`, so a model trained or modified in Linnet ships the
@@ -122,8 +138,14 @@ out-of-tree vLLM model class for arbitrary Linnet programs is not part of
 this release.
 
 `transformers` agrees with the Linnet interpreter on the exported model to
-1e-4 (the tests export tiny GPT-2, Llama, and Llama 3.1 configurations, the
-last with its `rope_scaling`, and compare logits). The export of
+1e-4 (the tests export tiny GPT-2, Llama, Llama 3.1, Qwen2, Qwen3, and
+Phi-3 configurations and compare logits). The Nest cards of Qwen2.5 0.5B,
+Qwen3 4B and 8B, and Phi-3 mini export to checkpoints whose tensors are the
+Hub checkpoints' own: `transformers` gives bitwise-identical logits for
+Qwen3 8B, vLLM 0.30 decodes the same greedy tokens as from the Hub
+checkpoints (Qwen3 8B in eager mode; its compiled kernels, built per
+checkpoint, round differently at two near-ties), and llama.cpp's converter
+writes the same GGUF tensors from either. The export of
 `tinyllama-1.1b-chat` from Nest was served by vLLM 0.30 on an H100 as it is:
 `/v1/completions` and `/v1/chat/completions` answer with the model's chat
 template applied. The benchmarks run the Llama-family exports and GPT-2's
@@ -146,9 +168,9 @@ Transformers checkpoint as above, runs that converter on it (`--converter`,
 or `LLAMA_CPP` pointing at a llama.cpp checkout), and writes an Ollama
 `Modelfile` next to the GGUF file, with the chat template translated when
 the tokenizer's template is one Ollama has an equivalent for (ChatML,
-Zephyr, Llama 2). The family restriction is the same as for vLLM: `llama`
-and `gpt2`. A model outside them cannot run in llama.cpp anyway, and Linnet
-does not pretend otherwise.
+Zephyr, Llama 2). The family restriction is the same as for vLLM: `llama`,
+`qwen2`, `qwen3`, `phi3`, and `gpt2`. A model outside them cannot run in
+llama.cpp anyway, and Linnet does not pretend otherwise.
 
 ## ComfyUI
 

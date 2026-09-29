@@ -4,8 +4,9 @@ llama.cpp runs a fixed set of architectures from GGUF files, and its own
 `convert_hf_to_gguf.py` knows how to write them (tensor layout, tokenizer
 metadata, quantization). `export` therefore goes through the Transformers
 checkpoint `linnet.hf` writes and hands it to that converter, then writes a
-Modelfile so `ollama create` picks the result up. Only the `llama` and
-`gpt2` families qualify, as with `linnet.hf`; nothing else is attempted.
+Modelfile so `ollama create` picks the result up. Only the families
+`linnet.hf` recognizes qualify (Llama, Qwen2, Qwen3, Phi-3, GPT-2);
+nothing else is attempted.
 
     python -m linnet.gguf export tinyllama-1.1b-chat -o serve/tinyllama \\
         --converter ~/llama.cpp/convert_hf_to_gguf.py --outtype q8_0
