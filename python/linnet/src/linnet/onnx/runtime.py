@@ -160,7 +160,7 @@ class OnnxModel:
                 binding.bind_output(port, "cpu")
         for port, path in session.next_states.items():
             if port in session.in_place:
-                binding.bind_ortvalue_output(port, self.state[path])
+                binding.bind_ortvalue_output(port, self._state_buffer(session, port, path))
             else:
                 binding.bind_output(port, self._device, 0)
         session.session.run_with_iobinding(binding)
@@ -181,6 +181,15 @@ class OnnxModel:
 
     def reset_state(self) -> None:
         self.state = {}
+
+    def _state_buffer(self, session: _Session, port: str, path: str) -> Any:
+        """The buffer state `path` lives in, made (zeros) for one an entry
+        writes before any entry has read it."""
+        if path not in self.state:
+            shape, element = session.next_specs[port]
+            zeros = np.zeros(shape, dtype=_NUMPY[element])
+            self.state[path] = _to_device(self._ort, zeros, element, self._device)
+        return self.state[path]
 
     def _replay(self, session: _Session, arrays: list[Any]) -> Any:
         """One call of a session captured as a CUDA graph: the first binds
@@ -228,7 +237,8 @@ class OnnxModel:
             outputs.append(value)
         # Every next state is its state's own buffer (see `_session`).
         for port, path in session.next_states.items():
-            binding.bind_ortvalue_output(port, self.state[path])
+            binding.bind_ortvalue_output(port, self._state_buffer(session, port, path))
+            states[path] = self.state[path]
         return _Fixed(binding, inputs, outputs, states)
 
     def place(self, array: Any, dtype: str) -> Any:
@@ -277,6 +287,13 @@ class OnnxModel:
         cuda_graph = cuda_graph and names[:1] == ["CUDAExecutionProvider"]
         settings = self._ort.SessionOptions()
         settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if self._device == "cuda":
+            # The GPU does the work; ONNX Runtime's default is a spinning
+            # thread per visible core, which in a container allowed fewer
+            # cores than it sees spends the quota and stalls the process for
+            # the rest of each scheduling period (tens of milliseconds).
+            settings.intra_op_num_threads = 1
+            settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
         if self._device == "cuda" and not cuda_graph:
             # Every session allocates from one arena: each of its own grows
             # to the largest call it has seen and keeps it, which for a
@@ -299,6 +316,13 @@ class OnnxModel:
         if not stateless:
             prepared = self._prepare(exported, parameters)
             used = _consumed(exported.model.graph)
+            # An entry that reads only some weights (an encoder's, of a
+            # model with a decoder too) leaves the rest as inputs nothing
+            # reads: they go, rather than being taken for the entry's own.
+            graph = exported.model.graph
+            kept = [i for i in graph.input if i.name not in parameters or i.name in used]
+            del graph.input[:]
+            graph.input.extend(kept)
             parameters = {port: path for port, path in parameters.items() if port in used}
         graph_inputs = {i.name: i.type.tensor_type for i in exported.model.graph.input}
         states = {}
@@ -324,6 +348,13 @@ class OnnxModel:
         ]
         in_place = _written_in_place(exported.model.graph, states, next_states)
         graph_outputs = {o.name: o.type.tensor_type for o in exported.model.graph.output}
+        next_specs = {
+            port: (
+                tuple(d.dim_value for d in graph_outputs[port].shape.dim),
+                graph_outputs[port].elem_type,
+            )
+            for port in next_states
+        }
         result_elements = [graph_outputs[port].elem_type for port in results]
         graphed = cuda_graph and set(next_states) <= in_place and 16 not in result_elements
         providers = self.providers
@@ -352,6 +383,7 @@ class OnnxModel:
             prepared,
             in_place,
             graphed,
+            next_specs,
         )
 
     def _prepare(self, exported: Any, parameters: Mapping[str, str]) -> dict[str, str]:
@@ -523,6 +555,7 @@ class _Session:
         prepared: dict[str, str],
         in_place: frozenset[str] = frozenset(),
         graphed: bool = False,
+        next_specs: dict[str, tuple[tuple[int, ...], int]] | None = None,
     ) -> None:
         self.session = session
         self.inputs = inputs
@@ -536,6 +569,7 @@ class _Session:
         self.prepared = prepared  # graph input -> prepared value key
         self.in_place = in_place  # next-state outputs written into the state's own buffer
         self.graphed = graphed  # replayed as a CUDA graph
+        self.next_specs = next_specs or {}  # next-state output -> (shape, element type)
         self.fixed: _Fixed | None = None  # its binding, once the first call made it
 
 
@@ -709,9 +743,11 @@ def _written_in_place(
 ) -> frozenset[str]:
     """The next-state outputs that can share their state's buffer: written
     by one scatter (`ScatterND`, `ScatterElements`) from the state, which
-    nothing else reads. Bound to that buffer, the scatter updates the cache
-    where it lies instead of copying the rest of it first, and the state
-    keeps its address."""
+    nothing else reads, or written by an entry that does not read the state
+    at all (an encoder filling a decoder's cross-attention caches). Bound to
+    that buffer, the scatter updates the cache where it lies instead of
+    copying the rest of it first, and the state keeps its address, which a
+    CUDA graph over another entry reading it relies on."""
     ports = {path: port for port, (path, _, _) in states.items()}
     reads: dict[str, int] = {}
 
@@ -731,10 +767,11 @@ def _written_in_place(
     for port, path in next_states.items():
         node = producers.get(port)
         source = ports.get(path)
-        if (
+        if source is None or reads.get(source, 0) == 0:
+            shared.add(port)  # written, never read: the old value is dead
+        elif (
             node is not None
             and node.op_type in ("ScatterND", "ScatterElements")
-            and source is not None
             and node.input[0] == source
             and reads.get(source) == 1
         ):
