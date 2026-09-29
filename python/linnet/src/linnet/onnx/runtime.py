@@ -55,7 +55,13 @@ class OnnxModel:
     `run_entry(name, inputs)` runs one entry on NumPy inputs, or on
     `OrtValue`s already on the device, and returns its results as NumPy
     arrays (one result bare, several as a tuple); with `keep_on_device=True`,
-    as `OrtValue`s left on the device. `state`
+    as `OrtValue`s left on the device. `argmax=True` replaces the first
+    result (logits) by its argmax over the last axis, computed in the graph:
+    a greedy decoder moves token ids, not scores. `cuda_graph=True` replays
+    the entry as a CUDA graph, its inputs, weights, state, and results at
+    addresses that stay put and the new inputs copied into place first, when
+    it can be (CUDA, every state it writes updated in place, no bf16
+    result); otherwise it runs as usual. `state`
     holds the block's state members by path, on the device; `reset_state()`
     clears it.
     """
@@ -95,15 +101,28 @@ class OnnxModel:
 
     # ---- entries
 
-    def run_entry(self, name: str, inputs: Sequence[Any], keep_on_device: bool = False) -> Any:
+    def run_entry(
+        self,
+        name: str,
+        inputs: Sequence[Any],
+        keep_on_device: bool = False,
+        argmax: bool = False,
+        cuda_graph: bool = False,
+    ) -> Any:
         if name not in self._signatures:
             raise LinnetError(f"the block has no entry `{name}`")
         arrays = [v if isinstance(v, self._ort.OrtValue) else np.asarray(v) for v in inputs]
         bindings = self._bindings(name, arrays)
-        key = (name, tuple(sorted(bindings.items())))
-        if key not in self._sessions:
-            self._sessions[key] = self._session(name, bindings)
-        session = self._sessions[key]
+        graphed = cuda_graph and not keep_on_device
+        key = (name, tuple(sorted(bindings.items())), argmax, graphed)
+        session = self._sessions.get(key)
+        if session is not None and session.fixed is not None and not session.fixed.current(self):
+            # A state was replaced since the graph was captured: capture anew.
+            session = None
+        if session is None:
+            session = self._sessions[key] = self._session(name, bindings, argmax, graphed)
+        if session.graphed:
+            return self._replay(session, arrays)
         binding = session.session.io_binding()
         for port, array in zip(session.inputs, arrays, strict=True):
             element = session.elements[port]
@@ -139,8 +158,11 @@ class OnnxModel:
                 binding.bind_ortvalue_output(port, target)
             else:
                 binding.bind_output(port, "cpu")
-        for port in session.next_states:
-            binding.bind_output(port, self._device, 0)
+        for port, path in session.next_states.items():
+            if port in session.in_place:
+                binding.bind_ortvalue_output(port, self.state[path])
+            else:
+                binding.bind_output(port, self._device, 0)
         session.session.run_with_iobinding(binding)
         outputs = binding.get_outputs()
         # bf16 results arrive as their bits; they are returned as f32.
@@ -152,12 +174,62 @@ class OnnxModel:
             else outputs[i].numpy()
             for i in range(len(session.results))
         ]
-        for i, path in enumerate(session.next_states.values()):
-            self.state[path] = outputs[len(session.results) + i]
+        for i, (port, path) in enumerate(session.next_states.items()):
+            if port not in session.in_place:
+                self.state[path] = outputs[len(session.results) + i]
         return results[0] if len(results) == 1 else tuple(results)
 
     def reset_state(self) -> None:
         self.state = {}
+
+    def _replay(self, session: _Session, arrays: list[Any]) -> Any:
+        """One call of a session captured as a CUDA graph: the first binds
+        every value where it stays; later ones copy the inputs into place."""
+        if session.fixed is None:
+            session.fixed = self._fix(session, arrays)
+        else:
+            for value, port, array in zip(
+                session.fixed.inputs, session.inputs, arrays, strict=True
+            ):
+                host = array.numpy() if isinstance(array, self._ort.OrtValue) else array
+                value.update_inplace(np.ascontiguousarray(_encode(host, session.elements[port])))
+        session.session.run_with_iobinding(session.fixed.binding)
+        results = [value.numpy() for value in session.fixed.outputs]
+        return results[0] if len(results) == 1 else tuple(results)
+
+    def _fix(self, session: _Session, arrays: list[Any]) -> _Fixed:
+        binding = session.session.io_binding()
+        inputs: list[Any] = []
+        for port, array in zip(session.inputs, arrays, strict=True):
+            element = session.elements[port]
+            host = array.numpy() if isinstance(array, self._ort.OrtValue) else array
+            value = _to_device(self._ort, _encode(host, element), element, self._device)
+            binding.bind_ortvalue_input(port, value)
+            inputs.append(value)
+        for port, path in session.parameters.items():
+            binding.bind_ortvalue_input(port, self._weights[path])
+        for port, key in session.prepared.items():
+            binding.bind_ortvalue_input(port, self._prepared[key])
+        states: dict[str, Any] = {}
+        for port, (path, shape, element) in session.states.items():
+            if path not in self.state:
+                zeros = np.zeros(shape, dtype=_NUMPY[element])
+                self.state[path] = _to_device(self._ort, zeros, element, self._device)
+            binding.bind_ortvalue_input(port, self.state[path])
+            states[path] = self.state[path]
+        outputs: list[Any] = []
+        for port, shape, element in zip(
+            session.results, session.result_shapes, session.result_elements, strict=True
+        ):
+            value = _to_device(
+                self._ort, np.zeros(shape, dtype=_NUMPY[element]), element, self._device
+            )
+            binding.bind_ortvalue_output(port, value)
+            outputs.append(value)
+        # Every next state is its state's own buffer (see `_session`).
+        for port, path in session.next_states.items():
+            binding.bind_ortvalue_output(port, self.state[path])
+        return _Fixed(binding, inputs, outputs, states)
 
     def place(self, array: Any, dtype: str) -> Any:
         """`array` as an `OrtValue` on the model's device in `dtype` (`f32`,
@@ -168,8 +240,17 @@ class OnnxModel:
 
     # ---- compilation
 
-    def _session(self, name: str, bindings: Mapping[str, int | str]) -> _Session:
+    def _session(
+        self,
+        name: str,
+        bindings: Mapping[str, int | str],
+        argmax: bool = False,
+        cuda_graph: bool = False,
+    ) -> _Session:
         options = self._options
+        # Weights an earlier session loaded are not read again: on the
+        # device for an entry with state, as host bytes for one without.
+        held = self._weights if self._signatures[name].get("states") else self._host
         exported = export_model(
             self._source,
             generics={**options["generics"], **bindings},
@@ -181,6 +262,7 @@ class OnnxModel:
             bindings=options["bindings"],
             cast_dtype=options["cast_dtype"],
             embed=False,
+            held=set(held),
         )
         metadata = {p.key: p.value for p in exported.model.metadata_props}
         parameters = {
@@ -191,12 +273,16 @@ class OnnxModel:
         stateless = not any(
             key.startswith(("linnet.state.", "linnet.next_state.")) for key in metadata
         )
+        names = [p if isinstance(p, str) else p[0] for p in self.providers]
+        cuda_graph = cuda_graph and names[:1] == ["CUDAExecutionProvider"]
         settings = self._ort.SessionOptions()
         settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        if self._device == "cuda":
+        if self._device == "cuda" and not cuda_graph:
             # Every session allocates from one arena: each of its own grows
             # to the largest call it has seen and keeps it, which for a
-            # server's dozen shapes is gigabytes held apart.
+            # server's dozen shapes is gigabytes held apart. A CUDA graph's
+            # session keeps its own, so the memory its captured kernels use
+            # is never handed to another session between replays.
             _share_cuda_arena(self._ort)
             settings.add_session_config_entry("session.use_env_allocators", "1")
         if stateless:
@@ -229,17 +315,27 @@ class OnnxModel:
         }
         outputs = [o.name for o in exported.model.graph.output]
         results = [o for o in outputs if o not in next_states]
+        if argmax:
+            results[0] = _argmax_output(exported.model, results[0])
         inputs = [
             i.name
             for i in exported.model.graph.input
             if i.name not in parameters and i.name not in states and i.name not in prepared
         ]
-        session = self._ort.InferenceSession(
-            exported.model.SerializeToString(), settings, providers=self.providers
-        )
-        elements = {port: graph_inputs[port].elem_type for port in inputs}
+        in_place = _written_in_place(exported.model.graph, states, next_states)
         graph_outputs = {o.name: o.type.tensor_type for o in exported.model.graph.output}
         result_elements = [graph_outputs[port].elem_type for port in results]
+        graphed = cuda_graph and set(next_states) <= in_place and 16 not in result_elements
+        providers = self.providers
+        if graphed:
+            first = self.providers[0]
+            options_cuda = {} if isinstance(first, str) else dict(first[1])
+            options_cuda["enable_cuda_graph"] = "1"
+            providers = [("CUDAExecutionProvider", options_cuda), *self.providers[1:]]
+        session = self._ort.InferenceSession(
+            exported.model.SerializeToString(), settings, providers=providers
+        )
+        elements = {port: graph_inputs[port].elem_type for port in inputs}
         result_shapes = [
             tuple(d.dim_value for d in graph_outputs[port].shape.dim) for port in results
         ]
@@ -254,6 +350,8 @@ class OnnxModel:
             result_shapes,
             next_states,
             prepared,
+            in_place,
+            graphed,
         )
 
     def _prepare(self, exported: Any, parameters: Mapping[str, str]) -> dict[str, str]:
@@ -352,6 +450,7 @@ class OnnxModel:
 
         graph = exported.model.graph
         used = _consumed(graph)
+        elements = {i.name: i.type.tensor_type.elem_type for i in graph.input}
         kept = [i for i in graph.input if i.name not in parameters]
         del graph.input[:]
         graph.input.extend(kept)
@@ -360,23 +459,24 @@ class OnnxModel:
         for port, path in parameters.items():
             if port not in used:
                 continue
-            tensor = exported.weights[port]
             if path not in self._host:
+                tensor = exported.weights[port]
                 array = np.frombuffer(tensor.raw_data, dtype=_NUMPY[tensor.data_type]).reshape(
                     tuple(tensor.dims)
                 )
                 self._host[path] = (array, _to_device(self._ort, array, tensor.data_type, "cpu"))
+            array = self._host[path][0]
             # An initializer whose data is external: the session takes it
             # from `values`, not from a file.
             placeholder = onnx.TensorProto()
             placeholder.name = port
-            placeholder.data_type = tensor.data_type
-            placeholder.dims.extend(tensor.dims)
+            placeholder.data_type = elements[port]
+            placeholder.dims.extend(array.shape)
             placeholder.data_location = onnx.TensorProto.EXTERNAL
             for key, value in (
                 ("location", "linnet-weights"),
                 ("offset", "0"),
-                ("length", str(len(tensor.raw_data))),
+                ("length", str(array.nbytes)),
             ):
                 entry = placeholder.external_data.add()
                 entry.key, entry.value = key, value
@@ -421,6 +521,8 @@ class _Session:
         result_shapes: list[tuple[int, ...]],
         next_states: dict[str, str],
         prepared: dict[str, str],
+        in_place: frozenset[str] = frozenset(),
+        graphed: bool = False,
     ) -> None:
         self.session = session
         self.inputs = inputs
@@ -432,6 +534,25 @@ class _Session:
         self.results = results  # graph outputs, in order
         self.next_states = next_states  # graph output -> state path
         self.prepared = prepared  # graph input -> prepared value key
+        self.in_place = in_place  # next-state outputs written into the state's own buffer
+        self.graphed = graphed  # replayed as a CUDA graph
+        self.fixed: _Fixed | None = None  # its binding, once the first call made it
+
+
+class _Fixed:
+    """What a CUDA graph session binds, at addresses its replays reuse."""
+
+    def __init__(
+        self, binding: Any, inputs: list[Any], outputs: list[Any], states: dict[str, Any]
+    ) -> None:
+        self.binding = binding
+        self.inputs = inputs  # device copies of the data inputs, in order
+        self.outputs = outputs  # device results, in order
+        self.states = states  # state path -> the buffer bound
+
+    def current(self, model: OnnxModel) -> bool:
+        """Whether every state bound is still the model's."""
+        return all(model.state.get(path) is value for path, value in self.states.items())
 
 
 # Operators that only move or relabel what they read: a weight passed
@@ -554,6 +675,71 @@ def _share_cuda_arena(ort: Any) -> None:
     arena = ort.OrtArenaCfg({"arena_extend_strategy": 1})
     ort.create_and_register_allocator_v2("CUDAExecutionProvider", memory, {}, arena)
     _SHARED_ARENA.append(True)
+
+
+def _argmax_output(model: Any, result: str) -> str:
+    """Replaces graph output `result` (logits, `[..., vocab]`) by its argmax
+    over the last axis, as int64: a greedy decoder then moves token ids off
+    the device rather than every row's scores."""
+    import onnx
+
+    graph = model.graph
+    index = next(i for i, o in enumerate(graph.output) if o.name == result)
+    info = graph.output[index].type.tensor_type
+    source = result
+    if info.elem_type not in (onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT16):
+        # No bf16 ArgMax kernel: compare in f32, which is exact.
+        source = result + "_f32"
+        graph.node.append(
+            onnx.helper.make_node("Cast", [result], [source], to=onnx.TensorProto.FLOAT)
+        )
+    tokens = result + "_argmax"
+    graph.node.append(onnx.helper.make_node("ArgMax", [source], [tokens], axis=-1, keepdims=0))
+    shape = [d.dim_value for d in info.shape.dim][:-1]
+    replacement = onnx.helper.make_tensor_value_info(tokens, onnx.TensorProto.INT64, shape)
+    del graph.output[index]
+    graph.output.insert(index, replacement)
+    return tokens
+
+
+def _written_in_place(
+    graph: Any,
+    states: Mapping[str, tuple[str, tuple[int, ...], int]],
+    next_states: Mapping[str, str],
+) -> frozenset[str]:
+    """The next-state outputs that can share their state's buffer: written
+    by one scatter (`ScatterND`, `ScatterElements`) from the state, which
+    nothing else reads. Bound to that buffer, the scatter updates the cache
+    where it lies instead of copying the rest of it first, and the state
+    keeps its address."""
+    ports = {path: port for port, (path, _, _) in states.items()}
+    reads: dict[str, int] = {}
+
+    def count(g: Any) -> None:
+        for node in g.node:
+            for name in node.input:
+                reads[name] = reads.get(name, 0) + 1
+            for attribute in node.attribute:
+                if attribute.g.node:
+                    count(attribute.g)
+                for subgraph in attribute.graphs:
+                    count(subgraph)
+
+    count(graph)
+    producers = {output: node for node in graph.node for output in node.output}
+    shared: set[str] = set()
+    for port, path in next_states.items():
+        node = producers.get(port)
+        source = ports.get(path)
+        if (
+            node is not None
+            and node.op_type in ("ScatterND", "ScatterElements")
+            and source is not None
+            and node.input[0] == source
+            and reads.get(source) == 1
+        ):
+            shared.add(port)
+    return frozenset(shared)
 
 
 def _consumed(graph: Any) -> set[str]:
