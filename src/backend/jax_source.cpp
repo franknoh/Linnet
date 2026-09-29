@@ -325,6 +325,10 @@ public:
             at[0] != nullptr && at[1] != nullptr) {
             return define("jnp.take(" + name(1) + ", " + name(0) + ", axis=0)");
         }
+        if (implementation_base == "torch.index_select" && at.size() == 2 && at[0] != nullptr &&
+            at[1] != nullptr) {
+            return define("jnp.take(" + name(0) + ", " + name(1) + ", axis=-1)");
+        }
         if (implementation_base == "torch.tril" && at.empty() && shape.size() == 2) {
             std::string mask = define("jnp.tril(jnp.ones((" + std::to_string(shape[0]) + ", " +
                                       std::to_string(shape[1]) + "), dtype=bool), " +

@@ -14,6 +14,8 @@ std::vector<NativeCandidate> torch_candidates() {
     // computed, so these two are Exact and selected under every policy.
     return {
         {"std.nn.embedding::embedding", "torch.nn.functional.embedding", Legality::Exact, {}},
+        // Inputs taken in an order (GPTQ's activation order): a gather.
+        {"std.quant::take_inputs", "torch.index_select", Legality::Exact, {}},
         {"std.nn.attention::causal_mask", "torch.tril", Legality::Exact, {}},
         {"std.nn.conv::conv2d", "torch.nn.functional.conv2d", equivalent, {"a square kernel"}},
         // A maximum is one of its inputs, however it is found.
