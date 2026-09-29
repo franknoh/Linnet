@@ -287,6 +287,13 @@ class OnnxModel:
         cuda_graph = cuda_graph and names[:1] == ["CUDAExecutionProvider"]
         settings = self._ort.SessionOptions()
         settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if self._device == "cuda":
+            # The GPU does the work; ONNX Runtime's default is a spinning
+            # thread per visible core, which in a container allowed fewer
+            # cores than it sees spends the quota and stalls the process for
+            # the rest of each scheduling period (tens of milliseconds).
+            settings.intra_op_num_threads = 1
+            settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
         if self._device == "cuda" and not cuda_graph:
             # Every session allocates from one arena: each of its own grows
             # to the largest call it has seen and keeps it, which for a
