@@ -412,41 +412,108 @@ public:
         if (implementation_base == "torch.relu" && operands.size() == 1 && at[0] != nullptr) {
             return node("Relu", {*at[0]}, "", shape, dtype);
         }
-        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
+        if ((implementation_base == "torch.nn.functional.scaled_dot_product_attention" ||
+             implementation_base ==
+                 "torch.nn.functional.scaled_dot_product_attention(enable_gqa)") &&
             operands.size() == 5) {
-            const TensorInfo* query = at[0];
-            const TensorInfo* key = at[1];
-            const TensorInfo* value = at[2];
-            const TensorInfo* scale = at[3];
-            const TensorInfo* mask = at[4];
-            // A mask per sequence ([B, Q, K]) would line its batch axis up
-            // with the heads; the canonical body spells that one out.
-            if (query == nullptr || key == nullptr || value == nullptr || scale == nullptr ||
-                (mask != nullptr && mask->shape.size() != 2)) {
-                return std::nullopt;
-            }
-            // q·kᵀ in f32, scaled, masked, Softmax, ·v: the canonical arithmetic.
-            const TensorInfo q = f32(*query);
-            const TensorInfo k = f32(*key);
-            const TensorInfo v = f32(*value);
-            const Dims kt_shape{k.shape[0], k.shape[1], k.shape[3], k.shape[2]};
-            const TensorInfo kt{transpose(k, {0, 1, 3, 2}, kt_shape), kt_shape, acc};
-            const Dims scores_shape{q.shape[0], q.shape[1], q.shape[2], k.shape[2]};
-            TensorInfo scores{node("MatMul", {q, kt}, "", scores_shape, acc), scores_shape, acc};
-            scores = {node("Mul", {scores, f32(*scale)}, "", scores_shape, acc), scores_shape, acc};
-            if (mask != nullptr) {
-                Literal lowest;
-                lowest.kind = Literal::Kind::Real;
-                lowest.real = -1e30;
-                const TensorInfo fill{constant(lowest, acc), {}, acc};
-                scores = {
-                    node("Where", {*mask, scores, fill}, "", scores_shape, acc), scores_shape, acc};
-            }
-            const TensorInfo weights{
-                node("Softmax", {scores}, "axis = -1", scores_shape, acc), scores_shape, acc};
-            return back(node("MatMul", {weights, v}, "", shape, acc), shape);
+            return attention(at, fast, shape, dtype);
         }
         return std::nullopt;
+    }
+
+    // q·kᵀ, scaled, masked, Softmax, ·v. Grouped query heads are folded
+    // under their key/value head (`[B, Hk, G * Q, D]`, row `g * Q + q`), so
+    // each key and value is read once, not broadcast to every query head.
+    // The mask is shared (`[Q, K]`) or per sequence (`[B, Q, K]`). The
+    // products run in f32, or in the input dtype for `(input dtype)` (f32
+    // for bf16, which ONNX Runtime's `MatMul` lacks); scores and `Softmax`
+    // are f32 either way.
+    std::optional<std::string> attention(const std::vector<const TensorInfo*>& at,
+                                         bool fast,
+                                         const Dims& shape,
+                                         ScalarKind dtype) {
+        const TensorInfo* query = at[0];
+        const TensorInfo* key = at[1];
+        const TensorInfo* value = at[2];
+        const TensorInfo* scale = at[3];
+        const TensorInfo* mask = at[4];
+        if (query == nullptr || key == nullptr || value == nullptr || scale == nullptr ||
+            query->shape.size() != 4 || key->shape.size() != 4 || value->shape.size() != 4 ||
+            shape.size() != 4) {
+            return std::nullopt;
+        }
+        const std::int64_t batch = query->shape[0];
+        const std::int64_t heads = query->shape[1];
+        const std::int64_t queries = query->shape[2];
+        const std::int64_t width = query->shape[3];
+        const std::int64_t kv_heads = key->shape[1];
+        const std::int64_t keys = key->shape[2];
+        const std::int64_t value_width = value->shape[3];
+        if (kv_heads <= 0 || heads % kv_heads != 0 || key->shape[0] != batch ||
+            value->shape[1] != kv_heads || value->shape[2] != keys) {
+            return std::nullopt;
+        }
+        if (mask != nullptr &&
+            !(mask->shape == Dims{queries, keys} || mask->shape == Dims{batch, queries, keys})) {
+            return std::nullopt;
+        }
+        const std::int64_t group = heads / kv_heads;
+        const std::int64_t rows = group * queries;
+        const ScalarKind product =
+            fast ? (dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype) : ScalarKind::F32;
+        const auto as = [&](const TensorInfo& t, ScalarKind kind) -> TensorInfo {
+            return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
+        };
+        TensorInfo q = as(*query, product);
+        if (group > 1) {
+            const Dims folded{batch, kv_heads, rows, width};
+            q = {reshape(q, folded), folded, product};
+        }
+        const TensorInfo k = as(*key, product);
+        const Dims kt_shape{batch, kv_heads, width, keys};
+        const TensorInfo kt{transpose(k, {0, 1, 3, 2}, kt_shape), kt_shape, product};
+        const Dims scores_shape{batch, kv_heads, rows, keys};
+        TensorInfo scores =
+            as({node("MatMul", {q, kt}, "", scores_shape, product), scores_shape, product},
+               ScalarKind::F32);
+        scores = {
+            node("Mul", {scores, as(*scale, ScalarKind::F32)}, "", scores_shape, ScalarKind::F32),
+            scores_shape,
+            ScalarKind::F32};
+        if (mask != nullptr) {
+            // `[B or 1, 1, Q, K]` against the heads; repeated over the group
+            // when a group holds several query rows.
+            const std::int64_t mask_batch = mask->shape.size() == 3 ? batch : 1;
+            const Dims lifted{mask_batch, 1, queries, keys};
+            TensorInfo m{reshape(*mask, lifted), lifted, mask->dtype};
+            if (group > 1 && queries > 1) {
+                const Dims repeated{mask_batch, group, queries, keys};
+                m = {node("Expand", {m, int64_vector(repeated)}, "", repeated, mask->dtype),
+                     repeated,
+                     mask->dtype};
+                const Dims flat{mask_batch, 1, rows, keys};
+                m = {reshape(m, flat), flat, mask->dtype};
+            }
+            Literal lowest;
+            lowest.kind = Literal::Kind::Real;
+            lowest.real = -1e30;
+            const TensorInfo fill{constant(lowest, ScalarKind::F32), {}, ScalarKind::F32};
+            scores = {node("Where", {m, scores, fill}, "", scores_shape, ScalarKind::F32),
+                      scores_shape,
+                      ScalarKind::F32};
+        }
+        const TensorInfo weights =
+            as({node("Softmax", {scores}, "axis = -1", scores_shape, ScalarKind::F32),
+                scores_shape,
+                ScalarKind::F32},
+               product);
+        const Dims mixed_shape{batch, kv_heads, rows, value_width};
+        std::string mixed =
+            node("MatMul", {weights, as(*value, product)}, "", mixed_shape, product);
+        if (group > 1) {
+            mixed = reshape({mixed, mixed_shape, product}, shape);
+        }
+        return product == dtype ? mixed : convert({mixed, shape, product}, dtype);
     }
 
     std::string literal_of(const std::string& name) const {
