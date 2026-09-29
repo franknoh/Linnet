@@ -102,7 +102,7 @@ TEST("opt: a call that writes state survives DCE and CSE though nothing reads it
                   "        static for _i in 0..2 {\n            let _ = record(x)\n        }\n"
                   "        return x\n    }\n}\n");
     CHECK_EQ(count(text, "call @m::B.record"), 3U); // the loop's body counts once
-    CHECK_EQ(count(text, "@m::B.echo"), 0U);        // no effect: still dead
+    CHECK_EQ(count(text, "call @m::B.echo"), 0U);   // no effect: still dead
 }
 
 TEST("opt: state reads and writes survive DCE and CSE in order") {
