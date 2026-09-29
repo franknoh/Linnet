@@ -45,19 +45,37 @@ const LABELS: Record<string, string> = {
   vllm: "vLLM",
   "linnet-torch": "Linnet, generated",
   "linnet-cudagraphs": "Linnet, CUDA graphs",
-  "linnet-jax": "Linnet, XLA",
+  "linnet-inductor": "Linnet, inductor",
+  "linnet-jax": "Linnet, XLA (StableHLO)",
+  "linnet-jax-source": "Linnet, XLA (generated)",
   "linnet-onnx": "Linnet, ONNX Runtime",
+  "linnet-onnx-f32": "Linnet, ONNX Runtime f32",
+  "linnet-onnx-f16": "Linnet, ONNX Runtime f16",
+  "linnet-onnx-bf16": "Linnet, ONNX Runtime bf16",
+  "linnet-onnx-f32-trt": "Linnet, TensorRT f32",
+  "linnet-onnx-f16-trt": "Linnet, TensorRT f16",
+  "linnet-onnx-bf16-trt": "Linnet, TensorRT bf16",
   "linnet-offload": "Linnet, offloaded",
+  "linnet-gpus": "Linnet, layers on 2 GPUs",
+  "linnet-tp-torch": "Linnet, tensor parallel (torch)",
+  "linnet-tp-jax": "Linnet, tensor parallel (XLA)",
+  "vllm-tp": "vLLM, tensor parallel",
+  "linnet-vllm": "vLLM, Linnet export",
+  "linnet-llamacpp": "llama.cpp, Linnet export",
   "keras-hub": "KerasHub (JAX)",
   "onnx-reference": "torch.onnx, ONNX Runtime",
   "triton-onnx": "Triton, torch.onnx",
   "triton-linnet-onnx": "Triton, Linnet ONNX",
+  "triton-linnet-python": "Triton, Linnet Python backend",
   "serve-vllm": "vLLM",
   "serve-transformers": "transformers, batched",
   "serve-keras-hub": "KerasHub, static batches",
   "serve-triton-vllm": "Triton, vLLM backend",
   "serve-linnet-torch": "Linnet serve, CUDA graphs",
   "serve-linnet-jax": "Linnet serve, XLA",
+  "serve-linnet-onnx": "Linnet serve, ONNX Runtime",
+  "serve-triton-linnet": "Triton, Linnet serve",
+  "serve-linnet-vllm": "vLLM, Linnet export",
 };
 const label = (row: Row) => LABELS[row.key] ?? row.method;
 
@@ -146,7 +164,9 @@ const charts = computed(() => {
     // not memory a model needed: they are left out of the memory view.
     const unlike = (r: Row) =>
       v.unit === "GiB" &&
-      (r.key === "linnet-offload" || /reserv\w* .*pool|pool .*reserv|gpu_memory_utilization/i.test(r.notes));
+      (r.key === "linnet-offload" ||
+        /vllm/.test(r.key) ||
+        /reserv\w* .*pool|pool .*reserv|gpu_memory_utilization/i.test(r.notes));
     const model = {
       ...whole,
       rows: whole.rows.filter((r) => !unlike(r) && (r.error || (metric !== null && metric in r.metrics))),
