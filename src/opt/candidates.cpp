@@ -31,6 +31,7 @@ std::vector<NativeCandidate> torch_candidates() {
          {"CUDA, bf16, and a group size the kernel takes; otherwise the body runs"}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
+        {"std.nn.norm::group_norm", "torch.nn.functional.group_norm", equivalent, {}},
         {"std.nn.resize::upsample_nearest2d",
          "torch.nn.functional.interpolate(nearest)",
          Legality::Exact,

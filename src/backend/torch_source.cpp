@@ -566,6 +566,16 @@ public:
             return define(put + rows + ", None, " + span + "], " + name(1) +
                           ".permute(0, 2, 1, 3))");
         }
+        if (implementation_base == "torch.nn.functional.group_norm" && operands.size() == 4 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            // The group count is the call's own `Groups`.
+            const auto groups = call_generic("Groups");
+            if (!groups) {
+                return std::nullopt;
+            }
+            return define("F.group_norm(" + name(0) + ", " + std::to_string(*groups) + ", " +
+                          name(1) + ", " + name(2) + ", " + scalar(3) + ")");
+        }
         if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
             operands[0] && operands[1]) {
             // `F.conv2d` takes the window geometry as arguments. It comes from

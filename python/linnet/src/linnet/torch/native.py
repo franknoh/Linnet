@@ -99,6 +99,13 @@ def conv2d(args: list[Any], stride: int, pad: int) -> torch.Tensor:
     return functional.conv2d(x, weight, bias, stride=stride, padding=pad)
 
 
+def group_norm(args: list[Any], groups: int) -> torch.Tensor:
+    """`std.nn.norm::group_norm` as `F.group_norm`, with the call's own
+    `Groups`: statistics in f32, as the body computes them."""
+    x, weight, bias, eps = args
+    return functional.group_norm(x, groups, weight, bias, float(eps.item()))
+
+
 def max_pool2d(args: list[Any], window: int, stride: int, pad: int) -> torch.Tensor:
     """`std.nn.pool::max_pool2d` as `F.max_pool2d`, with the call's own
     geometry, as for the convolution."""
