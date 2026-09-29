@@ -107,6 +107,14 @@
 .VPHero .text {
   font-weight: 600;
 }
+/* The hero's line is a definition, not a slogan: a size that keeps it to
+   two lines beside the logo. */
+@media (min-width: 960px) {
+  .VPHero .text {
+    font-size: 44px;
+    line-height: 52px;
+  }
+}
 .VPHero .tagline {
   color: var(--vp-c-text-2);
   max-width: 44rem;
