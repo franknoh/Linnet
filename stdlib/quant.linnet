@@ -60,3 +60,58 @@ where In % 2 == 0 {
         return linear(x, dequantize_int4<Out, In / 2, T>(weight, scale), bias)
     }
 }
+
+// Asymmetric 4-bit weights in groups of `2 * Half` consecutive inputs,
+// stored as `[Out, Groups, Half]` bytes: each byte holds two weights of its
+// group, the low nibble first, in `0..15`, and
+// `weight[o, i] = (q[o, i] - zero[o, g]) * scale[o, g]` with `g` the group of
+// input `i`. ONNX Runtime's `MatMulNBits` reads this layout as it is;
+// GPTQ- and AWQ-style checkpoints repack into it.
+pub op dequantize_int4_groups<Out: Dim, Groups: Dim, Half: Dim, T: Float>(
+    packed: Tensor[Out, Groups, Half; u8],
+    scale: Tensor[Out, Groups; T],
+    zero: Tensor[Out, Groups; u8],
+) -> Tensor[Out, Groups * (2 * Half); T] {
+    let low[o, g, j] = cast<f32>(cast<i32>(packed[o, g, j]) & 15)
+    let high[o, g, j] = cast<f32>(shr(cast<i32>(packed[o, g, j]), 4) & 15)
+    let pairs = concat(
+        reshape(low, [Out, Groups, Half, 1]),
+        reshape(high, [Out, Groups, Half, 1]),
+        axis = -1,
+    )
+    let q = reshape(pairs, [Out, Groups, 2 * Half])
+    let weight[o, g, j] = (q[o, g, j] - cast<f32>(zero[o, g])) * cast<f32>(scale[o, g])
+    return cast<T>(reshape(weight, [Out, Groups * (2 * Half)]))
+}
+
+// A linear layer over group-wise 4-bit weights. Its body dequantizes and
+// multiplies; a backend with a fused 4-bit matrix product (PyTorch's on
+// CUDA, ONNX Runtime's `MatMulNBits`) runs that instead, reading the packed
+// weights as they are.
+pub op linear_int4_groups<*S: Shape, Out: Dim, Groups: Dim, Half: Dim, T: Float>(
+    x: Tensor[*S, Groups * (2 * Half); T],
+    packed: Tensor[Out, Groups, Half; u8],
+    scale: Tensor[Out, Groups; T],
+    zero: Tensor[Out, Groups; u8],
+    bias: Tensor[Out; T]?,
+) -> Tensor[*S, Out; T] {
+    return linear(x, dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero), bias)
+}
+
+// A linear layer whose weight is stored as group-wise asymmetric int4, in
+// groups of `Group` inputs.
+pub block Int4GroupLinear<In: Dim, Out: Dim, Group: Dim = 128, T: Float = bf16>
+where
+    Group > 0,
+    Group % 2 == 0,
+    In % Group == 0
+{
+    param weight: Tensor[Out, In / Group, Group / 2; u8]
+    param scale: Tensor[Out, In / Group; T]
+    param zero: Tensor[Out, In / Group; u8]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear_int4_groups(x, weight, scale, zero, bias)
+    }
+}

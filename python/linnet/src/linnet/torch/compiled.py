@@ -61,7 +61,7 @@ class CompiledLinnetModule(LinnetModule):
         self._fast: dict[tuple[Any, ...], _Prepared] = {}
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
-        self._prepared: dict[str, torch.Tensor] = {}
+        self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
 
     def _run_entry(
@@ -161,7 +161,7 @@ class CompiledLinnetModule(LinnetModule):
             self._prepared_values(generated),
         )
 
-    def _prepared_values(self, generated: _Generated) -> list[torch.Tensor]:
+    def _prepared_values(self, generated: _Generated) -> list[Any]:
         """The entry's weight-only values: shared with every entry that
         computes the same thing, and computed here when none has yet."""
         if not generated.prepared_keys:
@@ -315,7 +315,14 @@ class _Prepared:
     prepared: list[torch.Tensor]  # the entry's weight-only values, after the constants
 
 
-def _mark_static(tensor: torch.Tensor) -> None:
+def _mark_static(tensor: Any) -> None:
+    # A prepared value can be a tuple (packed weights and their scales).
+    if isinstance(tensor, tuple):
+        for part in tensor:  # pyright: ignore[reportUnknownVariableType]
+            _mark_static(part)
+        return
+    if not isinstance(tensor, torch.Tensor):
+        return
     if not getattr(tensor, "_linnet_static", False):
         torch._dynamo.mark_static_address(tensor)  # pyright: ignore[reportPrivateUsage]
         tensor._linnet_static = True  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
