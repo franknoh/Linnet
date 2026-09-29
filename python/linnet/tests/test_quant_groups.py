@@ -158,6 +158,17 @@ def test_cuda_bf16_runs_tinygemm(
     got = model.run_entry("forward", [many]).float().cpu().numpy()
     expected = many.float().cpu().numpy() @ weight.T
     np.testing.assert_allclose(got, expected, rtol=3e-2, atol=3e-1)
+    # One kernel dequantizes it, to the weight the arithmetic gives, bit for bit.
+    params = dict(model.named_parameters())
+    raw, scale, zero = (params[f"root.proj.{name}"] for name in ("weight", "scale", "zero"))
+    levels = torch.stack([raw & 15, raw >> 4], dim=-1).reshape(OUT, IN // GROUP, GROUP)
+    dequantized = (levels.to(scale.dtype) - zero.to(scale.dtype)[..., None]) * scale[..., None]
+    torch.testing.assert_close(
+        model.run_entry("forward", [many]),
+        torch.nn.functional.linear(many, dequantized.reshape(OUT, IN)),
+        rtol=0,
+        atol=0,
+    )
 
 
 # GPTQ's and AWQ's int32 packings, written from their definitions rather
