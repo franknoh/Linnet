@@ -100,7 +100,17 @@ what reads only weights, such as a batch norm into its convolution. An
 entry with state runs what reads only weights (a dequantizer unpacking
 every expert) once, in a session of its own, and binds the result; entries
 computing the same value share it. On CUDA, every session allocates from
-one shared arena.
+one shared arena. A new shape reads no weight again: those already on the
+device are only checked against the checkpoint's header.
+
+A state an entry writes with a scatter it alone reads (a KV cache row) is
+updated where it lies: the next value is bound to the state's own buffer,
+so no call copies the rest of the cache. `run_entry(..., argmax=True)`
+takes the argmax of the first result in the graph, and `cuda_graph=True`
+captures the entry as a CUDA graph and replays it, its inputs copied into
+buffers that stay put, when every state it writes is updated in place and
+no result is `bf16` (it runs as usual otherwise). `linnet.serve` does both
+for its decoding step.
 
 `model.place(array, "f16")` puts an input on the device once, for a call
 that repeats; `run_entry(..., keep_on_device=True)` leaves the results there
