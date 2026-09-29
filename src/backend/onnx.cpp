@@ -1111,9 +1111,6 @@ private:
             const Dims last{rows, heads, span, 1};
             return TensorInfo{reshape(full, last), last, ScalarKind::I64};
         };
-        const TensorInfo head_ids{iota(heads), {heads}, ScalarKind::I64};
-        TensorInfo row_ids{iota(rows), {rows}, ScalarKind::I64};
-        TensorInfo positions;
         const auto span_from = [&](const TensorInfo& start) {
             const TensorInfo offsets{iota(span), {span}, ScalarKind::I64};
             const TensorInfo first = as_i64(start);
@@ -1122,26 +1119,38 @@ private:
                 {span},
                 ScalarKind::I64};
         };
-        if (every_row) {
-            positions = span_from(*at[2]);
-        } else if (at.size() == 3) {
-            positions = as_i64(*at[2]); // one position per row
-        } else {
-            positions = span_from(*at[3]);
-            const TensorInfo slots = as_i64(*at[2]);
-            row_ids =
-                slots.shape.empty() ? TensorInfo{reshape(slots, {1}), {1}, ScalarKind::I64} : slots;
+        if (every_row || at.size() == 3) {
+            // Every row of the cache, so each element of `value` scatters
+            // along the sequence axis alone (`ScatterElements`, a thread per
+            // element): its position, the span's start plus its offset or
+            // its row's own. `ScatterND` would take a thread per `[D]` slice
+            // and copy it element by element.
+            const Dims& full = value.shape;
+            const TensorInfo along = every_row ? span_from(*at[2]) : as_i64(*at[2]);
+            const Dims placed = every_row ? Dims{1, 1, span, 1} : Dims{rows, 1, 1, 1};
+            const TensorInfo shaped{reshape(along, placed), placed, ScalarKind::I64};
+            const TensorInfo spread_out{
+                node("Expand", {shaped, int64_vector(full)}, "", full, ScalarKind::I64),
+                full,
+                ScalarKind::I64};
+            return node("ScatterElements", {cache, spread_out, value}, "axis = 2", shape, dtype);
         }
+        // Rows `slots` (one or several), a span each: an index per `[D]`
+        // slice, `(row, head, position)`.
+        const TensorInfo head_ids{iota(heads), {heads}, ScalarKind::I64};
+        const TensorInfo positions = span_from(*at[3]);
+        const TensorInfo slots = as_i64(*at[2]);
+        const TensorInfo row_ids =
+            slots.shape.empty() ? TensorInfo{reshape(slots, {1}), {1}, ScalarKind::I64} : slots;
         const Dims index_shape{rows, heads, span, 3};
-        const TensorInfo indices{node("Concat",
-                                      {spread(row_ids, 0),
-                                       spread(head_ids, 1),
-                                       spread(positions, at.size() == 3 && !every_row ? 0 : 2)},
-                                      "axis = 3",
-                                      index_shape,
-                                      ScalarKind::I64),
-                                 index_shape,
-                                 ScalarKind::I64};
+        const TensorInfo indices{
+            node("Concat",
+                 {spread(row_ids, 0), spread(head_ids, 1), spread(positions, 2)},
+                 "axis = 3",
+                 index_shape,
+                 ScalarKind::I64),
+            index_shape,
+            ScalarKind::I64};
         return node("ScatterND", {cache, indices, value}, "", shape, dtype);
     }
 
