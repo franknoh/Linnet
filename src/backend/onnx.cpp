@@ -533,6 +533,15 @@ public:
             const std::vector<TensorInfo> wide = widened({a, b});
             return compare(kind, wide[0], wide[1], shape);
         }
+        if (a.dtype == ScalarKind::BF16 || b.dtype == ScalarKind::BF16) {
+            // No bf16 comparisons either: compare in f32, which is exact.
+            const auto f32 = [&](const TensorInfo& t) {
+                return t.dtype == ScalarKind::BF16
+                           ? TensorInfo{convert(t, ScalarKind::F32), t.shape, ScalarKind::F32}
+                           : t;
+            };
+            return compare(kind, f32(a), f32(b), shape);
+        }
         switch (kind) {
         case ir::CompareKind::Eq:
             return node("Equal", {a, b}, "", shape, ScalarKind::Bool);

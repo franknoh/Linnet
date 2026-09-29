@@ -109,3 +109,45 @@ def test_one_tensor_serves_two_parameters(tmp_path: Path) -> None:
     x = np.arange(4, dtype=np.float32)
     (got,) = session.run(None, {session.get_inputs()[0].name: x})
     np.testing.assert_allclose(got, (3.0 * shared.numpy()) @ x, rtol=1e-5, atol=1e-5)
+
+
+SIXTEEN = """\
+module tests.sixteen
+
+pub block Model<T: Float = bf16> {
+    param levels: Tensor[4; u8]
+    param weight: Tensor[4; T]
+
+    pub entry forward(x: Tensor[4; T]) -> Tensor[4; T] {
+        let shifted = shr(levels, 1) + cast<u8>(1)
+        let lifted[i] = cast<T>(shifted[i])
+        return select(x > weight, x, lifted)
+    }
+}
+"""
+
+
+def test_types_onnx_runtime_lacks_kernels_for_are_widened(tmp_path: Path) -> None:
+    """ONNX Runtime has no bf16 comparisons and no arithmetic on 8-bit
+    integers: those compute in f32 and i32 in the export."""
+    pytest.importorskip("onnx")
+    import onnx
+
+    source = tmp_path / "sixteen.linnet"
+    source.write_text(SIXTEEN, encoding="utf-8")
+    save_file(
+        {
+            "levels": torch.tensor([0, 7, 200, 255], dtype=torch.uint8),
+            "weight": torch.zeros(4, dtype=torch.bfloat16),
+        },
+        str(tmp_path / "model.safetensors"),
+    )
+    exported = export_model(source, generics={}, weights=tmp_path / "model.safetensors")
+    typed = onnx.shape_inference.infer_shapes(exported.model)
+    types = {v.name: v.type.tensor_type.elem_type for v in typed.graph.value_info}
+    types.update({i.name: i.type.tensor_type.elem_type for i in typed.graph.input})
+    for node in typed.graph.node:
+        if node.op_type in ("Greater", "Less"):
+            assert all(types[i] == onnx.TensorProto.FLOAT for i in node.input)
+        if node.op_type in ("Add", "Sub", "Where"):
+            assert all(types.get(i) != onnx.TensorProto.UINT8 for i in node.input if i in types)
