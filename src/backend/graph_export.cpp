@@ -1665,8 +1665,23 @@ private:
                 fits = fits && grid_[static_cast<std::size_t>(axes[i])] == source.shape[i];
             }
             if (fits) {
+                // The grid's own leading axes, in order: the tensor as it
+                // is, broadcast only where something needs the whole grid
+                // (`to_grid`); an index stays as small as it is.
+                bool leading = true;
+                for (std::size_t i = 0; i < axes.size(); ++i) {
+                    leading = leading && axes[i] == static_cast<std::int64_t>(i);
+                }
+                if (leading && source.shape.size() < grid_.size()) {
+                    Val lazy = source;
+                    lazy.grid_rank = source.shape.size();
+                    return lazy;
+                }
                 return broadcast(source, grid_, axes);
             }
+        }
+        if (auto partial = gather_leading(op, source)) {
+            return *partial;
         }
         // General case: one i64 position per operand axis, gathered.
         std::vector<TensorInfo> columns;
@@ -1698,6 +1713,66 @@ private:
                                  columns, static_cast<std::int64_t>(grid_.size()), indices_shape),
                              indices_shape,
                              ScalarKind::I64};
+        return tensor(target_.gather(info(source), indices, grid_), grid_, source.dtype);
+    }
+
+    // `experts[top[k], o, i]`: when the trailing indices are the grid's own
+    // trailing positions over whole source axes, only the leading axes are
+    // gathered, by indices over the leading grid, and the rest taken whole.
+    // The general case would build an index for every element of the
+    // result: for a mixture of experts, a [TopK, Out, In, 3] tensor per
+    // layer per step.
+    std::optional<Val> gather_leading(const ir::Operation& op, const Val& source) {
+        const std::size_t rank = source.shape.size();
+        if (op.operands.size() != rank + 1) {
+            return std::nullopt;
+        }
+        std::size_t tail = 0;
+        while (tail < rank && tail < grid_.size()) {
+            const Val& index = value(op.operands[rank - tail]);
+            const std::size_t axis = grid_.size() - 1 - tail;
+            if (index.kind != Val::Kind::Index || index.axes.front() != axis ||
+                grid_[axis] != source.shape[rank - 1 - tail]) {
+                break;
+            }
+            ++tail;
+        }
+        const std::size_t gathered = rank - tail;
+        if (tail == 0 || gathered == 0) {
+            return std::nullopt;
+        }
+        const std::size_t prefix = grid_.size() - tail;
+        for (std::size_t i = 1; i <= gathered; ++i) {
+            const Val& index = value(op.operands[i]);
+            const bool fits = (index.kind == Val::Kind::Index && index.axes.front() < prefix) ||
+                              (index.kind == Val::Kind::Tensor && index.shape.size() <= prefix &&
+                               index.grid_rank >= index.shape.size());
+            if (!fits) {
+                return std::nullopt;
+            }
+        }
+        const Dims whole = grid_;
+        grid_ = Dims(whole.begin(), whole.begin() + static_cast<std::ptrdiff_t>(prefix));
+        std::vector<TensorInfo> columns;
+        for (std::size_t i = 1; i <= gathered; ++i) {
+            const Val& index = value(op.operands[i]);
+            const Val position = index.kind == Val::Kind::Index
+                                     ? iota(index.axes.front())
+                                     : convert(to_grid(index), ScalarKind::I64);
+            Dims column_shape = grid_;
+            column_shape.push_back(1);
+            columns.push_back(info(reshape(position, column_shape)));
+        }
+        Dims indices_shape = grid_;
+        indices_shape.push_back(static_cast<std::int64_t>(gathered));
+        const TensorInfo indices =
+            columns.size() == 1
+                ? columns.front()
+                : TensorInfo{target_.concat(
+                                 columns, static_cast<std::int64_t>(grid_.size()), indices_shape),
+                             indices_shape,
+                             ScalarKind::I64};
+        grid_ = whole;
         return tensor(target_.gather(info(source), indices, grid_), grid_, source.dtype);
     }
 
@@ -1897,16 +1972,83 @@ std::optional<std::pair<std::string, std::string>> top_level_assignment(const st
 
 // A parameter or value seen through views and casts only: `p3.permute(1, 0)`,
 // `v9.float()`, `p1.reshape(4, 5).to(torch.bfloat16)`, `p2[0]`.
+// Whether the words of `arguments` are only shapes, axes, and dtypes.
+bool literal_arguments(const std::string& arguments) {
+    static const std::set<std::string> argument_words{"torch",
+                                                      "jnp",
+                                                      "float32",
+                                                      "float16",
+                                                      "bfloat16",
+                                                      "float64",
+                                                      "int32",
+                                                      "int64",
+                                                      "bool",
+                                                      "None",
+                                                      "dtype"};
+    for (const auto& [at, word] : words_of(arguments)) {
+        if (!argument_words.contains(word)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Whether `expression` is a chain of `methods` calls on one value, their
-// arguments shapes, axes, and dtypes.
+// arguments shapes, axes, and dtypes: `v3.reshape((2, 4)).t()` as PyTorch
+// writes it, `jnp.transpose(v3, (1, 0))` as JAX does.
 bool method_chain(const std::string& expression, const std::set<std::string>& methods) {
     std::size_t i = 0;
-    while (i < expression.size() && word_char(expression[i])) {
-        ++i;
-    }
-    const std::string head = expression.substr(0, i);
-    if (!numbered(head, 'v') && !numbered(head, 'p')) {
-        return false;
+    if (expression.starts_with("jnp.")) {
+        std::size_t j = 4;
+        while (j < expression.size() && word_char(expression[j])) {
+            ++j;
+        }
+        if (!methods.contains(expression.substr(4, j - 4)) || j >= expression.size() ||
+            expression[j] != '(') {
+            return false;
+        }
+        // The call's first argument is the value; the rest are literals.
+        int depth = 0;
+        std::size_t comma = std::string::npos;
+        std::size_t close = std::string::npos;
+        for (std::size_t k = j; k < expression.size(); ++k) {
+            const char c = expression[k];
+            if (c == '(' || c == '[') {
+                ++depth;
+            } else if (c == ')' || c == ']') {
+                if (--depth == 0) {
+                    close = k;
+                    break;
+                }
+            } else if (c == ',' && depth == 1 && comma == std::string::npos) {
+                comma = k;
+            }
+        }
+        if (close == std::string::npos) {
+            return false;
+        }
+        const std::size_t end = comma == std::string::npos ? close : comma;
+        std::string first = expression.substr(j + 1, end - j - 1);
+        while (!first.empty() && first.front() == ' ') {
+            first.erase(first.begin());
+        }
+        while (!first.empty() && first.back() == ' ') {
+            first.pop_back();
+        }
+        if (!method_chain(first, methods) ||
+            (comma != std::string::npos &&
+             !literal_arguments(expression.substr(comma, close - comma)))) {
+            return false;
+        }
+        i = close + 1;
+    } else {
+        while (i < expression.size() && word_char(expression[i])) {
+            ++i;
+        }
+        const std::string head = expression.substr(0, i);
+        if (!numbered(head, 'v') && !numbered(head, 'p')) {
+            return false;
+        }
     }
     while (i < expression.size()) {
         if (expression[i] == '[') {
@@ -1933,29 +2075,14 @@ bool method_chain(const std::string& expression, const std::set<std::string>& me
             expression[j] != '(') {
             return false;
         }
-        static const std::set<std::string> argument_words{"torch",
-                                                          "jnp",
-                                                          "float32",
-                                                          "float16",
-                                                          "bfloat16",
-                                                          "float64",
-                                                          "int32",
-                                                          "int64",
-                                                          "bool",
-                                                          "None"};
         std::size_t close = j;
         int depth = 0;
         do {
             depth += expression[close] == '(' ? 1 : expression[close] == ')' ? -1 : 0;
             ++close;
         } while (close < expression.size() && depth > 0);
-        if (depth != 0) {
+        if (depth != 0 || !literal_arguments(expression.substr(j, close - j))) {
             return false;
-        }
-        for (const auto& [at, word] : words_of(expression.substr(j, close - j))) {
-            if (!argument_words.contains(word)) {
-                return false;
-            }
         }
         i = close;
     }
@@ -1972,26 +2099,19 @@ bool pure_view(const std::string& expression) {
                                                "expand",
                                                "unsqueeze",
                                                "squeeze",
-                                               "flatten"};
+                                               "flatten",
+                                               "broadcast_to",
+                                               "expand_dims",
+                                               "swapaxes",
+                                               "moveaxis"};
     return method_chain(expression, methods);
 }
 
 bool view_or_cast(const std::string& expression) {
-    static const std::set<std::string> methods{"float",
-                                               "half",
-                                               "bfloat16",
-                                               "contiguous",
-                                               "t",
-                                               "to",
-                                               "permute",
-                                               "reshape",
-                                               "view",
-                                               "transpose",
-                                               "expand",
-                                               "unsqueeze",
-                                               "squeeze",
-                                               "flatten",
-                                               "astype"};
+    static const std::set<std::string> methods{
+        "float",   "half",    "bfloat16",     "contiguous",  "t",         "to",      "permute",
+        "reshape", "view",    "transpose",    "expand",      "unsqueeze", "squeeze", "flatten",
+        "astype",  "asarray", "broadcast_to", "expand_dims", "swapaxes",  "moveaxis"};
     return method_chain(expression, methods);
 }
 
@@ -2127,6 +2247,11 @@ PreparedSplit split_prepared(const std::string& body,
         const auto assignment = top_level_assignment(line);
         if (assignment && keep.contains(assignment->first)) {
             kept_lines.push_back(line);
+            // A constant both sides read is made on both: as a prepared
+            // value it would key one entry's set apart from another's.
+            if (!reads_weights[assignment->first]) {
+                body_lines.push_back(line);
+            }
         } else {
             body_lines.push_back(line);
         }
@@ -2139,7 +2264,7 @@ PreparedSplit split_prepared(const std::string& body,
     }
     for (const std::string& line : kept_lines) {
         const std::string name = top_level_assignment(line)->first;
-        if (read_by_body.contains(name)) {
+        if (read_by_body.contains(name) && reads_weights[name]) {
             split.outputs.push_back(name);
         }
     }

@@ -328,21 +328,30 @@ public:
 
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
-        Dims all_axes;
-        Dims ones;
+        // The leading source axes are gathered, one per index column; the
+        // trailing ones are taken whole, after the indices' own axes.
+        const std::size_t gathered = static_cast<std::size_t>(indices.shape.back());
+        const std::size_t batch = indices.shape.size() - 1;
+        Dims leading;
+        Dims offsets;
+        Dims sizes;
         for (std::size_t i = 0; i < source.shape.size(); ++i) {
-            all_axes.push_back(static_cast<std::int64_t>(i));
-            ones.push_back(1);
+            if (i < gathered) {
+                leading.push_back(static_cast<std::int64_t>(i));
+                sizes.push_back(1);
+            } else {
+                offsets.push_back(static_cast<std::int64_t>(batch + i - gathered));
+                sizes.push_back(source.shape[i]);
+            }
         }
-        return emit(
-            "gather",
-            {source, indices},
-            "dimension_numbers = #stablehlo.gather<offset_dims = [], collapsed_slice_dims = " +
-                index_list(all_axes) + ", start_index_map = " + index_list(all_axes) +
-                ", index_vector_dim = " + std::to_string(shape.size()) +
-                ">, indices_are_sorted = false, slice_sizes = " + i64_array(ones),
-            shape,
-            source.dtype);
+        return emit("gather",
+                    {source, indices},
+                    "dimension_numbers = #stablehlo.gather<offset_dims = " + index_list(offsets) +
+                        ", collapsed_slice_dims = " + index_list(leading) + ", start_index_map = " +
+                        index_list(leading) + ", index_vector_dim = " + std::to_string(batch) +
+                        ">, indices_are_sorted = false, slice_sizes = " + i64_array(sizes),
+                    shape,
+                    source.dtype);
     }
 
     std::string

@@ -314,12 +314,19 @@ class OnnxModel:
         prepare = onnx.helper.make_model(graph, opset_imports=model.opset_import)
         prepare.ir_version = model.ir_version
         # TensorRT takes no part: the unpacking works on bytes it does not
-        # import, and it runs once.
-        providers = [
-            p
-            for p in self.providers
-            if (p if isinstance(p, str) else p[0]) != "TensorrtExecutionProvider"
-        ]
+        # import, and it runs once. The session's arena grows only by what
+        # it is asked for and gives back what the run no longer holds, so
+        # only the prepared values stay.
+        providers: list[Any] = []
+        for provider in self.providers:
+            name = provider if isinstance(provider, str) else provider[0]
+            if name == "TensorrtExecutionProvider":
+                continue
+            if name == "CUDAExecutionProvider":
+                options = {} if isinstance(provider, str) else dict(provider[1])
+                options["arena_extend_strategy"] = "kSameAsRequested"
+                provider = (name, options)
+            providers.append(provider)
         settings = self._ort.SessionOptions()
         session = self._ort.InferenceSession(
             prepare.SerializeToString(), settings, providers=providers
@@ -329,7 +336,11 @@ class OnnxModel:
             binding.bind_ortvalue_input(value.name, self._weights[parameters[value.name]])
         for name in missing:
             binding.bind_output(name, self._device, 0)
-        session.run_with_iobinding(binding)
+        run = self._ort.RunOptions()
+        run.add_run_config_entry(
+            "memory.enable_memory_arena_shrinkage", "gpu:0" if self._device == "cuda" else "cpu:0"
+        )
+        session.run_with_iobinding(binding, run)
         for name, value in zip(missing, binding.get_outputs(), strict=True):
             self._prepared[split.keys[name]] = value
 
