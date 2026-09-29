@@ -80,7 +80,7 @@ What `load` does:
 | | `torch.softmax` and `torch.rms_norm` are in neither tier: their kernels accumulate in f32 whatever the input dtype, so every policy calls them without casts |
 | `compile=True` | entries run as PyTorch source from `linnet torch`, generated once per entry and input shape; input-independent values (rotary tables, masks) are computed once and reused. The default on CUDA; `compile=False` is the interpreter, the default elsewhere |
 | `compile="inductor"` | the same, passed through `torch.compile` |
-| `compile="reduce-overhead"` | `torch.compile` with CUDA graphs: one replay per call instead of one launch per kernel, for decoding. A KV cache the entry writes is written in place, at an address the graph keeps |
+| `compile="reduce-overhead"` | CUDA graphs, for decoding: the first call runs through `torch.compile`, the second captures the whole step as one graph, and every later call copies its inputs into the graph's and replays it, with no per-argument checks. A KV cache the entry writes is written in place, at an address the graph keeps; a state or weight replaced since (`reset_state`) is captured again. On several devices, or with gradients, `torch.compile`'s own CUDA graphs run instead |
 | `trainable=True` | parameters require gradients |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 | `cast_dtype=True` | converts floating-point weights to the model's dtype as they are read: an f32 checkpoint in a bf16 model, or the reverse |
@@ -94,6 +94,14 @@ so a decoding step can replay as a CUDA graph while prompts of many lengths
 run without one.
 `model.reset_state()` zeroes every `state` member; `model.state_paths()`
 lists them; `model.generated_source(entry)` shows the code `compile` ran.
+
+Linear layers that read the same input with weights of their own -- a
+layer's query, key, and value projections, its gate and up -- run as one
+product over their weights side by side, sliced after: at a decoding step's
+few rows, one kernel instead of three. The joined weight is prepared once,
+and the runtime first lays each group's weights out one after another in
+one buffer, so it is a view of them and costs no memory. This happens for a
+model loaded for inference on one device; training keeps the layers apart.
 
 ## More than one GPU, and more than the GPU holds
 
