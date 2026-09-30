@@ -78,10 +78,11 @@ def source(tmp_path: Path) -> Path:
     return path
 
 
-def _generated(source: Path, entry: str, numerics: str) -> str:
+def _generated(source: Path, entry: str, numerics: str, **generics: int) -> str:
     command = [find_compiler(), "torch", "--root", "Model", "--entry", entry, "--numerics"]
     command += [numerics, "--std", str(STDLIB)]
-    command += [arg for name, value in GENERICS.items() for arg in ("--bind", f"{name}={value}")]
+    bound = {**GENERICS, **generics}
+    command += [arg for name, value in bound.items() for arg in ("--bind", f"{name}={value}")]
     return subprocess.run(
         [*command, str(source)], capture_output=True, text=True, check=True
     ).stdout
@@ -94,6 +95,15 @@ def test_only_fast_numerics_attend_by_blocks(source: Path) -> None:
         fast = _generated(source, entry, "fast")
         assert fast.count("_flex_blocks(v") == 1 and "_attend(" in fast
         assert "_attend(" not in _generated(source, entry, "equivalent")
+
+
+def test_a_step_attends_by_blocks_for_whole_groups_only(source: Path) -> None:
+    """FlexAttention's decoding kernel goes wrong unless each key head serves
+    a power of two of query heads; seven a head (Qwen2.5) keeps the two
+    products, while a packed pass, which the kernel for many queries runs,
+    keeps FlexAttention."""
+    assert "_attend(" not in _generated(source, "rows", "fast", H=14, Hk=2)
+    assert "_attend(" in _generated(source, "packed", "fast", H=14, Hk=2)
 
 
 def _packed_inputs(device: str) -> list[torch.Tensor]:

@@ -761,8 +761,13 @@ public:
                 // lengths (a serving step); one request's step has no blocks
                 // to skip, and the two products below launch less.
                 const bool rows_differ = attn_mask->shape.size() == 3 && attn_mask->shape[0] > 1;
+                // FlexAttention's decoding kernel is wrong (errors near 0.4 for
+                // Qwen2.5's seven query heads a key head, PyTorch 2.14) unless
+                // the query heads of a key head are a power of two.
+                const std::int64_t group = query->shape[1] / key->shape[1];
+                const bool whole_group = (group & (group - 1)) == 0;
                 if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0) &&
-                    (queries > 1 || rows_differ)) {
+                    (queries > 1 || (rows_differ && whole_group))) {
                     flex_helpers_ = true;
                     const std::string sizes =
                         std::to_string(queries) + ", " + std::to_string(keys) + ", " +
