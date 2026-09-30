@@ -30,9 +30,10 @@ pub op linear_experts_shared<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float
     weight: Tensor[E, Out, In; T],
     experts: Tensor[R, K; i64],
 ) -> Tensor[R, K, Out; T] {
-    let all = reshape(linear(x, reshape(weight, [E * Out, In])), [R, E, Out])
-    let by_expert = permute(all, [1, 0, 2])
-    let y[r, k, o] = by_expert[experts[r, k], r, o]
+    let products = reshape(linear(x, reshape(weight, [E * Out, In])), [R * E, Out])
+    let rows = iota<i32>(R)
+    let place[r, k] = cast<i64>(rows[r]) * cast<i64>(E) + experts[r, k]
+    let y[r, k, o] = products[place[r, k], o]
     return y
 }
 
@@ -50,8 +51,7 @@ pub op combine_experts<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float>(
     weights: Tensor[R, K; T],
 ) -> Tensor[R, Out; T] {
     let slots = iota<i32>(E)
-    let placed[r, e, i] =
-        sum[k]
-            select(experts[r, k] == cast<i64>(slots[e]), weights[r, k] * x[r, k, i], cast<T>(0.0))
+    let route[r, e, k] = select(experts[r, k] == cast<i64>(slots[e]), weights[r, k], cast<T>(0.0))
+    let placed[r, e, i] = sum[k] route[r, e, k] * x[r, k, i]
     return linear(reshape(placed, [R, E * In]), reshape(permute(weight, [1, 0, 2]), [Out, E * In]))
 }
