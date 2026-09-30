@@ -1094,7 +1094,13 @@ public:
                 const std::string name = text.substr(start, end - start);
                 constant_names.insert(name);
                 hoisted_names.push_back(name);
-                out.constants += text + "\n";
+                // A mask that is the same every call has its blocks listed
+                // once, eagerly, and can say there is nothing to skip.
+                if (text.find(" = _flex_blocks(") != std::string::npos && text.ends_with(")")) {
+                    out.constants += text.substr(0, text.size() - 1) + ", once=True)\n";
+                } else {
+                    out.constants += text + "\n";
+                }
             } else {
                 out.body += text + "\n";
             }
@@ -1501,11 +1507,13 @@ private:
     // counting rather than `bincount` keeps it on the device, so the step can
     // be a CUDA graph.
     static std::string flex_helpers() {
-        return "def _flex_blocks(mask, queries, keys, block_q, block_k):\n"
+        return "def _flex_blocks(mask, queries, keys, block_q, block_k, once=False):\n"
                "    \"\"\"The key blocks each query block of `mask` ([rows or 1, queries, "
                "keys],\n"
                "    or [queries, keys]) reaches in part and reaches whole, as FlexAttention's\n"
-               "    block mask lists them; None where FlexAttention does not run.\"\"\"\n"
+               "    block mask lists them; None where FlexAttention does not run. `once`: the\n"
+               "    mask is the same every call and listed eagerly, so None also where it\n"
+               "    reaches every block and there is nothing to skip.\"\"\"\n"
                "    if not mask.is_cuda:\n"
                "        return None\n"
                "    rows = mask.reshape(-1, queries, keys)\n"
@@ -1518,6 +1526,8 @@ private:
                "        .reshape(rows.shape[0], q_blocks, k_blocks, -1)\n"
                "    )\n"
                "    reached = tiles.any(-1)\n"
+               "    if once and bool(reached.all()):\n"
+               "        return None\n"
                "    whole = tiles.all(-1)\n"
                "\n"
                "    def listed(live):\n"
