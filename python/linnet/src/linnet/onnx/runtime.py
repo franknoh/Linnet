@@ -458,6 +458,12 @@ class OnnxModel:
                 provider = (name, options)
             providers.append(provider)
         settings = self._ort.SessionOptions()
+        if self._device == "cuda":
+            # As for the entries' sessions: a spinning pool as wide as the
+            # visible cores would spend the container's quota for as long
+            # as this session lives, stalling the first calls after it.
+            settings.intra_op_num_threads = 1
+            settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
         session = self._ort.InferenceSession(
             prepare.SerializeToString(), settings, providers=providers
         )
