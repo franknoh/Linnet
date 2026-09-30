@@ -38,7 +38,10 @@ missing inputs starting at zeros.
 `numerics` defaults to `"fast"`: layer normalization and attention
 accumulate in the input dtype, as Flax reference models do on `bf16`.
 `"equivalent"` keeps the f32 accumulation the canonical bodies specify, and
-`"exact"` keeps every canonical body. All three loaders take it.
+`"exact"` keeps every canonical body. Both also ask XLA for f32 products
+(matrix products, convolutions, attention) at full precision, where its
+default on an NVIDIA GPU since Ampere is TF32, with errors near 1e-3;
+`"fast"` leaves the default. All three loaders take it.
 
 ## load_model
 

@@ -142,7 +142,11 @@ def test_xla(model: tuple[Path, Path, dict[str, np.ndarray]], entry: str) -> Non
     from linnet.jax import load as load_jax
 
     source, weights, arrays = model
-    function = load_jax(source, generics={}, weights=weights, std_root=STDLIB, entry=entry)
+    # Equivalent numerics: f32 products at full precision, where XLA's
+    # default on a GPU is TF32.
+    function = load_jax(
+        source, generics={}, weights=weights, std_root=STDLIB, entry=entry, numerics="equivalent"
+    )
     got = np.asarray(function())
     np.testing.assert_allclose(got, _expected(entry, arrays), atol=1e-5, rtol=1e-5)
 

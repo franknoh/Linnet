@@ -103,8 +103,16 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
     _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
     _compiler_ok("fmt", "--check", str(result.source))
 
-    model = load(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
-    expected = forward(params, tokens)
+    # Both sides at full f32 precision: on a GPU, XLA's default is TF32.
+    model = load(
+        result.source,
+        generics={},
+        weights=tmp_path / "weights",
+        std_root=STDLIB,
+        numerics="equivalent",
+    )
+    with jax.default_matmul_precision("highest"):
+        expected = forward(params, tokens)
     actual = jax.jit(model)(tokens)
     np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=1e-5, rtol=1e-5)
 
