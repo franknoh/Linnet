@@ -87,7 +87,12 @@ def collect(nest: Path) -> dict[str, object]:
     # replaces), as the zoo's own pages read it.
     compare = json.loads((nest / "bench" / "compare.json").read_text(encoding="utf-8"))
     compare.pop("about", None)
-    return {"date": date, "environment": environment, "compare": compare, "models": models}
+    return {
+        "date": date,
+        "environment": environment,
+        "compare": compare,
+        "models": models,
+    }
 
 
 def main() -> None:
