@@ -1441,13 +1441,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 44.4531,
-      "decode_tok_s": 202.9647,
-      "load_s": 2.5074,
+      "ttft_ms": 30.5662,
+      "decode_tok_s": 197.8043,
+      "load_s": 2.8192,
       "peak_vram_mib": 54574.0
      },
      "first_token": null,
-     "max_abs_diff": 0.06640625,
+     "max_abs_diff": 0.0625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -1456,13 +1456,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 45.7844,
-      "decode_tok_s": 155.2307,
-      "load_s": 2.7185,
+      "ttft_ms": 32.8618,
+      "decode_tok_s": 145.7364,
+      "load_s": 3.0095,
       "peak_vram_mib": 54574.0
      },
      "first_token": null,
-     "max_abs_diff": 0.06640625,
+     "max_abs_diff": 0.0625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -1487,14 +1487,14 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 47.3521,
-      "decode_tok_s": 298.7226,
-      "load_s": 9.0897,
-      "peak_vram_mib": 51737.8,
+      "ttft_ms": 47.4837,
+      "decode_tok_s": 298.8349,
+      "load_s": 8.6804,
+      "peak_vram_mib": 51737.6,
       "driver_vram_mib": 66164.0
      },
      "first_token": null,
-     "max_abs_diff": 0.21875,
+     "max_abs_diff": 0.06640625,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -1541,14 +1541,14 @@
      "method": "Linnet ONNX f16 -> ONNX Runtime (CUDA)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 111.1764,
-      "decode_tok_s": 19.5299,
-      "load_s": 0.3711,
-      "peak_vram_mib": 70220.0
+      "ttft_ms": 102.2962,
+      "decode_tok_s": 21.7413,
+      "load_s": 0.1846,
+      "peak_vram_mib": 70006.0
      },
      "first_token": null,
-     "max_abs_diff": 0.19140625,
-     "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
+     "max_abs_diff": 0.1923828125,
+     "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; the argmax taken in the graph, each step replayed as a CUDA graph on the CUDA provider",
      "error": null
     },
     {
