@@ -439,6 +439,7 @@ int run_graph_export(std::span<const std::string_view> args,
         return usage_error("--numerics must be `exact`, `equivalent`, or `fast`");
     }
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
+    export_options.full_precision = *allowed != opt::Legality::Approximate;
     const auto text = format == "onnx"    ? backend::export_onnx(core, export_options)
                       : format == "torch" ? backend::export_torch_source(core, export_options)
                       : format == "jax"   ? backend::export_jax_source(core, export_options)

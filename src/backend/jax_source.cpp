@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace linnet::backend {
@@ -74,7 +75,8 @@ std::string real_text(double value) {
 // The generated module: straight-line `jax.numpy` over static shapes.
 class JaxTarget : public GraphTarget {
 public:
-    explicit JaxTarget(bool prepare) : prepare_(prepare) {}
+    JaxTarget(bool prepare, bool full_precision)
+        : prepare_(prepare), full_precision_(full_precision) {}
 
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         (void)shape;
@@ -595,11 +597,12 @@ public:
             for (std::size_t i = 0; i < prepared.inputs.size(); ++i) {
                 out += (i == 0 ? "" : ", ") + prepared.inputs[i];
             }
-            out += "):\n" + prepared.prepare + "    return (";
+            std::string returned = "    return (";
             for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + prepared.outputs[i];
+                returned += (i == 0 ? "" : ", ") + prepared.outputs[i];
             }
-            out += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
+            returned += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
+            out += "):\n" + precise(prepared.prepare + returned);
         }
         out += "\n\ndef main(";
         std::vector<std::string> arguments = arguments_;
@@ -607,12 +610,33 @@ public:
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             out += (i == 0 ? "" : ", ") + arguments[i];
         }
-        out += "):\n" + prepared.body + tail;
+        out += "):\n" + precise(prepared.body + tail);
         return out;
     }
 
 private:
-    bool prepare_ = false; // split weight-only work into `prepare`
+    // A function body run with f32 products (`@`, `einsum`, convolutions,
+    // attention) at full precision, when the numerics are not `fast`: XLA's
+    // default on an NVIDIA GPU is TF32. The setting is read while tracing,
+    // so it holds for everything the body calls and nothing outside it.
+    std::string precise(const std::string& body) const {
+        if (!full_precision_) {
+            return body;
+        }
+        std::string out = "    with jax.default_matmul_precision(\"highest\"):\n";
+        std::size_t start = 0;
+        while (start < body.size()) {
+            std::size_t end = body.find('\n', start);
+            end = end == std::string::npos ? body.size() : end + 1;
+            const std::string_view line{body.data() + start, end - start};
+            out += (line == "\n" ? "" : "    ") + std::string(line);
+            start = end;
+        }
+        return out;
+    }
+
+    bool prepare_ = false;        // split weight-only work into `prepare`
+    bool full_precision_ = false; // f32 products at full precision (`precise`)
 
     struct Loop {
         std::size_t id = 0;
@@ -806,7 +830,7 @@ private:
 
 std::expected<std::string, std::string> export_jax_source(ir::Module& module,
                                                           const JaxSourceOptions& options) {
-    JaxTarget target(options.prepare);
+    JaxTarget target(options.prepare, options.full_precision);
     return export_graph(module, options, target);
 }
 

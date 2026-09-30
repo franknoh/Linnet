@@ -198,6 +198,8 @@ const char* elementwise_name(Elementwise kind) {
 // StableHLO in MLIR's generic operation form, which every version parses.
 class StableHloTarget : public GraphTarget {
 public:
+    explicit StableHloTarget(bool full_precision) : full_precision_(full_precision) {}
+
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         const std::string tensor = "%" + name;
         arguments_.push_back(tensor + ": " + tensor_type(shape, dtype));
@@ -496,7 +498,11 @@ public:
                 i64_array({1, 1}) + ", padding = dense<[[" + p + ", " + p + "], [" + p + ", " + p +
                 "]]> : tensor<2x2xi64>, rhs_dilation = " + i64_array({1, 1}) +
                 ", window_strides = " + i64_array({*stride, *stride});
-            std::string out = emit("convolution", {*at[0], *at[1]}, attributes, shape, dtype);
+            std::string out = emit("convolution",
+                                   {*at[0], *at[1]},
+                                   attributes + precision(*at[0], *at[1]),
+                                   shape,
+                                   dtype);
             if (at[2] != nullptr) {
                 const std::string spread = broadcast(*at[2], {1}, shape);
                 out = elementwise(
@@ -790,7 +796,18 @@ private:
             i64_list(lhs_batch) + ", rhs_batching_dimensions = " + i64_list(rhs_batch) +
             ", lhs_contracting_dimensions = " + i64_list(lhs_contract) +
             ", rhs_contracting_dimensions = " + i64_list(rhs_contract) + ">";
-        return emit("dot_general", {lhs, rhs}, numbers, shape, dtype);
+        return emit("dot_general", {lhs, rhs}, numbers + precision(lhs, rhs), shape, dtype);
+    }
+
+    // `precision_config` asking for full precision when both operands are
+    // f32 and the numerics are not `fast`; empty otherwise, leaving the
+    // device's default (TF32 on an NVIDIA GPU).
+    std::string precision(const TensorInfo& lhs, const TensorInfo& rhs) const {
+        if (!full_precision_ || lhs.dtype != ScalarKind::F32 || rhs.dtype != ScalarKind::F32) {
+            return "";
+        }
+        return ", precision_config = [#stablehlo<precision HIGHEST>, #stablehlo<precision "
+               "HIGHEST>]";
     }
 
     static std::string i64_list(const Dims& dims) {
@@ -891,13 +908,14 @@ private:
     std::size_t next_ = 0;
     std::size_t parameters_ = 0;
     std::size_t states_ = 0;
+    bool full_precision_ = false; // f32 products at full precision (`precision`)
 };
 
 } // namespace
 
 std::expected<std::string, std::string> export_stablehlo(ir::Module& module,
                                                          const StableHloOptions& options) {
-    StableHloTarget target;
+    StableHloTarget target(options.full_precision);
     return export_graph(module, options, target);
 }
 

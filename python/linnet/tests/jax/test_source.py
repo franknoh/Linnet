@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from linnet.compiler import run_compiler, std_arguments
 from linnet.jax import export_linnet, load, load_source
 
 from .test_round_trip import REPO, STDLIB, forward, init_params
@@ -105,6 +106,20 @@ def test_jax_grad_trains_a_linnet_mlp(tmp_path: Path) -> None:
         params = {name: value - 0.05 * grads[name] for name, value in params.items()}
     last = float(loss(params))
     assert last < first * 0.05, (first, last)
+
+
+def test_products_run_at_full_precision_unless_fast(tmp_path: Path) -> None:
+    """XLA runs f32 products in TF32 on an NVIDIA GPU unless asked not to,
+    which the canonical body's f32 arithmetic is not; every numerics but
+    `fast` asks, in the StableHLO and in the generated source."""
+    source = tmp_path / "mlp.linnet"
+    source.write_text(MLP, encoding="utf-8")
+    shapes = ["--bind", "In=4", "--bind", "Hidden=8", "--bind", "Out=3", "--bind", "B=2"]
+    for numerics, precise in (("exact", True), ("equivalent", True), ("fast", False)):
+        arguments = ["--numerics", numerics, *shapes, *std_arguments(STDLIB), str(source)]
+        assert ("precision HIGHEST" in run_compiler("stablehlo", *arguments)) is precise
+        generated = run_compiler("jax", *arguments)
+        assert ('default_matmul_precision("highest")' in generated) is precise
 
 
 def test_fast_numerics_skips_f32_accumulation() -> None:

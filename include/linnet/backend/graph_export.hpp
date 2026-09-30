@@ -256,6 +256,12 @@ struct GraphExportOptions {
     // (tensor parallelism) are joined only by gathering them, so a runtime
     // that splits them turns this off.
     bool fuse = true;
+    // StableHLO and generated JAX only: f32 products (matrix products,
+    // convolutions, attention) at full f32 precision. XLA otherwise runs
+    // them at the device's default, which on an NVIDIA GPU since Ampere is
+    // TF32: a 10-bit mantissa, errors near 1e-3 against the canonical body.
+    // Every `--numerics` but `fast` sets it.
+    bool full_precision = false;
 };
 
 std::expected<std::string, std::string>
