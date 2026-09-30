@@ -214,6 +214,18 @@ def _int4_groups_linear(args: list[Any], _result: torch.dtype | None) -> torch.T
     return y if bias is None else y + bias
 
 
+def _grouped(x: torch.Tensor, weight: torch.Tensor) -> bool:
+    """Whether `torch._grouped_mm` runs these: CUDA, Hopper or later, bf16."""
+    return (
+        hasattr(torch, "_grouped_mm")
+        and x.is_cuda
+        and x.dtype == weight.dtype == torch.bfloat16
+        and torch.cuda.get_device_capability(x.device)[0] >= 9
+        and x.shape[-1] % 8 == 0
+        and weight.shape[1] % 8 == 0
+    )
+
+
 def _linear_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.moe::linear_experts`: one grouped product over the rows sorted
     by expert on CUDA in bf16, each chosen expert's weight gathered elsewhere."""
@@ -221,15 +233,8 @@ def _linear_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
     rows, chosen, width = x.shape
     count, out_features, _ = weight.shape
     flat = experts.reshape(-1).long()
-    grouped = getattr(torch, "_grouped_mm", None)
-    if (
-        grouped is not None
-        and x.is_cuda
-        and x.dtype == weight.dtype == torch.bfloat16
-        and torch.cuda.get_device_capability(x.device)[0] >= 9
-        and width % 8 == 0
-        and out_features % 8 == 0
-    ):
+    if _grouped(x, weight):
+        grouped = torch._grouped_mm  # pyright: ignore[reportPrivateUsage, reportPrivateImportUsage]
         order = flat.argsort(stable=True)
         slots = torch.arange(count, device=x.device)
         ends = (flat[None, :] <= slots[:, None]).sum(1).to(torch.int32)
@@ -240,9 +245,41 @@ def _linear_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
     return torch.einsum("rki,rkoi->rko", x.float(), taken.float()).to(x.dtype)
 
 
+def _linear_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`std.nn.moe::linear_experts_shared`: the grouped product over the row
+    repeated for each chosen expert, or every expert and the chosen kept."""
+    x, weight, experts = args
+    rows, chosen = experts.shape
+    count, out_features, width = weight.shape
+    if _grouped(x, weight):
+        return _linear_experts([x[:, None, :].expand(rows, chosen, width), weight, experts], None)
+    every = functional.linear(x, weight.reshape(count * out_features, width))
+    every = every.reshape(rows, count, out_features)
+    return every.gather(1, experts.long()[..., None].expand(rows, chosen, out_features))
+
+
+def _combine_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`std.nn.moe::combine_experts`: the grouped product weighed and summed,
+    or the weighed inputs placed by expert and multiplied by every expert."""
+    x, weight, experts, weights = args
+    rows, chosen, width = x.shape
+    count, out_features, _ = weight.shape
+    if _grouped(x, weight):
+        y = _linear_experts([x, weight, experts], None).float() * weights.float()[..., None]
+        return y.sum(1).to(x.dtype)
+    placed = torch.zeros(rows, count, width, dtype=x.dtype, device=x.device)
+    placed.scatter_add_(
+        1, experts.long()[..., None].expand(rows, chosen, width), weights[..., None] * x
+    )
+    joined = weight.permute(1, 0, 2).reshape(out_features, count * width)
+    return functional.linear(placed.reshape(rows, count * width), joined)
+
+
 NATIVE: dict[str, Native] = {
     "torch.ops.aten._weight_int4pack_mm": _int4_groups_linear,
     "torch._grouped_mm": _linear_experts,
+    "torch._grouped_mm(shared)": _linear_experts_shared,
+    "torch._grouped_mm(combined)": _combine_experts,
     "torch.nn.functional.embedding": _embedding,
     "torch.index_select": _index_select,
     "torch.nn.functional.batch_norm": _batch_norm,
