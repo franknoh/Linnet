@@ -138,15 +138,15 @@ StableHLO, `MatMul` and `Conv` in ONNX. On one H100, in `bf16`:
 
 | | Linnet | Reference stacks |
 | --- | --- | --- |
-| Llama 3.1 8B, decode one request | 169 tok/s (XLA) | vLLM 157, transformers compiled 110 |
+| Llama 3.1 8B, decode one request | 170 tok/s (XLA), 168 (CUDA graphs) | vLLM 157, transformers compiled 110 |
 | BERT base, forward at batch 1 | 0.74 ms (CUDA graphs) | transformers 3.60, compiled 1.67 |
 | SD VAE decoder, 512 px | 7.4 ms (XLA) | diffusers 22.0, compiled 10.4 |
-| Llama 3.1 8B, 256 requests served | 4476 tok/s (CUDA graphs) | vLLM 5658 |
-| gpt-oss 20B, decode one request | 217 tok/s (XLA) | vLLM 303, transformers 45 |
+| Llama 3.1 8B, 256 requests served | 4858 tok/s (CUDA graphs) | vLLM 5658 |
+| gpt-oss 20B, decode one request | 299 tok/s (XLA) | vLLM 303, transformers 45 |
 
-Where Linnet loses — vLLM's paged serving, gpt-oss's fused MXFP4 kernels,
-tensor parallelism across GPUs — is on the [benchmarks](/benchmarks) page with
-every other row: 24 models, 516 measurements.
+Where Linnet loses — vLLM's paged serving, tensor parallelism across GPUs —
+is on the [benchmarks](/benchmarks) page with every other row: 24 models, 528
+measurements.
 
 ## One source, many runtimes
 

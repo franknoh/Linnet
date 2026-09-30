@@ -52,10 +52,10 @@ Python once, when the source is written.
 **Portable does not mean interpreted.** The checked program is lowered to each
 backend's native path: generated PyTorch under `torch.compile` or CUDA graphs,
 XLA, ONNX Runtime and TensorRT. On one H100 in `bf16`, Llama 3.1 8B decodes one
-request at 169 tokens per second under XLA (vLLM 157, transformers compiled
-110) and BERT base runs a batch-1 forward pass in 0.74 ms as CUDA graphs
-(transformers 3.60). vLLM stays ahead when serving many requests at once
-(5658 against 4476 tokens per second for Llama 3.1 8B); every row, including
+request at 170 tokens per second under XLA and 168 as CUDA graphs (vLLM 157,
+transformers compiled 110) and BERT base runs a batch-1 forward pass in 0.74 ms
+as CUDA graphs (transformers 3.60). vLLM stays ahead when serving many requests
+at once (5658 against 4858 tokens per second for Llama 3.1 8B); every row, including
 where Linnet loses, is on the
 [benchmarks](https://linnet.franknoh.dev/benchmarks) page.
 
