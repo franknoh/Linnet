@@ -207,7 +207,10 @@ class Engine:
         self.pack_sizes: list[int] = []
         if pack > 0 and self.backend.packs:
             unit = -(-max(pack, limit) // 8)
-            unit = -(-unit // 128) * 128  # FlexAttention's blocks divide every size
+            # FlexAttention's 128-wide blocks divide every size worth its
+            # kernel; a smaller pass runs as a plain masked attention.
+            step = 128 if unit >= 128 else 16
+            unit = -(-unit // step) * step
             self.pack_sizes = [unit * k for k in (1, 2, 3, 4, 6, 8)]
             self.pack = self.pack_sizes[-1]
         if buckets is None:
