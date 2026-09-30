@@ -233,8 +233,14 @@ class Engine:
         """Compiles the step and the prompt shapes `prompt_lengths` need, so
         the first requests do not pay for it."""
         if self.pack:
+            # The sizes a pass can reach: up to the one that holds the longest
+            # `slots` prompts together (every size, without lengths).
+            longest = sorted(prompt_lengths)[-self.slots :]
+            reach = sum(longest) if longest else self.pack
             for size in self.pack_sizes:
                 self.backend.prefill_packed([[self.pad]], [0], [Sampling()], size, self.pad)
+                if size >= reach:
+                    break
             for _ in range(2):
                 self.backend.decode(mode([]))
             self.backend.decode(mode([])).tolist()
