@@ -1,0 +1,18 @@
+module std.nn.moe
+
+// The products of a mixture of experts for the experts each row chose:
+// `y[r, k, o] = sum_i x[r, k, i] * weight[experts[r, k], o, i]`, with every
+// expert's weight stored as `[Experts, Out, In]` and `x[r, k]` the input row
+// `r` sends to its `k`-th expert. The body gathers each chosen expert's
+// weight and multiplies, accumulating in f32; a backend with a grouped
+// matrix product (PyTorch's on CUDA) instead reads the chosen experts'
+// weights where they lie, rows sorted by expert.
+pub op linear_experts<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[R, K, In; T],
+    weight: Tensor[E, Out, In; T],
+    experts: Tensor[R, K; i64],
+) -> Tensor[R, K, Out; T] {
+    let chosen[r, k, o, i] = weight[experts[r, k], o, i]
+    let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, k, i]) * cast<f32>(chosen[r, k, o, i])
+    return cast<T>(y)
+}

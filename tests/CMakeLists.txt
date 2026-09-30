@@ -203,6 +203,17 @@ add_test(NAME cli_torch_source_fast
 set_tests_properties(cli_torch_source_fast PROPERTIES
     PASS_REGULAR_EXPRESSION "F.scaled_dot_product_attention\\("
     FAIL_REGULAR_EXPRESSION "\\.float\\(\\)")
+add_test(NAME cli_torch_source_experts
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --numerics fast --bind E=8 --bind In=16
+            --bind Out=32 --bind K=2 --bind R=3 ${PROJECT_SOURCE_DIR}/tests/cli/experts.linnet)
+set_tests_properties(cli_torch_source_experts PROPERTIES
+    PASS_REGULAR_EXPRESSION "torch._grouped_mm\\(.*v[0-9]+ = _linear_experts\\(in_x, p0, in_experts\\)")
+add_test(NAME cli_torch_source_experts_exact
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --numerics exact --bind E=8 --bind In=16
+            --bind Out=32 --bind K=2 --bind R=3 ${PROJECT_SOURCE_DIR}/tests/cli/experts.linnet)
+set_tests_properties(cli_torch_source_experts_exact PROPERTIES
+    PASS_REGULAR_EXPRESSION "torch.einsum\\(\"abc,abdc->abd\""
+    FAIL_REGULAR_EXPRESSION "_grouped_mm")
 add_test(NAME cli_torch_source_fused
     COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --numerics fast --entry decode --bind Vocab=11
             --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=1 --bind Batch=2

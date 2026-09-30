@@ -1,0 +1,14 @@
+module tests.experts
+
+use std.nn.moe::{linear_experts}
+
+pub block Model<E: Dim, In: Dim, Out: Dim, K: Dim, T: Float = bf16> {
+    param weight: Tensor[E, Out, In; T]
+
+    pub entry forward<R: Dim>(
+        x: Tensor[R, K, In; T],
+        experts: Tensor[R, K; i64],
+    ) -> Tensor[R, K, Out; T] {
+        return linear_experts(x, weight, experts)
+    }
+}

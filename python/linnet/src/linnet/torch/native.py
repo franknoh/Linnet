@@ -214,8 +214,35 @@ def _int4_groups_linear(args: list[Any], _result: torch.dtype | None) -> torch.T
     return y if bias is None else y + bias
 
 
+def _linear_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`std.nn.moe::linear_experts`: one grouped product over the rows sorted
+    by expert on CUDA in bf16, each chosen expert's weight gathered elsewhere."""
+    x, weight, experts = args
+    rows, chosen, width = x.shape
+    count, out_features, _ = weight.shape
+    flat = experts.reshape(-1).long()
+    grouped = getattr(torch, "_grouped_mm", None)
+    if (
+        grouped is not None
+        and x.is_cuda
+        and x.dtype == weight.dtype == torch.bfloat16
+        and torch.cuda.get_device_capability(x.device)[0] >= 9
+        and width % 8 == 0
+        and out_features % 8 == 0
+    ):
+        order = flat.argsort(stable=True)
+        slots = torch.arange(count, device=x.device)
+        ends = (flat[None, :] <= slots[:, None]).sum(1).to(torch.int32)
+        y = grouped(x.reshape(-1, width)[order], weight.transpose(-2, -1), offs=ends)
+        unsorted = torch.empty_like(y).index_copy_(0, order, y)
+        return unsorted.reshape(rows, chosen, out_features)
+    taken = weight[flat].reshape(rows, chosen, out_features, width)
+    return torch.einsum("rki,rkoi->rko", x.float(), taken.float()).to(x.dtype)
+
+
 NATIVE: dict[str, Native] = {
     "torch.ops.aten._weight_int4pack_mm": _int4_groups_linear,
+    "torch._grouped_mm": _linear_experts,
     "torch.nn.functional.embedding": _embedding,
     "torch.index_select": _index_select,
     "torch.nn.functional.batch_norm": _batch_norm,
