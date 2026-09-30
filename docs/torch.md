@@ -73,7 +73,7 @@ What `load` does:
 
 | Option | |
 | --- | --- |
-| `numerics="fast"` (default) | the kernels PyTorch's own reference implementations use: layer normalization and attention in the input dtype |
+| `numerics="fast"` (default) | the kernels PyTorch's own reference implementations use: layer normalization and attention in the input dtype, and a mixture of experts' products for the experts each token chose (`std.nn.moe::linear_experts`) as one `torch._grouped_mm` over the tokens sorted by expert (CUDA, compute capability 9 or later, bf16), which reads each chosen expert's weight where it lies rather than gathering it |
 | `numerics="equivalent"` | the same kernels, with the f32 accumulation the canonical bodies specify; on `bf16` this costs the fused attention kernel and about 1.6x |
 | | the kernels: `F.conv2d` (its stride and padding recovered from the shapes), `F.batch_norm`, `F.linear`, `scaled_dot_product_attention` with `is_causal` for a square `causal_mask` and `enable_gqa` for `grouped_attention`, `torch.softmax`, `torch.rms_norm`, `F.layer_norm`, activations, `torch.matmul`; `F.embedding` and the causal mask are exact and selected under every policy |
 | `numerics="exact"` | every library operation runs as its canonical `.linnet` body: the slowest path, for comparing against |

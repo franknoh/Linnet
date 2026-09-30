@@ -602,6 +602,11 @@ public:
             return define("_int4_linear(" + name(0) + ", " + packed + ", " + name(4) + ", " +
                           name(1) + ", " + name(2) + ", " + name(3) + ")");
         }
+        if (implementation_base == "torch._grouped_mm" && operands.size() == 3 && operands[0] &&
+            operands[1] && operands[2]) {
+            experts_helper_ = true;
+            return define("_linear_experts(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
+        }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             operands[0]) {
             // The geometry is the call's own, as for the convolution;
@@ -775,6 +780,9 @@ public:
                           "import torch.nn.functional as F\n\n";
         if (int4_helpers_) {
             out += int4_helpers();
+        }
+        if (experts_helper_) {
+            out += experts_helper();
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1418,6 +1426,39 @@ private:
                "\n\n";
     }
 
+    // `std.nn.moe::linear_experts` natively: the rows sorted by expert, one
+    // grouped matrix product reading each expert's weight in place, and the
+    // results put back in the rows' order. `offs` ends each expert's rows;
+    // counting rather than `bincount` keeps it on the device, so the step can
+    // be a CUDA graph.
+    static std::string experts_helper() {
+        return "def _linear_experts(x, weight, experts):\n"
+               "    rows, chosen, width = x.shape\n"
+               "    count, out_features, _ = weight.shape\n"
+               "    flat = experts.reshape(-1)\n"
+               "    if (\n"
+               "        x.is_cuda\n"
+               "        and x.dtype == torch.bfloat16\n"
+               "        and weight.dtype == torch.bfloat16\n"
+               "        and hasattr(torch, \"_grouped_mm\")\n"
+               "        and torch.cuda.get_device_capability(x.device)[0] >= 9\n"
+               "        and width % 8 == 0\n"
+               "        and out_features % 8 == 0\n"
+               "    ):\n"
+               "        order = flat.argsort(stable=True)\n"
+               "        slots = torch.arange(count, device=x.device)\n"
+               "        ends = (flat[None, :] <= slots[:, None]).sum(1).to(torch.int32)\n"
+               "        y = torch._grouped_mm(x.reshape(-1, width)[order], weight.transpose(-2, "
+               "-1),\n"
+               "                              offs=ends)\n"
+               "        unsorted = torch.empty_like(y).index_copy_(0, order, y)\n"
+               "        return unsorted.reshape(rows, chosen, out_features)\n"
+               "    taken = weight[flat].reshape(rows, chosen, out_features, width)\n"
+               "    y = torch.einsum(\"rki,rkoi->rko\", x.float(), taken.float())\n"
+               "    return y.to(x.dtype)\n"
+               "\n\n";
+    }
+
     std::string device() const {
         return placed_ ? "_dev[" + std::to_string(slot_) + "]" : std::string("_device");
     }
@@ -1482,6 +1523,7 @@ private:
     std::map<std::string, std::string> literals_; // constant name -> Python literal
     std::set<std::string> causal_masks_;          // square masks from `causal_mask`
     bool int4_helpers_ = false;                   // `_int4_pack` and `_int4_linear` are used
+    bool experts_helper_ = false;                 // `_linear_experts` is used
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value
     std::map<ScalarKind, std::string> zeros_;                // per-dtype zero constants

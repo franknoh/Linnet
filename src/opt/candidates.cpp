@@ -29,6 +29,14 @@ std::vector<NativeCandidate> torch_candidates() {
          "torch.ops.aten._weight_int4pack_mm",
          fast,
          {"CUDA, bf16, and a group size the kernel takes; otherwise the body runs"}},
+        // A grouped matrix product over rows sorted by expert, reading each
+        // chosen expert's weight where it lies; it accumulates in f32 and
+        // rounds once to bf16, as the body's cast does.
+        {"std.nn.moe::linear_experts",
+         "torch._grouped_mm",
+         fast,
+         {"CUDA (compute capability 9 or later), bf16, and widths the kernel takes; otherwise "
+          "the chosen experts are gathered"}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.norm::group_norm", "torch.nn.functional.group_norm", equivalent, {}},
