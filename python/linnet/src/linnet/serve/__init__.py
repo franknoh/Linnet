@@ -561,10 +561,13 @@ class _TorchBackend:
         segments += [-1] * extra
         last += [last[-1]] * (self.slots - len(last))
         packed = self._put([tokens, rows, positions, segments])
+        # A few pass sizes, each compiled like the step (and replayed as a CUDA
+        # graph): FlexAttention runs only under `torch.compile`, and a pass
+        # of thousands of tokens has as many kernels as the step.
         logits = self.model.run_entry(
             "prefill_packed",
             [packed[0], packed[1], packed[2], packed[3], self._put(last)],
-            compile=True,
+            compile=self.step_compile,
         )[: len(prompts)]
         lengths = [len(prompt) for prompt in prompts]
         rows_at, at = self._put(slots), self._put(lengths)
