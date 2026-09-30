@@ -27,15 +27,21 @@ drives two entries, which every decoder in the zoo has:
 | --- | --- |
 | `prefill_slots<M, S>(tokens: [M, S], slots: [M], lengths: [M]) -> [M, Vocab]` | writes `M` prompts into rows `slots` of the KV caches in one pass; each row of `tokens` is padded to one of a few compiled lengths and `lengths` says where each prompt ends |
 | `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]` | one token for every row, each at its own position |
+| `prefill_packed<P>(tokens: [P], rows: [P], positions: [P], segments: [P], last: [Batch]) -> [Batch, Vocab]` | optional: several prompts packed end to end into one pass of `P` tokens, each token given its cache row, its position, and which prompt it belongs to; returns the logits after each prompt's last token, `last[m]` |
 
-They are built from `std.nn.cache::write_slots` and `write_rows` (a cache
-row written at each sequence's own position) and
+They are built from `std.nn.cache::write_slots`, `write_rows` (a cache
+row written at each sequence's own position) and `write_tokens` (each
+token of a packed pass into its own row), and
 `std.nn.attention::grouped_attention_rows` (a mask per sequence). The
 caches are fixed slots sized by the model's `Batch` and `MaxSeq` generics,
 so `Batch` is the most requests in flight and `MaxSeq` the longest prompt
 plus completion; there is no paging. The generated PyTorch writes the
-caches in place, the step is replayed as a CUDA graph, and waiting prompts
-go through in passes of up to 8, each padded to its longest; with
+caches in place and the step is replayed as a CUDA graph. Waiting prompts
+are packed end to end, longest first, into passes of up to `pack` tokens
+(4096 by default) when the model has `prefill_packed` -- a pass is padded
+only after its last prompt, to one of six compiled sizes, and each size is
+compiled and replayed like the step -- and otherwise go through in passes
+of up to 8, each padded to its longest; with
 `linnet.jax.load_model` (or `nest.load(..., backend="jax_model")`) both
 entries are XLA programs over one copy of the weights, with the caches
 donated so XLA updates them in place. The tokens a step produces feed the

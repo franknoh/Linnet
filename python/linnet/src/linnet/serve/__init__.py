@@ -10,10 +10,17 @@ all do):
 - `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]`
   advances every row by one token, each at its own position.
 
+A card may also have `prefill_packed<P>(tokens: [P], rows: [P], positions:
+[P], segments: [P], last: [Batch]) -> [Batch, Vocab]`, which takes several
+prompts packed end to end in one pass of `P` tokens, each token told its
+row, its position, and which prompt it belongs to. With PyTorch the engine
+uses it: a pass then carries no padding between prompts, only after the last
+one up to a compiled size.
+
 `Engine` schedules requests over them. Between two decoding steps it admits
-waiting requests into free rows -- their prompts in passes of up to 8, each
-pass padded to one of a few compiled lengths -- then takes one step for the
-whole batch; a request
+waiting requests into free rows -- their prompts packed into passes of up to
+`pack` tokens, or in passes of up to 8 each padded to one of a few compiled
+lengths -- then takes one step for the whole batch; a request
 leaves when it reaches its token budget, an end-of-sequence token, or the
 cache's length. Rows are fixed slots of a cache sized by the model's `Batch`
 and `MaxSeq` generics -- no paging -- so `Batch` is the most requests in
@@ -133,6 +140,7 @@ class _Backend(Protocol):
 
     slots: int
     max_seq: int
+    packs: bool  # `prefill_packed` runs
 
     def prefill(
         self,
@@ -140,6 +148,14 @@ class _Backend(Protocol):
         slots: list[int],
         lengths: list[int],
         sampling: list[Sampling],
+    ) -> _Tokens: ...
+    def prefill_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
     ) -> _Tokens: ...
     def decode(self, need: int) -> _Tokens: ...
 
@@ -166,6 +182,13 @@ class Engine:
     to a prompt. Prompts are passed `max_group` at a time at most, in groups
     of powers of two, each a compiled shape. `graphs=True` replays the
     PyTorch step as a CUDA graph.
+
+    A PyTorch model whose card has `prefill_packed` takes its prompts packed
+    instead, first fit by decreasing length into passes of up to `pack`
+    tokens (at least the longest prompt a row holds) and `Batch` prompts,
+    each padded at its end to the smallest of `pack_sizes` that holds it: by
+    default 512, 1024, 1536, 2048, 3072 and 4096, scaled to `pack`.
+    `pack=0` keeps the grouped passes.
     """
 
     def __init__(
@@ -176,9 +199,20 @@ class Engine:
         graphs: bool = True,
         pad: int = 0,
         max_group: int = 8,
+        pack: int = 4096,
     ) -> None:
         self.backend: _Backend = _backend_for(model, graphs)
         limit = self.backend.max_seq
+        self.pack = 0
+        self.pack_sizes: list[int] = []
+        if pack > 0 and self.backend.packs:
+            unit = -(-max(pack, limit) // 8)
+            # FlexAttention's 128-wide blocks divide every size worth its
+            # kernel; a smaller pass runs as a plain masked attention.
+            step = 128 if unit >= 128 else 16
+            unit = -(-unit // step) * step
+            self.pack_sizes = [unit * k for k in (1, 2, 3, 4, 6, 8)]
+            self.pack = self.pack_sizes[-1]
         if buckets is None:
             buckets = []
             length = 16
@@ -198,6 +232,19 @@ class Engine:
     def warmup(self, prompt_lengths: Iterable[int] = ()) -> None:
         """Compiles the step and the prompt shapes `prompt_lengths` need, so
         the first requests do not pay for it."""
+        if self.pack:
+            # The sizes a pass can reach: up to the one that holds the longest
+            # `slots` prompts together (every size, without lengths).
+            longest = sorted(prompt_lengths)[-self.slots :]
+            reach = sum(longest) if longest else self.pack
+            for size in self.pack_sizes:
+                self.backend.prefill_packed([[self.pad]], [0], [Sampling()], size, self.pad)
+                if size >= reach:
+                    break
+            for _ in range(2):
+                self.backend.decode(mode([]))
+            self.backend.decode(mode([])).tolist()
+            return
         lengths = {self._bucket(n) for n in prompt_lengths} or {self.buckets[0]}
         for bucket in sorted(lengths):
             group = 1
@@ -295,6 +342,21 @@ class Engine:
         admitted = [self._waiting.popleft() for _ in range(min(len(free), len(self._waiting)))]
         admitted.sort(key=lambda c: len(c.request.prompt))
         placed = list(zip(free, admitted, strict=False))
+        for batch in self._packed(placed):
+            now = time.perf_counter() - self._start
+            prompts = [list(c.request.prompt) for _, c in batch]
+            size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
+            tokens = self.backend.prefill_packed(
+                prompts, [slot for slot, _ in batch], [c.sampling for _, c in batch], size, self.pad
+            )
+            self._prefills += 1
+            for slot, completion in batch:
+                completion.admitted = now
+                rows[slot] = completion
+            owners = [(i, slot, c) for i, (slot, c) in enumerate(batch)]
+            self._queued.append(_Queued(tokens, owners, prompts=True))
+        if self.pack:
+            placed = []
         while placed:
             group = 1
             while group * 2 <= min(len(placed), self.max_group):
@@ -350,6 +412,25 @@ class Engine:
                 completion.request.on_token(completion)
         return finished
 
+    def _packed(self, placed: list[tuple[int, Completion]]) -> list[list[tuple[int, Completion]]]:
+        """The admitted prompts as packed passes: first fit, longest first,
+        into passes of at most `pack` tokens and `slots` prompts."""
+        if not self.pack:
+            return []
+        passes: list[list[tuple[int, Completion]]] = []
+        room: list[int] = []
+        for slot, completion in sorted(placed, key=lambda sc: -len(sc[1].request.prompt)):
+            length = len(completion.request.prompt)
+            for i, left in enumerate(room):
+                if left >= length and len(passes[i]) < self.slots:
+                    passes[i].append((slot, completion))
+                    room[i] -= length
+                    break
+            else:
+                passes.append([(slot, completion)])
+                room.append(self.pack - length)
+        return passes
+
     def _bucket(self, length: int) -> int:
         for bucket in self.buckets:
             if bucket >= length:
@@ -399,6 +480,7 @@ class _TorchBackend:
         self.model = model
         self.slots, self.max_seq = _cache_generics(model)
         self.device = next(iter(model.parameters())).device
+        self.packs = "prefill_packed" in model.entries
         self.step_compile: bool | str = "reduce-overhead" if graphs else True
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
@@ -456,6 +538,60 @@ class _TorchBackend:
         self.positions[index] = at
         return _TorchTokens(first)
 
+    def prefill_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
+    ) -> _Tokens:
+        torch = self.torch
+        tokens: list[int] = []
+        rows: list[int] = []
+        positions: list[int] = []
+        segments: list[int] = []
+        last: list[int] = []
+        for m, (prompt, slot) in enumerate(zip(prompts, slots, strict=True)):
+            tokens += prompt
+            rows += [slot] * len(prompt)
+            positions += range(len(prompt))
+            segments += [m] * len(prompt)
+            last.append(len(tokens) - 1)
+        # Padding after the last prompt: a segment of its own, written at the
+        # cache's last position, which a request stops before it reaches.
+        extra = size - len(tokens)
+        tokens += [pad] * extra
+        rows += [slots[0]] * extra
+        positions += [self.max_seq - 1] * extra
+        segments += [-1] * extra
+        last += [last[-1]] * (self.slots - len(last))
+        packed = self._put([tokens, rows, positions, segments])
+        # A few pass sizes, each compiled like the step (and replayed as a CUDA
+        # graph): FlexAttention runs only under `torch.compile`, and a pass
+        # of thousands of tokens has as many kernels as the step.
+        logits = self.model.run_entry(
+            "prefill_packed",
+            [packed[0], packed[1], packed[2], packed[3], self._put(last)],
+            compile=self.step_compile,
+        )[: len(prompts)]
+        lengths = [len(prompt) for prompt in prompts]
+        rows_at, at = self._put(slots), self._put(lengths)
+        self._hold(slots, sampling)
+        index = rows_at.long()
+        first = self._draw(
+            logits,
+            self.temperature[index],
+            self.top_k[index],
+            self.top_p[index],
+            self.keys[index],
+            at,
+            mode(sampling),
+        )
+        self.tokens[index, 0] = first.to(torch.int32)
+        self.positions[index] = at
+        return _TorchTokens(first)
+
     def decode(self, need: int) -> _Tokens:
         logits = self.model.run_entry(
             "decode_rows", [self.tokens, self.positions], compile=self.step_compile
@@ -490,7 +626,25 @@ class _TorchTokens:
         return self.values.tolist()
 
 
-class _JaxBackend:
+class _Grouped:
+    """A backend whose prompt passes are grouped and padded (`prefill_slots`
+    only): XLA and ONNX Runtime, where a packed pass's mask would cost its
+    whole square."""
+
+    packs = False
+
+    def prefill_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
+    ) -> _Tokens:
+        raise NotImplementedError("packed prompt passes run with the PyTorch backend")
+
+
+class _JaxBackend(_Grouped):
     def __init__(self, model: Any) -> None:
         import jax as jax_module
         import jax.numpy as jnp_module
@@ -581,7 +735,7 @@ class _JaxTokens:
         return np.asarray(self.values).tolist()
 
 
-class _OnnxBackend:
+class _OnnxBackend(_Grouped):
     """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device,
     the step replayed as a CUDA graph on a GPU. Each call returns when its
     results exist, so nothing overlaps. Greedy passes take the argmax in the

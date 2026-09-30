@@ -530,6 +530,14 @@ public:
                           "torch.arange(" + std::to_string(span) + ", device=" + name(0) +
                           ".device), " + name(1) + ")");
         }
+        if (implementation_base == "torch.Tensor.index_put(tokens)" && operands.size() == 4 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            // `write_tokens`: token p at (rows[p], positions[p]), every head;
+            // the values [1, H, P, D] as [P, H, D].
+            return define("torch.ops.aten.index_put(" + name(0) + ", [" + name(2) +
+                          ".long(), None, " + name(3) + ".long()], " + name(1) +
+                          "[0].permute(1, 0, 2))");
+        }
         if (implementation_base == "torch.Tensor.index_put" &&
             (operands.size() == 3 || operands.size() == 4)) {
             std::vector<const TensorInfo*> at;
@@ -732,6 +740,52 @@ public:
             const bool heads_differ = query != nullptr && key != nullptr &&
                                       query->shape.size() > 1 && key->shape.size() > 1 &&
                                       key->shape[1] != query->shape[1];
+            // Fast numerics with an explicit mask: `_attend`, which under
+            // `torch.compile` on CUDA runs FlexAttention over only the key
+            // blocks the mask reaches -- a serving step's rows at their own
+            // lengths, packed prompts that each see only themselves, a
+            // sliding window -- and otherwise the arithmetic below. The
+            // blocks are worked out once per mask and shared by every layer.
+            // FlexAttention takes heads 16 to 256 wide.
+            if (fast && query != nullptr && key != nullptr && attn_mask != nullptr &&
+                !causal_masks_.contains(attn_mask->name) && query->shape.size() == 4 &&
+                key->shape.size() == 4 && key->shape[1] > 0 &&
+                query->shape[1] % key->shape[1] == 0 && query->shape[3] >= 16 &&
+                query->shape[3] <= 256 &&
+                (attn_mask->shape.size() == 2 || attn_mask->shape.size() == 3)) {
+                const std::int64_t queries = query->shape[2];
+                const std::int64_t keys = key->shape[2];
+                const std::int64_t block_q = 128;
+                const std::int64_t block_k = queries == 1 ? 64 : 128;
+                // One query per row pays off across many rows at their own
+                // lengths (a serving step); one request's step has no blocks
+                // to skip, and the two products below launch less.
+                const bool rows_differ = attn_mask->shape.size() == 3 && attn_mask->shape[0] > 1;
+                // FlexAttention's decoding kernel is wrong (errors near 0.4 for
+                // Qwen2.5's seven query heads a key head, PyTorch 2.14) unless
+                // the query heads of a key head are a power of two.
+                const std::int64_t group = query->shape[1] / key->shape[1];
+                const bool whole_group = (group & (group - 1)) == 0;
+                if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0) &&
+                    (queries > 1 || (rows_differ && whole_group))) {
+                    flex_helpers_ = true;
+                    const std::string sizes =
+                        std::to_string(queries) + ", " + std::to_string(keys) + ", " +
+                        std::to_string(block_q) + ", " + std::to_string(block_k);
+                    const std::string key_of = attn_mask->name + "/" + sizes;
+                    auto found = flex_blocks_.find(key_of);
+                    if (found == flex_blocks_.end()) {
+                        found = flex_blocks_
+                                    .emplace(key_of,
+                                             define("_flex_blocks(" + attn_mask->name + ", " +
+                                                    sizes + ")"))
+                                    .first;
+                    }
+                    return define("_attend(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                                  attn_mask->name + ", " + scalar(3) + ", " + found->second + ", " +
+                                  std::to_string(block_q) + ", " + std::to_string(block_k) + ")");
+                }
+            }
             // One query per sequence against a masked cache -- a decoding
             // step -- as two batched matrix products around a softmax. PyTorch
             // sends a masked single query to its memory-efficient kernel, which
@@ -795,6 +849,9 @@ public:
         }
         if (experts_helper_) {
             out += experts_helper();
+        }
+        if (flex_helpers_) {
+            out += flex_helpers();
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1037,7 +1094,13 @@ public:
                 const std::string name = text.substr(start, end - start);
                 constant_names.insert(name);
                 hoisted_names.push_back(name);
-                out.constants += text + "\n";
+                // A mask that is the same every call has its blocks listed
+                // once, eagerly, and can say there is nothing to skip.
+                if (text.find(" = _flex_blocks(") != std::string::npos && text.ends_with(")")) {
+                    out.constants += text.substr(0, text.size() - 1) + ", once=True)\n";
+                } else {
+                    out.constants += text + "\n";
+                }
             } else {
                 out.body += text + "\n";
             }
@@ -1443,6 +1506,89 @@ private:
     // results put back in the rows' order. `offs` ends each expert's rows;
     // counting rather than `bincount` keeps it on the device, so the step can
     // be a CUDA graph.
+    static std::string flex_helpers() {
+        return "def _flex_blocks(mask, queries, keys, block_q, block_k, once=False):\n"
+               "    \"\"\"The key blocks each query block of `mask` ([rows or 1, queries, "
+               "keys],\n"
+               "    or [queries, keys]) reaches in part and reaches whole, as FlexAttention's\n"
+               "    block mask lists them; None where FlexAttention does not run. `once`: the\n"
+               "    mask is the same every call and listed eagerly, so None also where it\n"
+               "    reaches every block and there is nothing to skip.\"\"\"\n"
+               "    if not mask.is_cuda:\n"
+               "        return None\n"
+               "    rows = mask.reshape(-1, queries, keys)\n"
+               "    q_blocks, k_blocks = max(1, queries // block_q), keys // block_k\n"
+               "    # Each tile's elements side by side, reduced in one step: inductor\n"
+               "    # cannot fuse a reduction over an axis of one.\n"
+               "    tiles = (\n"
+               "        rows.reshape(rows.shape[0], q_blocks, -1, k_blocks, block_k)\n"
+               "        .transpose(2, 3)\n"
+               "        .reshape(rows.shape[0], q_blocks, k_blocks, -1)\n"
+               "    )\n"
+               "    reached = tiles.any(-1)\n"
+               "    if once and bool(reached.all()):\n"
+               "        return None\n"
+               "    whole = tiles.all(-1)\n"
+               "\n"
+               "    def listed(live):\n"
+               "        count = live.sum(-1, dtype=torch.int32)[:, None]\n"
+               "        order = torch.argsort((~live).to(torch.int8), dim=-1, stable=True)\n"
+               "        return count, order.to(torch.int32)[:, None]\n"
+               "\n"
+               "    return (*listed(reached & ~whole), *listed(whole))\n"
+               "\n\n"
+               "def _attend(query, key, value, mask, scale, blocks, block_q, block_k):\n"
+               "    \"\"\"Attention under a boolean mask (true attends): FlexAttention over "
+               "the\n"
+               "    blocks the mask reaches when compiled for CUDA, and otherwise the same\n"
+               "    arithmetic as two products around a softmax (one query) or SDPA.\"\"\"\n"
+               "    grouped = key.shape[1] != query.shape[1]\n"
+               "    batch, heads, queries, width = query.shape\n"
+               "    keys = key.shape[2]\n"
+               "    rows = mask.reshape(-1, queries, keys)\n"
+               "    if blocks is not None and torch.compiler.is_compiling():\n"
+               "        from torch.nn.attention.flex_attention import BlockMask, "
+               "flex_attention\n"
+               "\n"
+               "        per_row = rows.shape[0] > 1\n"
+               "\n"
+               "        def mask_mod(b, h, q, kv):\n"
+               "            return rows[b if per_row else 0, q, kv]\n"
+               "\n"
+               "        count, order, whole_count, whole_order = blocks\n"
+               "        block_mask = BlockMask.from_kv_blocks(\n"
+               "            count,\n"
+               "            order,\n"
+               "            whole_count,\n"
+               "            whole_order,\n"
+               "            BLOCK_SIZE=(block_q, block_k),\n"
+               "            mask_mod=mask_mod,\n"
+               "            seq_lengths=(queries, keys),\n"
+               "        )\n"
+               "        return flex_attention(\n"
+               "            query, key, value, block_mask=block_mask, scale=scale, "
+               "enable_gqa=grouped\n"
+               "        )\n"
+               "    if queries == 1:\n"
+               "        # PyTorch sends a masked single query to a kernel that does not\n"
+               "        # split the keys across blocks; two products are faster.\n"
+               "        kv_heads = key.shape[1]\n"
+               "        grouped_query = query.reshape(batch, kv_heads, heads // kv_heads, "
+               "width)\n"
+               "        scores = torch.matmul(grouped_query, key.transpose(-1, -2)).float() * "
+               "scale\n"
+               "        scores = scores.masked_fill(~rows.reshape(rows.shape[0], 1, 1, keys), "
+               "-1e30)\n"
+               "        weights = torch.softmax(scores, dim=-1).to(value.dtype)\n"
+               "        return torch.matmul(weights, value).reshape(batch, heads, 1, width)\n"
+               "    attn_mask = rows.unsqueeze(1) if rows.shape[0] > 1 else rows[0]\n"
+               "    return F.scaled_dot_product_attention(\n"
+               "        query, key, value, attn_mask=attn_mask, scale=scale, "
+               "enable_gqa=grouped\n"
+               "    )\n"
+               "\n\n";
+    }
+
     static std::string experts_helper() {
         return "def _grouped(x, weight):\n"
                "    \"\"\"Whether torch._grouped_mm runs these: CUDA, Hopper or later, "
@@ -1558,12 +1704,14 @@ private:
     int slots_ = 1;
     int slot_ = 0;
     std::vector<std::string> arguments_;
-    std::vector<std::string> parameters_;         // paths, in argument order
-    std::vector<std::string> states_;             // paths, in argument order
-    std::map<std::string, std::string> literals_; // constant name -> Python literal
-    std::set<std::string> causal_masks_;          // square masks from `causal_mask`
-    bool int4_helpers_ = false;                   // `_int4_pack` and `_int4_linear` are used
-    bool experts_helper_ = false;                 // `_linear_experts` is used
+    std::vector<std::string> parameters_;            // paths, in argument order
+    std::vector<std::string> states_;                // paths, in argument order
+    std::map<std::string, std::string> literals_;    // constant name -> Python literal
+    std::set<std::string> causal_masks_;             // square masks from `causal_mask`
+    bool int4_helpers_ = false;                      // `_int4_pack` and `_int4_linear` are used
+    bool experts_helper_ = false;                    // `_linear_experts` is used
+    bool flex_helpers_ = false;                      // `_flex_blocks` and `_attend` are used
+    std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value
     std::map<ScalarKind, std::string> zeros_;                // per-dtype zero constants

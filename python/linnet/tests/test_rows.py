@@ -1,6 +1,7 @@
 """A batch whose sequences sit at different positions: a cache row written
 at each sequence's own position (`write_rows`), a prompt written into one
-row of a shared cache (`write_slot`), and attention masked per sequence
+row of a shared cache (`write_slot`), tokens of packed prompts each written
+into their own row (`write_tokens`), and attention masked per sequence
 (`grouped_attention_rows`) -- what serving several requests at once needs --
 must compute the same numbers on every path, and the generated PyTorch must
 write its caches in place rather than copy them."""
@@ -27,7 +28,7 @@ SOURCE = """\
 module tests.rows
 
 use std.nn.attention::{grouped_attention_rows}
-use std.nn.cache::{write_rows, write_slot, write_slots}
+use std.nn.cache::{write_rows, write_slot, write_slots, write_tokens}
 
 pub block Model<B: Dim, Hk: Dim, H: Dim, S: Dim, D: Dim, N: Dim, T: Float = f32>
 where
@@ -60,6 +61,15 @@ where
         at: i32,
     ) -> Tensor[B, Hk, S, D; T] {
         cache = write_slots(cache, value, slots, at)
+        return cache
+    }
+
+    pub entry store_tokens(
+        value: Tensor[1, Hk, N, D; T],
+        rows: Tensor[N; i32],
+        at: Tensor[N; i32],
+    ) -> Tensor[B, Hk, S, D; T] {
+        cache = write_tokens(cache, value, rows, at)
         return cache
     }
 }
@@ -157,6 +167,37 @@ def test_several_rows_at_once(source: Path, compile: bool) -> None:
     for loader in (load_jax, load_source):
         many = loader(source, generics=GENERICS, weights={}, std_root=STDLIB, entry="store_many")
         out, _ = many(jnp.asarray(value), jnp.asarray([2, 0], dtype=jnp.int32), jnp.int32(1))
+        np.testing.assert_allclose(np.asarray(out), expected, atol=1e-6)
+
+
+@pytest.mark.parametrize("compile", [False, True])
+@pytest.mark.parametrize("numerics", ["exact", "fast"])
+def test_tokens_each_into_their_own_row(source: Path, compile: bool, numerics: str) -> None:
+    """`write_tokens`: three tokens of packed prompts, each to its own row and
+    position, in one pass -- the canonical body and the scatters agree."""
+    rng = np.random.default_rng(3)
+    value = rng.standard_normal((1, 2, 3, 4)).astype(np.float32)
+    rows = np.array([2, 0, 2], dtype=np.int32)
+    at = np.array([5, 1, 0], dtype=np.int32)
+    expected = np.zeros((3, 2, 8, 4), np.float32)
+    for p in range(3):
+        expected[rows[p], :, at[p]] = value[0, :, p]
+    model = load(source, generics=GENERICS, std_root=STDLIB, compile=compile, numerics=numerics)
+    got = model.run_entry(
+        "store_tokens", [torch.tensor(value), torch.tensor(rows), torch.tensor(at)]
+    )
+    np.testing.assert_allclose(got.numpy(), expected, atol=1e-6)
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from linnet.jax import load as load_jax
+    from linnet.jax import load_source
+
+    for loader in (load_jax, load_source):
+        tokens = loader(
+            source, generics=GENERICS, weights={}, std_root=STDLIB, entry="store_tokens"
+        )
+        out, _ = tokens(jnp.asarray(value), jnp.asarray(rows), jnp.asarray(at))
         np.testing.assert_allclose(np.asarray(out), expected, atol=1e-6)
 
 

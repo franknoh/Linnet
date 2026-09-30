@@ -29,7 +29,7 @@ SOURCE = """\
 module tests.serve
 
 use std.nn.attention::{causal_mask, grouped_attention, grouped_attention_rows}
-use std.nn.cache::{write_rows, write_slots}
+use std.nn.cache::{write_rows, write_slots, write_tokens}
 use std.nn.embedding::{Embedding}
 use std.nn.linear::{Linear}
 
@@ -87,6 +87,33 @@ where
         let out = x + merge<M, S>(mixed)
         let last[b, h] = out[b, cast<i64>(lengths[b]) - 1, h]
         return head.forward(last)
+    }
+
+    pub entry prefill_packed<P: Dim>(
+        tokens: Tensor[P; i32],
+        rows: Tensor[P; i32],
+        at: Tensor[P; i32],
+        segments: Tensor[P; i32],
+        last: Tensor[Batch; i32],
+    ) -> Tensor[Batch, Vocab; T]
+    where P > 0 {
+        let placed = reshape(positions.forward(at), [1, P, H])
+        let x = embedding.forward(reshape(tokens, [1, P])) + placed
+        let k = heads<1, P>(k_proj.forward(x))
+        let v = heads<1, P>(v_proj.forward(x))
+        cache_k = write_tokens(cache_k, k, rows, at)
+        cache_v = write_tokens(cache_v, v, rows, at)
+        let own[i, j] = segments[i] == segments[j] && at[j] <= at[i]
+        let mixed = grouped_attention(
+            heads<1, P>(q_proj.forward(x)),
+            k,
+            v,
+            rsqrt(cast<f32>(H / Heads)),
+            some(own),
+        )
+        let out = x + merge<1, P>(mixed)
+        let ends[m, h] = out[0, cast<i64>(last[m]), h]
+        return head.forward(ends)
     }
 
     pub entry decode_rows(
@@ -173,18 +200,38 @@ def _greedy(model: torch.nn.Module, request: Request) -> list[int]:
     return out
 
 
-def test_torch(model_files: tuple[Path, Path]) -> None:
+@pytest.mark.parametrize("pack", [48, 0])
+def test_torch(model_files: tuple[Path, Path], pack: int) -> None:
+    """Prompts packed end to end into passes (`prefill_packed`), or grouped
+    and padded (`prefill_slots`, `pack=0`): the same tokens either way."""
     source, weights = model_files
     model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
     requests = _requests()
-    done, stats = Engine(model, graphs=False, buckets=[8, 16, 32]).run(requests)
+    engine = Engine(model, graphs=False, buckets=[8, 16, 32], pack=pack)
+    assert bool(engine.pack) == (pack > 0)
+    done, stats = engine.run(requests)
     # Eight requests through three rows: some had to wait for a row, and the
-    # first three prompts went through together (a pass of two and one of one).
+    # first three prompts went through together.
     assert stats.prefills < len(requests) and max(c.admitted for c in done) > 0
     for completion in done:
         assert completion.tokens == _greedy(model, completion.request)
         assert completion.reason == "length"
     assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
+
+
+def test_packs_fill_passes_longest_first(model_files: tuple[Path, Path]) -> None:
+    """First fit by decreasing length, at most `pack` tokens and `Batch`
+    prompts a pass, each pass padded to the smallest compiled size."""
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, pack=48)
+    assert engine.pack_sizes == [16, 32, 48, 64, 96, 128]
+    placed = [
+        (slot, Completion(Request(prompt=[1] * n, max_new_tokens=1)))
+        for slot, n in enumerate([30, 100, 40])
+    ]
+    passes = engine._packed(placed)  # pyright: ignore[reportPrivateUsage]
+    assert [[len(c.request.prompt) for _, c in p] for p in passes] == [[100], [40, 30]]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
