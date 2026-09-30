@@ -757,7 +757,12 @@ public:
                 const std::int64_t keys = key->shape[2];
                 const std::int64_t block_q = 128;
                 const std::int64_t block_k = queries == 1 ? 64 : 128;
-                if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0)) {
+                // One query per row pays off across many rows at their own
+                // lengths (a serving step); one request's step has no blocks
+                // to skip, and the two products below launch less.
+                const bool rows_differ = attn_mask->shape.size() == 3 && attn_mask->shape[0] > 1;
+                if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0) &&
+                    (queries > 1 || rows_differ)) {
                     flex_helpers_ = true;
                     const std::string sizes =
                         std::to_string(queries) + ", " + std::to_string(keys) + ", " +
