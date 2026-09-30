@@ -231,7 +231,11 @@ def test_jax_runs_the_routed_bodies(routed: tuple[Path, Path, torch.Tensor, torc
 
     source, path, up, down = routed
     x, experts, weights = _routed_inputs(6)
-    model = load_model(source, generics=ROUTED_GENERICS, weights=path, std_root=STDLIB)
+    # Exact numerics: f32 products at full precision, where XLA's default on
+    # a GPU is TF32.
+    model = load_model(
+        source, generics=ROUTED_GENERICS, weights=path, std_root=STDLIB, numerics="exact"
+    )
     got = np.asarray(model.run_entry("forward", [x.numpy(), experts.numpy(), weights.numpy()]))
     expected = _routed_expected(x, experts, weights, up, down).numpy()
     np.testing.assert_allclose(got, expected, atol=1e-4, rtol=1e-4)
