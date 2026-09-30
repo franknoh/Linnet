@@ -37,6 +37,19 @@ std::vector<NativeCandidate> torch_candidates() {
          fast,
          {"CUDA (compute capability 9 or later), bf16, and widths the kernel takes; otherwise "
           "the chosen experts are gathered"}},
+        // The same product for an input every chosen expert shares, and for
+        // inputs of their own weighed and summed: in place of the bodies'
+        // product with every expert.
+        {"std.nn.moe::linear_experts_shared",
+         "torch._grouped_mm(shared)",
+         fast,
+         {"CUDA (compute capability 9 or later), bf16, and widths the kernel takes; otherwise "
+          "every expert multiplies every row"}},
+        {"std.nn.moe::combine_experts",
+         "torch._grouped_mm(combined)",
+         fast,
+         {"CUDA (compute capability 9 or later), bf16, and widths the kernel takes; otherwise "
+          "every expert multiplies every row"}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.norm::group_norm", "torch.nn.functional.group_norm", equivalent, {}},

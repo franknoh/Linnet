@@ -1,5 +1,7 @@
 module std.nn.moe
 
+use std.nn.linear::{linear}
+
 // The products of a mixture of experts for the experts each row chose:
 // `y[r, k, o] = sum_i x[r, k, i] * weight[experts[r, k], o, i]`, with every
 // expert's weight stored as `[Experts, Out, In]` and `x[r, k]` the input row
@@ -15,4 +17,41 @@ pub op linear_experts<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float>(
     let chosen[r, k, o, i] = weight[experts[r, k], o, i]
     let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, k, i]) * cast<f32>(chosen[r, k, o, i])
     return cast<T>(y)
+}
+
+// `linear_experts` for an input every chosen expert shares -- a mixture's
+// gate and up projections: `y[r, k, o] = sum_i x[r, i] * weight[experts[r, k], o, i]`.
+// The body multiplies each row by every expert, one linear layer over the
+// experts side by side, and keeps the chosen ones: the dense form's work,
+// and no more memory than its result. A backend with a grouped matrix
+// product multiplies each expert by the rows that chose it instead.
+pub op linear_experts_shared<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[R, In; T],
+    weight: Tensor[E, Out, In; T],
+    experts: Tensor[R, K; i64],
+) -> Tensor[R, K, Out; T] {
+    let products = reshape(linear(x, reshape(weight, [E * Out, In])), [R * E, Out])
+    let rows = iota<i32>(R)
+    let place[r, k] = cast<i64>(rows[r]) * cast<i64>(E) + experts[r, k]
+    let y[r, k, o] = products[place[r, k], o]
+    return y
+}
+
+// The chosen experts' products with their own inputs, weighed and summed
+// per row -- a mixture's down projection:
+// `y[r, o] = sum_k weights[r, k] * sum_i x[r, k, i] * weight[experts[r, k], o, i]`.
+// The body puts each row's weighed inputs in its experts' places, zero
+// elsewhere, and multiplies by every expert at once: one linear layer over
+// the experts side by side, the dense form's work. A backend with a grouped
+// matrix product multiplies each expert by the rows that chose it instead.
+pub op combine_experts<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[R, K, In; T],
+    weight: Tensor[E, Out, In; T],
+    experts: Tensor[R, K; i64],
+    weights: Tensor[R, K; T],
+) -> Tensor[R, Out; T] {
+    let slots = iota<i32>(E)
+    let route[r, e, k] = select(experts[r, k] == cast<i64>(slots[e]), weights[r, k], cast<T>(0.0))
+    let placed[r, e, i] = sum[k] route[r, e, k] * x[r, k, i]
+    return linear(reshape(placed, [R, E * In]), reshape(permute(weight, [1, 0, 2]), [Out, E * In]))
 }

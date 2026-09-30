@@ -607,6 +607,18 @@ public:
             experts_helper_ = true;
             return define("_linear_experts(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
         }
+        if (implementation_base == "torch._grouped_mm(shared)" && operands.size() == 3 &&
+            operands[0] && operands[1] && operands[2]) {
+            experts_helper_ = true;
+            return define("_linear_experts_shared(" + name(0) + ", " + name(1) + ", " + name(2) +
+                          ")");
+        }
+        if (implementation_base == "torch._grouped_mm(combined)" && operands.size() == 4 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            experts_helper_ = true;
+            return define("_combine_experts(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ")");
+        }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             operands[0]) {
             // The geometry is the call's own, as for the convolution;
@@ -1432,19 +1444,24 @@ private:
     // counting rather than `bincount` keeps it on the device, so the step can
     // be a CUDA graph.
     static std::string experts_helper() {
-        return "def _linear_experts(x, weight, experts):\n"
-               "    rows, chosen, width = x.shape\n"
-               "    count, out_features, _ = weight.shape\n"
-               "    flat = experts.reshape(-1)\n"
-               "    if (\n"
+        return "def _grouped(x, weight):\n"
+               "    \"\"\"Whether torch._grouped_mm runs these: CUDA, Hopper or later, "
+               "bf16.\"\"\"\n"
+               "    return (\n"
                "        x.is_cuda\n"
                "        and x.dtype == torch.bfloat16\n"
                "        and weight.dtype == torch.bfloat16\n"
                "        and hasattr(torch, \"_grouped_mm\")\n"
                "        and torch.cuda.get_device_capability(x.device)[0] >= 9\n"
-               "        and width % 8 == 0\n"
-               "        and out_features % 8 == 0\n"
-               "    ):\n"
+               "        and x.shape[-1] % 8 == 0\n"
+               "        and weight.shape[1] % 8 == 0\n"
+               "    )\n"
+               "\n\n"
+               "def _linear_experts(x, weight, experts):\n"
+               "    rows, chosen, width = x.shape\n"
+               "    count, out_features, _ = weight.shape\n"
+               "    flat = experts.reshape(-1)\n"
+               "    if _grouped(x, weight):\n"
                "        order = flat.argsort(stable=True)\n"
                "        slots = torch.arange(count, device=x.device)\n"
                "        ends = (flat[None, :] <= slots[:, None]).sum(1).to(torch.int32)\n"
@@ -1456,6 +1473,29 @@ private:
                "    taken = weight[flat].reshape(rows, chosen, out_features, width)\n"
                "    y = torch.einsum(\"rki,rkoi->rko\", x.float(), taken.float())\n"
                "    return y.to(x.dtype)\n"
+               "\n\n"
+               "def _linear_experts_shared(x, weight, experts):\n"
+               "    rows, chosen = experts.shape\n"
+               "    count, out_features, width = weight.shape\n"
+               "    if _grouped(x, weight):\n"
+               "        return _linear_experts(x[:, None, :].expand(rows, chosen, width), weight, "
+               "experts)\n"
+               "    every = F.linear(x, weight.reshape(count * out_features, width))\n"
+               "    every = every.reshape(rows, count, out_features)\n"
+               "    return every.gather(1, experts[..., None].expand(rows, chosen, out_features))\n"
+               "\n\n"
+               "def _combine_experts(x, weight, experts, weights):\n"
+               "    rows, chosen, width = x.shape\n"
+               "    count, out_features, _ = weight.shape\n"
+               "    if _grouped(x, weight):\n"
+               "        y = _linear_experts(x, weight, experts).float() * weights.float()[..., "
+               "None]\n"
+               "        return y.sum(1).to(x.dtype)\n"
+               "    placed = torch.zeros(rows, count, width, dtype=x.dtype, device=x.device)\n"
+               "    placed.scatter_add_(1, experts[..., None].expand(rows, chosen, width), "
+               "weights[..., None] * x)\n"
+               "    joined = weight.permute(1, 0, 2).reshape(out_features, count * width)\n"
+               "    return F.linear(placed.reshape(rows, count * width), joined)\n"
                "\n\n";
     }
 
