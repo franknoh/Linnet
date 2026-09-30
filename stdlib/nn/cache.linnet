@@ -107,3 +107,31 @@ where
     )
     return out
 }
+
+// One position per token, each token in a row of its own choosing: token `p`
+// is written into row `rows[p]` at `positions[p]`. Prompts packed end to end
+// into one pass -- each token of a prompt goes to that prompt's row, at its
+// place in the prompt -- write their keys and values this way. The pairs
+// `(rows[p], positions[p])` must be distinct, except that tokens meant to be
+// dropped may share one pair nobody reads.
+pub op write_tokens<B: Dim, H: Dim, S: Dim, P: Dim, D: Dim, T: Float>(
+    cache: Tensor[B, H, S, D; T],
+    value: Tensor[1, H, P, D; T],
+    rows: Tensor[P; i32],
+    positions: Tensor[P; i32],
+) -> Tensor[B, H, S, D; T]
+where
+    S > 0,
+    P > 0
+{
+    let slots = iota<i32>(B)
+    let places = iota<i32>(S)
+    // Which token lands on row `b` at position `s`, if any.
+    let hits[b, s, p] = cast<i32>(rows[p] == slots[b] && positions[p] == places[s])
+    let chosen[b, s] = sum<i32>[p] hits[b, s, p] * cast<i32>(iota<i64>(P)[p])
+    let written[b, s] = (sum<i32>[p] hits[b, s, p]) > 0
+    let source[b, s] = cast<i64>(min(chosen[b, s], cast<i32>(P) - 1))
+    let by_token = permute(value, [2, 0, 1, 3])
+    let out[b, h, s, d] = select(written[b, s], by_token[source[b, s], 0, h, d], cache[b, h, s, d])
+    return out
+}

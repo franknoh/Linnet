@@ -345,6 +345,16 @@ public:
             return define("jax.lax.dynamic_update_slice_in_dim(" + name(0) + ", " + name(1) + ", " +
                           name(2) + ".astype(jnp.int32), 2)");
         }
+        if (implementation_base == "torch.Tensor.index_put(tokens)" && at.size() == 4 &&
+            at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr &&
+            at[0]->shape.size() == 4) {
+            // `write_tokens`: token p at (rows[p], positions[p]), a scatter of
+            // P x H vectors.
+            return define(name(0) + ".at[" + name(2) + ".astype(jnp.int32)[:, None], jnp.arange(" +
+                          std::to_string(at[0]->shape[1]) + ")[None, :], " + name(3) +
+                          ".astype(jnp.int32)[:, None]].set(" + name(1) +
+                          "[0].transpose(1, 0, 2))");
+        }
         if (implementation_base == "torch.Tensor.index_put" && (at.size() == 3 || at.size() == 4) &&
             at[0] != nullptr && at[1] != nullptr && at[0]->shape.size() == 4) {
             if (at.size() == 3) {
