@@ -40,9 +40,19 @@ fused kernel in place of dequantize-then-multiply:
 
 | Backend | `linear_int4_groups` |
 | --- | --- |
-| PyTorch, CUDA, `bf16`, groups of 32 to 256 | tinygemm (`_weight_int4pack_mm`); the weights are repacked for it once, at load (`--prepare`) |
+| PyTorch, CUDA, `bf16`, groups of 32 to 256 | tinygemm (`_weight_int4pack_mm`) for up to 16 rows; the weights are repacked for it once, at load (`--prepare`). More rows (a prompt) multiply the weight dequantized by one Triton kernel |
 | ONNX Runtime | `com.microsoft.MatMulNBits` (`f32` and `f16`; `bf16` goes through `f32`) |
+| JAX | the body, dequantized once at load (`--prepare`) |
 | everywhere else | the body: unpack, dequantize, `linear` |
+
+tinygemm reads the packed weights, so a decoding step reads a quarter of
+bf16's bytes, but its time grows with the rows; past about 16 a prompt's
+rows go faster through cuBLAS over the weight dequantized for that call, a
+layer at a time. For Llama 3.1 8B the first token of a 512-token prompt
+takes 24.8 ms this way, against 17.5 ms in bf16. XLA has no fused kernel
+for a 4-bit weight: left in the step, the dequantization runs as its own
+pass every call (44 tokens per second for 8B), so JAX dequantizes once when
+the model loads and then computes, and holds its weights, as in bf16.
 
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
 rounding each group to the nearest level:
