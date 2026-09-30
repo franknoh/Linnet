@@ -43,6 +43,14 @@ def _index_put(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.ops.aten.index_put(cache, [rows, None, span], value.permute(0, 2, 1, 3))
 
 
+def _write_tokens(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`write_tokens`: token p at (rows[p], positions[p]), every head."""
+    cache, value, rows, positions = args
+    return torch.ops.aten.index_put(
+        cache, [rows.long(), None, positions.long()], value[0].permute(1, 0, 2)
+    )
+
+
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
@@ -286,6 +294,7 @@ NATIVE: dict[str, Native] = {
     "torch.Tensor.mean": _spatial_mean,
     "torch.Tensor.index_copy": _index_copy,
     "torch.Tensor.index_put": _index_put,
+    "torch.Tensor.index_put(tokens)": _write_tokens,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,
