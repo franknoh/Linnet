@@ -746,10 +746,12 @@ public:
             // lengths, packed prompts that each see only themselves, a
             // sliding window -- and otherwise the arithmetic below. The
             // blocks are worked out once per mask and shared by every layer.
+            // FlexAttention takes heads 16 to 256 wide.
             if (fast && query != nullptr && key != nullptr && attn_mask != nullptr &&
                 !causal_masks_.contains(attn_mask->name) && query->shape.size() == 4 &&
                 key->shape.size() == 4 && key->shape[1] > 0 &&
-                query->shape[1] % key->shape[1] == 0 &&
+                query->shape[1] % key->shape[1] == 0 && query->shape[3] >= 16 &&
+                query->shape[3] <= 256 &&
                 (attn_mask->shape.size() == 2 || attn_mask->shape.size() == 3)) {
                 const std::int64_t queries = query->shape[2];
                 const std::int64_t keys = key->shape[2];
