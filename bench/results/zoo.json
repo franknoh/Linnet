@@ -13,6 +13,452 @@
   "gpus": "1",
   "driver": "580.126.09"
  },
+ "compare": {
+  "groups": [
+   {
+    "id": "pytorch",
+    "title": "PyTorch",
+    "keys": [
+     "transformers-eager",
+     "transformers-compile",
+     "diffusers-eager",
+     "diffusers-compile",
+     "sentence-transformers",
+     "linnet-torch",
+     "linnet-inductor",
+     "linnet-cudagraphs"
+    ]
+   },
+   {
+    "id": "jax",
+    "title": "JAX",
+    "keys": [
+     "keras-hub",
+     "linnet-jax",
+     "linnet-jax-source"
+    ]
+   },
+   {
+    "id": "onnx",
+    "title": "ONNX Runtime and TensorRT",
+    "keys": [
+     "onnx-reference",
+     "linnet-onnx-f32",
+     "linnet-onnx-f16",
+     "linnet-onnx-bf16",
+     "linnet-onnx-f32-trt",
+     "linnet-onnx-f16-trt",
+     "linnet-onnx-bf16-trt"
+    ]
+   },
+   {
+    "id": "engines",
+    "title": "LLM engines",
+    "keys": [
+     "vllm",
+     "linnet-vllm",
+     "sglang",
+     "linnet-sglang",
+     "tgi",
+     "linnet-tgi",
+     "linnet-llamacpp"
+    ]
+   },
+   {
+    "id": "triton",
+    "title": "Triton Inference Server",
+    "keys": [
+     "triton-onnx",
+     "triton-linnet-onnx",
+     "triton-linnet-python"
+    ]
+   },
+   {
+    "id": "multi",
+    "title": "Beyond one GPU",
+    "keys": [
+     "vllm-tp",
+     "linnet-tp-torch",
+     "linnet-tp-jax",
+     "linnet-gpus",
+     "linnet-offload"
+    ]
+   },
+   {
+    "id": "serving",
+    "title": "Serving many requests",
+    "keys": [
+     "serve-vllm",
+     "serve-linnet-torch",
+     "serve-linnet-jax",
+     "serve-linnet-onnx",
+     "serve-linnet-vllm",
+     "serve-sglang",
+     "serve-linnet-sglang",
+     "serve-tgi",
+     "serve-linnet-tgi",
+     "serve-triton-vllm",
+     "serve-triton-linnet",
+     "serve-transformers",
+     "serve-keras-hub"
+    ]
+   }
+  ],
+  "matchups": [
+   {
+    "id": "vllm",
+    "title": "One request at a time, against vLLM",
+    "short": "vs vLLM, one request",
+    "group": null,
+    "metric": "decode_tok_s",
+    "pairs": [
+     {
+      "them": [
+       "vllm"
+      ],
+      "us": [
+       "linnet-cudagraphs",
+       "linnet-jax-source",
+       "linnet-jax",
+       "linnet-inductor",
+       "linnet-torch"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "pytorch",
+    "title": "In PyTorch, against the reference implementation",
+    "short": "vs the reference, in PyTorch",
+    "group": "pytorch",
+    "metric": "primary",
+    "pairs": [
+     {
+      "them": [
+       "transformers-compile",
+       "transformers-eager",
+       "diffusers-compile",
+       "diffusers-eager",
+       "sentence-transformers"
+      ],
+      "us": [
+       "linnet-cudagraphs",
+       "linnet-inductor",
+       "linnet-torch"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "jax",
+    "title": "In JAX, against KerasHub",
+    "short": "vs KerasHub, in JAX",
+    "group": "jax",
+    "metric": "primary",
+    "pairs": [
+     {
+      "them": [
+       "keras-hub"
+      ],
+      "us": [
+       "linnet-jax-source",
+       "linnet-jax"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "onnx",
+    "title": "On ONNX Runtime, against the reference's own export",
+    "short": "vs torch.onnx, on ONNX Runtime",
+    "group": "onnx",
+    "metric": "primary",
+    "pairs": [
+     {
+      "them": [
+       "onnx-reference"
+      ],
+      "us": [
+       "linnet-onnx-f32"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "triton",
+    "title": "Behind Triton Inference Server, against the reference's export",
+    "short": "vs torch.onnx, behind Triton",
+    "group": "triton",
+    "metric": "primary",
+    "pairs": [
+     {
+      "them": [
+       "triton-onnx"
+      ],
+      "us": [
+       "triton-linnet-onnx"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "export",
+    "title": "In other engines, Linnet's export against the original checkpoint",
+    "short": "exported to vLLM, SGLang, TGI",
+    "group": "engines",
+    "metric": "decode_tok_s",
+    "parity": true,
+    "pairs": [
+     {
+      "them": [
+       "vllm"
+      ],
+      "us": [
+       "linnet-vllm"
+      ]
+     },
+     {
+      "them": [
+       "sglang"
+      ],
+      "us": [
+       "linnet-sglang"
+      ]
+     },
+     {
+      "them": [
+       "tgi"
+      ],
+      "us": [
+       "linnet-tgi"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "tp",
+    "title": "On two GPUs, against vLLM's tensor parallelism",
+    "short": "vs vLLM, two GPUs",
+    "group": "multi",
+    "metric": "decode_tok_s",
+    "pairs": [
+     {
+      "them": [
+       "vllm-tp"
+      ],
+      "us": [
+       "linnet-tp-torch",
+       "linnet-tp-jax"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "serve",
+    "title": "Serving 256 requests, against vLLM",
+    "short": "vs vLLM, serving",
+    "group": "serving",
+    "metric": "serve_tok_s",
+    "pairs": [
+     {
+      "them": [
+       "serve-vllm"
+      ],
+      "us": [
+       "serve-linnet-torch",
+       "serve-linnet-jax",
+       "serve-linnet-onnx"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "serve-export",
+    "title": "Serving in other engines, Linnet's export against the original checkpoint",
+    "short": "exported, serving",
+    "group": "serving",
+    "metric": "serve_tok_s",
+    "parity": true,
+    "pairs": [
+     {
+      "them": [
+       "serve-vllm"
+      ],
+      "us": [
+       "serve-linnet-vllm"
+      ]
+     },
+     {
+      "them": [
+       "serve-sglang"
+      ],
+      "us": [
+       "serve-linnet-sglang"
+      ]
+     },
+     {
+      "them": [
+       "serve-tgi"
+      ],
+      "us": [
+       "serve-linnet-tgi"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "serve-triton",
+    "title": "Serving behind Triton, against its vLLM backend",
+    "short": "vs vLLM, behind Triton",
+    "group": "serving",
+    "metric": "serve_tok_s",
+    "pairs": [
+     {
+      "them": [
+       "serve-triton-vllm"
+      ],
+      "us": [
+       "serve-triton-linnet"
+      ]
+     }
+    ]
+   }
+  ],
+  "runtimes": [
+   {
+    "id": "pytorch",
+    "title": "PyTorch",
+    "keys": [
+     "linnet-torch",
+     "linnet-inductor",
+     "linnet-cudagraphs"
+    ]
+   },
+   {
+    "id": "xla",
+    "title": "XLA",
+    "keys": [
+     "linnet-jax",
+     "linnet-jax-source"
+    ]
+   },
+   {
+    "id": "onnx",
+    "title": "ONNX Runtime",
+    "keys": [
+     "linnet-onnx-f32",
+     "linnet-onnx-f16",
+     "linnet-onnx-bf16"
+    ]
+   },
+   {
+    "id": "tensorrt",
+    "title": "TensorRT",
+    "keys": [
+     "linnet-onnx-f32-trt",
+     "linnet-onnx-f16-trt",
+     "linnet-onnx-bf16-trt"
+    ]
+   },
+   {
+    "id": "triton",
+    "title": "Triton",
+    "keys": [
+     "triton-linnet-onnx",
+     "triton-linnet-python",
+     "serve-triton-linnet"
+    ]
+   },
+   {
+    "id": "serve",
+    "title": "linnet.serve",
+    "keys": [
+     "serve-linnet-torch",
+     "serve-linnet-jax",
+     "serve-linnet-onnx"
+    ]
+   },
+   {
+    "id": "vllm",
+    "title": "vLLM",
+    "keys": [
+     "linnet-vllm",
+     "serve-linnet-vllm"
+    ]
+   },
+   {
+    "id": "sglang",
+    "title": "SGLang",
+    "keys": [
+     "linnet-sglang",
+     "serve-linnet-sglang"
+    ]
+   },
+   {
+    "id": "tgi",
+    "title": "TGI",
+    "keys": [
+     "linnet-tgi",
+     "serve-linnet-tgi"
+    ]
+   },
+   {
+    "id": "llamacpp",
+    "title": "llama.cpp",
+    "keys": [
+     "linnet-llamacpp"
+    ]
+   }
+  ],
+  "labels": {
+   "transformers-eager": "transformers",
+   "transformers-compile": "transformers, compiled",
+   "diffusers-eager": "diffusers",
+   "diffusers-compile": "diffusers, compiled",
+   "sentence-transformers": "sentence-transformers",
+   "linnet-torch": "Linnet, generated PyTorch",
+   "linnet-inductor": "Linnet, inductor",
+   "linnet-cudagraphs": "Linnet, CUDA graphs",
+   "keras-hub": "KerasHub",
+   "linnet-jax": "Linnet, XLA (StableHLO)",
+   "linnet-jax-source": "Linnet, XLA (generated JAX)",
+   "onnx-reference": "torch.onnx export",
+   "linnet-onnx-f32": "Linnet, ONNX Runtime f32",
+   "linnet-onnx-f16": "Linnet, ONNX Runtime f16",
+   "linnet-onnx-bf16": "Linnet, ONNX Runtime bf16",
+   "linnet-onnx-f32-trt": "Linnet, TensorRT f32",
+   "linnet-onnx-f16-trt": "Linnet, TensorRT f16",
+   "linnet-onnx-bf16-trt": "Linnet, TensorRT bf16",
+   "vllm": "vLLM",
+   "linnet-vllm": "vLLM on Linnet's export",
+   "sglang": "SGLang",
+   "linnet-sglang": "SGLang on Linnet's export",
+   "tgi": "TGI",
+   "linnet-tgi": "TGI on Linnet's export",
+   "linnet-llamacpp": "llama.cpp on Linnet's GGUF",
+   "triton-onnx": "Triton, torch.onnx export",
+   "triton-linnet-onnx": "Triton, Linnet's ONNX",
+   "triton-linnet-python": "Triton, Linnet Python backend",
+   "vllm-tp": "vLLM, tensor parallel",
+   "linnet-tp-torch": "Linnet, tensor parallel (PyTorch)",
+   "linnet-tp-jax": "Linnet, tensor parallel (XLA)",
+   "linnet-gpus": "Linnet, layers on two GPUs",
+   "linnet-offload": "Linnet, offloaded to host",
+   "serve-vllm": "vLLM",
+   "serve-linnet-torch": "linnet.serve, CUDA graphs",
+   "serve-linnet-jax": "linnet.serve, XLA",
+   "serve-linnet-onnx": "linnet.serve, ONNX Runtime",
+   "serve-linnet-vllm": "vLLM on Linnet's export",
+   "serve-sglang": "SGLang",
+   "serve-linnet-sglang": "SGLang on Linnet's export",
+   "serve-tgi": "TGI",
+   "serve-linnet-tgi": "TGI on Linnet's export",
+   "serve-triton-vllm": "Triton, vLLM backend",
+   "serve-triton-linnet": "Triton, linnet.serve backend",
+   "serve-transformers": "transformers, batched",
+   "serve-keras-hub": "KerasHub, static batches"
+  }
+ },
  "models": [
   {
    "name": "all-MiniLM-L6-v2",
@@ -47,6 +493,7 @@
       "load_s": 2.1933,
       "peak_vram_mib": 880.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "unpadded batches of exactly 128 tokens (this card takes no padding mask)",
      "error": null
@@ -61,6 +508,7 @@
       "load_s": 1.4946,
       "peak_vram_mib": 892.0
      },
+     "first_token": null,
      "max_abs_diff": 0.046875,
      "notes": "unpadded batches of exactly 128 tokens (this card takes no padding mask)",
      "error": null
@@ -75,6 +523,7 @@
       "load_s": 2.4411,
       "peak_vram_mib": 824.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "natural text tokenizing to 65 tokens, identical across the batch (no padding wasted); not the fixed-length random-token workload the other rows use, since this is the library's own string-in interface",
      "error": null
@@ -89,6 +538,7 @@
       "load_s": 0.6231,
       "peak_vram_mib": 864.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -103,6 +553,7 @@
       "load_s": 0.5717,
       "peak_vram_mib": 968.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -117,6 +568,7 @@
       "load_s": 0.6319,
       "peak_vram_mib": 840.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -132,6 +584,7 @@
       "peak_vram_mib": 346.9,
       "driver_vram_mib": 1134.0
      },
+     "first_token": null,
      "max_abs_diff": 0.046875,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -147,6 +600,7 @@
       "peak_vram_mib": 312.6,
       "driver_vram_mib": 1132.0
      },
+     "first_token": null,
      "max_abs_diff": 0.046875,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -161,6 +615,7 @@
       "load_s": 0.2903,
       "peak_vram_mib": 1492.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06287145614624023,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -175,6 +630,7 @@
       "load_s": 0.281,
       "peak_vram_mib": 2556.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06383466720581055,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -189,6 +645,7 @@
       "load_s": 0.2861,
       "peak_vram_mib": 1140.0
      },
+     "first_token": null,
      "max_abs_diff": 0.064453125,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -203,6 +660,7 @@
       "load_s": 0.2823,
       "peak_vram_mib": 2464.0
      },
+     "first_token": null,
      "max_abs_diff": 0.05859375,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -217,6 +675,7 @@
       "load_s": 0.2819,
       "peak_vram_mib": 1140.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03515625,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -231,6 +690,7 @@
       "load_s": 0.2746,
       "peak_vram_mib": 2464.0
      },
+     "first_token": null,
      "max_abs_diff": 0.046875,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -246,6 +706,7 @@
       "peak_vram_mib": 254.6,
       "driver_vram_mib": 880.0
      },
+     "first_token": null,
      "max_abs_diff": 0.046875,
      "notes": "bf16, under jax.jit; unpadded batches of exactly 128 tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -260,6 +721,7 @@
       "load_s": 12.4322,
       "peak_vram_mib": 1486.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06286907196044922,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; unpadded batches of exactly 128 tokens",
      "error": null
@@ -274,6 +736,7 @@
       "load_s": 5.1397,
       "peak_vram_mib": 1590.8
      },
+     "first_token": null,
      "max_abs_diff": 0.06286907196044922,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -288,6 +751,7 @@
       "load_s": 9.1867,
       "peak_vram_mib": 1560.8
      },
+     "first_token": null,
      "max_abs_diff": 0.06287145614624023,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -302,6 +766,7 @@
       "load_s": 7.137,
       "peak_vram_mib": 2368.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -341,6 +806,7 @@
       "load_s": 1.4411,
       "peak_vram_mib": 1162.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "unpadded batches of exactly 128 tokens (this card takes no padding mask)",
      "error": null
@@ -355,6 +821,7 @@
       "load_s": 1.6261,
       "peak_vram_mib": 1142.0
      },
+     "first_token": null,
      "max_abs_diff": 0.109375,
      "notes": "unpadded batches of exactly 128 tokens (this card takes no padding mask)",
      "error": null
@@ -369,6 +836,7 @@
       "load_s": 1.0936,
       "peak_vram_mib": 1108.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1171875,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -383,6 +851,7 @@
       "load_s": 1.1176,
       "peak_vram_mib": 1148.0
      },
+     "first_token": null,
      "max_abs_diff": 0.140625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -397,6 +866,7 @@
       "load_s": 1.1144,
       "peak_vram_mib": 1060.0
      },
+     "first_token": null,
      "max_abs_diff": 0.140625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -412,6 +882,7 @@
       "peak_vram_mib": 734.4,
       "driver_vram_mib": 1646.0
      },
+     "first_token": null,
      "max_abs_diff": 0.109375,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -427,6 +898,7 @@
       "peak_vram_mib": 726.6,
       "driver_vram_mib": 1646.0
      },
+     "first_token": null,
      "max_abs_diff": 0.25,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -441,6 +913,7 @@
       "load_s": 0.3337,
       "peak_vram_mib": 2586.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1145319938659668,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -455,6 +928,7 @@
       "load_s": 0.2824,
       "peak_vram_mib": 3282.0
      },
+     "first_token": null,
      "max_abs_diff": 0.11189699172973633,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -469,6 +943,7 @@
       "load_s": 0.5559,
       "peak_vram_mib": 1748.0
      },
+     "first_token": null,
      "max_abs_diff": 0.11328125,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -483,6 +958,7 @@
       "load_s": 0.2835,
       "peak_vram_mib": 3042.0
      },
+     "first_token": null,
      "max_abs_diff": 0.11328125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -497,6 +973,7 @@
       "load_s": 0.2895,
       "peak_vram_mib": 1748.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -511,6 +988,7 @@
       "load_s": 0.3062,
       "peak_vram_mib": 3038.0
      },
+     "first_token": null,
      "max_abs_diff": 0.109375,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -526,6 +1004,7 @@
       "peak_vram_mib": 525.0,
       "driver_vram_mib": 1650.0
      },
+     "first_token": null,
      "max_abs_diff": 0.2265625,
      "notes": "bf16, under jax.jit; unpadded batches of exactly 128 tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -540,6 +1019,7 @@
       "load_s": 17.5376,
       "peak_vram_mib": 3382.0
      },
+     "first_token": null,
      "max_abs_diff": 0.11434412002563477,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; unpadded batches of exactly 128 tokens",
      "error": null
@@ -554,6 +1034,7 @@
       "load_s": 9.1146,
       "peak_vram_mib": 2442.8
      },
+     "first_token": null,
      "max_abs_diff": 0.11434412002563477,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -568,6 +1049,7 @@
       "load_s": 15.0301,
       "peak_vram_mib": 2430.8
      },
+     "first_token": null,
      "max_abs_diff": 0.1145319938659668,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -582,6 +1064,7 @@
       "load_s": 7.0491,
       "peak_vram_mib": 2788.0
      },
+     "first_token": null,
      "max_abs_diff": 0.140625,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -621,6 +1104,7 @@
       "load_s": 6.7797,
       "peak_vram_mib": 2164.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -635,6 +1119,7 @@
       "load_s": 3.672,
       "peak_vram_mib": 1870.0
      },
+     "first_token": null,
      "max_abs_diff": 1.53125,
      "notes": "",
      "error": null
@@ -649,6 +1134,7 @@
       "load_s": 1.1315,
       "peak_vram_mib": 1870.0
      },
+     "first_token": null,
      "max_abs_diff": 0.625,
      "notes": "",
      "error": null
@@ -663,6 +1149,7 @@
       "load_s": 1.1799,
       "peak_vram_mib": 1816.0
      },
+     "first_token": null,
      "max_abs_diff": 2.234375,
      "notes": "",
      "error": null
@@ -677,6 +1164,7 @@
       "load_s": 1.2869,
       "peak_vram_mib": 1662.0
      },
+     "first_token": null,
      "max_abs_diff": 2.234375,
      "notes": "",
      "error": null
@@ -692,6 +1180,7 @@
       "peak_vram_mib": 3419.2,
       "driver_vram_mib": 9844.0
      },
+     "first_token": null,
      "max_abs_diff": 4.1640625,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -707,6 +1196,7 @@
       "peak_vram_mib": 1288.4,
       "driver_vram_mib": 2674.0
      },
+     "first_token": null,
      "max_abs_diff": 1.78125,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -721,6 +1211,7 @@
       "load_s": 0.2984,
       "peak_vram_mib": 16330.0
      },
+     "first_token": null,
      "max_abs_diff": 1.0886340141296387,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -735,6 +1226,7 @@
       "load_s": 0.2817,
       "peak_vram_mib": 9724.0
      },
+     "first_token": null,
      "max_abs_diff": 1.0885581970214844,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -749,6 +1241,7 @@
       "load_s": 0.3066,
       "peak_vram_mib": 8620.0
      },
+     "first_token": null,
      "max_abs_diff": 1.2421875,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -763,6 +1256,7 @@
       "load_s": 0.3406,
       "peak_vram_mib": 9372.0
      },
+     "first_token": null,
      "max_abs_diff": 1.30078125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -777,6 +1271,7 @@
       "load_s": 0.2942,
       "peak_vram_mib": 8672.0
      },
+     "first_token": null,
      "max_abs_diff": 6.875,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -791,6 +1286,7 @@
       "load_s": 0.2786,
       "peak_vram_mib": 9372.0
      },
+     "first_token": null,
      "max_abs_diff": 1.03125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -805,6 +1301,7 @@
       "load_s": 17.3307,
       "peak_vram_mib": 20406.0
      },
+     "first_token": null,
      "max_abs_diff": 1.0888938903808594,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; ",
      "error": null
@@ -819,6 +1316,7 @@
       "load_s": 7.0343,
       "peak_vram_mib": 20344.8
      },
+     "first_token": null,
      "max_abs_diff": 1.0888938903808594,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -833,6 +1331,7 @@
       "load_s": 15.0554,
       "peak_vram_mib": 20344.8
      },
+     "first_token": null,
      "max_abs_diff": 1.0886340141296387,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -847,6 +1346,7 @@
       "load_s": 11.0621,
       "peak_vram_mib": 3474.0
      },
+     "first_token": null,
      "max_abs_diff": 2.234375,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -886,6 +1386,7 @@
       "load_s": 114.6932,
       "peak_vram_mib": 41386.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "eager attention: no SDPA for this architecture",
      "error": null
@@ -900,6 +1401,7 @@
       "load_s": 125.577,
       "peak_vram_mib": 41286.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1875,
      "notes": "eager attention: no SDPA for this architecture",
      "error": null
@@ -914,6 +1416,7 @@
       "load_s": 95.2076,
       "peak_vram_mib": 70788.8
      },
+     "first_token": 220.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -928,6 +1431,7 @@
       "load_s": 2.5378,
       "peak_vram_mib": 54578.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1953125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -942,6 +1446,7 @@
       "load_s": 2.5074,
       "peak_vram_mib": 54574.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06640625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -956,6 +1461,7 @@
       "load_s": 2.7185,
       "peak_vram_mib": 54574.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06640625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -971,6 +1477,7 @@
       "peak_vram_mib": 15202.3,
       "driver_vram_mib": 33398.0
      },
+     "first_token": null,
      "max_abs_diff": 0.109375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -986,6 +1493,7 @@
       "peak_vram_mib": 51737.8,
       "driver_vram_mib": 66164.0
      },
+     "first_token": null,
      "max_abs_diff": 0.21875,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1001,6 +1509,7 @@
       "peak_vram_mib": 45163.0,
       "driver_vram_mib": 61452.0
      },
+     "first_token": null,
      "max_abs_diff": 8.9140625,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1012,6 +1521,7 @@
      "metrics": {
       "peak_vram_mib": 79578.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "RuntimeError: Error in execution: Non-zero status code returned while running Mul node. Name:'' Status Message: /onnxruntime_src/onnxruntime/core/framework/bfc_"
@@ -1021,6 +1531,7 @@
      "method": "linnet-onnx-f32-trt",
      "kind": "linnet",
      "metrics": {},
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "exit -9: [5] Failed to import initializer: In node -1 with name:  and operator:  (parseGraph): UNSUPPORTED_NODE: Assertion failed: ctx->getWeightsContext().conv"
@@ -1035,6 +1546,7 @@
       "load_s": 0.3711,
       "peak_vram_mib": 70220.0
      },
+     "first_token": null,
      "max_abs_diff": 0.19140625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1046,6 +1558,7 @@
      "metrics": {
       "peak_vram_mib": 70006.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "Fail: [ONNXRuntimeError] : 1 : FAIL : TensorRT EP failed to create engine from network for fused node: TensorrtExecutionProvider_TRTKernel_graph_main_8376132635"
@@ -1060,6 +1573,7 @@
       "load_s": 0.364,
       "peak_vram_mib": 69742.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1953125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1071,6 +1585,7 @@
      "metrics": {
       "peak_vram_mib": 69482.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "Fail: [ONNXRuntimeError] : 1 : FAIL : TensorRT EP failed to create engine from network for fused node: TensorrtExecutionProvider_TRTKernel_graph_main_1106551924"
@@ -1085,6 +1600,7 @@
       "load_s": 79.9683,
       "peak_vram_mib": 70152.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -1096,6 +1612,7 @@
      "metrics": {
       "peak_vram_mib": 79444.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "RuntimeError: generate_batch returned no tokens for any request"
@@ -1107,6 +1624,7 @@
      "metrics": {
       "peak_vram_mib": 61426.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "JaxRuntimeError: NOT_FOUND: Failed to get configs for: 2 out of 100 instructions. See logs for all failures. Example failure: "
@@ -1122,6 +1640,7 @@
       "serve_ttft_ms": 8388.6826,
       "peak_vram_mib": 69816.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -1137,6 +1656,7 @@
       "serve_ttft_ms": 18268.2979,
       "peak_vram_mib": 61072.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -1153,6 +1673,7 @@
       "peak_vram_mib": 56188.0,
       "driver_vram_mib": 66294.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1164,6 +1685,7 @@
      "metrics": {
       "peak_vram_mib": 81028.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "RuntimeError: Error in execution: Non-zero status code returned while running Einsum node. Name:'' Status Message: /onnxruntime_src/onnxruntime/core/framework/b"
@@ -1179,6 +1701,7 @@
       "serve_ttft_ms": 17705.7176,
       "peak_vram_mib": 63224.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -1218,6 +1741,7 @@
       "load_s": 2.0073,
       "peak_vram_mib": 1096.9
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -1232,6 +1756,7 @@
       "load_s": 1.4672,
       "peak_vram_mib": 1280.0
      },
+     "first_token": null,
      "max_abs_diff": 1.25,
      "notes": "",
      "error": null
@@ -1246,6 +1771,7 @@
       "load_s": 23.9422,
       "peak_vram_mib": 69720.8
      },
+     "first_token": 2213.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1260,6 +1786,7 @@
       "load_s": 1.0232,
       "peak_vram_mib": 1020.0
      },
+     "first_token": null,
      "max_abs_diff": 0.75,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -1274,6 +1801,7 @@
       "load_s": 0.5948,
       "peak_vram_mib": 1126.0
      },
+     "first_token": null,
      "max_abs_diff": 1.0,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -1288,6 +1816,7 @@
       "load_s": 1.1308,
       "peak_vram_mib": 1024.0
      },
+     "first_token": null,
      "max_abs_diff": 1.0,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -1303,6 +1832,7 @@
       "peak_vram_mib": 512.0,
       "driver_vram_mib": 1132.0
      },
+     "first_token": null,
      "max_abs_diff": 0.75,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1318,6 +1848,7 @@
       "peak_vram_mib": 642.0,
       "driver_vram_mib": 1646.0
      },
+     "first_token": null,
      "max_abs_diff": 1.0,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1333,6 +1864,7 @@
       "peak_vram_mib": 660.4,
       "driver_vram_mib": 1654.0
      },
+     "first_token": null,
      "max_abs_diff": 0.25,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1347,6 +1879,7 @@
       "load_s": 0.2947,
       "peak_vram_mib": 2606.0
      },
+     "first_token": null,
      "max_abs_diff": 1.3825111389160156,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1361,6 +1894,7 @@
       "load_s": 0.2856,
       "peak_vram_mib": 4098.0
      },
+     "first_token": null,
      "max_abs_diff": 1.3637847900390625,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1375,6 +1909,7 @@
       "load_s": 0.2915,
       "peak_vram_mib": 1714.0
      },
+     "first_token": null,
      "max_abs_diff": 1.34375,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1389,6 +1924,7 @@
       "load_s": 0.2914,
       "peak_vram_mib": 3334.0
      },
+     "first_token": null,
      "max_abs_diff": 1.78125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1403,6 +1939,7 @@
       "load_s": 0.296,
       "peak_vram_mib": 2216.0
      },
+     "first_token": null,
      "max_abs_diff": 0.5,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1417,6 +1954,7 @@
       "load_s": 0.2836,
       "peak_vram_mib": 3166.0
      },
+     "first_token": null,
      "max_abs_diff": 0.25,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1431,6 +1969,7 @@
       "load_s": 22.2086,
       "peak_vram_mib": 69406.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -1445,6 +1984,7 @@
       "load_s": 1.2817,
       "peak_vram_mib": 80574.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -1460,6 +2000,7 @@
       "peak_vram_mib": 3191.7,
       "driver_vram_mib": 8818.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1475,6 +2016,7 @@
       "serve_ttft_ms": 4635.0779,
       "peak_vram_mib": 69970.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -1490,6 +2032,7 @@
       "serve_ttft_ms": 363.8608,
       "peak_vram_mib": 2708.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -1506,6 +2049,7 @@
       "peak_vram_mib": 2055.9,
       "driver_vram_mib": 4756.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1521,6 +2065,7 @@
       "serve_ttft_ms": 639.9878,
       "peak_vram_mib": 11512.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -1536,6 +2081,7 @@
       "serve_ttft_ms": 1302.7413,
       "peak_vram_mib": 3416.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -1551,6 +2097,7 @@
       "peak_vram_mib": 69720.8,
       "driver_vram_mib": 69720.8
      },
+     "first_token": 2213.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (1 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1566,6 +2113,7 @@
       "peak_vram_mib": 69414.8,
       "driver_vram_mib": 69414.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -1580,6 +2128,7 @@
       "load_s": 8.6089,
       "peak_vram_mib": 1056.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -1594,6 +2143,7 @@
       "load_s": 30.8585,
       "peak_vram_mib": 69351.6
      },
+     "first_token": 2213.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1609,6 +2159,7 @@
       "peak_vram_mib": 69351.6,
       "driver_vram_mib": 69351.6
      },
+     "first_token": 2213.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (2 s), then SGLang on the exported checkpoint; reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1623,6 +2174,7 @@
       "load_s": 31.0765,
       "peak_vram_mib": 70021.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -1638,6 +2190,7 @@
       "peak_vram_mib": 70021.6,
       "driver_vram_mib": 70021.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then SGLang (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -1652,6 +2205,7 @@
       "load_s": 30.0757,
       "peak_vram_mib": 61906.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1667,6 +2221,7 @@
       "peak_vram_mib": 61906.9,
       "driver_vram_mib": 61906.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (2 s), then Text Generation Inference on the exported checkpoint; over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1682,6 +2237,7 @@
       "serve_ttft_ms": 1721.4536,
       "peak_vram_mib": 62204.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -1698,6 +2254,7 @@
       "peak_vram_mib": 62320.9,
       "driver_vram_mib": 62320.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then Text Generation Inference (continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -1737,6 +2294,7 @@
       "load_s": 5.2901,
       "peak_vram_mib": 16430.9
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -1751,6 +2309,7 @@
       "load_s": 4.2945,
       "peak_vram_mib": 16476.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "",
      "error": null
@@ -1765,6 +2324,7 @@
       "load_s": 43.519,
       "peak_vram_mib": 69060.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -1779,6 +2339,7 @@
       "load_s": 3.5894,
       "peak_vram_mib": 16244.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -1793,6 +2354,7 @@
       "load_s": 3.5653,
       "peak_vram_mib": 23360.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -1807,6 +2369,7 @@
       "load_s": 3.6513,
       "peak_vram_mib": 16238.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -1822,6 +2385,7 @@
       "peak_vram_mib": 16703.0,
       "driver_vram_mib": 33396.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1837,6 +2401,7 @@
       "peak_vram_mib": 16701.5,
       "driver_vram_mib": 33394.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09619140625,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1852,6 +2417,7 @@
       "peak_vram_mib": 17764.5,
       "driver_vram_mib": 33404.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1866,6 +2432,7 @@
       "load_s": 0.5022,
       "peak_vram_mib": 36012.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06537771224975586,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1877,6 +2444,7 @@
      "metrics": {
       "peak_vram_mib": 67034.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "Fail: [ONNXRuntimeError] : 1 : FAIL : TensorRT EP failed to create engine from network for fused node: TensorrtExecutionProvider_TRTKernel_graph_main_3492707504"
@@ -1891,6 +2459,7 @@
       "load_s": 0.5143,
       "peak_vram_mib": 17930.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0703125,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1905,6 +2474,7 @@
       "load_s": 0.4855,
       "peak_vram_mib": 42964.0
      },
+     "first_token": null,
      "max_abs_diff": 9.7734375,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1919,6 +2489,7 @@
       "load_s": 0.481,
       "peak_vram_mib": 16920.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1933,6 +2504,7 @@
       "load_s": 0.489,
       "peak_vram_mib": 40818.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -1947,6 +2519,7 @@
       "load_s": 34.0047,
       "peak_vram_mib": 70284.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -1961,6 +2534,7 @@
       "load_s": 3.9765,
       "peak_vram_mib": 81028.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -1976,6 +2550,7 @@
       "peak_vram_mib": 26425.0,
       "driver_vram_mib": 33396.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -1991,6 +2566,7 @@
       "serve_ttft_ms": 4545.4419,
       "peak_vram_mib": 69134.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -2006,6 +2582,7 @@
       "serve_ttft_ms": 3131.45,
       "peak_vram_mib": 29202.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -2022,6 +2599,7 @@
       "peak_vram_mib": 22580.7,
       "driver_vram_mib": 33466.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2037,6 +2615,7 @@
       "serve_ttft_ms": 4340.5598,
       "peak_vram_mib": 38456.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -2052,6 +2631,7 @@
       "serve_ttft_ms": 3275.5222,
       "peak_vram_mib": 30104.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -2067,6 +2647,7 @@
       "peak_vram_mib": 69060.8,
       "driver_vram_mib": 69060.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (16 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2082,6 +2663,7 @@
       "peak_vram_mib": 70316.8,
       "driver_vram_mib": 70316.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -2096,6 +2678,7 @@
       "load_s": 75.5292,
       "peak_vram_mib": 15352.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -2110,6 +2693,7 @@
       "load_s": 19.6062,
       "peak_vram_mib": 9150.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions; cuda:0: embedding, layers.0-13; host, streamed in: layers.14-31, norm, lm_head",
      "error": null
@@ -2124,6 +2708,7 @@
       "load_s": 6.9974,
       "peak_vram_mib": 23878.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -2138,6 +2723,7 @@
       "load_s": 6.4962,
       "peak_vram_mib": 48337.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "one process per GPU under torchrun, NCCL, CUDA graphs; KV cache compiled for 768 positions",
      "error": null
@@ -2153,6 +2739,7 @@
       "peak_vram_mib": 18801.2,
       "driver_vram_mib": 38684.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2167,6 +2754,7 @@
       "load_s": 275.5359,
       "peak_vram_mib": 142713.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2181,6 +2769,7 @@
       "load_s": 55.7342,
       "peak_vram_mib": 69639.6
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2196,6 +2785,7 @@
       "peak_vram_mib": 69575.6,
       "driver_vram_mib": 69575.6
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (18 s), then SGLang on the exported checkpoint; reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2210,6 +2800,7 @@
       "load_s": 55.7981,
       "peak_vram_mib": 71689.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -2225,6 +2816,7 @@
       "peak_vram_mib": 71625.6,
       "driver_vram_mib": 71625.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then SGLang (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -2239,6 +2831,7 @@
       "load_s": 44.1118,
       "peak_vram_mib": 60612.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2254,6 +2847,7 @@
       "peak_vram_mib": 60612.9,
       "driver_vram_mib": 60612.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (19 s), then Text Generation Inference on the exported checkpoint; over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2269,6 +2863,7 @@
       "serve_ttft_ms": 3609.4048,
       "peak_vram_mib": 62156.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -2285,6 +2880,7 @@
       "peak_vram_mib": 62706.9,
       "driver_vram_mib": 62706.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then Text Generation Inference (continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -2324,6 +2920,7 @@
       "load_s": 5.0698,
       "peak_vram_mib": 14844.9
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -2338,6 +2935,7 @@
       "load_s": 3.8074,
       "peak_vram_mib": 14858.0
      },
+     "first_token": null,
      "max_abs_diff": 0.078125,
      "notes": "",
      "error": null
@@ -2352,6 +2950,7 @@
       "load_s": 97.2142,
       "peak_vram_mib": 67804.8
      },
+     "first_token": 1054.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2366,6 +2965,7 @@
       "load_s": 3.1651,
       "peak_vram_mib": 14752.0
      },
+     "first_token": null,
      "max_abs_diff": 0.078125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -2380,6 +2980,7 @@
       "load_s": 3.105,
       "peak_vram_mib": 21884.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -2394,6 +2995,7 @@
       "load_s": 3.1366,
       "peak_vram_mib": 14746.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -2409,6 +3011,7 @@
       "peak_vram_mib": 14528.6,
       "driver_vram_mib": 17012.0
      },
+     "first_token": null,
      "max_abs_diff": 0.13037109375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2424,6 +3027,7 @@
       "peak_vram_mib": 14528.6,
       "driver_vram_mib": 17010.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1279296875,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2439,6 +3043,7 @@
       "peak_vram_mib": 14904.7,
       "driver_vram_mib": 17020.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2453,6 +3058,7 @@
       "load_s": 0.4384,
       "peak_vram_mib": 32940.0
      },
+     "first_token": null,
      "max_abs_diff": 0.07344776391983032,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -2467,6 +3073,7 @@
       "load_s": 0.4474,
       "peak_vram_mib": 75228.0
      },
+     "first_token": null,
      "max_abs_diff": 0.06902849674224854,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -2481,6 +3088,7 @@
       "load_s": 0.4814,
       "peak_vram_mib": 16906.0
      },
+     "first_token": null,
      "max_abs_diff": 0.07275390625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -2495,6 +3103,7 @@
       "load_s": 0.4236,
       "peak_vram_mib": 38750.0
      },
+     "first_token": null,
      "max_abs_diff": 1.81640625,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -2509,6 +3118,7 @@
       "load_s": 0.4458,
       "peak_vram_mib": 15426.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -2523,6 +3133,7 @@
       "load_s": 0.4525,
       "peak_vram_mib": 37580.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1484375,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -2537,6 +3148,7 @@
       "load_s": 32.5752,
       "peak_vram_mib": 70440.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -2551,6 +3163,7 @@
       "load_s": 3.7513,
       "peak_vram_mib": 81042.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -2566,6 +3179,7 @@
       "peak_vram_mib": 24669.0,
       "driver_vram_mib": 33394.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2581,6 +3195,7 @@
       "serve_ttft_ms": 5190.5731,
       "peak_vram_mib": 70840.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -2596,6 +3211,7 @@
       "serve_ttft_ms": 3071.9286,
       "peak_vram_mib": 27678.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -2612,6 +3228,7 @@
       "peak_vram_mib": 21097.2,
       "driver_vram_mib": 33466.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2627,6 +3244,7 @@
       "serve_ttft_ms": 4283.0542,
       "peak_vram_mib": 36408.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -2642,6 +3260,7 @@
       "serve_ttft_ms": 3289.8579,
       "peak_vram_mib": 28560.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -2657,6 +3276,7 @@
       "peak_vram_mib": 67804.8,
       "driver_vram_mib": 67804.8
      },
+     "first_token": 1054.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (14 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2672,6 +3292,7 @@
       "peak_vram_mib": 70338.8,
       "driver_vram_mib": 70338.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -2686,6 +3307,7 @@
       "load_s": 108.0353,
       "peak_vram_mib": 14456.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -2700,6 +3322,7 @@
       "load_s": 59.0686,
       "peak_vram_mib": 69635.6
      },
+     "first_token": 1054.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2715,6 +3338,7 @@
       "peak_vram_mib": 69635.6,
       "driver_vram_mib": 69635.6
      },
+     "first_token": 1054.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (15 s), then SGLang on the exported checkpoint; reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2729,6 +3353,7 @@
       "load_s": 49.6756,
       "peak_vram_mib": 71673.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -2744,6 +3369,7 @@
       "peak_vram_mib": 71673.6,
       "driver_vram_mib": 71673.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then SGLang (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -2758,6 +3384,7 @@
       "load_s": 52.1106,
       "peak_vram_mib": 60642.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2773,6 +3400,7 @@
       "peak_vram_mib": 60642.9,
       "driver_vram_mib": 60642.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (17 s), then Text Generation Inference on the exported checkpoint; over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -2788,6 +3416,7 @@
       "serve_ttft_ms": 1649.5383,
       "peak_vram_mib": 62520.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -2804,6 +3433,7 @@
       "peak_vram_mib": 62646.9,
       "driver_vram_mib": 62646.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then Text Generation Inference (continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -2843,6 +3473,7 @@
       "load_s": 3.183,
       "peak_vram_mib": 1922.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "unpadded batches of exactly 256 tokens (this card takes no padding mask)",
      "error": null
@@ -2857,6 +3488,7 @@
       "load_s": 1.3915,
       "peak_vram_mib": 1374.0
      },
+     "first_token": null,
      "max_abs_diff": 2.127197265625,
      "notes": "unpadded batches of exactly 256 tokens (this card takes no padding mask)",
      "error": null
@@ -2871,6 +3503,7 @@
       "load_s": 1.3889,
       "peak_vram_mib": 1304.0
      },
+     "first_token": null,
      "max_abs_diff": 1.625,
      "notes": "unpadded batches of exactly 256 tokens; bf16 on cuda",
      "error": null
@@ -2885,6 +3518,7 @@
       "load_s": 1.3561,
       "peak_vram_mib": 1442.0
      },
+     "first_token": null,
      "max_abs_diff": 1.25390625,
      "notes": "unpadded batches of exactly 256 tokens; bf16 on cuda",
      "error": null
@@ -2899,6 +3533,7 @@
       "load_s": 1.0257,
       "peak_vram_mib": 1306.0
      },
+     "first_token": null,
      "max_abs_diff": 1.25390625,
      "notes": "unpadded batches of exactly 256 tokens; bf16 on cuda",
      "error": null
@@ -2914,6 +3549,7 @@
       "peak_vram_mib": 927.1,
       "driver_vram_mib": 1648.0
      },
+     "first_token": null,
      "max_abs_diff": 1.46875,
      "notes": "unpadded batches of exactly 256 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2929,6 +3565,7 @@
       "peak_vram_mib": 1234.0,
       "driver_vram_mib": 2672.0
      },
+     "first_token": null,
      "max_abs_diff": 2.21142578125,
      "notes": "unpadded batches of exactly 256 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -2943,6 +3580,7 @@
       "load_s": 0.2884,
       "peak_vram_mib": 4822.0
      },
+     "first_token": null,
      "max_abs_diff": 2.393662452697754,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -2957,6 +3595,7 @@
       "load_s": 0.3006,
       "peak_vram_mib": 4116.0
      },
+     "first_token": null,
      "max_abs_diff": 2.3549375534057617,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -2971,6 +3610,7 @@
       "load_s": 0.3014,
       "peak_vram_mib": 2812.0
      },
+     "first_token": null,
      "max_abs_diff": 2.188232421875,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -2985,6 +3625,7 @@
       "load_s": 0.2769,
       "peak_vram_mib": 3768.0
      },
+     "first_token": null,
      "max_abs_diff": 2.162841796875,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -2999,6 +3640,7 @@
       "load_s": 0.2833,
       "peak_vram_mib": 2812.0
      },
+     "first_token": null,
      "max_abs_diff": 2.25,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -3013,6 +3655,7 @@
       "load_s": 0.2848,
       "peak_vram_mib": 3770.0
      },
+     "first_token": null,
      "max_abs_diff": 1.9375,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -3027,6 +3670,7 @@
       "load_s": 31.8486,
       "peak_vram_mib": 6960.0
      },
+     "first_token": null,
      "max_abs_diff": 2.3369617462158203,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; unpadded batches of exactly 256 tokens",
      "error": null
@@ -3041,6 +3685,7 @@
       "load_s": 11.206,
       "peak_vram_mib": 7032.8
      },
+     "first_token": null,
      "max_abs_diff": 2.3369617462158203,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -3055,6 +3700,7 @@
       "load_s": 16.0592,
       "peak_vram_mib": 6008.8
      },
+     "first_token": null,
      "max_abs_diff": 2.393662452697754,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -3069,6 +3715,7 @@
       "load_s": 10.0412,
       "peak_vram_mib": 3665.6
      },
+     "first_token": null,
      "max_abs_diff": 1.25390625,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -3108,6 +3755,7 @@
       "load_s": 4.6142,
       "peak_vram_mib": 8336.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -3122,6 +3770,7 @@
       "load_s": 2.6777,
       "peak_vram_mib": 8592.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "",
      "error": null
@@ -3136,6 +3785,7 @@
       "load_s": 38.3797,
       "peak_vram_mib": 68418.8
      },
+     "first_token": 4146.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -3150,6 +3800,7 @@
       "load_s": 1.9125,
       "peak_vram_mib": 8396.0
      },
+     "first_token": null,
      "max_abs_diff": 0.265625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3164,6 +3815,7 @@
       "load_s": 1.852,
       "peak_vram_mib": 8510.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3178,6 +3830,7 @@
       "load_s": 1.9084,
       "peak_vram_mib": 8394.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1171875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3193,6 +3846,7 @@
       "peak_vram_mib": 8468.5,
       "driver_vram_mib": 17010.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3208,6 +3862,7 @@
       "peak_vram_mib": 8468.5,
       "driver_vram_mib": 17010.0
      },
+     "first_token": null,
      "max_abs_diff": 0.3125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3222,6 +3877,7 @@
       "load_s": 0.3669,
       "peak_vram_mib": 20596.0
      },
+     "first_token": null,
      "max_abs_diff": 0.13383817672729492,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3236,6 +3892,7 @@
       "load_s": 0.3914,
       "peak_vram_mib": 43010.0
      },
+     "first_token": null,
      "max_abs_diff": 0.13777589797973633,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3250,6 +3907,7 @@
       "load_s": 0.361,
       "peak_vram_mib": 10918.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3264,6 +3922,7 @@
       "load_s": 0.3601,
       "peak_vram_mib": 22674.0
      },
+     "first_token": null,
      "max_abs_diff": 14.5,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3278,6 +3937,7 @@
       "load_s": 0.4101,
       "peak_vram_mib": 10020.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3292,6 +3952,7 @@
       "load_s": 0.3687,
       "peak_vram_mib": 22154.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1875,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3306,6 +3967,7 @@
       "load_s": 34.4689,
       "peak_vram_mib": 70000.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -3320,6 +3982,7 @@
       "load_s": 2.365,
       "peak_vram_mib": 80980.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -3335,6 +3998,7 @@
       "serve_ttft_ms": 7874.667,
       "peak_vram_mib": 70432.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -3350,6 +4014,7 @@
       "serve_ttft_ms": 2772.9846,
       "peak_vram_mib": 24326.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -3366,6 +4031,7 @@
       "peak_vram_mib": 26643.1,
       "driver_vram_mib": 33452.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3381,6 +4047,7 @@
       "serve_ttft_ms": 4343.9683,
       "peak_vram_mib": 49972.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -3396,6 +4063,7 @@
       "serve_ttft_ms": 3149.548,
       "peak_vram_mib": 24916.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -3411,6 +4079,7 @@
       "peak_vram_mib": 68492.4,
       "driver_vram_mib": 68492.4
      },
+     "first_token": 4146.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (8 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -3426,6 +4095,7 @@
       "peak_vram_mib": 70000.8,
       "driver_vram_mib": 70000.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -3440,6 +4110,7 @@
       "load_s": 27.8966,
       "peak_vram_mib": 8090.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -3479,6 +4150,7 @@
       "load_s": 1.9619,
       "peak_vram_mib": 1910.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -3493,6 +4165,7 @@
       "load_s": 1.5461,
       "peak_vram_mib": 1986.0
      },
+     "first_token": null,
      "max_abs_diff": 0.19140625,
      "notes": "",
      "error": null
@@ -3507,6 +4180,7 @@
       "load_s": 21.6662,
       "peak_vram_mib": 70818.8
      },
+     "first_token": 13.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -3521,6 +4195,7 @@
       "load_s": 0.8333,
       "peak_vram_mib": 2010.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3535,6 +4210,7 @@
       "load_s": 0.844,
       "peak_vram_mib": 2330.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1796875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3549,6 +4225,7 @@
       "load_s": 0.8076,
       "peak_vram_mib": 2016.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1796875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3564,6 +4241,7 @@
       "peak_vram_mib": 1574.6,
       "driver_vram_mib": 2672.0
      },
+     "first_token": null,
      "max_abs_diff": 0.3125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3579,6 +4257,7 @@
       "peak_vram_mib": 1572.0,
       "driver_vram_mib": 2672.0
      },
+     "first_token": null,
      "max_abs_diff": 0.234375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3594,6 +4273,7 @@
       "peak_vram_mib": 2085.9,
       "driver_vram_mib": 4728.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3608,6 +4288,7 @@
       "load_s": 0.3164,
       "peak_vram_mib": 4120.0
      },
+     "first_token": null,
      "max_abs_diff": 0.14293169975280762,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3622,6 +4303,7 @@
       "load_s": 0.291,
       "peak_vram_mib": 8448.0
      },
+     "first_token": null,
      "max_abs_diff": 0.13897037506103516,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3636,6 +4318,7 @@
       "load_s": 0.3352,
       "peak_vram_mib": 2998.0
      },
+     "first_token": null,
      "max_abs_diff": 0.142578125,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3650,6 +4333,7 @@
       "load_s": 0.291,
       "peak_vram_mib": 5886.0
      },
+     "first_token": null,
      "max_abs_diff": 5.984375,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3664,6 +4348,7 @@
       "load_s": 0.3084,
       "peak_vram_mib": 2286.0
      },
+     "first_token": null,
      "max_abs_diff": 0.38671875,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3678,6 +4363,7 @@
       "load_s": 0.2918,
       "peak_vram_mib": 5168.0
      },
+     "first_token": null,
      "max_abs_diff": 0.25,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -3692,6 +4378,7 @@
       "load_s": 18.3102,
       "peak_vram_mib": 69678.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -3706,6 +4393,7 @@
       "load_s": 1.3441,
       "peak_vram_mib": 78632.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -3721,6 +4409,7 @@
       "peak_vram_mib": 2750.9,
       "driver_vram_mib": 4722.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3736,6 +4425,7 @@
       "serve_ttft_ms": 7317.3173,
       "peak_vram_mib": 69888.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -3751,6 +4441,7 @@
       "serve_ttft_ms": 614.0639,
       "peak_vram_mib": 3128.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -3767,6 +4458,7 @@
       "peak_vram_mib": 2149.1,
       "driver_vram_mib": 4792.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3782,6 +4474,7 @@
       "serve_ttft_ms": 1105.1781,
       "peak_vram_mib": 10372.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -3797,6 +4490,7 @@
       "serve_ttft_ms": 1416.4857,
       "peak_vram_mib": 3784.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -3811,6 +4505,7 @@
       "load_s": 11.9838,
       "peak_vram_mib": 1950.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -3826,6 +4521,7 @@
       "peak_vram_mib": 70740.8,
       "driver_vram_mib": 70740.8
      },
+     "first_token": 13.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (2 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -3841,6 +4537,7 @@
       "peak_vram_mib": 69350.8,
       "driver_vram_mib": 69350.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -3880,6 +4577,7 @@
       "load_s": 5.7418,
       "peak_vram_mib": 8788.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -3894,6 +4592,7 @@
       "load_s": 2.7091,
       "peak_vram_mib": 8900.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "",
      "error": null
@@ -3908,6 +4607,7 @@
       "load_s": 65.8653,
       "peak_vram_mib": 69632.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -3922,6 +4622,7 @@
       "load_s": 1.8967,
       "peak_vram_mib": 9358.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3936,6 +4637,7 @@
       "load_s": 1.9651,
       "peak_vram_mib": 12854.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3950,6 +4652,7 @@
       "load_s": 1.9224,
       "peak_vram_mib": 9358.0
      },
+     "first_token": null,
      "max_abs_diff": 0.140625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -3965,6 +4668,7 @@
       "peak_vram_mib": 9408.3,
       "driver_vram_mib": 17014.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3980,6 +4684,7 @@
       "peak_vram_mib": 9408.3,
       "driver_vram_mib": 17012.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1875,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -3995,6 +4700,7 @@
       "peak_vram_mib": 10289.0,
       "driver_vram_mib": 17024.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4009,6 +4715,7 @@
       "load_s": 0.4206,
       "peak_vram_mib": 20806.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15512847900390625,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4023,6 +4730,7 @@
       "load_s": 0.4172,
       "peak_vram_mib": 45882.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15331459045410156,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4037,6 +4745,7 @@
       "load_s": 0.4499,
       "peak_vram_mib": 10870.0
      },
+     "first_token": null,
      "max_abs_diff": 0.671875,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4051,6 +4760,7 @@
       "load_s": 0.4104,
       "peak_vram_mib": 24196.0
      },
+     "first_token": null,
      "max_abs_diff": 11.4375,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4065,6 +4775,7 @@
       "load_s": 0.4221,
       "peak_vram_mib": 10236.0
      },
+     "first_token": null,
      "max_abs_diff": 0.5,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4079,6 +4790,7 @@
       "load_s": 0.4337,
       "peak_vram_mib": 23654.0
      },
+     "first_token": null,
      "max_abs_diff": 0.40625,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4093,6 +4805,7 @@
       "load_s": 58.2214,
       "peak_vram_mib": 70062.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -4107,6 +4820,7 @@
       "load_s": 2.3074,
       "peak_vram_mib": 81030.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -4122,6 +4836,7 @@
       "peak_vram_mib": 21640.7,
       "driver_vram_mib": 33398.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4137,6 +4852,7 @@
       "serve_ttft_ms": 5981.0185,
       "peak_vram_mib": 69532.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -4152,6 +4868,7 @@
       "serve_ttft_ms": 2340.6319,
       "peak_vram_mib": 19090.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -4168,6 +4885,7 @@
       "peak_vram_mib": 15611.7,
       "driver_vram_mib": 17104.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4183,6 +4901,7 @@
       "serve_ttft_ms": 3643.8683,
       "peak_vram_mib": 31654.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -4198,6 +4917,7 @@
       "serve_ttft_ms": 2701.8664,
       "peak_vram_mib": 19882.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -4213,6 +4933,7 @@
       "peak_vram_mib": 69632.8,
       "driver_vram_mib": 69632.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (8 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -4228,6 +4949,7 @@
       "peak_vram_mib": 70062.8,
       "driver_vram_mib": 70062.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -4242,6 +4964,7 @@
       "load_s": 29.8276,
       "peak_vram_mib": 8754.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -4281,6 +5004,7 @@
       "load_s": 3.8543,
       "peak_vram_mib": 16774.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -4295,6 +5019,7 @@
       "load_s": 3.6621,
       "peak_vram_mib": 16832.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "",
      "error": null
@@ -4309,6 +5034,7 @@
       "load_s": 66.0474,
       "peak_vram_mib": 69534.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -4323,6 +5049,7 @@
       "load_s": 3.0606,
       "peak_vram_mib": 16564.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1171875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -4337,6 +5064,7 @@
       "load_s": 3.8864,
       "peak_vram_mib": 23380.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -4351,6 +5079,7 @@
       "load_s": 3.1196,
       "peak_vram_mib": 16568.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -4366,6 +5095,7 @@
       "peak_vram_mib": 17172.2,
       "driver_vram_mib": 33398.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4381,6 +5111,7 @@
       "peak_vram_mib": 17181.2,
       "driver_vram_mib": 33396.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4396,6 +5127,7 @@
       "peak_vram_mib": 18054.6,
       "driver_vram_mib": 33408.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4410,6 +5142,7 @@
       "load_s": 0.5814,
       "peak_vram_mib": 37192.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08458328247070312,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4421,6 +5154,7 @@
      "metrics": {
       "peak_vram_mib": 68692.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "",
      "error": "Fail: [ONNXRuntimeError] : 1 : FAIL : TensorRT EP failed to create engine from network for fused node: TensorrtExecutionProvider_TRTKernel_graph_main_1765021298"
@@ -4435,6 +5169,7 @@
       "load_s": 0.5849,
       "peak_vram_mib": 19064.0
      },
+     "first_token": null,
      "max_abs_diff": 1.3671875,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4449,6 +5184,7 @@
       "load_s": 0.5562,
       "peak_vram_mib": 42760.0
      },
+     "first_token": null,
      "max_abs_diff": 11.3125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4463,6 +5199,7 @@
       "load_s": 0.6109,
       "peak_vram_mib": 17350.0
      },
+     "first_token": null,
      "max_abs_diff": 2.5,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4477,6 +5214,7 @@
       "load_s": 0.5565,
       "peak_vram_mib": 41426.0
      },
+     "first_token": null,
      "max_abs_diff": 1.59375,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -4491,6 +5229,7 @@
       "load_s": 67.1757,
       "peak_vram_mib": 70220.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -4505,6 +5244,7 @@
       "load_s": 3.5122,
       "peak_vram_mib": 80992.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -4520,6 +5260,7 @@
       "peak_vram_mib": 28195.4,
       "driver_vram_mib": 33398.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4535,6 +5276,7 @@
       "serve_ttft_ms": 6765.236,
       "peak_vram_mib": 68762.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -4550,6 +5292,7 @@
       "serve_ttft_ms": 3372.5767,
       "peak_vram_mib": 29774.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -4566,6 +5309,7 @@
       "peak_vram_mib": 23622.1,
       "driver_vram_mib": 33488.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4581,6 +5325,7 @@
       "serve_ttft_ms": 4745.7914,
       "peak_vram_mib": 38498.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -4596,6 +5341,7 @@
       "serve_ttft_ms": 3518.8405,
       "peak_vram_mib": 30620.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -4610,6 +5356,7 @@
       "load_s": 19.8711,
       "peak_vram_mib": 9174.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1171875,
      "notes": "KV cache compiled for 768 positions; cuda:0: embedding, layers.0-14; host, streamed in: layers.15-35, norm, lm_head",
      "error": null
@@ -4624,6 +5371,7 @@
       "load_s": 7.1667,
       "peak_vram_mib": 17082.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1171875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -4638,6 +5386,7 @@
       "load_s": 6.2033,
       "peak_vram_mib": 48793.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "one process per GPU under torchrun, NCCL, CUDA graphs; KV cache compiled for 768 positions",
      "error": null
@@ -4653,6 +5402,7 @@
       "peak_vram_mib": 20289.4,
       "driver_vram_mib": 39170.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4667,6 +5417,7 @@
       "load_s": 55.337,
       "peak_vram_mib": 143659.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -4682,6 +5433,7 @@
       "peak_vram_mib": 69534.8,
       "driver_vram_mib": 69534.8
      },
+     "first_token": 198.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (17 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -4697,6 +5449,7 @@
       "peak_vram_mib": 70220.8,
       "driver_vram_mib": 70220.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -4711,6 +5464,7 @@
       "load_s": 60.4282,
       "peak_vram_mib": 15526.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -4750,6 +5504,7 @@
       "load_s": 3.9498,
       "peak_vram_mib": 928.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -4764,6 +5519,7 @@
       "load_s": 3.8012,
       "peak_vram_mib": 946.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -4778,6 +5534,7 @@
       "load_s": 0.5102,
       "peak_vram_mib": 928.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -4792,6 +5549,7 @@
       "load_s": 0.6186,
       "peak_vram_mib": 968.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -4806,6 +5564,7 @@
       "load_s": 0.6284,
       "peak_vram_mib": 878.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -4821,6 +5580,7 @@
       "peak_vram_mib": 443.9,
       "driver_vram_mib": 1142.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4836,6 +5596,7 @@
       "peak_vram_mib": 512.5,
       "driver_vram_mib": 1142.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -4850,6 +5611,7 @@
       "load_s": 0.296,
       "peak_vram_mib": 1308.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08936357498168945,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -4864,6 +5626,7 @@
       "load_s": 0.2906,
       "peak_vram_mib": 2580.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08950281143188477,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -4878,6 +5641,7 @@
       "load_s": 0.2877,
       "peak_vram_mib": 1080.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1015625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -4892,6 +5656,7 @@
       "load_s": 0.2858,
       "peak_vram_mib": 2454.0
      },
+     "first_token": null,
      "max_abs_diff": 0.103515625,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -4906,6 +5671,7 @@
       "load_s": 0.3129,
       "peak_vram_mib": 1552.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -4920,6 +5686,7 @@
       "load_s": 0.3278,
       "peak_vram_mib": 2638.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -4934,6 +5701,7 @@
       "load_s": 11.9248,
       "peak_vram_mib": 1312.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08936309814453125,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; ",
      "error": null
@@ -4948,6 +5716,7 @@
       "load_s": 4.2034,
       "peak_vram_mib": 1538.8
      },
+     "first_token": null,
      "max_abs_diff": 0.08936309814453125,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -4962,6 +5731,7 @@
       "load_s": 8.0535,
       "peak_vram_mib": 1544.8
      },
+     "first_token": null,
      "max_abs_diff": 0.08936357498168945,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -4976,6 +5746,7 @@
       "load_s": 7.041,
       "peak_vram_mib": 2438.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -5015,6 +5786,7 @@
       "load_s": 7.2014,
       "peak_vram_mib": 1082.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -5029,6 +5801,7 @@
       "load_s": 4.0868,
       "peak_vram_mib": 1100.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "",
      "error": null
@@ -5043,6 +5816,7 @@
       "load_s": 1.2226,
       "peak_vram_mib": 1032.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -5057,6 +5831,7 @@
       "load_s": 1.4366,
       "peak_vram_mib": 1070.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "",
      "error": null
@@ -5071,6 +5846,7 @@
       "load_s": 1.392,
       "peak_vram_mib": 1030.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "",
      "error": null
@@ -5086,6 +5862,7 @@
       "peak_vram_mib": 514.0,
       "driver_vram_mib": 1134.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5101,6 +5878,7 @@
       "peak_vram_mib": 505.1,
       "driver_vram_mib": 1134.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5115,6 +5893,7 @@
       "load_s": 0.2914,
       "peak_vram_mib": 1852.0
      },
+     "first_token": null,
      "max_abs_diff": 0.2690119743347168,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -5129,6 +5908,7 @@
       "load_s": 0.289,
       "peak_vram_mib": 2816.0
      },
+     "first_token": null,
      "max_abs_diff": 0.26560449600219727,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -5143,6 +5923,7 @@
       "load_s": 0.2995,
       "peak_vram_mib": 1420.0
      },
+     "first_token": null,
      "max_abs_diff": 0.25390625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -5157,6 +5938,7 @@
       "load_s": 0.2987,
       "peak_vram_mib": 2572.0
      },
+     "first_token": null,
      "max_abs_diff": 0.2578125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -5171,6 +5953,7 @@
       "load_s": 0.2834,
       "peak_vram_mib": 1962.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -5185,6 +5968,7 @@
       "load_s": 0.2903,
       "peak_vram_mib": 2896.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -5199,6 +5983,7 @@
       "load_s": 15.5402,
       "peak_vram_mib": 2128.0
      },
+     "first_token": null,
      "max_abs_diff": 0.2690114974975586,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; ",
      "error": null
@@ -5213,6 +5998,7 @@
       "load_s": 4.0642,
       "peak_vram_mib": 2168.9
      },
+     "first_token": null,
      "max_abs_diff": 0.2690114974975586,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -5227,6 +6013,7 @@
       "load_s": 12.056,
       "peak_vram_mib": 2174.8
      },
+     "first_token": null,
      "max_abs_diff": 0.2690119743347168,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -5241,6 +6028,7 @@
       "load_s": 9.0435,
       "peak_vram_mib": 2542.1
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -5280,6 +6068,7 @@
       "load_s": 15.565,
       "peak_vram_mib": 1190.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "unpadded batches of exactly 128 tokens (this card takes no padding mask)",
      "error": null
@@ -5294,6 +6083,7 @@
       "load_s": 1.5454,
       "peak_vram_mib": 1170.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "unpadded batches of exactly 128 tokens (this card takes no padding mask)",
      "error": null
@@ -5308,6 +6098,7 @@
       "load_s": 1.1358,
       "peak_vram_mib": 1136.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -5322,6 +6113,7 @@
       "load_s": 1.1444,
       "peak_vram_mib": 1176.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -5336,6 +6128,7 @@
       "load_s": 1.1062,
       "peak_vram_mib": 1088.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda",
      "error": null
@@ -5351,6 +6144,7 @@
       "peak_vram_mib": 784.8,
       "driver_vram_mib": 1646.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5366,6 +6160,7 @@
       "peak_vram_mib": 771.2,
       "driver_vram_mib": 1646.0
      },
+     "first_token": null,
      "max_abs_diff": 0.21875,
      "notes": "unpadded batches of exactly 128 tokens; bf16 on cuda; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5380,6 +6175,7 @@
       "load_s": 0.2849,
       "peak_vram_mib": 2702.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08825016021728516,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -5394,6 +6190,7 @@
       "load_s": 0.2734,
       "peak_vram_mib": 3410.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08764839172363281,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -5408,6 +6205,7 @@
       "load_s": 0.2871,
       "peak_vram_mib": 1804.0
      },
+     "first_token": null,
      "max_abs_diff": 0.087890625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -5422,6 +6220,7 @@
       "load_s": 0.2741,
       "peak_vram_mib": 3130.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09765625,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -5436,6 +6235,7 @@
       "load_s": 0.3679,
       "peak_vram_mib": 1804.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -5450,6 +6250,7 @@
       "load_s": 0.2691,
       "peak_vram_mib": 3128.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; unpadded batches of exactly the sequence length",
      "error": null
@@ -5465,6 +6266,7 @@
       "peak_vram_mib": 567.1,
       "driver_vram_mib": 1650.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1171875,
      "notes": "bf16, under jax.jit; unpadded batches of exactly 128 tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5479,6 +6281,7 @@
       "load_s": 18.5575,
       "peak_vram_mib": 2874.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08825016021728516,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; unpadded batches of exactly 128 tokens",
      "error": null
@@ -5493,6 +6296,7 @@
       "load_s": 9.2011,
       "peak_vram_mib": 3470.4
      },
+     "first_token": null,
      "max_abs_diff": 0.08825016021728516,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -5507,6 +6311,7 @@
       "load_s": 16.069,
       "peak_vram_mib": 3976.8
      },
+     "first_token": null,
      "max_abs_diff": 0.08825016021728516,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -5521,6 +6326,7 @@
       "load_s": 11.0709,
       "peak_vram_mib": 2844.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 64 in flight",
      "error": null
@@ -5559,6 +6365,7 @@
       "load_s": 3.171,
       "peak_vram_mib": 3064.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -5572,6 +6379,7 @@
       "load_s": 0.649,
       "peak_vram_mib": 2394.0
      },
+     "first_token": null,
      "max_abs_diff": 0.00010275840759277344,
      "notes": "",
      "error": null
@@ -5585,6 +6393,7 @@
       "load_s": 0.4967,
       "peak_vram_mib": 2968.0
      },
+     "first_token": null,
      "max_abs_diff": 8.186697959899902e-05,
      "notes": "",
      "error": null
@@ -5598,6 +6407,7 @@
       "load_s": 0.4988,
       "peak_vram_mib": 2392.0
      },
+     "first_token": null,
      "max_abs_diff": 9.685754776000977e-05,
      "notes": "",
      "error": null
@@ -5611,6 +6421,7 @@
       "load_s": 0.4547,
       "peak_vram_mib": 2250.0
      },
+     "first_token": null,
      "max_abs_diff": 9.685754776000977e-05,
      "notes": "",
      "error": null
@@ -5625,6 +6436,7 @@
       "peak_vram_mib": 2847.5,
       "driver_vram_mib": 4728.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0012342222034931183,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5639,6 +6451,7 @@
       "peak_vram_mib": 2847.6,
       "driver_vram_mib": 4728.0
      },
+     "first_token": null,
      "max_abs_diff": 0.001276012510061264,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5652,6 +6465,7 @@
       "load_s": 0.3065,
       "peak_vram_mib": 8782.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0023171473294496536,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; the image encoder",
      "error": null
@@ -5665,6 +6479,7 @@
       "load_s": 0.2978,
       "peak_vram_mib": 4492.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0012321211397647858,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; the image encoder",
      "error": null
@@ -5678,6 +6493,7 @@
       "load_s": 0.3564,
       "peak_vram_mib": 8002.0
      },
+     "first_token": null,
      "max_abs_diff": 0.002835877239704132,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; the image encoder",
      "error": null
@@ -5691,6 +6507,7 @@
       "load_s": 0.3158,
       "peak_vram_mib": 4206.0
      },
+     "first_token": null,
      "max_abs_diff": 0.007983803749084473,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; the image encoder",
      "error": null
@@ -5704,6 +6521,7 @@
       "load_s": 0.3019,
       "peak_vram_mib": 7854.0
      },
+     "first_token": null,
      "max_abs_diff": 0.02760845422744751,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; the image encoder",
      "error": null
@@ -5717,6 +6535,7 @@
       "load_s": 0.3164,
       "peak_vram_mib": 3904.0
      },
+     "first_token": null,
      "max_abs_diff": 0.029810786247253418,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; the image encoder",
      "error": null
@@ -5756,6 +6575,7 @@
       "load_s": 6.7101,
       "peak_vram_mib": 9160.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
@@ -5770,6 +6590,7 @@
       "load_s": 4.8945,
       "peak_vram_mib": 7574.0
      },
+     "first_token": null,
      "max_abs_diff": 0.033203125,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
@@ -5784,6 +6605,7 @@
       "throughput_per_s": 39.394,
       "peak_vram_mib": 12516.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
@@ -5798,6 +6620,7 @@
       "throughput_per_s": 91.1884,
       "peak_vram_mib": 6572.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0283203125,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
@@ -5812,6 +6635,7 @@
       "throughput_per_s": 90.805,
       "peak_vram_mib": 6374.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0283203125,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
@@ -5827,6 +6651,7 @@
       "peak_vram_mib": 3377.3,
       "driver_vram_mib": 8822.0
      },
+     "first_token": null,
      "max_abs_diff": 0.044921875,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5842,6 +6667,7 @@
       "peak_vram_mib": 3377.3,
       "driver_vram_mib": 8822.0
      },
+     "first_token": null,
      "max_abs_diff": 0.052734375,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -5856,6 +6682,7 @@
       "load_s": 0.265,
       "peak_vram_mib": 26942.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03966502845287323,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -5870,6 +6697,7 @@
       "load_s": 0.242,
       "peak_vram_mib": 11810.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03982146084308624,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -5884,6 +6712,7 @@
       "load_s": 0.2425,
       "peak_vram_mib": 13338.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0379638671875,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -5898,6 +6727,7 @@
       "load_s": 0.2381,
       "peak_vram_mib": 8788.0
      },
+     "first_token": null,
      "max_abs_diff": 0.043212890625,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -5912,6 +6742,7 @@
       "load_s": 0.242,
       "peak_vram_mib": 21742.0
      },
+     "first_token": null,
      "max_abs_diff": 0.056640625,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -5926,6 +6757,7 @@
       "load_s": 0.2421,
       "peak_vram_mib": 10708.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03515625,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -5964,6 +6796,7 @@
       "load_s": 31.0511,
       "peak_vram_mib": 6444.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16",
      "error": null
@@ -5977,6 +6810,7 @@
       "load_s": 8.1262,
       "peak_vram_mib": 6450.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16",
      "error": null
@@ -5990,6 +6824,7 @@
       "load_s": 16.952,
       "peak_vram_mib": 6660.0
      },
+     "first_token": null,
      "max_abs_diff": 0.015625,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16",
      "error": null
@@ -6003,6 +6838,7 @@
       "load_s": 19.8322,
       "peak_vram_mib": 6578.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16",
      "error": null
@@ -6016,6 +6852,7 @@
       "load_s": 17.2403,
       "peak_vram_mib": 6430.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16",
      "error": null
@@ -6030,6 +6867,7 @@
       "peak_vram_mib": 6462.5,
       "driver_vram_mib": 8830.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6044,6 +6882,7 @@
       "peak_vram_mib": 5362.8,
       "driver_vram_mib": 8822.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "one step, 128x128 latent (1024-pixel image), batch 2, 77-token context, bf16; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6057,6 +6896,7 @@
       "load_s": 0.3042,
       "peak_vram_mib": 24896.0
      },
+     "first_token": null,
      "max_abs_diff": 0.030341625213623047,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -6070,6 +6910,7 @@
       "load_s": 0.2995,
       "peak_vram_mib": 24896.0
      },
+     "first_token": null,
      "max_abs_diff": 0.030341625213623047,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -6083,6 +6924,7 @@
       "load_s": 0.2908,
       "peak_vram_mib": 14408.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -6096,6 +6938,7 @@
       "load_s": 0.2947,
       "peak_vram_mib": 14408.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -6109,6 +6952,7 @@
       "load_s": 0.2915,
       "peak_vram_mib": 14944.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -6122,6 +6966,7 @@
       "load_s": 0.2884,
       "peak_vram_mib": 14944.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -6161,6 +7006,7 @@
       "load_s": 7.9305,
       "peak_vram_mib": 1290.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -6175,6 +7021,7 @@
       "load_s": 4.0705,
       "peak_vram_mib": 1312.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -6189,6 +7036,7 @@
       "load_s": 2.3846,
       "peak_vram_mib": 1270.0
      },
+     "first_token": null,
      "max_abs_diff": 0.015625,
      "notes": "",
      "error": null
@@ -6203,6 +7051,7 @@
       "load_s": 2.2777,
       "peak_vram_mib": 1452.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -6217,6 +7066,7 @@
       "load_s": 2.3268,
       "peak_vram_mib": 1252.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -6232,6 +7082,7 @@
       "peak_vram_mib": 1085.2,
       "driver_vram_mib": 2672.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6247,6 +7098,7 @@
       "peak_vram_mib": 1066.7,
       "driver_vram_mib": 2670.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0234375,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6261,6 +7113,7 @@
       "load_s": 0.2932,
       "peak_vram_mib": 2444.0
      },
+     "first_token": null,
      "max_abs_diff": 0.04524040222167969,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -6275,6 +7128,7 @@
       "load_s": 0.3084,
       "peak_vram_mib": 3202.0
      },
+     "first_token": null,
      "max_abs_diff": 0.04555702209472656,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -6289,6 +7143,7 @@
       "load_s": 0.3067,
       "peak_vram_mib": 1684.0
      },
+     "first_token": null,
      "max_abs_diff": 0.046875,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -6303,6 +7158,7 @@
       "load_s": 0.3182,
       "peak_vram_mib": 2960.0
      },
+     "first_token": null,
      "max_abs_diff": 0.04296875,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -6317,6 +7173,7 @@
       "load_s": 0.3429,
       "peak_vram_mib": 1694.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -6331,6 +7188,7 @@
       "load_s": 0.339,
       "peak_vram_mib": 2962.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -6345,6 +7203,7 @@
       "load_s": 19.7322,
       "peak_vram_mib": 2394.0
      },
+     "first_token": null,
      "max_abs_diff": 0.04458141326904297,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; ",
      "error": null
@@ -6359,6 +7218,7 @@
       "load_s": 8.0748,
       "peak_vram_mib": 2434.8
      },
+     "first_token": null,
      "max_abs_diff": 0.04458141326904297,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -6373,6 +7233,7 @@
       "load_s": 15.0632,
       "peak_vram_mib": 2424.8
      },
+     "first_token": null,
      "max_abs_diff": 0.04524040222167969,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -6387,6 +7248,7 @@
       "load_s": 16.2324,
       "peak_vram_mib": 3200.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -6426,6 +7288,7 @@
       "load_s": 2.6624,
       "peak_vram_mib": 4286.9
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -6440,6 +7303,7 @@
       "load_s": 1.9598,
       "peak_vram_mib": 4340.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1015625,
      "notes": "",
      "error": null
@@ -6454,6 +7318,7 @@
       "load_s": 28.2573,
       "peak_vram_mib": 68882.8
      },
+     "first_token": 29.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6468,6 +7333,7 @@
       "load_s": 1.0578,
       "peak_vram_mib": 4414.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -6482,6 +7348,7 @@
       "load_s": 1.1788,
       "peak_vram_mib": 5930.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -6496,6 +7363,7 @@
       "load_s": 1.0397,
       "peak_vram_mib": 4418.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -6511,6 +7379,7 @@
       "peak_vram_mib": 4096.4,
       "driver_vram_mib": 8816.0
      },
+     "first_token": null,
      "max_abs_diff": 0.140625,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6526,6 +7395,7 @@
       "peak_vram_mib": 4096.4,
       "driver_vram_mib": 8814.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6541,6 +7411,7 @@
       "peak_vram_mib": 4101.8,
       "driver_vram_mib": 8824.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6555,6 +7426,7 @@
       "load_s": 0.3148,
       "peak_vram_mib": 10688.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09243297576904297,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -6569,6 +7441,7 @@
       "load_s": 0.3181,
       "peak_vram_mib": 21484.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09415864944458008,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -6583,6 +7456,7 @@
       "load_s": 0.3101,
       "peak_vram_mib": 5896.0
      },
+     "first_token": null,
      "max_abs_diff": 0.085693359375,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -6597,6 +7471,7 @@
       "load_s": 0.2972,
       "peak_vram_mib": 12000.0
      },
+     "first_token": null,
      "max_abs_diff": 9.6875,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -6611,6 +7486,7 @@
       "load_s": 0.3459,
       "peak_vram_mib": 5260.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1484375,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -6625,6 +7501,7 @@
       "load_s": 0.2968,
       "peak_vram_mib": 11552.0
      },
+     "first_token": null,
      "max_abs_diff": 0.359375,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -6639,6 +7516,7 @@
       "load_s": 24.706,
       "peak_vram_mib": 69792.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -6653,6 +7531,7 @@
       "load_s": 1.6737,
       "peak_vram_mib": 81002.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -6668,6 +7547,7 @@
       "peak_vram_mib": 18647.1,
       "driver_vram_mib": 25202.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6683,6 +7563,7 @@
       "serve_ttft_ms": 8071.1387,
       "peak_vram_mib": 69584.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -6698,6 +7579,7 @@
       "serve_ttft_ms": 1444.1896,
       "peak_vram_mib": 14352.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -6714,6 +7596,7 @@
       "peak_vram_mib": 13345.0,
       "driver_vram_mib": 17066.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -6729,6 +7612,7 @@
       "serve_ttft_ms": 2382.3274,
       "peak_vram_mib": 28756.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -6744,6 +7628,7 @@
       "serve_ttft_ms": 2065.4045,
       "peak_vram_mib": 14964.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -6759,6 +7644,7 @@
       "peak_vram_mib": 68882.8,
       "driver_vram_mib": 68882.8
      },
+     "first_token": 29.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (4 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6774,6 +7660,7 @@
       "peak_vram_mib": 70300.8,
       "driver_vram_mib": 70300.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -6788,6 +7675,7 @@
       "load_s": 21.8517,
       "peak_vram_mib": 4166.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -6802,6 +7690,7 @@
       "load_s": 42.6776,
       "peak_vram_mib": 69519.6
      },
+     "first_token": 29.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6817,6 +7706,7 @@
       "peak_vram_mib": 69519.6,
       "driver_vram_mib": 69519.6
      },
+     "first_token": 29.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (6 s), then SGLang on the exported checkpoint; reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6831,6 +7721,7 @@
       "load_s": 38.5411,
       "peak_vram_mib": 70781.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -6846,6 +7737,7 @@
       "peak_vram_mib": 70781.6,
       "driver_vram_mib": 70781.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then SGLang (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -6860,6 +7752,7 @@
       "load_s": 34.0685,
       "peak_vram_mib": 61424.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6875,6 +7768,7 @@
       "peak_vram_mib": 61424.9,
       "driver_vram_mib": 61424.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (6 s), then Text Generation Inference on the exported checkpoint; over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6890,6 +7784,7 @@
       "serve_ttft_ms": 2395.3471,
       "peak_vram_mib": 62356.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -6906,6 +7801,7 @@
       "peak_vram_mib": 62474.9,
       "driver_vram_mib": 62474.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then Text Generation Inference (continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -6945,6 +7841,7 @@
       "load_s": 2.5907,
       "peak_vram_mib": 3000.9
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -6959,6 +7856,7 @@
       "load_s": 1.6011,
       "peak_vram_mib": 3042.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "",
      "error": null
@@ -6973,6 +7871,7 @@
       "load_s": 37.5775,
       "peak_vram_mib": 68726.8
      },
+     "first_token": 29871.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -6987,6 +7886,7 @@
       "load_s": 0.8635,
       "peak_vram_mib": 2954.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -7001,6 +7901,7 @@
       "load_s": 0.8229,
       "peak_vram_mib": 3950.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -7015,6 +7916,7 @@
       "load_s": 0.8469,
       "peak_vram_mib": 2956.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions",
      "error": null
@@ -7030,6 +7932,7 @@
       "peak_vram_mib": 2441.0,
       "driver_vram_mib": 4720.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7045,6 +7948,7 @@
       "peak_vram_mib": 2441.0,
       "driver_vram_mib": 4720.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7060,6 +7964,7 @@
       "peak_vram_mib": 2646.5,
       "driver_vram_mib": 4728.0
      },
+     "first_token": null,
      "max_abs_diff": 0.1875,
      "notes": "peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7074,6 +7979,7 @@
       "load_s": 0.3111,
       "peak_vram_mib": 6366.0
      },
+     "first_token": null,
      "max_abs_diff": 0.093536376953125,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -7088,6 +7994,7 @@
       "load_s": 0.2907,
       "peak_vram_mib": 13602.0
      },
+     "first_token": null,
      "max_abs_diff": 0.09106159210205078,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -7102,6 +8009,7 @@
       "load_s": 0.2888,
       "peak_vram_mib": 4130.0
      },
+     "first_token": null,
      "max_abs_diff": 0.08984375,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -7116,6 +8024,7 @@
       "load_s": 0.3447,
       "peak_vram_mib": 8430.0
      },
+     "first_token": null,
      "max_abs_diff": 0.11328125,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -7130,6 +8039,7 @@
       "load_s": 0.301,
       "peak_vram_mib": 3176.0
      },
+     "first_token": null,
      "max_abs_diff": 0.125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -7144,6 +8054,7 @@
       "load_s": 0.3054,
       "peak_vram_mib": 7566.0
      },
+     "first_token": null,
      "max_abs_diff": 0.15625,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
      "error": null
@@ -7158,6 +8069,7 @@
       "load_s": 24.2048,
       "peak_vram_mib": 69768.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -7172,6 +8084,7 @@
       "load_s": 1.4213,
       "peak_vram_mib": 80886.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; paged|sdpa attention; reserves a paged KV-cache pool up front, so its memory is a setting, not a need; no per-request timestamps",
      "error": null
@@ -7187,6 +8100,7 @@
       "peak_vram_mib": 4807.7,
       "driver_vram_mib": 8816.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; every batch runs to the longest possible prompt plus the new tokens; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7202,6 +8116,7 @@
       "serve_ttft_ms": 6590.0623,
       "peak_vram_mib": 69758.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -7217,6 +8132,7 @@
       "serve_ttft_ms": 701.0932,
       "peak_vram_mib": 5240.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -7233,6 +8149,7 @@
       "peak_vram_mib": 3668.5,
       "driver_vram_mib": 4776.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7248,6 +8165,7 @@
       "serve_ttft_ms": 1467.1254,
       "peak_vram_mib": 13962.0
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; 64 fixed cache rows of 640 positions",
      "error": null
@@ -7263,6 +8181,7 @@
       "serve_ttft_ms": 1353.2112,
       "peak_vram_mib": 5908.4
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed, first tokens timed at the client",
      "error": null
@@ -7278,6 +8197,7 @@
       "peak_vram_mib": 68726.8,
       "driver_vram_mib": 68726.8
      },
+     "first_token": 29871.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (2 s), then vLLM on the exported checkpoint; reserves a KV-cache pool up front (gpu_memory_utilization 0.85), so its memory is a setting, not a need",
      "error": null
@@ -7293,6 +8213,7 @@
       "peak_vram_mib": 69920.8,
       "driver_vram_mib": 69920.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then vLLM on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at gpu_memory_utilization 0.85",
      "error": null
@@ -7307,6 +8228,7 @@
       "load_s": 14.9574,
       "peak_vram_mib": 2756.8
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.gguf.export, then llama-bench with every layer on the GPU; the first token is the prompt at llama-bench's prompt rate",
      "error": null
@@ -7321,6 +8243,7 @@
       "load_s": 35.8785,
       "peak_vram_mib": 69609.6
      },
+     "first_token": 29871.0,
      "max_abs_diff": null,
      "notes": "reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -7336,6 +8259,7 @@
       "peak_vram_mib": 69609.6,
       "driver_vram_mib": 69609.6
      },
+     "first_token": 29871.0,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (4 s), then SGLang on the exported checkpoint; reserves a KV-cache pool up front (mem_fraction_static 0.85), so its memory is a setting, not a need",
      "error": null
@@ -7350,6 +8274,7 @@
       "load_s": 36.1552,
       "peak_vram_mib": 70445.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -7365,6 +8290,7 @@
       "peak_vram_mib": 70445.6,
       "driver_vram_mib": 70445.6
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then SGLang (offline, continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; KV-cache pool at mem_fraction_static 0.85",
      "error": null
@@ -7379,6 +8305,7 @@
       "load_s": 32.0823,
       "peak_vram_mib": 61588.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -7394,6 +8321,7 @@
       "peak_vram_mib": 61588.9,
       "driver_vram_mib": 61588.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (3 s), then Text Generation Inference on the exported checkpoint; over HTTP, streamed; the prompt is the token ids decoded and tokenized again; reserves a KV-cache pool up front (cuda-memory-fraction 0.85), so its memory is a setting, not a need",
      "error": null
@@ -7409,6 +8337,7 @@
       "serve_ttft_ms": 2482.4327,
       "peak_vram_mib": 62370.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -7425,6 +8354,7 @@
       "peak_vram_mib": 62646.9,
       "driver_vram_mib": 62646.9
      },
+     "first_token": null,
      "max_abs_diff": null,
      "notes": "linnet.hf.export (0 s), then Text Generation Inference (continuous batching) on the exported checkpoint; 256 requests of 128-512 prompt tokens and 128 new tokens, at most 64 in flight; over HTTP, streamed; stops at end-of-sequence (TGI cannot ignore it), so throughput counts the tokens produced; KV-cache pool at cuda-memory-fraction 0.85",
      "error": null
@@ -7464,6 +8394,7 @@
       "load_s": 9.3589,
       "peak_vram_mib": 1060.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -7478,6 +8409,7 @@
       "load_s": 3.8317,
       "peak_vram_mib": 1166.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0234375,
      "notes": "",
      "error": null
@@ -7492,6 +8424,7 @@
       "load_s": 1.0621,
       "peak_vram_mib": 1042.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "",
      "error": null
@@ -7506,6 +8439,7 @@
       "load_s": 1.1709,
       "peak_vram_mib": 1190.0
      },
+     "first_token": null,
      "max_abs_diff": 0.01953125,
      "notes": "",
      "error": null
@@ -7520,6 +8454,7 @@
       "load_s": 1.6967,
       "peak_vram_mib": 1062.0
      },
+     "first_token": null,
      "max_abs_diff": 0.01953125,
      "notes": "",
      "error": null
@@ -7535,6 +8470,7 @@
       "peak_vram_mib": 640.2,
       "driver_vram_mib": 1648.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7550,6 +8486,7 @@
       "peak_vram_mib": 623.7,
       "driver_vram_mib": 1646.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16, like the torch rows; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7564,6 +8501,7 @@
       "load_s": 0.2953,
       "peak_vram_mib": 2474.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03966021537780762,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -7578,6 +8516,7 @@
       "load_s": 0.2912,
       "peak_vram_mib": 3140.0
      },
+     "first_token": null,
      "max_abs_diff": 0.04030036926269531,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -7592,6 +8531,7 @@
       "load_s": 0.2753,
       "peak_vram_mib": 1692.0
      },
+     "first_token": null,
      "max_abs_diff": 0.041015625,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -7606,6 +8546,7 @@
       "load_s": 0.2827,
       "peak_vram_mib": 2940.0
      },
+     "first_token": null,
      "max_abs_diff": 0.041015625,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -7620,6 +8561,7 @@
       "load_s": 0.2938,
       "peak_vram_mib": 1708.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions",
      "error": null
@@ -7634,6 +8576,7 @@
       "load_s": 0.2886,
       "peak_vram_mib": 2940.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03125,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions",
      "error": null
@@ -7649,6 +8592,7 @@
       "peak_vram_mib": 415.0,
       "driver_vram_mib": 1132.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0625,
      "notes": "bf16, under jax.jit; ; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7663,6 +8607,7 @@
       "load_s": 17.2344,
       "peak_vram_mib": 2392.0
      },
+     "first_token": null,
      "max_abs_diff": 0.03959846496582031,
      "notes": "the reference model's own ONNX export, f32 like Linnet's; ",
      "error": null
@@ -7677,6 +8622,7 @@
       "load_s": 8.0365,
       "peak_vram_mib": 2430.9
      },
+     "first_token": null,
      "max_abs_diff": 0.03959846496582031,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -7691,6 +8637,7 @@
       "load_s": 14.1003,
       "peak_vram_mib": 1893.9
      },
+     "first_token": null,
      "max_abs_diff": 0.03966021537780762,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -7705,6 +8652,7 @@
       "load_s": 10.0547,
       "peak_vram_mib": 2750.0
      },
+     "first_token": null,
      "max_abs_diff": 0.01953125,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
@@ -7717,7 +8665,7 @@
    "task": "audio",
    "parameters": 1543613440,
    "reference": "transformers-eager",
-   "primary": "encode_ms",
+   "primary": "transcribe_ms",
    "workload": {
     "device": "cuda",
     "prompt_tokens": 512,
@@ -7744,6 +8692,7 @@
       "load_s": 8.9753,
       "peak_vram_mib": 4196.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -7758,6 +8707,7 @@
       "load_s": 1.8417,
       "peak_vram_mib": 4472.0
      },
+     "first_token": null,
      "max_abs_diff": 4.90625,
      "notes": "",
      "error": null
@@ -7772,6 +8722,7 @@
       "load_s": 2.0715,
       "peak_vram_mib": 5448.0
      },
+     "first_token": null,
      "max_abs_diff": 1.125,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7786,6 +8737,7 @@
       "load_s": 2.0048,
       "peak_vram_mib": 5632.0
      },
+     "first_token": null,
      "max_abs_diff": 4.5703125,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7800,6 +8752,7 @@
       "load_s": 2.0097,
       "peak_vram_mib": 5492.0
      },
+     "first_token": null,
      "max_abs_diff": 4.5703125,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7815,6 +8768,7 @@
       "peak_vram_mib": 3697.1,
       "driver_vram_mib": 4740.0
      },
+     "first_token": null,
      "max_abs_diff": 3.2890625,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7830,6 +8784,7 @@
       "peak_vram_mib": 3614.2,
       "driver_vram_mib": 4736.0
      },
+     "first_token": null,
      "max_abs_diff": 16.263671875,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -7844,6 +8799,7 @@
       "load_s": 0.2487,
       "peak_vram_mib": 12022.0
      },
+     "first_token": null,
      "max_abs_diff": 4.8056793212890625,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7858,6 +8814,7 @@
       "load_s": 0.2453,
       "peak_vram_mib": 18440.0
      },
+     "first_token": null,
      "max_abs_diff": 4.8056793212890625,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7872,6 +8829,7 @@
       "load_s": 0.2428,
       "peak_vram_mib": 7756.0
      },
+     "first_token": null,
      "max_abs_diff": 0.636474609375,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7886,6 +8844,7 @@
       "load_s": 0.2449,
       "peak_vram_mib": 11168.0
      },
+     "first_token": null,
      "max_abs_diff": 3.9921875,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7900,6 +8859,7 @@
       "load_s": 0.241,
       "peak_vram_mib": 8864.0
      },
+     "first_token": null,
      "max_abs_diff": 15.03515625,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7914,6 +8874,7 @@
       "load_s": 0.2431,
       "peak_vram_mib": 10936.0
      },
+     "first_token": null,
      "max_abs_diff": 14.21875,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7926,7 +8887,7 @@
    "task": "audio",
    "parameters": 37765248,
    "reference": "transformers-eager",
-   "primary": "encode_ms",
+   "primary": "transcribe_ms",
    "workload": {
     "device": "cuda",
     "prompt_tokens": 512,
@@ -7953,6 +8914,7 @@
       "load_s": 1.9118,
       "peak_vram_mib": 934.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0,
      "notes": "",
      "error": null
@@ -7967,6 +8929,7 @@
       "load_s": 0.6698,
       "peak_vram_mib": 1120.0
      },
+     "first_token": null,
      "max_abs_diff": 0.0008020401000976562,
      "notes": "",
      "error": null
@@ -7981,6 +8944,7 @@
       "load_s": 0.3052,
       "peak_vram_mib": 1064.0
      },
+     "first_token": null,
      "max_abs_diff": 0.07889080047607422,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -7995,6 +8959,7 @@
       "load_s": 0.3012,
       "peak_vram_mib": 1184.0
      },
+     "first_token": null,
      "max_abs_diff": 0.07913780212402344,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8009,6 +8974,7 @@
       "load_s": 0.2968,
       "peak_vram_mib": 1062.0
      },
+     "first_token": null,
      "max_abs_diff": 0.07913780212402344,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8024,6 +8990,7 @@
       "peak_vram_mib": 432.3,
       "driver_vram_mib": 1198.0
      },
+     "first_token": null,
      "max_abs_diff": 0.6458406448364258,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -8039,6 +9006,7 @@
       "peak_vram_mib": 432.3,
       "driver_vram_mib": 1198.0
      },
+     "first_token": null,
      "max_abs_diff": 0.3831906318664551,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
@@ -8053,6 +9021,7 @@
       "load_s": 0.2364,
       "peak_vram_mib": 1846.0
      },
+     "first_token": null,
      "max_abs_diff": 0.7507038116455078,
      "notes": "f32; ONNX Runtime's CUDA execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8067,6 +9036,7 @@
       "load_s": 0.1542,
       "peak_vram_mib": 3418.0
      },
+     "first_token": null,
      "max_abs_diff": 0.7840394973754883,
      "notes": "f32; ONNX Runtime's TensorRT execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8081,6 +9051,7 @@
       "load_s": 0.2333,
       "peak_vram_mib": 1674.0
      },
+     "first_token": null,
      "max_abs_diff": 0.7178497314453125,
      "notes": "f16; ONNX Runtime's CUDA execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8095,6 +9066,7 @@
       "load_s": 0.2451,
       "peak_vram_mib": 3142.0
      },
+     "first_token": null,
      "max_abs_diff": 1.3493905067443848,
      "notes": "f16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8109,6 +9081,7 @@
       "load_s": 0.243,
       "peak_vram_mib": 1552.0
      },
+     "first_token": null,
      "max_abs_diff": 8.531454086303711,
      "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null
@@ -8123,6 +9096,7 @@
       "load_s": 0.1458,
       "peak_vram_mib": 3080.0
      },
+     "first_token": null,
      "max_abs_diff": 5.794703006744385,
      "notes": "bf16; ONNX Runtime's TensorRT execution provider; first calls build the sessions; transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each",
      "error": null

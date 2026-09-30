@@ -5,6 +5,7 @@
 // multiples, everything else's, or the full table for one model.
 import { computed, ref } from "vue";
 import zoo from "../../../bench/results/zoo.json";
+import { type Compare, against, grouped, times } from "./compare";
 
 interface Row {
   key: string;
@@ -27,7 +28,13 @@ interface Model {
 }
 
 const props = defineProps<{ part: "decoders" | "serving" | "others" | "table" }>();
-const data = zoo as unknown as { date: string; environment: Record<string, string>; models: Model[] };
+const data = zoo as unknown as {
+  date: string;
+  environment: Record<string, string>;
+  compare: Compare;
+  models: Model[];
+};
+const compare = data.compare;
 const NEST = "https://nest.franknoh.dev/models/";
 
 type Family = "reference" | "linnet";
@@ -36,56 +43,7 @@ function family(row: Row): Family {
   return row.kind === "linnet" ? "linnet" : "reference";
 }
 
-const LABELS: Record<string, string> = {
-  "transformers-eager": "transformers",
-  "transformers-compile": "transformers, compiled",
-  "diffusers-eager": "diffusers",
-  "diffusers-compile": "diffusers, compiled",
-  "sentence-transformers": "sentence-transformers",
-  vllm: "vLLM",
-  "linnet-torch": "Linnet, generated",
-  "linnet-cudagraphs": "Linnet, CUDA graphs",
-  "linnet-inductor": "Linnet, inductor",
-  "linnet-jax": "Linnet, XLA (StableHLO)",
-  "linnet-jax-source": "Linnet, XLA (generated)",
-  "linnet-onnx": "Linnet, ONNX Runtime",
-  "linnet-onnx-f32": "Linnet, ONNX Runtime f32",
-  "linnet-onnx-f16": "Linnet, ONNX Runtime f16",
-  "linnet-onnx-bf16": "Linnet, ONNX Runtime bf16",
-  "linnet-onnx-f32-trt": "Linnet, TensorRT f32",
-  "linnet-onnx-f16-trt": "Linnet, TensorRT f16",
-  "linnet-onnx-bf16-trt": "Linnet, TensorRT bf16",
-  "linnet-offload": "Linnet, offloaded",
-  "linnet-gpus": "Linnet, layers on 2 GPUs",
-  "linnet-tp-torch": "Linnet, tensor parallel (torch)",
-  "linnet-tp-jax": "Linnet, tensor parallel (XLA)",
-  "vllm-tp": "vLLM, tensor parallel",
-  "linnet-vllm": "vLLM, Linnet export",
-  sglang: "SGLang",
-  "linnet-sglang": "SGLang, Linnet export",
-  tgi: "Text Generation Inference",
-  "linnet-tgi": "TGI, Linnet export",
-  "linnet-llamacpp": "llama.cpp, Linnet export",
-  "keras-hub": "KerasHub (JAX)",
-  "onnx-reference": "torch.onnx, ONNX Runtime",
-  "triton-onnx": "Triton, torch.onnx",
-  "triton-linnet-onnx": "Triton, Linnet ONNX",
-  "triton-linnet-python": "Triton, Linnet Python backend",
-  "serve-vllm": "vLLM",
-  "serve-transformers": "transformers, batched",
-  "serve-keras-hub": "KerasHub, static batches",
-  "serve-triton-vllm": "Triton, vLLM backend",
-  "serve-linnet-torch": "Linnet serve, CUDA graphs",
-  "serve-linnet-jax": "Linnet serve, XLA",
-  "serve-linnet-onnx": "Linnet serve, ONNX Runtime",
-  "serve-triton-linnet": "Triton, Linnet serve",
-  "serve-linnet-vllm": "vLLM, Linnet export",
-  "serve-sglang": "SGLang",
-  "serve-linnet-sglang": "SGLang, Linnet export",
-  "serve-tgi": "Text Generation Inference",
-  "serve-linnet-tgi": "TGI, Linnet export",
-};
-const label = (row: Row) => LABELS[row.key] ?? row.method;
+const label = (row: Row) => compare.labels[row.key] ?? row.method;
 
 function size(parameters: number | null): string {
   if (!parameters) return "";
@@ -140,11 +98,12 @@ const PRIMARY_LABEL: Record<string, string> = {
   encode_ms: "encoder",
 };
 
-const WIDTH = 460;
-const LABEL = 150;
+const WIDTH = 480;
+const LABEL = 172;
 const BAR = 16;
 const GAP = 6;
 const TOP = 4;
+const HEAD = 18; // a runtime's title above its rows
 
 function format(value: number, v: View): string {
   if (v.speedup) return `${value.toFixed(2)}×`;
@@ -154,8 +113,10 @@ function format(value: number, v: View): string {
   return `${value.toFixed(0)} ${v.unit}`;
 }
 
-function hover(row: Row): string {
+function hover(row: Row, rows: Row[], metric: string | null): string {
   const lines = [row.method];
+  const vs = metric ? against(compare, rows, row, metric) : null;
+  if (vs) lines.push(`${times(vs.speedup)} the speed of ${compare.labels[vs.them.key] ?? vs.them.method}`);
   for (const [k, v] of Object.entries(row.metrics)) lines.push(`${k}: ${v >= 100 ? v.toFixed(0) : v.toFixed(2)}`);
   if (row.max_abs_diff !== null) lines.push(`max |diff| vs reference: ${row.max_abs_diff}`);
   if (row.notes) lines.push(row.notes);
@@ -179,6 +140,9 @@ const charts = computed(() => {
       ...whole,
       rows: whole.rows.filter((r) => !unlike(r) && (r.error || (metric !== null && metric in r.metrics))),
     };
+    // Each runtime's rows together, the stacks before Linnet.
+    const groups = grouped(compare, model.rows);
+    model.rows = groups.flatMap((g) => g.rows);
     const reference = model.rows.find((r) => r.key === model.reference);
     const base = metric ? reference?.metrics[metric] : undefined;
     const value = (row: Row): number | null => {
@@ -198,26 +162,46 @@ const charts = computed(() => {
     const eligible = values.map((x, i) => (x !== null && !model.rows[i].error && model.rows[i].key !== "linnet-offload" ? x : null));
     const present = eligible.filter((x): x is number => x !== null);
     const target = present.length ? (lower ? Math.min(...present) : Math.max(...present)) : null;
-    const bars = model.rows.map((row, i) => {
-      const x = values[i];
-            return {
-        key: row.key,
-        label: label(row),
-        family: family(row),
-        best: target !== null && eligible[i] === target,
-        y: TOP + i * (BAR + GAP),
-        width: x === null ? 0 : Math.max(2, scale(x)),
-        text: row.error ? "failed" : x === null ? "not measured" : format(x, v),
-        hover: hover(row),
-      };
-    });
+    const heads: { key: string; title: string; y: number }[] = [];
+    const bars: {
+      key: string;
+      label: string;
+      family: Family;
+      best: boolean;
+      y: number;
+      width: number;
+      text: string;
+      hover: string;
+    }[] = [];
+    let y = TOP;
+    let i = 0;
+    for (const g of groups) {
+      heads.push({ key: g.group.id, title: g.group.title, y });
+      y += HEAD;
+      for (const row of g.rows) {
+        const x = values[i];
+        bars.push({
+          key: row.key,
+          label: label(row),
+          family: family(row),
+          best: target !== null && eligible[i] === target,
+          y,
+          width: x === null ? 0 : Math.max(2, scale(x)),
+          text: row.error ? "failed" : x === null ? "not measured" : format(x, v),
+          hover: hover(row, whole.rows, metric),
+        });
+        y += BAR + GAP;
+        i += 1;
+      }
+    }
     return {
       key: model.name,
       title: model.title,
       size: size(model.parameters),
       what: v.id === "latency" && model.primary ? `${PRIMARY_LABEL[model.primary] ?? model.primary}, batch 1` : v.id === "throughput" ? "items per second at the family's large batch" : "",
       href: `${NEST}${model.name}/benchmarks`,
-      height: TOP + model.rows.length * (BAR + GAP) + 2,
+      height: y + 2,
+      heads,
       bars,
       baseline: v.speedup ? LABEL + scale(1) : null,
     };
@@ -239,6 +223,7 @@ const COLUMNS: [string, string][] = [
   ["load_s", "load s"],
 ];
 const columns = computed(() => COLUMNS.filter(([k]) => table.value.rows.some((r) => k in r.metrics)));
+const tableGroups = computed(() => grouped(compare, table.value.rows));
 function cell(row: Row, key: string): string {
   const x = row.metrics[key];
   if (x === undefined) return "";
@@ -288,6 +273,10 @@ function diff(row: Row): string {
             :y1="0"
             :y2="chart.height"
           />
+          <g v-for="head in chart.heads" :key="head.key" class="zoo-head">
+            <line :x1="0" :x2="WIDTH" :y1="head.y + 1" :y2="head.y + 1" />
+            <text x="0" :y="head.y + 13">{{ head.title }}</text>
+          </g>
           <g v-for="bar in chart.bars" :key="bar.key" :class="['zoo-row', `zoo-${bar.family}`, { 'zoo-best': bar.best }]">
             <title>{{ bar.hover }}</title>
             <rect class="zoo-hit" x="0" :y="bar.y - GAP / 2" :width="WIDTH" :height="BAR + GAP" />
@@ -317,9 +306,12 @@ function diff(row: Row): string {
             <th>Notes</th>
           </tr>
         </thead>
-        <tbody>
-          <tr v-for="row in table.rows" :key="row.key" :class="{ linnet: row.kind === 'linnet' }">
-            <td>{{ row.method }}</td>
+        <tbody v-for="g in tableGroups" :key="g.group.id">
+          <tr class="group">
+            <th :colspan="columns.length + 3">{{ g.group.title }}</th>
+          </tr>
+          <tr v-for="row in g.rows" :key="row.key" :class="{ linnet: row.kind === 'linnet' }">
+            <td>{{ label(row) }}</td>
             <td v-for="[k] in columns" :key="k" class="num">{{ cell(row, k) }}</td>
             <td class="num">{{ diff(row) }}</td>
             <td class="notes">{{ row.error ? `failed: ${row.error}` : row.notes }}</td>
@@ -444,6 +436,17 @@ function diff(row: Row): string {
   stroke-width: 1;
   stroke-dasharray: 3 3;
 }
+.zoo-head line {
+  stroke: var(--vp-c-divider);
+  stroke-width: 1;
+}
+.zoo-head text {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  fill: var(--vp-c-text-3);
+}
 .zoo-label {
   font-size: 11px;
   fill: var(--vp-c-text-1);
@@ -499,6 +502,14 @@ function diff(row: Row): string {
 .notes {
   color: var(--vp-c-text-2);
   min-width: 14rem;
+}
+tr.group th {
+  text-align: left;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+  background: var(--vp-c-bg-soft);
 }
 tr.linnet td:first-child {
   color: var(--vp-c-text-1);

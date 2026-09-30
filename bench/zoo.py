@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 # The one number each kind of model is judged by, in the order tried.
-PRIMARY = ["decode_tok_s", "latency_ms", "step_ms", "encode_ms"]
+PRIMARY = ["decode_tok_s", "transcribe_ms", "latency_ms", "step_ms", "encode_ms"]
 
 
 def _task(tags: list[str]) -> str:
@@ -53,12 +53,15 @@ def collect(nest: Path) -> dict[str, object]:
                 for k, v in (method.get("metrics") or {}).items()
                 if isinstance(v, (int, float)) and k != "first_token"
             }
+            # The token an engine chose first, for the exports' "same answer".
+            first = (method.get("metrics") or {}).get("first_token")
             rows.append(
                 {
                     "key": method["key"],
                     "method": method["method"],
                     "kind": "linnet" if "linnet" in method["key"] else "reference",
                     "metrics": metrics,
+                    "first_token": first if isinstance(first, (int, float)) else None,
                     "max_abs_diff": method.get("max_abs_diff"),
                     "notes": method.get("notes") or "",
                     "error": (method.get("error") or "").split("\n")[0][:160] or None,
@@ -80,7 +83,11 @@ def collect(nest: Path) -> dict[str, object]:
                 "rows": rows,
             }
         )
-    return {"date": date, "environment": environment, "models": models}
+    # How the rows compare (runtimes, and which stack each Linnet row
+    # replaces), as the zoo's own pages read it.
+    compare = json.loads((nest / "bench" / "compare.json").read_text(encoding="utf-8"))
+    compare.pop("about", None)
+    return {"date": date, "environment": environment, "compare": compare, "models": models}
 
 
 def main() -> None:
