@@ -175,10 +175,11 @@ along the one axis that differs, and `all_reduce` sums across the processes.
 A sum of at most 64 KiB -- a decoding step's, one token's hidden state -- is
 one Triton kernel over symmetric memory, into which each process writes its
 part and from which it reads its peers', in about half the time NCCL takes
-for a message that small; larger ones go to NCCL. The entries are the generated code of one shard on ordinary tensors, so a
-shard's query, key and value projections still join into one product (and
-gate and up into another), and the decoding step still replays as one CUDA
-graph with its all-reduces inside.
+for a message that small; larger ones go to NCCL. The entries are the
+generated code of one shard on ordinary tensors, so a shard's query, key and
+value projections still join into one product (and gate and up into
+another), and the decoding step still replays as one CUDA graph with its
+all-reduces inside.
 
 A model without `Shards` is split from the outside: each
 process of a `torch.distributed` job holds its slice of the weights as DTensors: the
