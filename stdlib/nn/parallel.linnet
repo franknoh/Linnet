@@ -9,3 +9,16 @@ module std.nn.parallel
 pub op all_reduce<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
     return x
 }
+
+// The shards' parts of `x` side by side along its last axis: each device of
+// a model split across devices holds a slice of an output -- the logits of
+// its part of a vocabulary -- and every device needs the whole, the shards in
+// order. With one shard the result is `x` itself. The body repeats `x` once
+// per shard, which is that for one shard and the right shape for any; a
+// backend that runs the shards as processes gathers their parts instead.
+pub op all_gather<R: Dim, N: Dim, Shards: Dim, T: Float>(
+    x: Tensor[R, N; T],
+) -> Tensor[R, Shards * N; T]
+where Shards > 0 {
+    return reshape(broadcast_to(reshape(x, [R, 1, N]), [R, Shards, N]), [R, Shards * N])
+}

@@ -168,10 +168,14 @@ A model can say how it splits. The zoo's Llama-shaped decoders have a
 heads, `KvHeads / Shards` key and value heads, and `Inner / Shards` hidden
 units, and the projections back out of them end in
 `std.nn.parallel::all_reduce`, the sum over the shards, which on one device
-is the value itself. With `tensor_parallel=mesh`, each process runs the
-model with `Shards` bound to the mesh size on its own part of every weight
-the checkpoint holds `Shards` times over, read from the checkpoint alone
-along the one axis that differs, and `all_reduce` sums across the processes.
+is the value itself. Those with an output projection of their own (not tied
+to the embedding) split it too: each shard holds `Vocab / Shards` rows of
+it, and `std.nn.parallel::all_gather` sets the shards' slices of the logits
+side by side, which on one device is the one slice, the whole. With
+`tensor_parallel=mesh`, each process runs the model with `Shards` bound to
+the mesh size on its own part of every weight the checkpoint holds `Shards`
+times over, read from the checkpoint alone along the one axis that differs;
+`all_reduce` sums across the processes and `all_gather` gathers from them.
 A sum of at most 64 KiB -- a decoding step's, one token's hidden state -- is
 one Triton kernel over symmetric memory, into which each process writes its
 part and from which it reads its peers', in about half the time NCCL takes
