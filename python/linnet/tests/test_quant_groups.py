@@ -1,7 +1,7 @@
 """Group-wise 4-bit linears (`std.quant::Int4GroupLinear`): the rounding
 `linnet.quant` does, and the same numbers from the canonical body, the
-interpreter, generated PyTorch (tinygemm on CUDA), and ONNX Runtime's
-`MatMulNBits`."""
+interpreter, generated PyTorch (tinygemm and Linnet's kernel on CUDA), and
+ONNX Runtime's `MatMulNBits`."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
@@ -153,12 +153,15 @@ def test_cuda_bf16_runs_tinygemm(
     assert isinstance(prepared, tuple) and len(prepared) == 3
     expected = x.float().cpu().numpy() @ weight.T
     np.testing.assert_allclose(got, expected, rtol=3e-2, atol=3e-1)
-    # A prompt's many rows take the dequantized weight instead: the same numbers.
-    many = torch.randn(40, IN, device="cuda", dtype=torch.bfloat16)
-    got = model.run_entry("forward", [many]).float().cpu().numpy()
-    expected = many.float().cpu().numpy() @ weight.T
-    np.testing.assert_allclose(got, expected, rtol=3e-2, atol=3e-1)
+    # A batch of decoding requests goes through Linnet's kernel, a prompt's
+    # many rows through the weight dequantized for the call: the same numbers.
+    for rows in (40, 160):
+        many = torch.randn(rows, IN, device="cuda", dtype=torch.bfloat16)
+        got = model.run_entry("forward", [many]).float().cpu().numpy()
+        expected = many.float().cpu().numpy() @ weight.T
+        np.testing.assert_allclose(got, expected, rtol=3e-2, atol=3e-1)
     # One kernel dequantizes it, to the weight the arithmetic gives, bit for bit.
+    many = torch.randn(160, IN, device="cuda", dtype=torch.bfloat16)
     params = dict(model.named_parameters())
     raw, scale, zero = (params[f"root.proj.{name}"] for name in ("weight", "scale", "zero"))
     levels = torch.stack([raw & 15, raw >> 4], dim=-1).reshape(OUT, IN // GROUP, GROUP)
@@ -169,6 +172,39 @@ def test_cuda_bf16_runs_tinygemm(
         rtol=0,
         atol=0,
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the kernel runs on CUDA")
+@pytest.mark.parametrize(
+    ("rows", "group", "out", "dtype"),
+    [
+        (8, 128, 72, torch.bfloat16),  # ragged outputs, the inputs split in four
+        (37, 32, 72, torch.float16),  # ragged rows, groups smaller than a step
+        (128, 64, 72, torch.bfloat16),
+        (24, 128, 8448, torch.bfloat16),  # enough tiles to fill the GPU unsplit
+    ],
+)
+def test_the_int4_kernel_multiplies_the_dequantized_weight(
+    rows: int, group: int, out: int, dtype: torch.dtype
+) -> None:
+    pytest.importorskip("triton")
+    from linnet.torch.kernels import int4_linear
+
+    width = 512
+    generator = torch.Generator().manual_seed(rows)
+    packed = torch.randint(
+        0, 256, (out, width // group, group // 2), generator=generator, dtype=torch.uint8
+    )
+    scale = (torch.rand(out, width // group, generator=generator) * 0.02 + 0.001).to(dtype)
+    zero = torch.randint(6, 10, (out, width // group), generator=generator, dtype=torch.uint8)
+    x = torch.randn(rows, width, generator=generator).to(dtype)
+    levels = torch.stack([packed & 15, packed >> 4], dim=-1).reshape(out, width // group, group)
+    weight = (levels.float() - zero.float()[..., None]) * scale.float()[..., None]
+    expected = x.float() @ weight.reshape(out, width).T
+    got = int4_linear(x.cuda(), packed.cuda(), scale.cuda(), zero.cuda())
+    assert got.shape == (rows, out) and got.dtype == dtype
+    bound = 1e-2 * expected.abs().max().item()
+    torch.testing.assert_close(got.float().cpu(), expected, rtol=0, atol=bound)
 
 
 # GPTQ's and AWQ's int32 packings, written from their definitions rather
