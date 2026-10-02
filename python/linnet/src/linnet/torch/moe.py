@@ -122,9 +122,11 @@ def mxfp4_grouped(
     # Each pair's place among the pairs sorted by expert, from a running
     # count per expert rather than a sort: `order[i]` is the pair at sorted
     # position `i`.
-    one_hot = flat[:, None] == torch.arange(count, device=flat.device)[None, :]
-    counts = one_hot.sum(0, dtype=torch.int32)
-    rank = one_hot.cumsum(0, dtype=torch.int32).gather(1, flat[:, None]).reshape(-1) - 1
+    # Experts by pairs, so the running count is a scan along the inner axis
+    # (along the outer one, PyTorch's scan is many times slower).
+    one_hot = torch.arange(count, device=flat.device)[:, None] == flat[None, :]
+    counts = one_hot.sum(1, dtype=torch.int32)
+    rank = one_hot.cumsum(1, dtype=torch.int32).gather(0, flat[None, :]).reshape(-1) - 1
     starts = counts.cumsum(0, dtype=torch.int32) - counts
     place = (starts[flat] + rank).long()
     order = torch.empty(pairs, dtype=torch.long, device=flat.device)
