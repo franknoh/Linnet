@@ -15,7 +15,12 @@ A card may also have `prefill_packed<P>(tokens: [P], rows: [P], positions:
 prompts packed end to end in one pass of `P` tokens, each token told its
 row, its position, and which prompt it belongs to. With PyTorch the engine
 uses it: a pass then carries no padding between prompts, only after the last
-one up to a compiled size.
+one up to a compiled size. And a card may have `step_packed<P>(tokens, rows,
+positions, segments, last, step_tokens: [Batch, 1], step_positions: [Batch])
+-> [2 * Batch, Vocab]`, `prefill_packed`'s pass with `decode_rows`'s step
+for every row in it: the logits after each prompt, then each row's step.
+A step that admits prompts while other rows decode then reads the weights
+once, not once for the prompts and again for the step.
 
 `Engine` schedules requests over them. Between two decoding steps it admits
 waiting requests into free rows -- their prompts packed into passes of up to
@@ -162,6 +167,7 @@ class _Backend(Protocol):
     slots: int
     max_seq: int
     packs: bool  # `prefill_packed` runs
+    mixes: bool  # `step_packed` runs
 
     def prefill(
         self,
@@ -181,6 +187,17 @@ class _Backend(Protocol):
         top: int = -1,
     ) -> _Tokens: ...
     def decode(self, need: int, top: int = -1) -> _Tokens: ...
+    def step_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
+        need: int,
+        top: int = -1,
+        step_top: int = -1,
+    ) -> tuple[_Tokens, _Tokens]: ...
 
 
 @dataclass
@@ -211,7 +228,10 @@ class Engine:
     tokens (at least the longest prompt a row holds) and `Batch` prompts,
     each padded at its end to the smallest of `pack_sizes` that holds it: by
     default 512, 1024, 1536, 2048, 3072 and 4096, scaled to `pack`.
-    `pack=0` keeps the grouped passes.
+    `pack=0` keeps the grouped passes. A card that also has `step_packed`
+    takes the step of the rows already decoding in the last such pass of a
+    step (`mix=False` keeps them apart); the rows that pass admits take
+    their first step with the next.
     """
 
     def __init__(
@@ -223,6 +243,7 @@ class Engine:
         pad: int = 0,
         max_group: int = 8,
         pack: int = 4096,
+        mix: bool = True,
     ) -> None:
         self.backend: _Backend = _backend_for(model, graphs)
         limit = self.backend.max_seq
@@ -244,6 +265,7 @@ class Engine:
                 length += max(16, 1 << (length.bit_length() - 3))
             buckets.append(limit)
         self.buckets = sorted({b for b in buckets if b <= limit})
+        self.mix = mix and bool(self.pack) and self.backend.mixes
         self.pad = pad
         self.max_group = max(1, max_group)
         self._seeds = random.Random()
@@ -262,6 +284,10 @@ class Engine:
             reach = sum(longest) if longest else self.pack
             for size in self.pack_sizes:
                 self.backend.prefill_packed([[self.pad]], [0], [Sampling()], size, self.pad)
+                if self.mix:
+                    self.backend.step_packed(
+                        [[self.pad]], [0], [Sampling()], size, self.pad, mode([])
+                    )
                 if size >= reach:
                     break
             for _ in range(2):
@@ -361,11 +387,15 @@ class Engine:
         step for every row and reads what the passes before it produced.
         Returns the requests that finished."""
         rows = self._rows
+        decoding = any(row is not None for row in rows)
         free = [slot for slot in range(self.slots) if rows[slot] is None]
         admitted = [self._waiting.popleft() for _ in range(min(len(free), len(self._waiting)))]
         admitted.sort(key=lambda c: len(c.request.prompt))
         placed = list(zip(free, admitted, strict=False))
-        for batch in self._packed(placed):
+        passes = self._packed(placed)
+        # With rows already decoding, the last pass carries their step.
+        mixed = passes.pop() if passes and decoding and self.mix else None
+        for batch in passes:
             now = time.perf_counter() - self._start
             prompts = [list(c.request.prompt) for _, c in batch]
             size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
@@ -407,7 +437,33 @@ class Engine:
             owners = [(i, slot, c) for i, (slot, c) in enumerate(batch)]
             self._queued.append(_Queued(tokens, owners, prompts=True))
         ahead = 0
-        if any(row is not None for row in rows):
+        if mixed is not None:
+            now = time.perf_counter() - self._start
+            prompts = [list(c.request.prompt) for _, c in mixed]
+            size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
+            # Every row in use steps but those this pass fills, which have no
+            # token to step from yet.
+            stepping = [(slot, slot, c) for slot, c in enumerate(rows) if c is not None]
+            first, stepped = self.backend.step_packed(
+                prompts,
+                [slot for slot, _ in mixed],
+                [c.sampling for _, c in mixed],
+                size,
+                self.pad,
+                mode(c.sampling for _, _, c in stepping),
+                _top(c for _, c in mixed),
+                _top(c for _, _, c in stepping),
+            )
+            self._prefills += 1
+            self._steps += 1
+            for slot, completion in mixed:
+                completion.admitted = now
+                rows[slot] = completion
+            owners = [(i, slot, c) for i, (slot, c) in enumerate(mixed)]
+            self._queued.append(_Queued(first, owners, prompts=True))
+            self._queued.append(_Queued(stepped, stepping, prompts=False))
+            ahead = 2
+        elif any(row is not None for row in rows):
             # One step for the whole batch; empty rows compute along. It
             # stays queued while the passes before it are read.
             owners = [(slot, slot, c) for slot, c in enumerate(rows) if c is not None]
@@ -548,6 +604,7 @@ class _TorchBackend:
         self.slots, self.max_seq = _cache_generics(model)
         self.device = next(iter(model.parameters())).device
         self.packs = "prefill_packed" in model.entries
+        self.mixes = self.packs and "step_packed" in model.entries
         self.step_compile: bool | str = "reduce-overhead" if graphs else True
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
@@ -606,16 +663,9 @@ class _TorchBackend:
         self.positions[index] = at
         return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
-    def prefill_packed(
-        self,
-        prompts: list[list[int]],
-        slots: list[int],
-        sampling: list[Sampling],
-        size: int,
-        pad: int,
-        top: int = -1,
-    ) -> _Tokens:
-        torch = self.torch
+    def _pack(self, prompts: list[list[int]], slots: list[int], size: int, pad: int) -> list[Any]:
+        """A packed pass's `tokens`, `rows`, `positions`, `segments` and
+        `last`, on the device."""
         tokens: list[int] = []
         rows: list[int] = []
         positions: list[int] = []
@@ -636,14 +686,14 @@ class _TorchBackend:
         segments += [-1] * extra
         last += [last[-1]] * (self.slots - len(last))
         packed = self._put([tokens, rows, positions, segments])
-        # A few pass sizes, each compiled like the step (and replayed as a CUDA
-        # graph): FlexAttention runs only under `torch.compile`, and a pass
-        # of thousands of tokens has as many kernels as the step.
-        logits = self.model.run_entry(
-            "prefill_packed",
-            [packed[0], packed[1], packed[2], packed[3], self._put(last)],
-            compile=self.step_compile,
-        )[: len(prompts)]
+        return [packed[0], packed[1], packed[2], packed[3], self._put(last)]
+
+    def _admit(
+        self, logits: Any, prompts: list[list[int]], slots: list[int], sampling: list[Sampling]
+    ) -> Any:
+        """Draws the token after each prompt from its logits and sets its row
+        to it, at the position after the prompt."""
+        torch = self.torch
         lengths = [len(prompt) for prompt in prompts]
         rows_at, at = self._put(slots), self._put(lengths)
         self._hold(slots, sampling)
@@ -659,12 +709,63 @@ class _TorchBackend:
         )
         self.tokens[index, 0] = first.to(torch.int32)
         self.positions[index] = at
+        return first
+
+    def prefill_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
+        top: int = -1,
+    ) -> _Tokens:
+        # A few pass sizes, each compiled like the step (and replayed as a CUDA
+        # graph): FlexAttention runs only under `torch.compile`, and a pass
+        # of thousands of tokens has as many kernels as the step.
+        logits = self.model.run_entry(
+            "prefill_packed", self._pack(prompts, slots, size, pad), compile=self.step_compile
+        )[: len(prompts)]
+        first = self._admit(logits, prompts, slots, sampling)
         return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
-    def decode(self, need: int, top: int = -1) -> _Tokens:
+    def step_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
+        need: int,
+        top: int = -1,
+        step_top: int = -1,
+    ) -> tuple[_Tokens, _Tokens]:
+        """`prefill_packed` and `decode` in one pass. The rows the prompts
+        fill step along from no token of theirs: their step is written at
+        the cache's last position, which a request stops before it reaches,
+        and the prompts' tokens then set them."""
+        index = self._put(slots).long()
+        positions = self.positions.clone()
+        positions[index] = self.max_seq - 1
         logits = self.model.run_entry(
-            "decode_rows", [self.tokens, self.positions], compile=self.step_compile
+            "step_packed",
+            [*self._pack(prompts, slots, size, pad), self.tokens, positions],
+            compile=self.step_compile,
         )
+        stepped = self._advance(logits[self.slots :], need)
+        prompted = logits[: len(prompts)]
+        first = self._admit(prompted, prompts, slots, sampling)
+        return (
+            _TorchTokens(first, _logprobs_torch(prompted, first, top) if top >= 0 else None),
+            _TorchTokens(
+                stepped,
+                _logprobs_torch(logits[self.slots :], stepped, step_top) if step_top >= 0 else None,
+            ),
+        )
+
+    def _advance(self, logits: Any, need: int) -> Any:
+        """Draws every row's next token from its step's logits and moves the
+        row on to it."""
         produced = self._draw(
             logits, self.temperature, self.top_k, self.top_p, self.keys, self.positions + 1, need
         )
@@ -672,6 +773,13 @@ class _TorchBackend:
         # A row whose request has finished computes along until the engine
         # reads that it has; its position stays inside the cache.
         self.positions.add_(1).clamp_(max=self.max_seq - 1)
+        return produced
+
+    def decode(self, need: int, top: int = -1) -> _Tokens:
+        logits = self.model.run_entry(
+            "decode_rows", [self.tokens, self.positions], compile=self.step_compile
+        )
+        produced = self._advance(logits, need)
         return _TorchTokens(produced, _logprobs_torch(logits, produced, top) if top >= 0 else None)
 
 
@@ -711,6 +819,7 @@ class _Grouped:
     whole square."""
 
     packs = False
+    mixes = False
 
     def prefill_packed(
         self,
@@ -721,6 +830,19 @@ class _Grouped:
         pad: int,
         top: int = -1,
     ) -> _Tokens:
+        raise NotImplementedError("packed prompt passes run with the PyTorch backend")
+
+    def step_packed(
+        self,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        size: int,
+        pad: int,
+        need: int,
+        top: int = -1,
+        step_top: int = -1,
+    ) -> tuple[_Tokens, _Tokens]:
         raise NotImplementedError("packed prompt passes run with the PyTorch backend")
 
 

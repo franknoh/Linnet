@@ -28,6 +28,7 @@ drives two entries, which every decoder in the zoo has:
 | `prefill_slots<M, S>(tokens: [M, S], slots: [M], lengths: [M]) -> [M, Vocab]` | writes `M` prompts into rows `slots` of the KV caches in one pass; each row of `tokens` is padded to one of a few compiled lengths and `lengths` says where each prompt ends |
 | `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]` | one token for every row, each at its own position |
 | `prefill_packed<P>(tokens: [P], rows: [P], positions: [P], segments: [P], last: [Batch]) -> [Batch, Vocab]` | optional: several prompts packed end to end into one pass of `P` tokens, each token given its cache row, its position, and which prompt it belongs to; returns the logits after each prompt's last token, `last[m]` |
+| `step_packed<P>(tokens, rows, positions, segments, last, step_tokens: [Batch, 1], step_positions: [Batch]) -> [2 * Batch, Vocab]` | optional, with `prefill_packed`: its pass and `decode_rows`'s step for every row in one, the projections run once over all `P + Batch` tokens; returns the logits after each prompt, then each row's step |
 
 They are built from `std.nn.cache::write_slots`, `write_rows` (a cache
 row written at each sequence's own position) and `write_tokens` (each
@@ -41,7 +42,10 @@ are packed end to end, longest first, into passes of up to `pack` tokens
 (4096 by default) when the model has `prefill_packed` -- a pass is padded
 only after its last prompt, to one of six compiled sizes, and each size is
 compiled and replayed like the step -- and otherwise go through in passes
-of up to 8, each padded to its longest; with
+of up to 8, each padded to its longest. With `step_packed` as well, a step
+that admits prompts while other rows decode carries those rows' step in its
+last pass, so the weights are read once for both (`mix=False` keeps them
+apart); the rows that pass fills take their first step with the next one; with
 `linnet.jax.load_model` (or `nest.load(..., backend="jax_model")`) both
 entries are XLA programs over one copy of the weights, with the caches
 donated so XLA updates them in place. The tokens a step produces feed the
