@@ -550,6 +550,11 @@ public:
             shards_helper_ = true;
             return define("_all_reduce(" + name(0) + ")");
         }
+        if (implementation_base == "torch.distributed.all_gather" && operands.size() == 1 &&
+            operands[0]) {
+            shards_helper_ = true;
+            return define("_all_gather(" + name(0) + ")");
+        }
         if (implementation_base == "torch.Tensor.index_put(tokens)" && operands.size() == 4 &&
             operands[0] && operands[1] && operands[2] && operands[3]) {
             // `write_tokens`: token p at (rows[p], positions[p]), every head;
@@ -1598,6 +1603,16 @@ private:
                "    from linnet.torch.collectives import all_reduce\n"
                "\n"
                "    return all_reduce(x, _GROUP)\n"
+               "\n\n"
+               "def _all_gather(x):\n"
+               "    \"\"\"`std.nn.parallel::all_gather`: the shards' slices side by side "
+               "along\n"
+               "    the last axis, in the processes' order.\"\"\"\n"
+               "    if _GROUP is None:\n"
+               "        return x\n"
+               "    from linnet.torch.collectives import all_gather\n"
+               "\n"
+               "    return all_gather(x, _GROUP)\n"
                "\n\n";
     }
 

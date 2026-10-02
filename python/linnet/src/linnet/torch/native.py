@@ -87,8 +87,9 @@ def _mxfp4_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch
 
 
 def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    """`std.nn.parallel::all_reduce` in one process, which holds the whole
-    model: the sum over one shard is the value itself."""
+    """`std.nn.parallel::all_reduce` and `all_gather` in one process, which
+    holds the whole model: one shard's sum, or its slices side by side, is the
+    value itself."""
     return args[0]
 
 
@@ -339,6 +340,7 @@ NATIVE: dict[str, Native] = {
     "torch.Tensor.index_put": _index_put,
     "torch.Tensor.index_put(tokens)": _write_tokens,
     "torch.distributed.all_reduce": _one_shard,
+    "torch.distributed.all_gather": _one_shard,
     "linnet.mxfp4_experts": _mxfp4_experts,
     "linnet.mxfp4_experts(shared)": _mxfp4_experts_shared,
     "torch.matmul": _matmul,

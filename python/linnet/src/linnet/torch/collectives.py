@@ -125,4 +125,11 @@ def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
     return funcol.all_reduce(x, "sum", group)
 
 
-__all__ = ["ONE_SHOT_BYTES", "all_reduce", "prepare"]
+def all_gather(x: torch.Tensor, group: Any) -> torch.Tensor:
+    """The processes' `x` side by side along the last axis, in rank order."""
+    from torch.distributed import _functional_collectives as funcol
+
+    return funcol.all_gather_tensor(x.contiguous(), x.dim() - 1, group)
+
+
+__all__ = ["ONE_SHOT_BYTES", "all_gather", "all_reduce", "prepare"]
