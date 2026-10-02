@@ -303,6 +303,43 @@ def test_torch_cuda_graphs(model_files: tuple[Path, Path]) -> None:
     assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_mixed_passes_on_flex_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Heads 16 wide and passes of 128 tokens and more, so the prompts and
+    the rows' steps both run on FlexAttention, replayed as CUDA graphs: the
+    passes that take the rows' steps along give greedy decoding's tokens."""
+    source = tmp_path / "serve.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    generics: dict[str, int | str] = {"Vocab": 64, "H": 64, "Heads": 4, "Batch": 4, "MaxSeq": 256}
+    model = load(source, generics=generics, std_root=STDLIB, device="cuda", compile=True)
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.copy_(torch.randn(parameter.shape, device="cuda", generator=generator) * 0.02)
+    rng = random.Random(0)
+    requests = [
+        Request(
+            prompt=[rng.randrange(64) for _ in range(rng.randrange(20, 120))],
+            max_new_tokens=rng.randrange(4, 40),
+        )
+        for _ in range(16)
+    ]
+    engine = Engine(model, pack=1024)
+    assert engine.mix and engine.pack_sizes[0] == 128
+    passes: list[int] = []
+    step_packed = engine.backend.step_packed
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        passes.append(len(args[0]))
+        return step_packed(*args, **kwargs)
+
+    monkeypatch.setattr(engine.backend, "step_packed", counted)
+    done, _ = engine.run(requests)
+    assert passes
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
+
+
 def test_stops_at_eos_and_at_the_end_of_the_cache(model_files: tuple[Path, Path]) -> None:
     source, weights = model_files
     model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
