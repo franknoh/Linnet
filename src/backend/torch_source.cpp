@@ -1591,12 +1591,13 @@ private:
                "\n\n"
                "def _all_reduce(x):\n"
                "    \"\"\"`std.nn.parallel::all_reduce`: the sum over the shards' "
-               "processes.\"\"\"\n"
+               "processes;\n"
+               "    a small one by Linnet's one-shot kernel, a large one by NCCL.\"\"\"\n"
                "    if _GROUP is None:\n"
                "        return x\n"
-               "    from torch.distributed import _functional_collectives as funcol\n"
+               "    from linnet.torch.collectives import all_reduce\n"
                "\n"
-               "    return funcol.all_reduce(x, \"sum\", _GROUP)\n"
+               "    return all_reduce(x, _GROUP)\n"
                "\n\n";
     }
 

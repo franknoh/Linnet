@@ -181,8 +181,13 @@ def load(
             parameter.requires_grad_(True)
     module.amp = precision
     if mesh is not None:
+        from .collectives import prepare
+
         assert isinstance(module, CompiledLinnetModule)
         module.shard_group = mesh.get_group()
+        # Every process loads together, so the one-shot all-reduce's
+        # buffers are set up here, a collective, once per group.
+        prepare(module.shard_group)
     elif tensor_parallel is not None:
         from .parallel import distribute
 
