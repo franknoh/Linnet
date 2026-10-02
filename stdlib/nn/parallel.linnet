@@ -1,0 +1,11 @@
+module std.nn.parallel
+
+// The sum of `x` over the shards of a model split across devices (tensor
+// parallelism): each device holds part of a sum -- a projection back out of
+// the heads or the hidden units it computed, from the input rows it holds --
+// and every device needs the whole of it. With one shard, a model on one
+// device, the sum is `x` itself, which is the body; a backend that runs the
+// shards as processes adds them across devices.
+pub op all_reduce<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return x
+}
