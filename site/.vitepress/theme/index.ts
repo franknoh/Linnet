@@ -14,7 +14,7 @@ export default {
   Layout: () =>
     h(DefaultTheme.Layout, null, {
       "home-hero-info-after": () => h(HeroFiles),
-      "home-hero-after": () => h(ArchDiagram),
+      "home-hero-image": () => h(ArchDiagram),
     }),
   enhanceApp({ app }) {
     app.component("BenchChart", BenchChart);

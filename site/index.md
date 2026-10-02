@@ -5,9 +5,6 @@ hero:
   name: Linnet
   text: The checked source format for neural network architectures
   tagline: SafeTensors for model structure. Architecture is source, weights are data, and the architecture is checked and run without importing the model's Python.
-  image:
-    src: /logo.svg
-    alt: Linnet
   actions:
     - theme: brand
       text: Get started
