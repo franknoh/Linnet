@@ -1,6 +1,7 @@
 import { h } from "vue";
 import DefaultTheme from "vitepress/theme";
 import type { Theme } from "vitepress";
+import ArchDiagram from "./ArchDiagram.vue";
 import BenchChart from "./BenchChart.vue";
 import BenchTable from "./BenchTable.vue";
 import HeroFiles from "./HeroFiles.vue";
@@ -13,6 +14,7 @@ export default {
   Layout: () =>
     h(DefaultTheme.Layout, null, {
       "home-hero-info-after": () => h(HeroFiles),
+      "home-hero-after": () => h(ArchDiagram),
     }),
   enhanceApp({ app }) {
     app.component("BenchChart", BenchChart);
