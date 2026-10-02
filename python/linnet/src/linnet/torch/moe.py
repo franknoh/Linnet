@@ -118,31 +118,41 @@ def mxfp4_grouped(
     rows, chosen = experts.shape
     count, out_features = blocks.shape[0], blocks.shape[1]
     flat = experts.reshape(-1)
-    order = flat.argsort(stable=True)
-    inputs = x if shared else x.reshape(rows * chosen, -1)
+    pairs = flat.numel()
+    # Each pair's place among the pairs sorted by expert, from a running
+    # count per expert rather than a sort: `order[i]` is the pair at sorted
+    # position `i`.
+    one_hot = flat[:, None] == torch.arange(count, device=flat.device)[None, :]
+    counts = one_hot.sum(0, dtype=torch.int32)
+    rank = one_hot.cumsum(0, dtype=torch.int32).gather(1, flat[:, None]).reshape(-1) - 1
+    starts = counts.cumsum(0, dtype=torch.int32) - counts
+    place = (starts[flat] + rank).long()
+    order = torch.empty(pairs, dtype=torch.long, device=flat.device)
+    order.scatter_(0, place, torch.arange(pairs, device=flat.device))
+    inputs = x if shared else x.reshape(pairs, -1)
     sources = order // chosen if shared else order
     if _triton_kernels():
         from triton_kernels.matmul import matmul
         from triton_kernels.tensor_details.ragged_tensor import make_ragged_tensor_metadata
 
         weight, precision = swizzled(blocks, scales)
-        slots = torch.arange(count, device=flat.device)
-        counts = (flat[:, None] == slots[None, :]).sum(0, dtype=torch.int32)
-        metadata = make_ragged_tensor_metadata(counts, flat.numel())
+        # Row `i` of the product reads input `sources[i]` and is written to
+        # pair `order[i]`: the products come back in the pairs' order.
         y = matmul(
             inputs,
             weight,
             None,
-            a_ragged_metadata=metadata,
+            a_ragged_metadata=make_ragged_tensor_metadata(counts, pairs),
             gather_indx=sources.to(torch.int32),
+            scatter_indx=order.to(torch.int32),
             precision_config=precision,
         )
-    else:
-        weight = dequantized(blocks, scales)
-        slots = torch.arange(count, device=flat.device)
-        ends = (flat[None, :] <= slots[:, None]).sum(1).to(torch.int32)
-        grouped_mm: Any = getattr(torch, "_grouped_mm")  # noqa: B009 - private, checked by `available`
-        y = grouped_mm(inputs[sources], weight.transpose(-2, -1), offs=ends)
+        return y.reshape(rows, chosen, out_features)
+    weight = dequantized(blocks, scales)
+    grouped_mm: Any = getattr(torch, "_grouped_mm")  # noqa: B009 - private, checked by `available`
+    y = grouped_mm(
+        inputs[sources], weight.transpose(-2, -1), offs=counts.cumsum(0, dtype=torch.int32)
+    )
     unsorted = torch.empty_like(y).index_copy_(0, order, y)
     return unsorted.reshape(rows, chosen, out_features)
 
