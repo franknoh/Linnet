@@ -1,0 +1,24 @@
+module tests.optional_sub
+
+block Projection<D: Dim> {
+    param weight: Tensor[D, D; f32]
+
+    pub fn forward<B: Dim>(x: Tensor[B, D; f32]) -> Tensor[B, D; f32] {
+        let y[b, o] = sum[i] x[b, i] * weight[o, i]
+        return y
+    }
+}
+
+// An optional child block: `some(block)` when the weights have it.
+pub block Model<D: Dim> {
+    sub proj: Projection<D>
+    sub pooler: Projection<D>? = none
+
+    pub entry forward<B: Dim>(x: Tensor[B, D; f32]) -> Tensor[B, D; f32] {
+        let hidden = proj.forward(x)
+        return match pooler {
+            some(head) => head.forward(hidden)
+            none => hidden
+        }
+    }
+}

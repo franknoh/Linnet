@@ -211,6 +211,10 @@ file = "valid/025_runtime_index.linnet"
 expect = "ok"
 
 [[case]]
+file = "valid/026_optional_sub.linnet"
+expect = "ok"
+
+[[case]]
 file = "invalid/123_while_condition_tensor.linnet"
 expect = "error"
 code = "E2114"
@@ -224,3 +228,8 @@ code = "E2116"
 file = "invalid/125_negative_index.linnet"
 expect = "error"
 code = "E2209"
+
+[[case]]
+file = "invalid/126_sub_default_value.linnet"
+expect = "error"
+code = "E4101"

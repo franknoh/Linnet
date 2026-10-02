@@ -110,7 +110,8 @@ private:
                           const std::string& prefix,
                           const std::vector<std::string>& repeat,
                           std::vector<EntityId>& active,
-                          ManifestBlock& out);
+                          ManifestBlock& out,
+                          bool within_optional);
 
     // ------------------------------------------------------------------- names
     EntityId lookup(const ast::Name& name);

@@ -40,7 +40,7 @@ block_item         = param_decl | buffer_decl | state_decl | sub_decl | item ;
 param_decl         = "param", identifier, ":", type, [ "=", expr ] ;
 buffer_decl        = "buffer", identifier, ":", type ;
 state_decl         = "state", identifier, ":", type ;
-sub_decl           = "sub", identifier, ":", type ;
+sub_decl           = "sub", identifier, ":", type, [ "=", expr ] ;   (* `= none` for an optional block *)
 
 generic_params     = "<", generic_param, { ",", generic_param }, [ "," ], ">" ;
 generic_param      = [ "*" ], identifier, ":", generic_constraint, [ "=", type_or_expr ] ;

@@ -10,7 +10,7 @@ the entry named `forward`, or the only entry.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +32,10 @@ class BlockModule(nn.Module):
         self.env = env
         self.optional_params: set[str] = set()
         self.absent_params: set[str] = set()
+        # Optional sub-blocks, present or absent as a whole: absent until
+        # weights bind every parameter one requires.
+        self.optional_subs: set[str] = set()
+        self.absent_subs: set[str] = set()
         self.state_names: set[str] = set()
         definition = plan.blocks[name]
         for constraint in definition["constraints"]:
@@ -40,6 +44,10 @@ class BlockModule(nn.Module):
         for member in definition["members"]:
             member_type = member["type"]
             if member["kind"] == "sub":
+                if member_type["kind"] == "optional":
+                    member_type = member_type["inner"]
+                    self.optional_subs.add(member["name"])
+                    self.absent_subs.add(member["name"])
                 self.add_module(member["name"], _instantiate_sub(plan, member_type, env, device))
                 continue
             is_optional = member_type["kind"] == "optional"
@@ -86,9 +94,11 @@ class BlockModule(nn.Module):
                 states[name] = buffer
             else:
                 params[name] = buffer
-        subs: dict[str, BlockInstance | list[BlockInstance]] = {}
+        subs: dict[str, BlockInstance | list[BlockInstance] | None] = {}
         for name, child in self.named_children():
-            if isinstance(child, BlockModule):
+            if name in self.absent_subs:
+                subs[name] = None
+            elif isinstance(child, BlockModule):
                 subs[name] = child.instance()
             elif isinstance(child, nn.ModuleList):
                 subs[name] = [
@@ -437,11 +447,14 @@ def bind_weights(
     problems: list[str] = []
     assignments: list[tuple[str, str, Path]] = []
     parts: dict[str, tuple[int, int]] = {}  # path -> (axis, extent) of its shard
+    optional_subs = _optional_subs(module)
     for path, tensor in _all_tensors(module):
         source = mapping.get(path, path)
         owner, leaf = owner_of(module, path)
         if source not in available:
-            if leaf in owner.optional_params:
+            if leaf in owner.optional_params or any(
+                path.startswith(prefix + ".") for prefix in optional_subs
+            ):
                 continue
             if strict:
                 problems.append(f"missing tensor `{source}` for `{path}`")
@@ -481,6 +494,23 @@ def bind_weights(
             owner, leaf = owner_of(module, path)
             getattr(owner, leaf).copy_(loaded)
             owner.absent_params.discard(leaf)
+    # An optional sub-block is present when every parameter it requires was
+    # bound (and something was): a checkpoint without its weights leaves it out.
+    bound = {path for path, _, _ in assignments}
+    every = [path for path, _ in _all_tensors(module)]
+    for prefix, (parent, name) in optional_subs.items():
+        inside = [path for path in every if path.startswith(prefix + ".")]
+        nested = [other + "." for other in optional_subs if other.startswith(prefix + ".")]
+        required = [
+            path
+            for path in inside
+            if not any(path.startswith(other) for other in nested)
+            and owner_of(module, path)[1] not in owner_of(module, path)[0].optional_params
+        ]
+        if all(path in bound for path in required) and any(path in bound for path in inside):
+            parent.absent_subs.discard(name)
+        else:
+            parent.absent_subs.add(name)
     # Which optional parameters are bound decides what a compiled entry
     # computes; entries prepared before this binding are prepared again.
     for cache in ("_fast", "_prepared"):
@@ -498,6 +528,19 @@ def _shard_axis(full: list[int], local: list[int], count: int) -> int | None:
     if len(differ) == 1 and full[differ[0]] == local[differ[0]] * count:
         return differ[0]
     return None
+
+
+def _optional_subs(module: LinnetModule) -> dict[str, tuple[BlockModule, str]]:
+    """Every optional sub-block by path, with the block that holds it and its
+    name there."""
+    found: dict[str, tuple[BlockModule, str]] = {}
+    named = cast("Iterable[tuple[str, nn.Module]]", module.named_modules())
+    for name, block in named:
+        if isinstance(block, BlockModule):
+            path = name.removeprefix("root").removeprefix(".")
+            for sub in block.optional_subs:
+                found[f"{path}.{sub}" if path else sub] = (block, sub)
+    return found
 
 
 def _all_tensors(module: LinnetModule) -> list[tuple[str, torch.Tensor]]:

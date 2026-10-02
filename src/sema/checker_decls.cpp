@@ -580,12 +580,15 @@ void Checker::resolve_member(EntityId entity) {
         is_kind(type, TypeKind::Optional) ? types_.get(type).elements.front() : type;
     const SourceSpan type_span = decl.type == ast::no_id ? target.span : ast().type(decl.type).span;
     if (decl.kind == ast::MemberKind::Sub) {
+        // A block, an optional block (present or absent as a whole), or an
+        // array of blocks.
         const TypeId element =
-            is_kind(type, TypeKind::Array) ? types_.get(type).elements.front() : type;
+            is_kind(type, TypeKind::Array) ? types_.get(type).elements.front() : inner;
         if (!types_.is_error(type) && !is_kind(element, TypeKind::Block)) {
             error(codes::invalid_member_type,
                   type_span,
-                  "a `sub` must be a block or an array of blocks, not `" + str(type) + "`");
+                  "a `sub` must be a block, an optional block, or an array of blocks, not `" +
+                      str(type) + "`");
         }
     } else if (!types_.is_error(type) && !is_kind(inner, TypeKind::Tensor)) {
         error(codes::invalid_member_type,
@@ -599,15 +602,20 @@ void Checker::resolve_member(EntityId entity) {
     }
 
     if (decl.default_value != ast::no_id) {
+        const std::string keyword(ast::member_keyword(decl.kind));
         const ast::Expr& value = ast().expr(decl.default_value);
         if (!std::holds_alternative<ast::NoneExpr>(value.data)) {
-            error(codes::param_payload, value.span, "a `param` cannot have a value in source")
-                .note("parameter data is bound externally; the only default is `none`, which "
-                      "marks an optional parameter as possibly absent");
+            error(codes::param_payload,
+                  value.span,
+                  "a `" + keyword + "` cannot have a value in source")
+                .note(std::string("parameter data is bound externally; the only default is "
+                                  "`none`, which marks an optional ") +
+                      (decl.kind == ast::MemberKind::Sub ? "sub-block" : "parameter") +
+                      " as possibly absent");
         } else if (!types_.is_error(type) && !is_kind(type, TypeKind::Optional)) {
             error(codes::invalid_member_type,
                   value.span,
-                  "only an optional `param` can default to `none`")
+                  "only an optional `" + keyword + "` can default to `none`")
                 .help("declare the type as `" + str(type) + "?`");
         }
     }

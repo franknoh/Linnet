@@ -21,7 +21,7 @@ void Checker::collect_manifests() {
                                         std::string(generic.name));
         }
         std::vector<EntityId> active;
-        collect_manifest(entity, {}, "", {}, active, manifest);
+        collect_manifest(entity, {}, "", {}, active, manifest, false);
         result_.manifests.push_back(std::move(manifest));
     }
 }
@@ -31,7 +31,8 @@ void Checker::collect_manifest(EntityId block,
                                const std::string& prefix,
                                const std::vector<std::string>& repeat,
                                std::vector<EntityId>& active,
-                               ManifestBlock& out) {
+                               ManifestBlock& out,
+                               bool within_optional) {
     // A block that contains itself, directly or through an array, has no
     // finite manifest; the cycle is already an error elsewhere.
     if (std::find(active.begin(), active.end(), block) != active.end()) {
@@ -59,7 +60,10 @@ void Checker::collect_manifest(EntityId block,
         if (member->kind == ast::MemberKind::Sub) {
             std::vector<std::string> inner_repeat = repeat;
             std::string inner_prefix = path;
-            const TypeData* element = &data;
+            // An optional sub is present or absent as a whole: everything in
+            // it is optional.
+            const bool is_optional = data.kind == TypeKind::Optional;
+            const TypeData* element = is_optional ? &types_.get(data.elements.front()) : &data;
             if (data.kind == TypeKind::Array) {
                 inner_repeat.push_back(dims_.to_string(data.value));
                 inner_prefix += "[*]";
@@ -71,7 +75,8 @@ void Checker::collect_manifest(EntityId block,
                                  inner_prefix + ".",
                                  inner_repeat,
                                  active,
-                                 out);
+                                 out,
+                                 within_optional || is_optional);
             }
             continue;
         }
@@ -80,8 +85,9 @@ void Checker::collect_manifest(EntityId block,
         entry.path = path;
         entry.kind = std::string(ast::member_keyword(member->kind));
         entry.repeat = repeat;
-        entry.is_optional = data.kind == TypeKind::Optional;
-        const TypeData& tensor = entry.is_optional ? types_.get(data.elements.front()) : data;
+        const bool declared_optional = data.kind == TypeKind::Optional;
+        entry.is_optional = within_optional || declared_optional;
+        const TypeData& tensor = declared_optional ? types_.get(data.elements.front()) : data;
         if (tensor.kind != TypeKind::Tensor) {
             continue;
         }
