@@ -1,6 +1,7 @@
 #include "linnet/backend/torch_source.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -614,7 +615,12 @@ public:
             if (!window) {
                 return std::nullopt;
             }
+            // One number when every axis agrees, as for a square window.
             const auto tuple = [](const std::vector<std::int64_t>& values) {
+                if (std::adjacent_find(values.begin(), values.end(), std::not_equal_to<>()) ==
+                    values.end()) {
+                    return std::to_string(values.front());
+                }
                 std::string text = "(";
                 for (std::size_t i = 0; i < values.size(); ++i) {
                     text += i == 0 ? "" : ", ";
