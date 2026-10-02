@@ -119,13 +119,13 @@ def test_a_model_trains_on_a_linnet_loss(compile: bool) -> None:
     torch.testing.assert_close(loss, expected)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=0.5)
-    first = float(loss)
+    first = loss.item()
     for _ in range(30):
         optimizer.zero_grad()
         loss = cross_entropy(model(x), labels)
         loss.backward()
         optimizer.step()  # pyright: ignore[reportUnknownMemberType]
-    assert float(loss) < first * 0.7, (first, float(loss))
+    assert loss.item() < first * 0.7, (first, loss.item())
 
 
 POSITIONS = """\
