@@ -530,6 +530,19 @@ public:
                           "torch.arange(" + std::to_string(span) + ", device=" + name(0) +
                           ".device), " + name(1) + ")");
         }
+        if ((implementation_base == "linnet.mxfp4_experts" ||
+             implementation_base == "linnet.mxfp4_experts(shared)") &&
+            operands.size() == 4 && operands[0] && operands[1] && operands[2] && operands[3] &&
+            shape.size() == 3) {
+            // A shared input is the same row for each chosen slot: a view.
+            mxfp4_helper_ = true;
+            const std::string x =
+                implementation_base == "linnet.mxfp4_experts"
+                    ? name(0)
+                    : name(0) + "[:, None, :].expand(-1, " + std::to_string(shape[1]) + ", -1)";
+            return define("_mxfp4_experts(" + x + ", " + name(1) + ", " + name(2) + ", " + name(3) +
+                          ")");
+        }
         if (implementation_base == "torch.distributed.all_reduce" && operands.size() == 1 &&
             operands[0]) {
             shards_helper_ = true;
@@ -860,6 +873,9 @@ public:
         }
         if (shards_helper_) {
             out += shards_helper();
+        }
+        if (mxfp4_helper_) {
+            out += mxfp4_helper();
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1514,6 +1530,33 @@ private:
     // results put back in the rows' order. `offs` ends each expert's rows;
     // counting rather than `bincount` keeps it on the device, so the step can
     // be a CUDA graph.
+    static std::string mxfp4_helper() {
+        return "try:\n"
+               "    from linnet.torch.kernels import mxfp4_experts as _mxfp4_kernel\n"
+               "except ImportError:  # no Triton: the arithmetic in `_mxfp4_experts`\n"
+               "    _mxfp4_kernel = None\n"
+               "\n"
+               "_FP4 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, "
+               "-3.0, -4.0, -6.0)\n"
+               "\n\n"
+               "def _mxfp4_experts(x, blocks, scales, experts):\n"
+               "    \"\"\"`std.quant::mxfp4_experts`: for a decoding step's few rows on CUDA,\n"
+               "    Linnet's kernel reads the chosen experts' four-bit bytes as they are;\n"
+               "    otherwise the chosen experts are unpacked and multiplied in f32.\"\"\"\n"
+               "    rows, chosen, _ = x.shape\n"
+               "    if _mxfp4_kernel is not None and x.is_cuda and rows * chosen <= 32:\n"
+               "        return _mxfp4_kernel(x, blocks, scales, experts)\n"
+               "    table = torch.tensor(_FP4, dtype=torch.float32, device=x.device)\n"
+               "    taken = blocks[experts]\n"
+               "    values = torch.stack([table[(taken & 15).long()], table[(taken >> "
+               "4).long()]], dim=-1)\n"
+               "    factor = torch.exp2(scales[experts].float() - 127)[..., None]\n"
+               "    weight = (values.reshape(*taken.shape[:-1], 32) * "
+               "factor).reshape(*taken.shape[:-2], -1)\n"
+               "    return torch.einsum(\"rki,rkoi->rko\", x.float(), weight).to(x.dtype)\n"
+               "\n\n";
+    }
+
     static std::string shards_helper() {
         return "# The process group a sharded model's processes run over, which the\n"
                "# runtime sets (`load(tensor_parallel=...)`); None for one process.\n"
@@ -1744,6 +1787,7 @@ private:
     bool experts_helper_ = false;                    // `_linear_experts` is used
     bool flex_helpers_ = false;                      // `_flex_blocks` and `_attend` are used
     bool shards_helper_ = false;                     // `_all_reduce` is used
+    bool mxfp4_helper_ = false;                      // `_mxfp4_experts` is used
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value

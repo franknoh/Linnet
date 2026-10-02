@@ -132,3 +132,97 @@ where
         return linear_int4_groups(taken, weight, scale, zero, bias)
     }
 }
+
+// MXFP4, the format OpenAI's gpt-oss checkpoints publish their expert
+// weights in. A row of `N` weights is cut into blocks of 32. Each block is 16
+// bytes, two four-bit values per byte, plus one byte of scale: `4 + 8/32 =
+// 4.25` bits per weight. The checkpoint stores the two parts as separate
+// tensors, `..._blocks` of shape `[Experts, Rows, N / 32, 16]` and
+// `..._scales` of shape `[Experts, Rows, N / 32]`, both `u8`; the arithmetic
+// below is what turns them into weights.
+//
+// One `u8` block byte holds two FP4 (E2M1) values: the low nibble is element
+// `2k` of the block, the high nibble element `2k + 1`. A nibble is a sign
+// bit, two exponent bits, and one mantissa bit, which spells out sixteen
+// values: `0, 0.5, 1, 1.5, 2, 3, 4, 6` and their negatives. The reference
+// implementation reads them from a lookup table; the language has no tensor
+// data in source, so they are computed instead. Twice each value is an
+// integer in `0..12`, so `doubled` stays in one byte and the only float
+// arithmetic is the final scaling.
+//
+// One `u8` scale byte per block is an E8M0 exponent, biased by 127: the
+// block's weights are its FP4 values times `2 ** (scale - 127)`. That power
+// of two is built from integer shifts rather than `exp`, so it is exact. The
+// shifts saturate at `2 ** 62` in either direction, which keeps the shift
+// counts inside `i64`; every scale byte in this checkpoint's 96 expert scale
+// tensors lies in 115..136, that is `2 ** -12` to `2 ** 9`, so the saturation
+// is never reached. A checkpoint that did reach it would need the product of
+// two such factors instead of one.
+//
+// The result is `[Experts, Rows, N]`, the layout the checkpoint names: `Rows`
+// is the output width of the projection and `N` its input width. The
+// reference transposes the last two axes to suit its own parameter; the
+// contractions in `gpt_oss.experts` read this layout as it stands instead.
+pub op dequantize_mxfp4<Experts: Dim, Rows: Dim, G: Dim, T: Float>(
+    blocks: Tensor[Experts, Rows, G, 16; u8],
+    scales: Tensor[Experts, Rows, G; u8],
+) -> Tensor[Experts, Rows, G * 32; T] {
+    let low = blocks & 15
+    let high = shr(blocks, 4) & 15
+    let interleaved = concat(
+        reshape(low, [Experts, Rows, G, 16, 1]),
+        reshape(high, [Experts, Rows, G, 16, 1]),
+        axis = -1,
+    )
+    let nibbles = reshape(interleaved, [Experts, Rows, G, 32])
+    let exponent = shr(nibbles, 1) & 3
+    let mantissa = nibbles & 1
+    let doubled = select(
+        exponent == 0,
+        mantissa,
+        shl(1, exponent) + shl(mantissa, max(exponent - 1, 0)),
+    )
+    let signed = select((nibbles & 8) == 0, cast<i8>(doubled), -cast<i8>(doubled))
+    let biased = cast<i32>(scales) - 127
+    let up = cast<f32>(shl(cast<i64>(1), cast<i64>(min(max(biased, 0), 62))))
+    let down = cast<f32>(shl(cast<i64>(1), cast<i64>(min(max(-biased, 0), 62))))
+    // The 0.5 undoes the doubling `doubled` carries; both factors are powers
+    // of two, so `T` holds the product exactly for every FP4 value.
+    let factor = cast<T>(up / down * 0.5)
+    let value[e, r, g, b] = cast<T>(signed[e, r, g, b]) * factor[e, r, g]
+    return reshape(value, [Experts, Rows, G * 32])
+}
+
+// `std.nn.moe::linear_experts` with the experts' weights in MXFP4: row `r`'s
+// `k`-th input times its `k`-th chosen expert, `y[r, k, o] = sum_i x[r, k, i]
+// * W[experts[r, k], o, i]`, `W` as `dequantize_mxfp4` reads `blocks` and
+// `scales`. The body dequantizes, gathers the chosen experts and multiplies,
+// accumulating in f32; PyTorch on CUDA reads the chosen experts' four-bit
+// blocks and scales as they are, a quarter of the bytes of 16-bit weights,
+// and unpacks them in registers.
+pub op mxfp4_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
+    x: Tensor[R, K, G * 32; T],
+    blocks: Tensor[E, Out, G, 16; u8],
+    scales: Tensor[E, Out, G; u8],
+    experts: Tensor[R, K; i64],
+) -> Tensor[R, K, Out; T] {
+    let weight = dequantize_mxfp4<E, Out, G, T>(blocks, scales)
+    let chosen[r, k, o, i] = weight[experts[r, k], o, i]
+    let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, k, i]) * cast<f32>(chosen[r, k, o, i])
+    return cast<T>(y)
+}
+
+// `mxfp4_experts` for an input every chosen expert of a row shares -- a
+// mixture's gate and up projections: `y[r, k, o] = sum_i x[r, i] *
+// W[experts[r, k], o, i]`.
+pub op mxfp4_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
+    x: Tensor[R, G * 32; T],
+    blocks: Tensor[E, Out, G, 16; u8],
+    scales: Tensor[E, Out, G; u8],
+    experts: Tensor[R, K; i64],
+) -> Tensor[R, K, Out; T] {
+    let weight = dequantize_mxfp4<E, Out, G, T>(blocks, scales)
+    let chosen[r, k, o, i] = weight[experts[r, k], o, i]
+    let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, i]) * cast<f32>(chosen[r, k, o, i])
+    return cast<T>(y)
+}

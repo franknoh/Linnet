@@ -51,6 +51,41 @@ def _write_tokens(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     )
 
 
+_FP4 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0)
+
+
+def mxfp4_experts(
+    x: torch.Tensor, blocks: torch.Tensor, scales: torch.Tensor, experts: torch.Tensor
+) -> torch.Tensor:
+    """`std.quant::mxfp4_experts`: Linnet's kernel for a decoding step's few
+    rows on CUDA (`linnet.torch.kernels`), the chosen experts unpacked and
+    multiplied in f32 otherwise."""
+    rows, chosen, _ = x.shape
+    if x.is_cuda and rows * chosen <= 32:
+        try:
+            from .kernels import mxfp4_experts as kernel
+        except ImportError:
+            pass
+        else:
+            return kernel(x, blocks, scales, experts)
+    table = torch.tensor(_FP4, dtype=torch.float32, device=x.device)
+    taken = blocks[experts]
+    values = torch.stack([table[(taken & 15).long()], table[(taken >> 4).long()]], dim=-1)
+    factor = torch.exp2(scales[experts].float() - 127)[..., None]
+    weight = (values.reshape(*taken.shape[:-1], 32) * factor).reshape(*taken.shape[:-2], -1)
+    return torch.einsum("rki,rkoi->rko", x.float(), weight).to(x.dtype)
+
+
+def _mxfp4_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, blocks, scales, experts = args
+    return mxfp4_experts(x, blocks, scales, experts)
+
+
+def _mxfp4_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, blocks, scales, experts = args
+    return mxfp4_experts(x[:, None, :].expand(-1, experts.shape[1], -1), blocks, scales, experts)
+
+
 def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.parallel::all_reduce` in one process, which holds the whole
     model: the sum over one shard is the value itself."""
@@ -302,6 +337,8 @@ NATIVE: dict[str, Native] = {
     "torch.Tensor.index_put": _index_put,
     "torch.Tensor.index_put(tokens)": _write_tokens,
     "torch.distributed.all_reduce": _one_shard,
+    "linnet.mxfp4_experts": _mxfp4_experts,
+    "linnet.mxfp4_experts(shared)": _mxfp4_experts_shared,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,
