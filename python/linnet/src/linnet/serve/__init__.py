@@ -283,11 +283,15 @@ class Engine:
             longest = sorted(prompt_lengths)[-self.slots :]
             reach = sum(longest) if longest else self.pack
             for size in self.pack_sizes:
-                self.backend.prefill_packed([[self.pad]], [0], [Sampling()], size, self.pad)
-                if self.mix:
-                    self.backend.step_packed(
-                        [[self.pad]], [0], [Sampling()], size, self.pad, mode([])
-                    )
+                # Twice: the first call compiles the pass, the second captures
+                # it as a CUDA graph, which a pass of thousands of tokens takes
+                # a while to do -- before the requests' clock starts.
+                for _ in range(2):
+                    self.backend.prefill_packed([[self.pad]], [0], [Sampling()], size, self.pad)
+                    if self.mix:
+                        self.backend.step_packed(
+                            [[self.pad]], [0], [Sampling()], size, self.pad, mode([])
+                        )
                 if size >= reach:
                     break
             for _ in range(2):

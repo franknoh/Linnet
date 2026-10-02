@@ -190,7 +190,10 @@ class CompiledLinnetModule(LinnetModule):
         if self._graph_pool is None:
             self._graph_pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, pool=self._graph_pool):
+        # Thread-local: a server's other threads (Triton's, say) may call
+        # into CUDA while this one captures, which in the default global mode
+        # invalidates the capture.
+        with torch.cuda.graph(graph, pool=self._graph_pool, capture_error_mode="thread_local"):
             outputs = list(generated.main(*arguments))
             if self.tensor_parallel is not None:
                 from .parallel import whole
