@@ -117,4 +117,121 @@ def mxfp4_experts(
     return y
 
 
-__all__ = ["mxfp4_experts"]
+@triton.jit
+def _int4_linear_kernel(
+    x_ptr,
+    packed_ptr,
+    scale_ptr,
+    zero_ptr,
+    y_ptr,
+    rows,
+    width,
+    depth,
+    group: tl.constexpr,
+    block_m: tl.constexpr,
+    block_n: tl.constexpr,
+    block_k: tl.constexpr,
+):
+    # A block_m by block_n tile of the output per program, over one of the
+    # split's equal stretches of the inputs (axis 2), block_k at a time. Each
+    # step unpacks block_k of every weight row (block_k divides the group, so
+    # one scale and zero point serve it), puts the even and odd values back in
+    # order, and multiplies on tensor cores.
+    tile_m = tl.program_id(0)
+    tile_n = tl.program_id(1)
+    part = tl.program_id(2)
+    split = tl.num_programs(2)
+    rm = tile_m * block_m + tl.arange(0, block_m)
+    rn = tile_n * block_n + tl.arange(0, block_n)
+    half = tl.arange(0, block_k // 2)
+    inputs = tl.arange(0, block_k)
+    groups = depth // group
+    span = depth // split
+    live_m = rm < rows
+    live_n = rn < width
+    acc = tl.zeros((block_m, block_n), dtype=tl.float32)
+    for k0 in range(part * span, (part + 1) * span, block_k):
+        packed = tl.load(
+            packed_ptr + rn[:, None].to(tl.int64) * (depth // 2) + (k0 // 2 + half)[None, :],
+            mask=live_n[:, None],
+            other=0,
+        ).to(tl.int32)
+        step = tl.load(scale_ptr + rn * groups + k0 // group, mask=live_n, other=0).to(tl.float32)
+        level = tl.load(zero_ptr + rn * groups + k0 // group, mask=live_n, other=0).to(tl.float32)
+        low = ((packed & 15).to(tl.float32) - level[:, None]) * step[:, None]
+        high = ((packed >> 4).to(tl.float32) - level[:, None]) * step[:, None]
+        weight = tl.interleave(low, high).to(x_ptr.dtype.element_ty)
+        x = tl.load(
+            x_ptr + rm[:, None] * depth + (k0 + inputs)[None, :], mask=live_m[:, None], other=0.0
+        )
+        acc = tl.dot(x, tl.trans(weight), acc)
+    out = y_ptr + part * rows * width + rm[:, None] * width + rn[None, :]
+    tl.store(out, acc.to(y_ptr.dtype.element_ty), mask=live_m[:, None] & live_n[None, :])
+
+
+# Tiles by row count, measured on an H100 over the joined projections of
+# Llama 3.1 8B, Qwen2.5 7B, and TinyLlama: (rows up to, block_m, block_n,
+# warps, stages, waves). The inputs are split while the programs stay within
+# `waves` waves of the GPU's multiprocessors, so a few rows over a short
+# weight still fill it.
+_INT4_TILES = (
+    (16, 16, 32, 4, 3, 2),
+    (32, 32, 64, 4, 3, 1),
+    (64, 64, 64, 4, 3, 2),
+    (128, 128, 64, 8, 4, 1),
+)
+
+
+@triton_op("linnet::int4_linear", mutates_args=())
+def int4_linear(
+    x: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, zero: torch.Tensor
+) -> torch.Tensor:
+    """`F.linear(x, W)` for `x` [rows, In] (`bf16` or `f16`), with `W` the
+    group-wise 4-bit weights of `std.quant::linear_int4_groups` -- `packed`
+    ([Out, Groups, Group / 2] u8, the even value low), `scale` and `zero`
+    ([Out, Groups]) -- unpacked inside the product, so the weight is read
+    once, at a quarter of `bf16`'s bytes. Meant for a batch of decoding
+    requests, 8 to 128 rows: fewer go faster through tinygemm, more through
+    cuBLAS over the weight dequantized once for the call. The group is 16,
+    32, 64, or a multiple of 128."""
+    rows, depth = x.shape
+    width, _groups, half = packed.shape
+    group = 2 * half
+    block_k = min(group, 128)
+    if block_k < 16 or group % block_k or block_k & (block_k - 1):
+        raise ValueError(f"int4_linear: a group of {group} is not 16, 32, 64, or a multiple of 128")
+    tiles = next((tiles for tiles in _INT4_TILES if rows <= tiles[0]), _INT4_TILES[-1])
+    _, block_m, block_n, warps, stages, waves = tiles
+    programs = triton.cdiv(rows, block_m) * triton.cdiv(width, block_n)
+    budget = waves * torch.cuda.get_device_properties(x.device).multi_processor_count
+    split = 1
+    while split < 4 and programs * split * 2 <= budget and depth % (2 * split * block_k) == 0:
+        split *= 2
+    if split == 1:
+        y = torch.empty(rows, width, dtype=x.dtype, device=x.device)
+    else:
+        y = torch.empty(split, rows, width, dtype=torch.float32, device=x.device)
+
+    def grid(_meta: dict[str, Any]) -> tuple[int, int, int]:
+        return (triton.cdiv(rows, block_m), triton.cdiv(width, block_n), split)
+
+    wrap_triton(_int4_linear_kernel)[grid](
+        x.contiguous(),
+        packed.contiguous(),
+        scale.contiguous(),
+        zero.contiguous(),
+        y,
+        rows,
+        width,
+        depth,
+        group=group,
+        block_m=block_m,
+        block_n=block_n,
+        block_k=block_k,
+        num_warps=warps,
+        num_stages=stages,
+    )
+    return y if split == 1 else y.sum(0).to(x.dtype)
+
+
+__all__ = ["int4_linear", "mxfp4_experts"]

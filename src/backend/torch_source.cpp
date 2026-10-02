@@ -621,8 +621,9 @@ public:
         if (implementation_base == "torch.ops.aten._weight_int4pack_mm" && operands.size() == 5 &&
             operands[0] && operands[1] && operands[2] && operands[3]) {
             // Packing reads only weights, so `--prepare` does it once; the
-            // helpers pick tinygemm where it runs (CUDA, bf16, its group
-            // sizes) and the dequantized weight elsewhere.
+            // helpers pick tinygemm or Linnet's kernel, by the rows, where
+            // they run (CUDA, bf16, tinygemm's group sizes) and the
+            // dequantized weight elsewhere.
             int4_helpers_ = true;
             const std::string packed =
                 define("_int4_pack(" + name(1) + ", " + name(2) + ", " + name(3) + ")");
@@ -1474,6 +1475,11 @@ private:
                "except ImportError:  # PyTorch without a GPU build\n"
                "    triton = None\n"
                "\n"
+               "try:\n"
+               "    from linnet.torch.kernels import int4_linear as _int4_kernel\n"
+               "except ImportError:  # no Triton: tinygemm and the dequantized weight\n"
+               "    _int4_kernel = None\n"
+               "\n"
                "if triton is not None:\n"
                "\n"
                "    @triton.jit\n"
@@ -1512,12 +1518,17 @@ private:
                "\n\n"
                "def _int4_linear(x, packed, bias, raw, scale, zero):\n"
                "    flat = x.reshape(-1, x.shape[-1])\n"
-               "    if len(packed) == 3 and flat.shape[0] <= 16:\n"
+               "    rows = flat.shape[0]\n"
+               "    if len(packed) == 3 and rows < 8:\n"
                "        weight, pairs, group = packed\n"
                "        y = torch.ops.aten._weight_int4pack_mm(flat, weight, group, pairs)\n"
+               "    elif len(packed) == 3 and rows <= 128 and _int4_kernel is not None:\n"
+               "        # tinygemm's time grows with the rows; a batch of decoding\n"
+               "        # requests unpacks each group inside one matrix product.\n"
+               "        y = _int4_kernel(flat, raw, scale, zero)\n"
                "    elif len(packed) == 3:\n"
-               "        # tinygemm is built for a few rows; a prompt's many rows\n"
-               "        # multiply the weight dequantized for this call instead.\n"
+               "        # A prompt's many rows multiply the weight dequantized for\n"
+               "        # this call instead.\n"
                "        y = F.linear(flat, _int4_weight(raw, scale, zero))\n"
                "    else:\n"
                "        y = F.linear(flat, packed[0])\n"
