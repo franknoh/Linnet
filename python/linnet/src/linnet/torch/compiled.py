@@ -168,7 +168,15 @@ class CompiledLinnetModule(LinnetModule):
         for static, value in zip(prepared.static, inputs, strict=True):
             static.copy_(value)
         if graph is None:
-            graph = prepared.graph = self._capture(prepared, prepared.static)
+            from torch._dynamo.exc import TorchRuntimeError  # pyright: ignore[reportPrivateUsage]
+
+            try:
+                graph = prepared.graph = self._capture(prepared, prepared.static)
+            except TorchRuntimeError:
+                # The step had to compile again -- a guard the first call
+                # set no longer held -- which nothing can under a capture.
+                # This call runs as it is, compiling, and the next captures.
+                return self._call(prepared, prepared.static, cuda_graphs=False)
         graph.graph.replay()
         results = [value.clone() for value in graph.results]
         return results[0] if len(results) == 1 else tuple(results)
