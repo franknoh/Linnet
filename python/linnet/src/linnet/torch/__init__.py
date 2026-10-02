@@ -112,9 +112,10 @@ def load(
         `std.nn.parallel::all_reduce` calls sum across the processes (its
         `all_gather` calls gather from them). The entries are ordinary
         generated code on local tensors, so sibling projections still join
-        and a step still replays as one CUDA graph, its collectives inside. Any other model has its weights split as
-        `linnet.parallel` says (`tp_rules` overrides it by path pattern) and
-        its KV caches by heads, as DTensors, and DTensor adds the collectives.
+        and a step still replays as one CUDA graph, its collectives inside.
+        Any other model has its weights split as `linnet.parallel` says
+        (`tp_rules` overrides it by path pattern) and its KV caches by heads,
+        as DTensors, and DTensor adds the collectives.
         Results come back whole either way.
 
         `trainable=True` makes the parameters require gradients: every entry is
