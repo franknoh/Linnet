@@ -108,7 +108,7 @@
   font-weight: 600;
 }
 /* The hero's line is a definition, not a slogan: a size that keeps it to
-   two lines beside the logo. */
+   three lines beside the diagram. */
 @media (min-width: 960px) {
   .VPHero .text {
     font-size: 44px;
@@ -118,6 +118,39 @@
 .VPHero .tagline {
   color: var(--vp-c-text-2);
   max-width: 44rem;
+}
+
+/* The hero's image is the architecture diagram (ArchDiagram.vue), not a
+   square picture: beside the text from 1200px, where its column is wide
+   enough to read, and after the text below that. */
+.VPHero.has-image .image {
+  order: 3;
+  margin: 40px 0 0;
+}
+.VPHero.has-image .image-container {
+  width: auto;
+  height: auto;
+  transform: none;
+}
+.VPHero.has-image .image-bg {
+  display: none;
+}
+@media (min-width: 960px) and (max-width: 1199px) {
+  .VPHero.has-image .container {
+    flex-direction: column;
+  }
+  .VPHero.has-image .image-container {
+    justify-content: flex-start;
+  }
+  .VPHero.has-image .image-container .arch-svg {
+    margin: 0;
+  }
+}
+@media (min-width: 1200px) {
+  .VPHero.has-image .image {
+    min-width: 0;
+    margin: 0 0 0 48px;
+  }
 }
 
 .vp-doc h1,
