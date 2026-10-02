@@ -87,7 +87,12 @@ arm_pattern        = identifier | "some", "(", pattern, ")" | "none" ;
 logical_or         = logical_and, { "||", logical_and } ;
 logical_and        = equality, { "&&", equality } ;
 equality           = comparison, { ( "==" | "!=" ), comparison } ;
-comparison         = additive, { ( "<" | "<=" | ">" | ">=" ), additive } ;
+comparison         = bit_or, { ( "<" | "<=" | ">" | ">=" ), bit_or } ;
+(* Bitwise on integers, elementwise logical on booleans; looser than "+",
+   tighter than comparisons, so `(a == b) & (i < n)` needs its parentheses. *)
+bit_or             = bit_xor, { "|", bit_xor } ;
+bit_xor            = bit_and, { "^", bit_and } ;
+bit_and            = additive, { "&", additive } ;
 additive           = multiplicative, { ( "+" | "-" ), multiplicative } ;
 multiplicative     = unary, { ( "*" | "/" | "%" ), unary } ;
 unary              = [ "!" | "-" | "+" ], postfix ;

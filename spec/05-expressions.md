@@ -52,7 +52,9 @@ Arithmetic operators are defined for compatible scalar types and are elementwise
 
 Comparison of tensors produces a boolean tensor with broadcasted shape.
 
-Logical `&&`, `||`, and `!` apply to scalar booleans. Elementwise boolean tensor operations are provided by library functions or explicitly specified primitive operators.
+Logical `&&`, `||`, and `!` take scalar `bool` operands only. Boolean tensors combine elementwise with `&`, `|`, and `^`; `mask ^ true` negates one.
+
+Binary operators bind, from loosest to tightest: `||`; `&&`; `==` `!=`; `<` `<=` `>` `>=`; `|`; `^`; `&`; `+` `-`; `*` `/` `%`. All are left-associative. Because comparisons bind looser than the bitwise operators, combining two comparisons with `&` needs parentheses: `(a == b) & (i < n)`. Unary `!`, `-`, and `+` bind tighter than every binary operator.
 
 ## 5.5 Calls
 
@@ -116,11 +118,13 @@ x[:, start:end:step]
 
 A slice creates a logical tensor view in HIR. Backends determine whether materialization is required.
 
-An integer index removes its axis. A slice `start:stop:step` keeps it with extent `max(0, (min(stop, D) - start + step - 1) / step)` for an axis of size `D`; `start` defaults to `0`, `stop` to `D`, and `step` to `1`. Slice bounds MUST be non-negative compile-time integers and the step a positive integer constant, so that the result shape never depends on runtime data. `...` stands for all axes not addressed explicitly and may appear once. Axes that belong to a shape pack cannot be indexed individually.
+An integer index removes its axis. It is a compile-time integer, which MUST be provably within the axis, or a runtime integer scalar, which reads the position it holds. A runtime index outside the axis has no defined result; the program is responsible for keeping it in range. Negative indices are rejected: the last element of an axis of size `N` is `x[N - 1]`.
 
-Inside index notation (section 6) every tensor access MUST index all axes, using index variables, a pack index, or integers.
+A slice `start:stop:step` keeps its axis with extent `max(0, (min(stop, D) - start + step - 1) / step)` for an axis of size `D`; `start` defaults to `0`, `stop` to `D`, and `step` to `1`. Slice bounds MUST be non-negative compile-time integers and the step a positive integer constant, so that the result shape never depends on runtime data. `...` stands for all axes not addressed explicitly and may appear once. Axes that belong to a shape pack cannot be indexed individually.
 
-Negative literal indices MAY be supported when the dimension is statically known or when the backend plan preserves well-defined indexing semantics. The initial implementation MAY reject negative indices conservatively.
+Inside index notation (section 6) every tensor access MUST index all axes, using index variables, a pack index, or integers. An integer there may be computed from runtime data, typically another tensor's element, as in `x[b, labels[b]]`; such an access is a gather (§6.4).
+
+*Informative:* the reference exporters accept a runtime index inside index notation; outside it they currently require compile-time indices, so `let v[k] = x[at[k]]` is the portable spelling.
 
 ## 5.9 Shape literals
 

@@ -38,7 +38,7 @@ Backends may map buffers to framework-specific non-trainable state.
 state cache: Tensor[Batch, KvHeads, MaxSeq, Head; T]
 ```
 
-A state member has a tensor type whose shape is fixed by the block's generics, like a `param`. It carries no payload: the runtime supplies the initial value (backends default to zeros) and keeps the latest value between entry calls.
+A state member has a tensor type whose shape is fixed by the block's generics, like a `param`; it cannot be optional. It carries no payload: the runtime supplies the initial value (backends default to zeros) and keeps the latest value between entry calls.
 
 Inside the block's functions and entries, the member name reads the current value, and an assignment statement replaces it:
 

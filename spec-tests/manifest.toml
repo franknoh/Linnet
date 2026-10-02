@@ -203,6 +203,20 @@ file = "valid/023_while.linnet"
 expect = "ok"
 
 [[case]]
+file = "valid/024_module_entries.linnet"
+expect = "ok"
+
+[[case]]
 file = "invalid/123_while_condition_tensor.linnet"
 expect = "error"
 code = "E2114"
+
+[[case]]
+file = "invalid/124_logical_and_tensor.linnet"
+expect = "error"
+code = "E2116"
+
+[[case]]
+file = "invalid/125_negative_index.linnet"
+expect = "error"
+code = "E2209"

@@ -72,6 +72,7 @@ A compiler is not required to provide an executor. A conforming frontend can sto
 - **dimension expression**: a compile-time integer expression used in tensor shapes.
 - **shape pack**: a variadic sequence of dimensions, written `*S` in generic declarations and `*s` in index notation.
 - **semantic op**: an `op` declaration whose identity may be preserved through optimization while its body provides canonical semantics.
-- **block**: a structural component containing parameters, buffers, sub-blocks, and callable methods.
-- **entry**: a public execution entry point.
+- **block**: a structural component containing parameters, buffers, state, sub-blocks, and callable methods.
+- **entry**: a public execution entry point. An entry of a block runs with the block's parameters and state; an entry declared at module level is a **function** of its inputs alone (§7.6).
+- **state member**: mutable execution state owned by a block instance, such as a KV cache (§9.3).
 - **primitive**: an operation understood directly by Core Tensor IR rather than implemented as a user/library `op`.

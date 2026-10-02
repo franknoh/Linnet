@@ -34,7 +34,12 @@ A future `extern op` mechanism must be opt-in at compile/materialization time an
 
 ## 13.6 Determinism
 
-Pure Linnet code is deterministic for a fixed set of inputs under the language's numeric semantics. Randomness, state, clocks, and external effects require explicit future constructs.
+Linnet code is deterministic for fixed inputs, parameters, and initial state under the language's numeric semantics. The constructs that look like exceptions are explicit data:
+
+- `state` members (§9.3) are read and assigned in program order, and their values flow through the entry's inputs and results;
+- randomness is computed from keys the caller passes, by a counter-based generator written in Linnet (`std.random`); no primitive draws random numbers and there is no hidden generator (§15.2).
+
+There are no clocks or external effects.
 
 ## 13.7 Numeric nondeterminism
 

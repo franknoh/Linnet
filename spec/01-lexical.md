@@ -94,6 +94,8 @@ Integer literals:
 0b1010
 ```
 
+`_` may appear only between two digits. A decimal literal other than `0` has no leading zero. Hexadecimal (`0x`) and binary (`0b`) forms are integers only.
+
 Floating literals:
 
 ```text
@@ -102,6 +104,8 @@ Floating literals:
 1e-5
 3.141_592
 ```
+
+A floating literal has a fractional part, an exponent (`e` or `E`, optionally signed), or both; each digit run follows the same `_` rule as integers.
 
 Boolean literals:
 
@@ -150,9 +154,10 @@ The following are valid statements:
 
 - `let` declarations;
 - `var` declarations;
-- assignment to a local `var`;
+- assignment to a local `var` or to a `state` member of the enclosing block;
 - `return`;
 - `static for`;
+- `while`;
 - declarations inside structural scopes.
 
 A formatter MUST emit one logical statement per line except where a multiline expression is more readable.

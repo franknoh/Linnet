@@ -1,0 +1,6 @@
+module tests.logical
+
+// `&&` takes scalar `bool` operands; boolean tensors combine with `&`.
+pub fn both<N: Dim>(a: Tensor[N; bool], b: Tensor[N; bool]) -> Tensor[N; bool] {
+    return a && b
+}
