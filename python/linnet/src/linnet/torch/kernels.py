@@ -6,7 +6,9 @@ Importing this module needs Triton (and so a CUDA build of PyTorch); the
 generated code falls back to plain PyTorch arithmetic without it.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUntypedFunctionDecorator=false, reportMissingTypeStubs=false
+# Triton reads a kernel's annotations and resolves only its own, so the kernels
+# stay unannotated.
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUntypedFunctionDecorator=false, reportMissingTypeStubs=false, reportMissingParameterType=false, reportUnknownParameterType=false
 
 from __future__ import annotations
 
