@@ -19,7 +19,7 @@ from torch.library import triton_op, wrap_triton
 
 
 @triton.jit
-def _half(nibble: Any) -> Any:
+def _half(nibble):
     # An E2M1 nibble's bits placed in an fp16: its exponent bits at 11..10,
     # its mantissa bit at 9, its sign at 15. That fp16 is the E2M1 value times
     # 2 ** -14, normal and subnormal alike; the block's scale puts the 2 ** 14
@@ -30,16 +30,16 @@ def _half(nibble: Any) -> Any:
 
 @triton.jit
 def _mxfp4_experts_kernel(
-    x_ptr: Any,
-    blocks_ptr: Any,
-    scales_ptr: Any,
-    experts_ptr: Any,
-    y_ptr: Any,
+    x_ptr,
+    blocks_ptr,
+    scales_ptr,
+    experts_ptr,
+    y_ptr,
     width: tl.constexpr,
     count: tl.constexpr,
     block_o: tl.constexpr,
     block_g: tl.constexpr,
-) -> None:
+):
     # One (row, chosen slot) pair and block_o of its expert's output rows per
     # program; block_g blocks of 32 weights of each row at a time.
     pair = tl.program_id(0)
