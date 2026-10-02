@@ -213,16 +213,19 @@ pub op mxfp4_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
 }
 
 // `mxfp4_experts` for an input every chosen expert of a row shares -- a
-// mixture's gate and up projections: `y[r, k, o] = sum_i x[r, i] *
-// W[experts[r, k], o, i]`.
+// mixture's gate and up projections: `y[r, k, o] = sum_i x[r, 0, i] *
+// W[experts[r, k], o, i]`, the input one position per row as a decoder holds
+// a token. Indexed at that position, the input multiplies the gathered
+// weights elementwise before the sum, which XLA fuses into one pass over the
+// chosen experts.
 pub op mxfp4_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
-    x: Tensor[R, G * 32; T],
+    x: Tensor[R, 1, G * 32; T],
     blocks: Tensor[E, Out, G, 16; u8],
     scales: Tensor[E, Out, G; u8],
     experts: Tensor[R, K; i64],
 ) -> Tensor[R, K, Out; T] {
     let weight = dequantize_mxfp4<E, Out, G, T>(blocks, scales)
     let chosen[r, k, o, i] = weight[experts[r, k], o, i]
-    let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, i]) * cast<f32>(chosen[r, k, o, i])
+    let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, 0, i]) * cast<f32>(chosen[r, k, o, i])
     return cast<T>(y)
 }

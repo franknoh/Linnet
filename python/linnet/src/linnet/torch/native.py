@@ -83,7 +83,7 @@ def _mxfp4_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor
 
 def _mxfp4_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     x, blocks, scales, experts = args
-    return mxfp4_experts(x[:, None, :].expand(-1, experts.shape[1], -1), blocks, scales, experts)
+    return mxfp4_experts(x.expand(-1, experts.shape[1], -1), blocks, scales, experts)
 
 
 def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:

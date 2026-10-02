@@ -534,12 +534,13 @@ public:
              implementation_base == "linnet.mxfp4_experts(shared)") &&
             operands.size() == 4 && operands[0] && operands[1] && operands[2] && operands[3] &&
             shape.size() == 3) {
-            // A shared input is the same row for each chosen slot: a view.
+            // A shared input ([R, 1, In]) is the same row for each chosen slot:
+            // a view.
             mxfp4_helper_ = true;
             const std::string x =
                 implementation_base == "linnet.mxfp4_experts"
                     ? name(0)
-                    : name(0) + "[:, None, :].expand(-1, " + std::to_string(shape[1]) + ", -1)";
+                    : name(0) + ".expand(-1, " + std::to_string(shape[1]) + ", -1)";
             return define("_mxfp4_experts(" + x + ", " + name(1) + ", " + name(2) + ", " + name(3) +
                           ")");
         }

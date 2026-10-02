@@ -40,7 +40,7 @@ pub block Model<E: Dim, Out: Dim, G: Dim, K: Dim, T: Float = f32> {
     }
 
     pub entry shared<R: Dim>(
-        x: Tensor[R, G * 32; T],
+        x: Tensor[R, 1, G * 32; T],
         experts: Tensor[R, K; i32],
     ) -> Tensor[R, K, Out; T] {
         let chosen[r, k] = cast<i64>(experts[r, k])
@@ -84,7 +84,7 @@ def _dequantized(blocks: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
 def _inputs(device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     generator = torch.Generator().manual_seed(1)
     each = torch.randn(3, 2, 96, generator=generator)
-    shared = torch.randn(3, 96, generator=generator)
+    shared = torch.randn(3, 1, 96, generator=generator)
     experts = torch.tensor([[0, 3], [2, 1], [3, 0]], dtype=torch.int32)
     return each.to(device), shared.to(device), experts.to(device)
 
@@ -110,7 +110,7 @@ def test_the_experts_products(
     )
     taken = weight[experts.long()]
     expected_each = torch.einsum("rki,rkoi->rko", each, taken)
-    expected_shared = torch.einsum("ri,rkoi->rko", shared, taken)
+    expected_shared = torch.einsum("ri,rkoi->rko", shared[:, 0], taken)
     torch.testing.assert_close(model.run_entry("each", [each, experts]), expected_each)
     torch.testing.assert_close(model.run_entry("shared", [shared, experts]), expected_shared)
 
@@ -128,7 +128,7 @@ def test_the_kernel_reads_the_bytes_as_they_are(
     )
     taken = weight[experts.long().cpu()]
     expected_each = torch.einsum("rki,rkoi->rko", each.cpu(), taken)
-    expected_shared = torch.einsum("ri,rkoi->rko", shared.cpu(), taken)
+    expected_shared = torch.einsum("ri,rkoi->rko", shared[:, 0].cpu(), taken)
     torch.testing.assert_close(
         model.run_entry("each", [each, experts]).cpu(), expected_each, atol=1e-4, rtol=1e-4
     )
