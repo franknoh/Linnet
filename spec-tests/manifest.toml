@@ -207,6 +207,10 @@ file = "valid/024_module_entries.linnet"
 expect = "ok"
 
 [[case]]
+file = "valid/025_runtime_index.linnet"
+expect = "ok"
+
+[[case]]
 file = "invalid/123_while_condition_tensor.linnet"
 expect = "error"
 code = "E2114"

@@ -203,6 +203,12 @@ add_test(NAME cli_onnx_function
             ${PROJECT_SOURCE_DIR}/examples/09-functions/functions.linnet)
 set_tests_properties(cli_onnx_function PROPERTIES
     PASS_REGULAR_EXPRESSION "main \\(int64\\[2,4\\] generated, int64\\[2,4\\] reference, int64\\[2\\] lengths, float penalty\\) => \\(float\\[2\\] output0\\)")
+# Runtime integer indices outside index notation export as gathers.
+add_test(NAME cli_stablehlo_runtime_index
+    COMMAND linnet stablehlo --entry pick --bind N=4 --bind M=3
+            ${PROJECT_SOURCE_DIR}/spec-tests/valid/025_runtime_index.linnet)
+set_tests_properties(cli_stablehlo_runtime_index PROPERTIES
+    PASS_REGULAR_EXPRESSION "%i: tensor<i64>, %j: tensor<i32>\\) -> \\(tensor<f32>, tensor<3xf32>, tensor<4xf32>\\).*\"stablehlo.gather\"")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)

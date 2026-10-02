@@ -7,6 +7,8 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace linnet::ir {
@@ -955,8 +957,16 @@ private:
                 lower_expr(index.components.front().value, types().scalar(ScalarKind::I64));
             return emit(OpKind::ArrayGet, {base, position}, type, {}, node.span);
         }
+        // An integer index known only at run time (`x[i]` for an `i64` input):
+        // a slice takes compile-time bounds, so such an access is a gather.
+        const bool has_runtime_index = std::any_of(
+            index.components.begin(), index.components.end(), [&](const ast::IndexComponent& c) {
+                return c.kind == ast::IndexKind::Expr &&
+                       types().kind(substituted(facts(c.value).type)) != TypeKind::CompileInt;
+            });
         const bool is_element_access =
-            !frame_->index_scopes.empty() && types().kind(type) == TypeKind::Scalar &&
+            (!frame_->index_scopes.empty() || has_runtime_index) &&
+            types().kind(type) == TypeKind::Scalar &&
             std::all_of(
                 index.components.begin(), index.components.end(), [](const ast::IndexComponent& c) {
                     return c.kind == ast::IndexKind::Expr || c.kind == ast::IndexKind::Pack;
@@ -975,6 +985,9 @@ private:
                                                                   types().scalar(ScalarKind::I64)));
             }
             return emit(OpKind::Element, std::move(operands), type, {}, node.span);
+        }
+        if (has_runtime_index) {
+            return lower_runtime_index(node, index, base, type);
         }
         // Slicing: one entry per axis of the base tensor.
         Attributes attributes;
@@ -1033,6 +1046,128 @@ private:
         }
         (void)id;
         return emit(OpKind::Slice, {base}, type, attributes, node.span);
+    }
+
+    // `x[i, :]` with `i` known only at run time: the axes that stay are read
+    // by a comprehension (`let r[j] = x[i, j]`), the gather index notation
+    // already is, and whatever slicing those axes have follows as an ordinary
+    // slice. Integer positions, runtime or constant, are computed outside it.
+    ValueId lower_runtime_index(const ast::Expr& node,
+                                const ast::IndexExpr& index,
+                                ValueId base,
+                                TypeId type) {
+        const Shape shape = types().get(module_.value(base).type).shape;
+        const DType dtype = types().get(module_.value(base).type).dtype;
+        // The component addressing each axis of `base`; none for an axis
+        // `...` (or the end of the list) keeps whole.
+        std::vector<const ast::IndexComponent*> addressed;
+        std::size_t explicit_count = 0;
+        for (const ast::IndexComponent& component : index.components) {
+            explicit_count += component.kind == ast::IndexKind::Ellipsis ? 0 : 1;
+        }
+        for (const ast::IndexComponent& component : index.components) {
+            const bool is_whole = component.kind == ast::IndexKind::Slice &&
+                                  component.start == ast::no_id && component.stop == ast::no_id &&
+                                  component.step == ast::no_id;
+            if (component.kind == ast::IndexKind::Ellipsis) {
+                addressed.insert(addressed.end(), shape.size() - explicit_count, nullptr);
+            } else {
+                addressed.push_back(is_whole ? nullptr : &component);
+            }
+        }
+        addressed.resize(shape.size(), nullptr);
+
+        std::vector<ValueId> positions(shape.size(), no_id);
+        std::vector<std::size_t> kept;
+        for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+            const ast::IndexComponent* component = addressed[axis];
+            if (component != nullptr && component->kind == ast::IndexKind::Expr) {
+                positions[axis] = lower_expr(component->value, types().scalar(ScalarKind::I64));
+            } else {
+                kept.push_back(axis);
+            }
+        }
+        // Index names other than those of the values the body reads, so that
+        // the source emitted back from the IR means the same.
+        std::set<std::string> taken;
+        const auto take_name = [&](ValueId value) {
+            taken.insert(module_.value(value).name);
+            if (const OpId producer = module_.value(value).producer; producer != no_id) {
+                taken.insert(module_.op(producer).attributes.name);
+            }
+        };
+        take_name(base);
+        for (const ValueId position : positions) {
+            if (position != no_id) {
+                take_name(position);
+            }
+        }
+        std::vector<std::string> names;
+        std::vector<Shape> domains;
+        Shape gathered_shape;
+        for (int n = 0; names.size() < kept.size(); ++n) {
+            static constexpr std::string_view letters = "ijklmnpq";
+            std::string name = n < static_cast<int>(letters.size())
+                                   ? std::string(1, letters[static_cast<std::size_t>(n)])
+                                   : "i" + std::to_string(n);
+            if (!taken.contains(name)) {
+                names.push_back(std::move(name));
+            }
+        }
+        for (const std::size_t axis : kept) {
+            domains.push_back(Shape{shape[axis]});
+            gathered_shape.push_back(shape[axis]);
+        }
+        const OpId op = region_op(OpKind::Comprehension,
+                                  {},
+                                  {types().tensor(gathered_shape, dtype)},
+                                  index_attributes(names, domains),
+                                  node.span);
+        const RegionId region = nested_region(
+            op, index_arguments(names, domains), [&](const std::vector<ValueId>& args) {
+                std::vector<ValueId> operands{base};
+                std::size_t next = 0;
+                for (const ValueId position : positions) {
+                    operands.push_back(position != no_id ? position : args[next++]);
+                }
+                yield({emit(
+                    OpKind::Element, std::move(operands), types().scalar(dtype), {}, node.span)});
+            });
+        module_.op(op).regions.push_back(region);
+        const ValueId gathered = module_.op(op).results.front();
+
+        const bool is_sliced = std::any_of(
+            kept.begin(), kept.end(), [&](std::size_t axis) { return addressed[axis] != nullptr; });
+        if (!is_sliced) {
+            return gathered;
+        }
+        const auto dim_of = [&](ast::ExprId expr, const shape::Poly& fallback) {
+            if (expr == ast::no_id) {
+                return fallback;
+            }
+            const TypeData& value = types().get(substituted(facts(expr).type));
+            return value.kind == TypeKind::CompileInt ? value.value : fallback;
+        };
+        Attributes attributes;
+        for (const std::size_t axis : kept) {
+            const ShapeElem& unit = shape[axis];
+            const ast::IndexComponent* component = addressed[axis];
+            attributes.pack_units.push_back(unit);
+            attributes.squeezed.push_back(false);
+            if (component == nullptr) {
+                attributes.starts.push_back(shape::Poly(0));
+                attributes.stops.push_back(unit.is_pack ? shape::Poly(0) : unit.dim);
+                attributes.steps.push_back(1);
+                attributes.whole.push_back(true);
+            } else {
+                attributes.starts.push_back(dim_of(component->start, shape::Poly(0)));
+                attributes.stops.push_back(dim_of(component->stop, unit.dim));
+                attributes.steps.push_back(
+                    dim_of(component->step, shape::Poly(1)).constant().value_or(1));
+                attributes.whole.push_back(false);
+            }
+        }
+        return emit(OpKind::Slice, {gathered}, type, attributes, node.span);
     }
 
     // ------------------------------------------------------------------ calls
