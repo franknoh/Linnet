@@ -44,8 +44,10 @@ only after its last prompt, to one of six compiled sizes, and each size is
 compiled and replayed like the step -- and otherwise go through in passes
 of up to 8, each padded to its longest. With `step_packed` as well, a step
 that admits prompts while other rows decode carries those rows' step in its
-last pass, so the weights are read once for both (`mix=False` keeps them
-apart); the rows that pass fills take their first step with the next one; with
+smallest pass, if that pass fits the second of the compiled sizes (1024
+tokens by default): the weights are read once for both (`mix=False` keeps
+them apart), and only two sizes of the mixed pass are compiled. The rows
+that pass fills take their first step with the next one; with
 `linnet.jax.load_model` (or `nest.load(..., backend="jax_model")`) both
 entries are XLA programs over one copy of the weights, with the caches
 donated so XLA updates them in place. The tokens a step produces feed the
