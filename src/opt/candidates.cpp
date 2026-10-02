@@ -18,6 +18,8 @@ std::vector<NativeCandidate> torch_candidates() {
         {"std.quant::take_inputs", "torch.index_select", Legality::Exact, {}},
         {"std.nn.attention::causal_mask", "torch.tril", Legality::Exact, {}},
         {"std.nn.conv::conv2d", "torch.nn.functional.conv2d", equivalent, {"a square kernel"}},
+        {"std.nn.conv::conv2d_rect", "torch.nn.functional.conv2d(rect)", equivalent, {}},
+        {"std.nn.conv::conv1d", "torch.nn.functional.conv1d", equivalent, {}},
         // A maximum is one of its inputs, however it is found.
         {"std.nn.pool::max_pool2d",
          "torch.nn.functional.max_pool2d",

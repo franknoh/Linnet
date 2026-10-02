@@ -140,12 +140,14 @@ def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return scaled if bias is None else scaled + bias
 
 
-def conv2d(args: list[Any], stride: int, pad: int) -> torch.Tensor:
-    """`std.nn.conv::conv2d` as `F.conv2d`, with the call's own `Stride` and
-    `Pad`. They are not recovered from the shapes: a 3x3 window taking 4
+def convolution(args: list[Any], strides: list[int], pads: list[int]) -> torch.Tensor:
+    """`std.nn.conv::conv1d`, `conv2d`, and `conv2d_rect` as `F.conv1d` and
+    `F.conv2d`, with the call's own strides and padding, one per spatial
+    axis. They are not recovered from the shapes: a 3x3 window taking 4
     positions to 2 fits both stride 1 without padding and stride 2 with one."""
     x, weight, bias = args
-    return functional.conv2d(x, weight, bias, stride=stride, padding=pad)
+    convolve = functional.conv1d if len(strides) == 1 else functional.conv2d
+    return convolve(x, weight, bias, stride=tuple(strides), padding=tuple(pads))
 
 
 def group_norm(args: list[Any], groups: int) -> torch.Tensor:

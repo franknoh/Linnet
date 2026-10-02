@@ -11,6 +11,25 @@ pub fn zero_pad<B: Dim, C: Dim, H: Dim, W: Dim, P: Dim, T: Float>(
     return concat(concat(columns, tall, axis = 3), columns, axis = 3)
 }
 
+// Zero padding on the two spatial axes, `PH` rows above and below and `PW`
+// columns either side.
+pub fn zero_pad2d<B: Dim, C: Dim, H: Dim, W: Dim, PH: Dim, PW: Dim, T: Float>(
+    x: Tensor[B, C, H, W; T],
+) -> Tensor[B, C, H + 2 * PH, W + 2 * PW; T] {
+    let rows = fill<T>([B, C, PH, W], 0.0)
+    let tall = concat(concat(rows, x, axis = 2), rows, axis = 2)
+    let columns = fill<T>([B, C, H + 2 * PH, PW], 0.0)
+    return concat(concat(columns, tall, axis = 3), columns, axis = 3)
+}
+
+// Zero padding on the last axis of a `[B, C, L]` signal.
+pub fn zero_pad1d<B: Dim, C: Dim, L: Dim, P: Dim, T: Float>(
+    x: Tensor[B, C, L; T],
+) -> Tensor[B, C, L + 2 * P; T] {
+    let side = fill<T>([B, C, P], 0.0)
+    return concat(concat(side, x, axis = 2), side, axis = 2)
+}
+
 // A square 2-D convolution, in the cross-correlation sense every framework
 // stores its weights for: `weight[out, in, kh, kw]`, `[B, C, H, W]` images.
 //
@@ -69,5 +88,113 @@ where
         x: Tensor[B, Cin, H, W; T],
     ) -> Tensor[B, Cout, (H + 2 * Pad - K) / Stride + 1, (W + 2 * Pad - K) / Stride + 1; T] {
         return conv2d<B, Cin, Cout, H, W, K, Stride, Pad, T>(x, weight, bias)
+    }
+}
+
+// A 2-D convolution with a kernel of its own height and width, and its own
+// stride and padding on each axis: `weight[out, in, kh, kw]` over
+// `[B, C, H, W]` images, as `conv2d` but not square.
+pub op conv2d_rect<
+    B: Dim,
+    Cin: Dim,
+    Cout: Dim,
+    H: Dim,
+    W: Dim,
+    KH: Dim,
+    KW: Dim,
+    StrideH: Dim,
+    StrideW: Dim,
+    PadH: Dim,
+    PadW: Dim,
+    T: Float,
+>(
+    x: Tensor[B, Cin, H, W; T],
+    weight: Tensor[Cout, Cin, KH, KW; T],
+    bias: Tensor[Cout; T]? = none,
+) -> Tensor[B, Cout, (H + 2 * PadH - KH) / StrideH + 1, (W + 2 * PadW - KW) / StrideW + 1; T]
+where
+    StrideH > 0,
+    StrideW > 0,
+    KH > 0,
+    KW > 0
+{
+    let padded = zero_pad2d<B, Cin, H, W, PadH, PadW, T>(x)
+    let rows[oh, kh] =
+        iota<i32>((H + 2 * PadH - KH) / StrideH + 1)[oh] * cast<i32>(StrideH) + iota<i32>(KH)[kh]
+    let columns[ow, kw] =
+        iota<i32>((W + 2 * PadW - KW) / StrideW + 1)[ow] * cast<i32>(StrideW) + iota<i32>(KW)[kw]
+    let mixed[b, co, oh, ow] =
+        sum[ci, kh, kw] padded[b, ci, rows[oh, kh], columns[ow, kw]] * weight[co, ci, kh, kw]
+    return match bias {
+        some(b) => mixed + reshape(b, [Cout, 1, 1])
+        none => mixed
+    }
+}
+
+// A 1-D convolution over `[B, C, L]` signals, `weight[out, in, k]`: an audio
+// model's stem, a convolution over a sequence.
+pub op conv1d<B: Dim, Cin: Dim, Cout: Dim, L: Dim, K: Dim, Stride: Dim, Pad: Dim, T: Float>(
+    x: Tensor[B, Cin, L; T],
+    weight: Tensor[Cout, Cin, K; T],
+    bias: Tensor[Cout; T]? = none,
+) -> Tensor[B, Cout, (L + 2 * Pad - K) / Stride + 1; T]
+where
+    Stride > 0,
+    K > 0
+{
+    let padded = zero_pad1d<B, Cin, L, Pad, T>(x)
+    // Window `o` starts at `o * Stride`, so tap `k` of it is here.
+    let taps[o, k] =
+        iota<i32>((L + 2 * Pad - K) / Stride + 1)[o] * cast<i32>(Stride) + iota<i32>(K)[k]
+    let mixed[b, co, o] = sum[ci, k] padded[b, ci, taps[o, k]] * weight[co, ci, k]
+    return match bias {
+        some(b) => mixed + reshape(b, [Cout, 1])
+        none => mixed
+    }
+}
+
+pub block Conv2dRect<
+    Cin: Dim,
+    Cout: Dim,
+    KH: Dim,
+    KW: Dim,
+    StrideH: Dim,
+    StrideW: Dim,
+    PadH: Dim,
+    PadW: Dim,
+    T: Float = f32,
+>
+where
+    StrideH > 0,
+    StrideW > 0,
+    KH > 0,
+    KW > 0
+{
+    param weight: Tensor[Cout, Cin, KH, KW; T]
+    param bias: Tensor[Cout; T]? = none
+
+    pub fn forward<B: Dim, H: Dim, W: Dim>(
+        x: Tensor[B, Cin, H, W; T],
+    ) -> Tensor[B, Cout, (H + 2 * PadH - KH) / StrideH + 1, (W + 2 * PadW - KW) / StrideW + 1; T] {
+        return conv2d_rect<B, Cin, Cout, H, W, KH, KW, StrideH, StrideW, PadH, PadW, T>(
+            x,
+            weight,
+            bias,
+        )
+    }
+}
+
+pub block Conv1d<Cin: Dim, Cout: Dim, K: Dim, Stride: Dim, Pad: Dim, T: Float = f32>
+where
+    Stride > 0,
+    K > 0
+{
+    param weight: Tensor[Cout, Cin, K; T]
+    param bias: Tensor[Cout; T]? = none
+
+    pub fn forward<B: Dim, L: Dim>(
+        x: Tensor[B, Cin, L; T],
+    ) -> Tensor[B, Cout, (L + 2 * Pad - K) / Stride + 1; T] {
+        return conv1d<B, Cin, Cout, L, K, Stride, Pad, T>(x, weight, bias)
     }
 }

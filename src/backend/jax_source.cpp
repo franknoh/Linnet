@@ -381,21 +381,29 @@ public:
         if (implementation_base == "torch.matmul" && at.size() == 2) {
             return define("jnp.matmul(" + name(0) + ", " + name(1) + ")");
         }
-        if (implementation_base == "torch.nn.functional.conv2d" && at.size() == 3 &&
-            at[0] != nullptr && at[1] != nullptr) {
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!stride || !pad) {
+        if (is_convolution(implementation_base) && at.size() == 3 && at[0] != nullptr &&
+            at[1] != nullptr) {
+            const auto window = conv_window(implementation_base);
+            if (!window) {
                 return std::nullopt;
             }
-            const std::string s = std::to_string(*stride);
-            const std::string p = std::to_string(*pad);
+            const bool flat = window->strides.size() == 1;
+            std::string strides = "(";
+            std::string padding = "(";
+            for (std::size_t i = 0; i < window->strides.size(); ++i) {
+                const std::string p = std::to_string(window->pads[i]);
+                strides += std::to_string(window->strides[i]) + ", ";
+                padding += "(" + p + ", " + p + "), ";
+            }
+            const std::string layout =
+                flat ? "(\"NCH\", \"OIH\", \"NCH\")" : "(\"NCHW\", \"OIHW\", \"NCHW\")";
             const std::string mixed =
-                define("jax.lax.conv_general_dilated(" + name(0) + ", " + name(1) + ", (" + s +
-                       ", " + s + "), ((" + p + ", " + p + "), (" + p + ", " + p +
-                       ")), dimension_numbers=(\"NCHW\", \"OIHW\", \"NCHW\"))");
-            return at[2] != nullptr ? define(mixed + " + " + name(2) + ".reshape((1, -1, 1, 1))")
-                                    : mixed;
+                define("jax.lax.conv_general_dilated(" + name(0) + ", " + name(1) + ", " + strides +
+                       "), " + padding + "), dimension_numbers=" + layout + ")");
+            return at[2] != nullptr
+                       ? define(mixed + " + " + name(2) +
+                                (flat ? ".reshape((1, -1, 1))" : ".reshape((1, -1, 1, 1))"))
+                       : mixed;
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && at.size() == 1 &&
             at[0] != nullptr) {

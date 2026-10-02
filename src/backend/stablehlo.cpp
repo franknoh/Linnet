@@ -481,23 +481,29 @@ public:
             }
             return dot_general(a, b, batch, batch, {rank - 1}, {rank - 2}, shape, dtype);
         }
-        if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
-            at[0] != nullptr && at[1] != nullptr) {
-            // The window geometry is the call's own `Stride` and `Pad`, never
-            // a guess from the shapes; without them the gather body runs.
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!stride || !pad) {
+        if (is_convolution(implementation_base) && operands.size() == 3 && at[0] != nullptr &&
+            at[1] != nullptr) {
+            // The window geometry is the call's own generics, never a guess
+            // from the shapes; without them the gather body runs.
+            const auto window = conv_window(implementation_base);
+            if (!window) {
                 return std::nullopt;
             }
-            const std::string p = std::to_string(*pad);
+            const std::size_t spatial = window->strides.size();
+            const std::string axes = spatial == 1 ? "0" : "0, 1";
+            std::string padding;
+            for (std::size_t i = 0; i < spatial; ++i) {
+                const std::string p = std::to_string(window->pads[i]);
+                padding += (i == 0 ? "[" : ", [") + p + ", " + p + "]";
+            }
+            const Dims ones(spatial, 1);
             const std::string attributes =
-                "batch_group_count = 1 : i64, dimension_numbers = "
-                "#stablehlo.conv<[b, f, 0, 1]x[o, i, 0, 1]->[b, f, 0, 1]>, "
-                "feature_group_count = 1 : i64, lhs_dilation = " +
-                i64_array({1, 1}) + ", padding = dense<[[" + p + ", " + p + "], [" + p + ", " + p +
-                "]]> : tensor<2x2xi64>, rhs_dilation = " + i64_array({1, 1}) +
-                ", window_strides = " + i64_array({*stride, *stride});
+                "batch_group_count = 1 : i64, dimension_numbers = #stablehlo.conv<[b, f, " + axes +
+                "]x[o, i, " + axes + "]->[b, f, " + axes +
+                "]>, feature_group_count = 1 : i64, lhs_dilation = " + i64_array(ones) +
+                ", padding = dense<[" + padding + "]> : tensor<" + std::to_string(spatial) +
+                "x2xi64>, rhs_dilation = " + i64_array(ones) +
+                ", window_strides = " + i64_array(window->strides);
             std::string out = emit("convolution",
                                    {*at[0], *at[1]},
                                    attributes + precision(*at[0], *at[1]),

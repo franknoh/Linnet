@@ -181,6 +181,41 @@ public:
         return found == call_generics_.end() ? std::nullopt : std::optional(found->second);
     }
 
+    // A convolution's window geometry, from the call's own generics: one
+    // stride and one padding per spatial axis. `conv1d` and the square
+    // `conv2d` take `Stride` and `Pad` for every axis, `conv2d_rect` takes
+    // `StrideH`, `StrideW`, `PadH`, and `PadW`. Without them, nothing.
+    struct ConvWindow {
+        std::vector<std::int64_t> strides;
+        std::vector<std::int64_t> pads;
+    };
+    std::optional<ConvWindow> conv_window(const std::string& implementation) const {
+        if (implementation == "torch.nn.functional.conv2d(rect)") {
+            const auto sh = call_generic("StrideH");
+            const auto sw = call_generic("StrideW");
+            const auto ph = call_generic("PadH");
+            const auto pw = call_generic("PadW");
+            if (!sh || !sw || !ph || !pw) {
+                return std::nullopt;
+            }
+            return ConvWindow{{*sh, *sw}, {*ph, *pw}};
+        }
+        const std::size_t spatial = implementation == "torch.nn.functional.conv1d" ? 1 : 2;
+        const auto stride = call_generic("Stride");
+        const auto pad = call_generic("Pad");
+        if (!stride || !pad) {
+            return std::nullopt;
+        }
+        return ConvWindow{std::vector<std::int64_t>(spatial, *stride),
+                          std::vector<std::int64_t>(spatial, *pad)};
+    }
+
+    static bool is_convolution(const std::string& implementation) {
+        return implementation == "torch.nn.functional.conv2d" ||
+               implementation == "torch.nn.functional.conv2d(rect)" ||
+               implementation == "torch.nn.functional.conv1d";
+    }
+
     virtual std::optional<std::string>
     native_call(const std::string& implementation,
                 const std::vector<std::optional<TensorInfo>>& operands,
