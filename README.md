@@ -63,10 +63,10 @@ where Linnet loses, is on the
 
 | Target | Entry point | Scope |
 | --- | --- | --- |
-| PyTorch | `linnet.torch.load`: interpreted, generated source, `torch.compile`, CUDA graphs; training, device placement, tensor parallelism | |
-| JAX | `linnet.jax.load` (XLA), `load_source` (`jax.numpy`, `jax.grad`), `load_model`, `load_nnx` (Flax NNX) | |
+| PyTorch | `linnet.torch.load`: interpreted, generated source, `torch.compile`, CUDA graphs; training, device placement, tensor parallelism. `load_function`: functions such as losses, differentiable | |
+| JAX | `linnet.jax.load` (XLA), `load_source` (`jax.numpy`, `jax.grad`), `load_model`, `load_nnx` (Flax NNX), `load_function` | |
 | StableHLO | `linnet stablehlo` | static shapes |
-| ONNX Runtime | `linnet onnx`, `linnet.onnx.export_model`, `load_model` (CUDA, TensorRT) | static shapes |
+| ONNX Runtime | `linnet onnx`, `linnet.onnx.export_model`, `export_function`, `load_model` (CUDA, TensorRT) | static shapes |
 | Triton Inference Server | `python -m linnet.triton export`: ONNX or Python backend | ONNX backend: entries without state |
 | vLLM and other transformers-checkpoint servers | `linnet.hf.export` | Llama and GPT-2 families |
 | llama.cpp, Ollama | `linnet.gguf.export`: GGUF and a Modelfile | Llama and GPT-2 families |
@@ -98,7 +98,8 @@ pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
 
 Blocks, generics over dimensions and dtypes, `where` constraints, index
 notation, `static for` and `while`, and `state` for caches, with a standard
-library written in Linnet itself. The [language tour](docs/language-tour.md)
+library written in Linnet itself. Entries at module level are functions --
+a loss, preprocessing, a reward -- that export on their own. The [language tour](docs/language-tour.md)
 and the [specification](spec/) cover the rest.
 
 ## Repository

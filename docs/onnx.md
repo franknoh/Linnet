@@ -74,6 +74,18 @@ embeds a checkpoint as initializers; `cast_dtype=True` converts its
 floating-point tensors to the dtype the graph declares, so an f32
 checkpoint exports as an `f16` or `bf16` model (`--bind T=f16`).
 
+An `entry` declared at module level is a function of its inputs alone (a
+loss, a preprocessing step, a reward) and has no weights, so
+`export_function` makes a complete model from the source:
+
+```python
+from linnet.onnx import export_function
+
+exported = export_function("functions.linnet", "normalize_images",
+                           generics={"B": 1, "H": 224, "W": 224, "C": 3})
+exported.save("normalize_images.onnx")
+```
+
 ## Running on ONNX Runtime
 
 ```python

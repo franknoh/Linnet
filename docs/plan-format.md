@@ -2,7 +2,8 @@
 
 `linnet plan` prints the root block as one JSON document. A materializer
 reads it to build a module, bind weights, and run entries. The plan contains
-no tensor data. Version 1:
+no tensor data. With `--functions` it is a plan of the module-level entries
+instead: `root` is `null` and the manifest is empty. Version 1:
 
 ```text
 { "version": 1,

@@ -1,4 +1,5 @@
-"""Self-contained ONNX models: `linnet onnx` output with the weights inside.
+"""Self-contained ONNX models: `linnet onnx` output with the weights inside,
+and module-level entries (functions, which have none) on their own.
 
 The compiler exports parameters as graph inputs named in the metadata
 (`linnet.path.param0` = `layers.0.up.weight`). `export_model` turns those
@@ -214,6 +215,39 @@ def export_model(
         inputs=tuple(_port(i) for i in model.graph.input),
         outputs=tuple(_port(o) for o in model.graph.output),
         parameters=tuple(paths.values()),
+    )
+
+
+def export_function(
+    source: str | Path,
+    name: str | None = None,
+    *,
+    generics: Mapping[str, int | str],
+    std_root: str | Path | None = None,
+    numerics: str = "equivalent",
+) -> Exported:
+    """Compiles a module-level entry -- a function of its inputs alone, such
+    as a loss, a preprocessing step, or a reward -- to a self-contained ONNX
+    model. It has no weights, so nothing is embedded. `name` picks the entry
+    (the only one when omitted); `generics` binds every generic, the graph's
+    shapes being static."""
+    import onnx
+    from onnx import parser
+
+    from ..plan import compile_plan
+
+    plan = compile_plan(source, std_root=std_root, optimize=False, functions=True)
+    entry = str(plan.module_entry(name)["name"]).rsplit("::", 1)[1]
+    arguments = ["onnx", "--numerics", numerics, "--entry", entry]
+    for generic, value in generics.items():
+        arguments += ["--bind", f"{generic}={value}"]
+    model = parser.parse_model(run_compiler(*arguments, *std_arguments(std_root), str(source)))
+    onnx.checker.check_model(model)
+    return Exported(
+        model=model,
+        inputs=tuple(_port(i) for i in model.graph.input),
+        outputs=tuple(_port(o) for o in model.graph.output),
+        parameters=(),
     )
 
 

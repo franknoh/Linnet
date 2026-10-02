@@ -103,6 +103,8 @@ pub entry forward<B: Dim, S: Dim>(
 
 A block or module MAY expose multiple entries such as `prefill`, `decode`, or `classify`.
 
+An entry declared at module level has no `self`: it reads no parameters or state and is a function of its inputs alone, such as a loss, a preprocessing step, or a reward. A backend exports it on its own, with its inputs as the only arguments. Other functions and entries MAY call it like any `fn`.
+
 The word `forward` has no intrinsic language meaning.
 
 ## 7.7 Generic defaults

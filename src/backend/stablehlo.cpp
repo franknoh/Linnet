@@ -720,7 +720,7 @@ public:
         }
         body_ += indent_ + "\"func.return\"(" + names + ") : (" + types + ") -> ()\n";
         std::string out =
-            "// " + block_name + "." + entry_name + " from module " + module_path +
+            "// " + entry_label(block_name, entry_name) + " from module " + module_path +
             ". Arguments after the inputs are the\n"
             "// parameters of the block hierarchy, named by `linnet.path`, then the\n"
             "// state members read before the call, named by `linnet.state`. Results\n"

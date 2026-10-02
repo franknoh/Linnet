@@ -163,6 +163,17 @@ pub block Model<H: Dim, Layers: Dim> {
 Parameter paths follow the structure (`layers.0.attention.q_proj.weight`);
 `linnet inspect --parameters` lists them.
 
+An `entry` can also stand at module level, outside any block. It has no
+parameters or state, so it is a function of its inputs alone -- a loss, a
+preprocessing step, a reward -- and every backend exports it on its own:
+
+```linnet
+pub entry mse<B: Dim, N: Dim>(predicted: Tensor[B, N; f32], target: Tensor[B, N; f32]) -> f32 {
+    let error[b, n] = predicted[b, n] - target[b, n]
+    return sum[b, n] error[b, n] * error[b, n] / cast<f32>(B * N)
+}
+```
+
 ## Loops
 
 ```linnet

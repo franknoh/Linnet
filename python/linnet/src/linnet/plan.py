@@ -120,13 +120,17 @@ class Env:
 
 @dataclass
 class Plan:
-    """The plan document as dictionaries; `linnet.ir.Program` is the typed view."""
+    """The plan document as dictionaries; `linnet.ir.Program` is the typed view.
+
+    A plan of functions (`linnet plan --functions`) has no root block: `root`
+    is empty and so is the manifest."""
 
     root: dict[str, Any]
     manifest: list[dict[str, Any]]
     blocks: dict[str, dict[str, Any]]
     functions: dict[str, dict[str, Any]]
     text: str = field(default="", repr=False)
+    module: str = ""  # the root file's module path
 
     @staticmethod
     def from_json(text: str) -> Plan:
@@ -134,12 +138,40 @@ class Plan:
         if document.get("version") != 1:
             raise PlanError(f"unsupported plan version {document.get('version')!r}")
         return Plan(
-            root=document["root"],
+            root=document["root"] or {},
             manifest=document["manifest"],
             blocks=document["blocks"],
             functions={function["name"]: function for function in document["functions"]},
             text=text,
+            module=document["module"],
         )
+
+    def module_entries(self) -> dict[str, dict[str, Any]]:
+        """The entries declared at module level in the root file, by name:
+        functions of their inputs alone."""
+        prefix = f"{self.module}::"
+        return {
+            function["name"].removeprefix(prefix): function
+            for function in self.functions.values()
+            if function["kind"] == "entry"
+            and function["block"] is None
+            and function["name"].startswith(prefix)
+        }
+
+    def module_entry(self, name: str | None) -> dict[str, Any]:
+        """The module-level entry called `name`, or the only one."""
+        entries = self.module_entries()
+        if name is None:
+            if len(entries) != 1:
+                listed = ", ".join(f"`{entry}`" for entry in entries) or "none"
+                raise PlanError(
+                    f"the module has {len(entries)} module-level entries ({listed}); name one"
+                )
+            return next(iter(entries.values()))
+        if name not in entries:
+            listed = ", ".join(f"`{entry}`" for entry in entries) or "none"
+            raise PlanError(f"no module-level entry `{name}` (there are: {listed})")
+        return entries[name]
 
     def entries_of(self, block: str) -> list[dict[str, Any]]:
         return [
@@ -161,8 +193,12 @@ def compile_plan(
     std_root: str | Path | None = None,
     optimize: bool = True,
     numerics: str = "exact",
+    functions: bool = False,
 ) -> Plan:
     """Runs `linnet plan` on a source file. Checking never executes the model.
+
+    With `functions`, the plan is of the module-level entries, with no root
+    block (`linnet plan --functions`).
 
     With `optimize`, the compiler's exact canonicalization passes run first;
     they never change results. `numerics` is `"exact"` (every semantic
@@ -178,6 +214,8 @@ def compile_plan(
         command.append("--no-optimize")
     if root is not None:
         command += ["--root", root]
+    if functions:
+        command.append("--functions")
     command += [*std_arguments(std_root), str(source)]
     try:
         return Plan.from_json(run_compiler(*command))

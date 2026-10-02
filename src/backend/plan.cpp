@@ -21,14 +21,21 @@ public:
         : module_(module), model_(module.model()), types_(module.types()), options_(options) {}
 
     std::expected<std::string, std::string> run() {
-        const auto root = find_root();
-        if (!root) {
-            return std::unexpected(root.error());
-        }
         std::string out = "{\"version\":1";
         out += ",\"module\":" + json_string(model_.module_paths.at(options_.root_module));
-        out += ",\"root\":" + block_description(*root);
-        out += ",\"manifest\":" + manifest(*root);
+        if (options_.functions) {
+            if (!has_entry(no_entity)) {
+                return std::unexpected("no module-level `entry` in this file");
+            }
+            out += ",\"root\":null,\"manifest\":[]";
+        } else {
+            const auto root = find_root();
+            if (!root) {
+                return std::unexpected(root.error());
+            }
+            out += ",\"root\":" + block_description(*root);
+            out += ",\"manifest\":" + manifest(*root);
+        }
         out += ",\"blocks\":" + blocks_json();
         out += ",\"functions\":[";
         bool is_first = true;
@@ -81,16 +88,24 @@ private:
             return std::unexpected("no block named `" + options_.root + "` in this file");
         }
         if (candidates.size() != 1) {
-            return std::unexpected(candidates.empty()
-                                       ? "no block with an `entry`; name one with --root"
-                                       : "several blocks have entries; name one with --root");
+            return std::unexpected(
+                candidates.empty()
+                    ? has_entry(no_entity)
+                          ? "no block with an `entry`; the module-level entries are in "
+                            "`plan --functions`"
+                          : "no block with an `entry`; name one with --root"
+                    : "several blocks have entries; name one with --root");
         }
         return candidates.front();
     }
 
+    // Whether `block` (or the root module itself, for `no_entity`) declares
+    // an entry.
     bool has_entry(EntityId block) const {
         for (const ir::Function& function : module_.functions()) {
-            if (function.is_entry && model_.entities[function.entity].parent == block) {
+            const Entity& entity = model_.entities[function.entity];
+            if (function.is_entry && entity.parent == block &&
+                entity.module == options_.root_module) {
                 return true;
             }
         }

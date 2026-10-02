@@ -25,6 +25,10 @@ TORCH_DTYPES: dict[str, torch.dtype] = {
 }
 
 
+# PyTorch dtypes back to Linnet names, for binding a dtype generic from an input.
+LINNET_DTYPES: dict[torch.dtype, str] = {dtype: name for name, dtype in TORCH_DTYPES.items()}
+
+
 def torch_dtype(env: Env, spec: str | dict[str, Any]) -> torch.dtype:
     """The PyTorch dtype of a plan dtype, with dtype generics resolved by `env`."""
     return TORCH_DTYPES[env.dtype_name(spec)]

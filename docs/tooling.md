@@ -120,7 +120,8 @@ linnet emit plan.json        # or `linnet emit -` from stdin
 
 `plan` prints the root block (the only block with entries, or `--root`) as a
 JSON document: structure, parameter manifest, and the Core IR of every
-function. See [Plan format](plan-format.md). `emit` is the other direction:
+function. `--functions` prints the module-level entries instead, with no
+root block. See [Plan format](plan-format.md). `emit` is the other direction:
 it prints the plan's own module as formatted source, turning references to
 other modules into `use` lines. Both read and write text only.
 
@@ -140,6 +141,12 @@ apply). The bound values must satisfy the root block's and the entry's
 that splits five features into two heads of two. Calls are inlined, `static for` is unrolled, index notation becomes
 broadcasts, gathers, and reductions, and `while` becomes the format's loop.
 Anything the format cannot express is an error, never an approximation.
+
+An entry declared at module level, outside any block, exports the same way:
+a function of its inputs alone, with no parameters or state. `--entry` names
+it; a file whose blocks have no entries needs no `--entry` when it declares
+one function. Without `--root`, an `--entry` that both the module and a
+block declare is an error.
 
 | Format | Output |
 | --- | --- |

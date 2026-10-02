@@ -18,7 +18,7 @@ import torch
 from torch import nn
 
 from ..plan import Env, Plan, PlanError
-from .dtypes import TORCH_DTYPES, torch_dtype
+from .dtypes import LINNET_DTYPES, TORCH_DTYPES, torch_dtype
 from .interp import BlockInstance, Interpreter
 
 
@@ -321,7 +321,12 @@ def bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
         return
     if param_type["kind"] != "tensor":
         raise PlanError(f"input `{name}` has a type that cannot be passed from PyTorch")
-    expected_dtype = torch_dtype(env, param_type["dtype"])
+    spec: str | dict[str, Any] = param_type["dtype"]
+    if isinstance(spec, dict) and value.dtype in LINNET_DTYPES:
+        # A dtype generic of the entry's own (a function's `T`), bound by the
+        # first input that carries it; the rest must agree.
+        env.dtypes.setdefault(int(spec["var"]), LINNET_DTYPES[value.dtype])
+    expected_dtype = torch_dtype(env, spec)
     if value.dtype != expected_dtype:
         raise PlanError(f"input `{name}` has dtype {value.dtype}, expected {expected_dtype}")
     units: list[dict[str, Any] | int] = param_type["shape"]

@@ -18,7 +18,7 @@ import torch
 from onnx import parser  # type: ignore[import-untyped]
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
-from linnet.onnx import find_compiler, import_onnx
+from linnet.onnx import export_function, find_compiler, import_onnx
 from linnet.torch import load
 
 REPO = Path(__file__).resolve().parents[4]
@@ -122,3 +122,31 @@ def test_while_loop_runs_under_onnxruntime() -> None:
         feeds = {"x": np.ones(3, np.float32), "limit": np.array(limit, np.int32), "param0": scale}
         (actual,) = session.run(None, feeds)
         np.testing.assert_allclose(np.asarray(actual), np.array(expected, np.float32))
+
+
+def test_a_function_exports_on_its_own() -> None:
+    """A module-level entry has no weights: the model `export_function` makes
+    takes the function's inputs alone, and computes what it says."""
+    onnxruntime = pytest.importorskip("onnxruntime")
+    exported = export_function(
+        EXAMPLES / "09-functions" / "functions.linnet",
+        "token_log_probs",
+        generics={"B": 2, "S": 3, "V": 5, "T": "f32"},
+        std_root=STDLIB,
+    )
+    assert exported.parameters == ()
+    assert [(port.name, port.dtype, port.shape) for port in exported.inputs] == [
+        ("logits", "f32", (2, 3, 5)),
+        ("tokens", "i64", (2, 3)),
+    ]
+    session = onnxruntime.InferenceSession(
+        exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
+    )
+    rng = np.random.default_rng(0)
+    logits = rng.standard_normal((2, 3, 5)).astype(np.float32)
+    tokens = rng.integers(0, 5, (2, 3)).astype(np.int64)
+    (actual,) = session.run(None, {"logits": logits, "tokens": tokens})
+    shifted = logits - logits.max(-1, keepdims=True)
+    log_probs = shifted - np.log(np.exp(shifted).sum(-1, keepdims=True))
+    expected = np.take_along_axis(log_probs, tokens[..., None], -1)[..., 0]
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-6)

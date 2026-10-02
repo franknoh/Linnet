@@ -94,7 +94,7 @@ add_test(NAME example_transformer_checks
 add_test(NAME example_models_check
     COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/05-llama
             ${PROJECT_SOURCE_DIR}/examples/06-gpt2 ${PROJECT_SOURCE_DIR}/examples/07-vit
-            ${PROJECT_SOURCE_DIR}/examples/08-clip)
+            ${PROJECT_SOURCE_DIR}/examples/08-clip ${PROJECT_SOURCE_DIR}/examples/09-functions)
 add_test(NAME example_models_are_formatted
     COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/examples)
 linnet_add_test(ir_test unit/ir_test.cpp)
@@ -181,6 +181,28 @@ add_test(NAME cli_jax_source_while
     COMMAND linnet jax --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
 set_tests_properties(cli_jax_source_while PROPERTIES
     PASS_REGULAR_EXPRESSION "def main\\(in_x, in_limit, p0\\):.*def _cond0\\(carried\\):.*w0 = jax.lax.while_loop\\(_cond0, _body0,")
+# Module-level entries: functions of their inputs alone, exported with no
+# parameters, and a plan of them with no root block.
+add_test(NAME cli_plan_functions
+    COMMAND linnet plan --functions --std ${PROJECT_SOURCE_DIR}/stdlib
+            ${PROJECT_SOURCE_DIR}/examples/09-functions/functions.linnet)
+set_tests_properties(cli_plan_functions PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"root\":null,\"manifest\":\\[\\].*\"name\":\"examples.functions::cross_entropy\",\"kind\":\"entry\",\"block\":null")
+add_test(NAME cli_stablehlo_function
+    COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --entry cross_entropy --bind B=4
+            --bind V=10 --bind T=bf16 ${PROJECT_SOURCE_DIR}/examples/09-functions/functions.linnet)
+set_tests_properties(cli_stablehlo_function PROPERTIES
+    PASS_REGULAR_EXPRESSION "// cross_entropy from module examples.functions.*func.func @main\\(%logits: tensor<4x10xbf16>, %labels: tensor<4xi64>\\) -> tensor<f32>")
+add_test(NAME cli_torch_function
+    COMMAND linnet torch --std ${PROJECT_SOURCE_DIR}/stdlib --entry normalize_images --bind B=2
+            --bind H=3 --bind W=4 --bind C=3 ${PROJECT_SOURCE_DIR}/examples/09-functions/functions.linnet)
+set_tests_properties(cli_torch_function PROPERTIES
+    PASS_REGULAR_EXPRESSION "PARAMETERS = \\[\\].*def main\\(in_pixels, in_mean, in_std")
+add_test(NAME cli_onnx_function
+    COMMAND linnet onnx --std ${PROJECT_SOURCE_DIR}/stdlib --entry match_reward --bind B=2 --bind S=4
+            ${PROJECT_SOURCE_DIR}/examples/09-functions/functions.linnet)
+set_tests_properties(cli_onnx_function PROPERTIES
+    PASS_REGULAR_EXPRESSION "main \\(int64\\[2,4\\] generated, int64\\[2,4\\] reference, int64\\[2\\] lengths, float penalty\\) => \\(float\\[2\\] output0\\)")
 add_test(NAME cli_stablehlo_unbound
     COMMAND linnet stablehlo --std ${PROJECT_SOURCE_DIR}/stdlib --bind H=8
             ${PROJECT_SOURCE_DIR}/examples/03-block-and-weights/model.linnet)
