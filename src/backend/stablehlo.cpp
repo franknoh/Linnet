@@ -494,7 +494,11 @@ public:
             std::string padding;
             for (std::size_t i = 0; i < spatial; ++i) {
                 const std::string p = std::to_string(window->pads[i]);
-                padding += (i == 0 ? "[" : ", [") + p + ", " + p + "]";
+                padding += i == 0 ? "[" : ", [";
+                padding += p;
+                padding += ", ";
+                padding += p;
+                padding += "]";
             }
             const Dims ones(spatial, 1);
             const std::string attributes =

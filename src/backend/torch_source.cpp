@@ -617,7 +617,8 @@ public:
             const auto tuple = [](const std::vector<std::int64_t>& values) {
                 std::string text = "(";
                 for (std::size_t i = 0; i < values.size(); ++i) {
-                    text += (i == 0 ? "" : ", ") + std::to_string(values[i]);
+                    text += i == 0 ? "" : ", ";
+                    text += std::to_string(values[i]);
                 }
                 return text + (values.size() == 1 ? ",)" : ")");
             };

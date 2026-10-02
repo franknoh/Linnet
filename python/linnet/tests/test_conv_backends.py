@@ -5,6 +5,8 @@ does, including where the shapes alone could not say which geometry is meant.
 Before they had one, both exports wrote the canonical gather, whose index
 table for a VAE's first convolution has 2.4 billion entries."""
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+
 from __future__ import annotations
 
 import os

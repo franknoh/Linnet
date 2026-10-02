@@ -392,8 +392,13 @@ public:
             std::string padding = "(";
             for (std::size_t i = 0; i < window->strides.size(); ++i) {
                 const std::string p = std::to_string(window->pads[i]);
-                strides += std::to_string(window->strides[i]) + ", ";
-                padding += "(" + p + ", " + p + "), ";
+                strides += std::to_string(window->strides[i]);
+                strides += ", ";
+                padding += "(";
+                padding += p;
+                padding += ", ";
+                padding += p;
+                padding += "), ";
             }
             const std::string layout =
                 flat ? "(\"NCH\", \"OIH\", \"NCH\")" : "(\"NCHW\", \"OIHW\", \"NCHW\")";
