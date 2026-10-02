@@ -15,6 +15,7 @@ import importlib.util
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -189,6 +190,7 @@ class CompiledLinnetModule(LinnetModule):
         by_path = dict(zip(generated.states, states, strict=True))
         if self._graph_pool is None:
             self._graph_pool = torch.cuda.graph_pool_handle()
+        _warm_blas(self.interpreter.device)
         graph = torch.cuda.CUDAGraph()
         # Thread-local: a server's other threads (Triton's, say) may call
         # into CUDA while this one captures, which in the default global mode
@@ -471,6 +473,22 @@ class _Graph:
 
     def current(self) -> bool:
         return all(table.get(leaf) is tensor for table, leaf, tensor in self.watched)
+
+
+_blas_threads = threading.local()
+
+
+def _warm_blas(device: torch.device) -> None:
+    """Makes this thread's cuBLAS and cuBLASLt handles, outside any capture:
+    they are made per thread on first use, which a capture cannot do, and a
+    server may capture a step on a worker thread after warming up on
+    another."""
+    if getattr(_blas_threads, "warm", False):
+        return
+    small = torch.ones(16, 16, dtype=torch.bfloat16, device=device)
+    torch.addmm(small[0], small, small)
+    torch.matmul(small.float(), small.float())
+    _blas_threads.warm = True
 
 
 def _table(owner: Any, leaf: str) -> tuple[dict[str, Any], str]:
