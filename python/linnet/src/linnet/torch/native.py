@@ -236,6 +236,26 @@ def _attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return _sdpa(query, key, value, scale, mask, fast=False)
 
 
+def _sink_attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`std.nn.attention::sink_attention`: two products around a softmax that
+    also counts each query head's sink logit, whose share is then dropped."""
+    query, key, value, sinks, scale, mask = args
+    batch, heads, queries, width = query.shape
+    kv_heads, keys = key.shape[1], key.shape[2]
+    group = heads // kv_heads
+    rows = mask.reshape(-1, queries, keys)
+    grouped = query.reshape(batch, kv_heads, group * queries, width)
+    scores = torch.matmul(grouped, key.transpose(-1, -2)).float() * float(scale)
+    scores = scores.reshape(batch, kv_heads, group, queries, keys)
+    scores = scores.masked_fill(~rows.reshape(rows.shape[0], 1, 1, queries, keys), -1e30)
+    sink = sinks.float().reshape(1, kv_heads, group, 1, 1)
+    peak = torch.maximum(scores.amax(-1, keepdim=True), sink)
+    shifted = torch.exp(scores - peak)
+    total = shifted.sum(-1, keepdim=True) + torch.exp(sink - peak)
+    weights = (shifted / total).to(value.dtype).reshape(batch, kv_heads, group * queries, keys)
+    return torch.matmul(weights, value).reshape(batch, heads, queries, width)
+
+
 def _softmax_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.softmax(args[0], dim=-1)
 
@@ -341,6 +361,7 @@ NATIVE: dict[str, Native] = {
     "torch.Tensor.index_put(tokens)": _write_tokens,
     "torch.distributed.all_reduce": _one_shard,
     "torch.distributed.all_gather": _one_shard,
+    "linnet.sink_attention": _sink_attention,
     "linnet.mxfp4_experts": _mxfp4_experts,
     "linnet.mxfp4_experts(shared)": _mxfp4_experts_shared,
     "torch.matmul": _matmul,

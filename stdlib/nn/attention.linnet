@@ -98,3 +98,41 @@ where
     )
     return attention_rows(query, keys, values, scale, mask)
 }
+
+// Attention with sinks (gpt-oss): one learned logit per query head joins the
+// softmax of every row, and its share is then dropped, so a head can attend
+// nowhere by putting its mass on the sink and `sum(weights) < 1`. Query heads
+// are grouped by the key/value head they share, as in
+// `grouped_attention_rows`, and the mask is per sequence.
+//
+// The sink is written into the denominator -- the maximum subtracted for
+// stability is that of the masked scores and the sink together -- rather
+// than concatenated as a column and sliced off again. Scores accumulate in
+// f32.
+pub op sink_attention<B: Dim, Hq: Dim, Hk: Dim, Q: Dim, K: Dim, D: Dim, T: Float>(
+    query: Tensor[B, Hq, Q, D; T],
+    key: Tensor[B, Hk, K, D; T],
+    value: Tensor[B, Hk, K, D; T],
+    sinks: Tensor[Hq; T],
+    scale: f32,
+    mask: Tensor[B, Q, K; bool],
+) -> Tensor[B, Hq, Q, D; T]
+where
+    Hk > 0,
+    Hq % Hk == 0
+{
+    let grouped = reshape(query, [B, Hk, Hq / Hk, Q, D])
+    let score[b, g, r, q, k] =
+        sum<f32>[d] cast<f32>(grouped[b, g, r, q, d]) * cast<f32>(key[b, g, k, d])
+    let scaled = score * scale
+    let masked[b, g, r, q, k] = select(mask[b, q, k], scaled[b, g, r, q, k], -1e30)
+    let sink = reshape(cast<f32>(sinks), [Hk, Hq / Hk])
+    let key_peak[b, g, r, q] = max[k] masked[b, g, r, q, k]
+    let peak[b, g, r, q] = max(key_peak[b, g, r, q], sink[g, r])
+    let shifted[b, g, r, q, k] = exp(masked[b, g, r, q, k] - peak[b, g, r, q])
+    let key_total[b, g, r, q] = sum[k] shifted[b, g, r, q, k]
+    let total[b, g, r, q] = key_total[b, g, r, q] + exp(sink[g, r] - peak[b, g, r, q])
+    let weights[b, g, r, q, k] = shifted[b, g, r, q, k] / total[b, g, r, q]
+    let mixed[b, g, r, q, d] = sum[k] weights[b, g, r, q, k] * cast<f32>(value[b, g, k, d])
+    return reshape(cast<T>(mixed), [B, Hq, Q, D])
+}
