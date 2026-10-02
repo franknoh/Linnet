@@ -56,7 +56,7 @@ A future low-level kernel DSL may target the same or a lower IR and allow Triton
 
 ## 15.10 Distributed execution
 
-*Informative.* A model that splits itself across processes states it in ordinary source: a `Shards` generic sizes each process's part of the split weights, and `std.nn.parallel::all_reduce` marks where partial results combine. The operation's canonical body is the identity, which is exact for one shard, so the program with `Shards = 1` is the reference; a backend running several processes sums across them there. Collective operations beyond this, and placement or sharding annotations in the type system, are future work.
+*Informative.* A model that splits itself across processes states it in ordinary source: a `Shards` generic sizes each process's part of the split weights, `std.nn.parallel::all_reduce` marks where partial results combine, and `std.nn.parallel::all_gather` where each process's slice of an output joins the others' along the last axis. Their canonical bodies are exact for one shard -- the identity, and the slice repeated `Shards` times -- so the program with `Shards = 1` is the reference; a backend running several processes sums or gathers across them there. Collective operations beyond this, and placement or sharding annotations in the type system, are future work.
 
 ## 15.11 Importers
 

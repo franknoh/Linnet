@@ -1,7 +1,8 @@
-"""A model that says how it splits (a `Shards` generic and
-`std.nn.parallel::all_reduce`) loaded with `tensor_parallel=`: each process
-binds its own part of every weight the checkpoint holds `Shards` times over,
-and the result is the whole model's, on every process."""
+"""A model that says how it splits (a `Shards` generic,
+`std.nn.parallel::all_reduce`, and `all_gather`) loaded with
+`tensor_parallel=`: each process binds its own part of every weight the
+checkpoint holds `Shards` times over, and the result is the whole model's,
+on every process."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
@@ -27,23 +28,30 @@ module tests.shards
 
 use std.nn.activations::{silu}
 use std.nn.linear::{Linear}
-use std.nn.parallel::{all_reduce}
+use std.nn.parallel::{all_gather, all_reduce}
 
-pub block Model<H: Dim, Inner: Dim, T: Float = f32, Shards: Dim = 1>
+pub block Model<H: Dim, Inner: Dim, Vocab: Dim, T: Float = f32, Shards: Dim = 1>
 where
     Shards > 0,
-    Inner % Shards == 0
+    Inner % Shards == 0,
+    Vocab % Shards == 0
 {
     sub up: Linear<H, Inner / Shards, T>
     sub down: Linear<Inner / Shards, H, T>
+    sub head: Linear<H, Vocab / Shards, T>
 
     pub entry forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
         return x + all_reduce(down.forward(silu(up.forward(x))))
     }
+
+    // Each shard's slice of the vocabulary, gathered.
+    pub entry logits<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, Vocab; T] {
+        return all_gather<B, Vocab / Shards, Shards, T>(head.forward(x))
+    }
 }
 """
 
-GENERICS: dict[str, int | str] = {"H": 8, "Inner": 12}
+GENERICS: dict[str, int | str] = {"H": 8, "Inner": 12, "Vocab": 10}
 
 
 @pytest.fixture(autouse=True)
@@ -72,8 +80,9 @@ def _shard(rank: int, port: int, source: str, weights: str, out: str) -> None:
         )
         x = torch.arange(24, dtype=torch.float32).reshape(3, 8) / 10
         y = model.run_entry("forward", [x])
+        logits = model.run_entry("logits", [x])
         shapes = {name: tuple(p.shape) for name, p in model.named_parameters()}
-        torch.save({"y": y, "shapes": shapes}, f"{out}.{rank}")
+        torch.save({"y": y, "logits": logits, "shapes": shapes}, f"{out}.{rank}")
     finally:
         dist.destroy_process_group()
 
@@ -86,12 +95,18 @@ def test_each_process_holds_its_part_and_gets_the_whole_result(tmp_path: Path) -
         "up.weight": torch.randn(12, 8, generator=generator),
         "up.bias": torch.randn(12, generator=generator),
         "down.weight": torch.randn(8, 12, generator=generator),
+        "head.weight": torch.randn(10, 8, generator=generator),
     }
     weights = tmp_path / "model.safetensors"
     save_file(tensors, str(weights))
     whole = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
     x = torch.arange(24, dtype=torch.float32).reshape(3, 8) / 10
     expected = whole.run_entry("forward", [x])
+    expected_logits = whole.run_entry("logits", [x])
+    # One shard's gather is its slice, the whole: the interpreter agrees.
+    interpreted = load(source, generics=GENERICS, std_root=STDLIB, weights=weights)
+    torch.testing.assert_close(interpreted.run_entry("logits", [x]), expected_logits)
+    torch.testing.assert_close(expected_logits, x @ tensors["head.weight"].T)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -100,7 +115,10 @@ def test_each_process_holds_its_part_and_gets_the_whole_result(tmp_path: Path) -
     for rank in range(2):
         result = torch.load(f"{out}.{rank}")
         torch.testing.assert_close(result["y"], expected, atol=1e-5, rtol=1e-5)
-        # Half of `up` by its outputs (with its bias), half of `down` by its inputs.
+        torch.testing.assert_close(result["logits"], expected_logits, atol=1e-5, rtol=1e-5)
+        # Half of `up` by its outputs (with its bias), half of `down` by its
+        # inputs, half of `head` by its outputs.
         shapes = result["shapes"]
         assert shapes["root.up.weight"] == (6, 8) and shapes["root.up.bias"] == (6,)
         assert shapes["root.down.weight"] == (8, 6)
+        assert shapes["root.head.weight"] == (5, 8)
