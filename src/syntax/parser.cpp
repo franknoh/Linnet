@@ -700,8 +700,8 @@ private:
         expect(K::Colon);
         decl.type = parse_type();
         if (at(K::Equal)) {
-            if (kind != MemberKind::Param) {
-                error_here("only `param` declarations may have a default");
+            if (kind != MemberKind::Param && kind != MemberKind::Sub) {
+                error_here("only `param` and `sub` declarations may have a default");
             }
             advance();
             decl.default_value = parse_expr();

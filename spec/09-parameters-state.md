@@ -61,6 +61,14 @@ sub norm: RMSNorm<Hidden, T>
 sub layers: [DecoderLayer<Hidden, T>; Layers]
 ```
 
+A child block may be optional, present or absent as a whole, like an optional `param`:
+
+```text
+sub pooler: Linear<Hidden, Hidden, T>? = none
+```
+
+Its value is `some(block)` or `none`, read with `match`. Every parameter inside it is optional in the manifest (§9.6). A materializer treats the block as absent when the weights lack any parameter it requires (one declared without `?`), and as present otherwise. An array of blocks cannot be optional.
+
 ## 9.5 Parameter paths
 
 A compiler instantiating a root block MUST derive deterministic hierarchical paths from sub-block and parameter names.
@@ -81,6 +89,6 @@ Semantic analysis of a fully instantiated root block can produce a parameter man
 - kind (`param`, `buffer`, or `state`);
 - tensor shape expression after known substitutions;
 - dtype;
-- optional/required status.
+- optional/required status; a parameter inside an optional `sub` is optional.
 
 This manifest is compiler data and contains no tensor bytes.

@@ -386,8 +386,11 @@ private:
                 continue;
             }
             const TypeKind kind = model_.types.kind(declared.type);
-            const bool is_sub = kind == TypeKind::Block || kind == TypeKind::Array;
             const bool is_optional = kind == TypeKind::Optional;
+            const TypeKind inner =
+                is_optional ? model_.types.kind(model_.types.get(declared.type).elements.front())
+                            : kind;
+            const bool is_sub = inner == TypeKind::Block || inner == TypeKind::Array;
             out += std::string("    ") +
                    (is_sub               ? "sub "
                     : declared.is_buffer ? "buffer "

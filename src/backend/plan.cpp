@@ -382,7 +382,7 @@ private:
         bool is_first = true;
         std::vector<EntityId> active;
         std::vector<std::string> repeat;
-        walk_block(root, {}, "", repeat, active, out, is_first);
+        walk_block(root, {}, "", repeat, active, out, is_first, false);
         return out + "]";
     }
 
@@ -392,7 +392,8 @@ private:
                     std::vector<std::string>& repeat,
                     std::vector<EntityId>& active,
                     std::string& out,
-                    bool& is_first) const {
+                    bool& is_first,
+                    bool within_optional) const {
         if (std::find(active.begin(), active.end(), block) != active.end()) {
             return;
         }
@@ -416,9 +417,16 @@ private:
             const TypeId type = types_.substitute(member.type, substitution);
             const TypeData& data = model_.types.get(type);
             const std::string path = prefix + std::string(name);
-            const bool is_sub = data.kind == TypeKind::Block || data.kind == TypeKind::Array;
+            // An optional `sub` is present or absent as a whole: everything
+            // in it is optional.
+            const bool is_optional_sub =
+                data.kind == TypeKind::Optional &&
+                model_.types.get(data.elements.front()).kind == TypeKind::Block;
+            const bool is_sub =
+                data.kind == TypeKind::Block || data.kind == TypeKind::Array || is_optional_sub;
             if (is_sub) {
-                const TypeData* element = &data;
+                const TypeData* element =
+                    is_optional_sub ? &model_.types.get(data.elements.front()) : &data;
                 std::string inner_prefix = path;
                 bool is_array = false;
                 if (data.kind == TypeKind::Array) {
@@ -446,8 +454,14 @@ private:
                             break;
                         }
                     }
-                    walk_block(
-                        element->decl, inner, inner_prefix + ".", repeat, active, out, is_first);
+                    walk_block(element->decl,
+                               inner,
+                               inner_prefix + ".",
+                               repeat,
+                               active,
+                               out,
+                               is_first,
+                               within_optional || is_optional_sub);
                 }
                 if (is_array) {
                     repeat.pop_back();
@@ -469,7 +483,8 @@ private:
             for (std::size_t i = 0; i < repeat.size(); ++i) {
                 out += (i == 0 ? "" : ",") + repeat[i];
             }
-            out += std::string("],\"optional\":") + (is_optional ? "true" : "false") + "}";
+            out += std::string("],\"optional\":") +
+                   (is_optional || within_optional ? "true" : "false") + "}";
         }
         active.pop_back();
     }

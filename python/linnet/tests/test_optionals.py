@@ -112,3 +112,93 @@ def test_jax_accepts_a_mix_of_present_and_absent(
     x = torch.randn(3, 8)
     got = np.asarray(function(jnp.asarray(x.numpy())))  # pyright: ignore[reportUnknownMemberType]
     np.testing.assert_allclose(got, _expected(x, weights).numpy(), atol=1e-5, rtol=1e-5)
+
+
+SUB_SOURCE = """\
+module tests.optional_sub
+
+use std.nn.linear::{Linear}
+
+pub block Model<D: Dim, T: Float = f32> {
+    sub proj: Linear<D, D, T>
+    sub pooler: Linear<D, D, T>? = none
+
+    pub entry forward<B: Dim>(x: Tensor[B, D; T]) -> Tensor[B, D; T] {
+        let hidden = proj.forward(x)
+        return match pooler {
+            some(head) => head.forward(hidden)
+            none => hidden
+        }
+    }
+}
+"""
+
+# A checkpoint with the optional sub-block, one with it but not its own
+# optional bias, and one without it at all.
+SUB_CASES = ["whole", "no pooler bias", "no pooler"]
+
+
+def _sub_checkpoint(tmp_path: Path, case: str) -> tuple[Path, Path, dict[str, torch.Tensor]]:
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    weights = {
+        "proj.weight": torch.randn(8, 8),
+        "pooler.weight": torch.randn(8, 8),
+        "pooler.bias": torch.randn(8) * 3,
+    }
+    if case == "no pooler bias":
+        del weights["pooler.bias"]
+    elif case == "no pooler":
+        del weights["pooler.weight"], weights["pooler.bias"]
+    source = tmp_path / "optional_sub.linnet"
+    source.write_text(SUB_SOURCE, encoding="utf-8")
+    path = tmp_path / "model.safetensors"
+    save_file(weights, str(path))
+    return source, path, weights
+
+
+def _sub_expected(x: torch.Tensor, weights: dict[str, torch.Tensor]) -> torch.Tensor:
+    hidden = x @ weights["proj.weight"].T
+    if "pooler.weight" not in weights:
+        return hidden
+    pooled = hidden @ weights["pooler.weight"].T
+    return pooled + weights["pooler.bias"] if "pooler.bias" in weights else pooled
+
+
+@pytest.mark.parametrize("compile", [False, True])
+@pytest.mark.parametrize("case", SUB_CASES)
+def test_torch_runs_an_optional_sub_block_as_the_checkpoint_has_it(
+    tmp_path: Path, compile: bool, case: str
+) -> None:
+    source, weights_path, weights = _sub_checkpoint(tmp_path, case)
+    model = load(source, generics={"D": 8}, std_root=STDLIB, weights=weights_path, compile=compile)
+    x = torch.randn(3, 8)
+    torch.testing.assert_close(model(x), _sub_expected(x, weights))
+
+
+@pytest.mark.parametrize("case", SUB_CASES)
+def test_onnx_and_jax_run_an_optional_sub_block_as_the_checkpoint_has_it(
+    tmp_path: Path, case: str
+) -> None:
+    source, weights_path, weights = _sub_checkpoint(tmp_path, case)
+    x = torch.randn(3, 8)
+    expected = _sub_expected(x, weights).numpy()
+
+    onnxruntime = pytest.importorskip("onnxruntime")
+    from linnet.onnx import export_model
+
+    exported = export_model(source, generics={"D": 8, "B": 3}, weights=weights_path)
+    assert sorted(exported.parameters) == sorted(weights)
+    session = onnxruntime.InferenceSession(
+        exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
+    )
+    (got,) = session.run(None, {session.get_inputs()[0].name: x.numpy()})
+    np.testing.assert_allclose(got, expected, atol=1e-5, rtol=1e-5)
+
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from linnet.jax import load as load_jax
+
+    function = load_jax(source, generics={"D": 8}, weights=weights_path, std_root=STDLIB)
+    got = np.asarray(function(jnp.asarray(x.numpy())))  # pyright: ignore[reportUnknownMemberType]
+    np.testing.assert_allclose(got, expected, atol=1e-5, rtol=1e-5)

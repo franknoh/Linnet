@@ -1,0 +1,10 @@
+module tests.sub_default
+
+block Projection<D: Dim> {
+    param weight: Tensor[D, D; f32]
+}
+
+// Only an optional `sub` can default to `none`.
+pub block Model<D: Dim> {
+    sub pooler: Projection<D> = none
+}

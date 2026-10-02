@@ -37,7 +37,8 @@ class BlockInstance:
     name: str
     env: Env
     params: dict[str, torch.Tensor | None] = field(default_factory=dict)  # type: ignore[arg-type]
-    subs: dict[str, BlockInstance | list[BlockInstance]] = field(default_factory=dict)  # type: ignore[arg-type]
+    # None for an optional sub-block left out.
+    subs: dict[str, BlockInstance | list[BlockInstance] | None] = field(default_factory=dict)  # type: ignore[arg-type]
     # `state` members: the current values, and a hook that persists a write
     # in the owning module so the next call starts from it.
     states: dict[str, torch.Tensor] = field(default_factory=dict)  # type: ignore[arg-type]

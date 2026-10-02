@@ -586,7 +586,16 @@ private:
             const TypeId type = types_.substitute(model_.entities[entity].type, subst);
             const TypeData& data = types_.get(type);
             const std::string path = prefix + std::string(name);
-            if (data.kind == TypeKind::Block) {
+            const bool is_optional_sub = data.kind == TypeKind::Optional &&
+                                         types_.kind(data.elements.front()) == TypeKind::Block;
+            if (is_optional_sub) {
+                const TypeData& inner = types_.get(data.elements.front());
+                if (sub_present(inner, path)) {
+                    collect_parameters(inner.decl, block_substitution(inner), path + ".");
+                } else {
+                    absent_subs_.insert(path);
+                }
+            } else if (data.kind == TypeKind::Block) {
                 collect_parameters(data.decl, block_substitution(data), path + ".");
             } else if (data.kind == TypeKind::Array) {
                 const TypeData& element = types_.get(data.elements.front());
@@ -614,6 +623,50 @@ private:
                 parameters_[path] = value;
             }
         }
+    }
+
+    // Whether an optional `sub` at `path` is present: optionals are, the sub
+    // is not named absent itself, and neither is any parameter it requires
+    // (a loader lists the parameters a checkpoint lacks, so a sub whose
+    // weights are missing is absent as a whole).
+    bool sub_present(const TypeData& block_type, const std::string& path) const {
+        if (!options_.optionals_present || options_.absent.contains(path)) {
+            return false;
+        }
+        return !requires_absent(block_type.decl, block_substitution(block_type), path + ".");
+    }
+
+    bool
+    requires_absent(EntityId block, const Substitution& subst, const std::string& prefix) const {
+        for (const auto& [name, entity] : model_.decls.at(block).scope) {
+            const Entity& member = model_.entities[entity];
+            if (member.kind != EntityKind::Member || member.is_state) {
+                continue;
+            }
+            const TypeData& data = types_.get(types_.substitute(member.type, subst));
+            const std::string path = prefix + std::string(name);
+            if (data.kind == TypeKind::Optional) {
+                continue; // optional itself: its absence is its own
+            }
+            if (data.kind == TypeKind::Block) {
+                if (requires_absent(data.decl, block_substitution(data), path + ".")) {
+                    return true;
+                }
+            } else if (data.kind == TypeKind::Array) {
+                const TypeData& element = types_.get(data.elements.front());
+                const auto length = data.value.constant().value_or(0);
+                for (std::int64_t i = 0; i < length; ++i) {
+                    if (requires_absent(element.decl,
+                                        block_substitution(element),
+                                        path + "." + std::to_string(i) + ".")) {
+                        return true;
+                    }
+                }
+            } else if (options_.absent.contains(path)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     Substitution block_substitution(const TypeData& block_type) const {
@@ -1277,7 +1330,17 @@ private:
             const Val& block = operand(0);
             const TypeData& data =
                 types_.get(types_.substitute(member(block, a.name), block.subst));
-            define(op, sub_value(data, block.path + a.name));
+            const std::string path = block.path + a.name;
+            if (data.kind == TypeKind::Optional) {
+                Val optional;
+                optional.kind = absent_subs_.contains(path) ? Val::Kind::None : Val::Kind::Some;
+                if (optional.kind == Val::Kind::Some) {
+                    optional.elements.push_back(sub_value(types_.get(data.elements.front()), path));
+                }
+                define(op, optional);
+                return;
+            }
+            define(op, sub_value(data, path));
             return;
         }
         case ir::OpKind::StateRead: {
@@ -1895,6 +1958,7 @@ private:
     GraphTarget& target_;
     std::map<std::string, const ir::Function*> functions_;
     std::map<std::string, Val> parameters_;
+    std::set<std::string> absent_subs_;       // optional subs left out, by path
     std::map<std::string, Val> state_types_;  // state members by path, unnamed
     std::map<std::string, Val> states_;       // current state values by path
     std::vector<std::string> written_states_; // assigned states in first-write order

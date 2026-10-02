@@ -327,6 +327,7 @@ class CompiledLinnetModule(LinnetModule):
                 path = name.removeprefix("root").removeprefix(".")
                 prefix = f"{path}." if path else ""
                 absent += [prefix + leaf for leaf in sorted(module.absent_params)]
+                absent += [prefix + sub for sub in sorted(module.absent_subs)]
         return tuple(absent)
 
     def _compile(self, entry: str, bindings: dict[str, str], backend: str | None) -> _Generated:

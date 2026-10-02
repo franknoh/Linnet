@@ -158,7 +158,7 @@ pub block Model<H: Dim, Layers: Dim> {
 | `param` | a weight, bound from a checkpoint; `= none` marks it optional |
 | `buffer` | non-trainable data, bound like a parameter |
 | `state` | execution state such as a KV cache: read by name, replaced by assignment, kept between calls |
-| `sub` | a child block or an array of them |
+| `sub` | a child block or an array of them; `sub pooler: Linear<H, H>? = none` is an optional one, present when the weights have it |
 
 Parameter paths follow the structure (`layers.0.attention.q_proj.weight`);
 `linnet inspect --parameters` lists them.

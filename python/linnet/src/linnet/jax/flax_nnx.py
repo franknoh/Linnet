@@ -70,6 +70,11 @@ def to_nnx(function: LinnetFunction) -> Any:
         return classes[block]
 
     def _child(kind: dict[str, Any], path: str) -> Any:
+        if kind["kind"] == "optional":
+            # An optional sub-block: there when the weights have it.
+            if not any(key.startswith(f"{path}.") for key in weights):
+                return None
+            kind = cast(dict[str, Any], kind["inner"])
         if kind["kind"] == "array":
             element = cast(dict[str, Any], kind["element"])
             return nnx.List(
