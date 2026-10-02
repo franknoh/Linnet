@@ -309,7 +309,11 @@ class CompiledLinnetModule(LinnetModule):
                 if symbol in env.dtypes:
                     bindings[generic["name"]] = env.dtypes[symbol]
             else:
-                raise PlanError("shape-pack generics of entries cannot be compiled per call yet")
+                symbol = int(generic["sym"])
+                if symbol not in env.packs:
+                    raise PlanError(f"cannot determine `{generic['name']}` from the inputs")
+                # A shape pack's dimensions, as `linnet torch --bind S=2,3` takes them.
+                bindings[generic["name"]] = ",".join(map(str, env.packs[symbol]))
         return bindings
 
     def _absent_optionals(self) -> tuple[str, ...]:

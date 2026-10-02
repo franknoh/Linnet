@@ -170,3 +170,40 @@ def test_the_generated_source_is_a_function_of_the_inputs_alone() -> None:
     text = cross_entropy.generated_source()
     assert "# cross_entropy from module examples.functions" in text
     assert "PARAMETERS = []" in text and "def main(in_logits, in_labels" in text
+
+
+PACKS = """\
+module tests.packs
+
+use std.nn.softmax::{softmax}
+
+// Any number of leading axes, a shape pack: softmax over the last.
+pub entry probabilities<*S: Shape, N: Dim, T: Float>(logits: Tensor[*S, N; T]) -> Tensor[*S, N; T] {
+    return softmax(logits)
+}
+
+pub block Scale<N: Dim> {
+    param weight: Tensor[N; f32]
+
+    pub entry forward<*S: Shape>(x: Tensor[*S, N; f32]) -> Tensor[*S, N; f32] {
+        return x * weight
+    }
+}
+"""
+
+
+@pytest.mark.parametrize("compile", [False, True])
+def test_a_shape_pack_binds_from_each_call(tmp_path: Path, compile: bool) -> None:
+    """`*S` takes whatever leading axes an input has -- none, one, or two --
+    and generated code is compiled for each."""
+    source = tmp_path / "packs.linnet"
+    source.write_text(PACKS, encoding="utf-8")
+    probabilities = load_function(source, std_root=STDLIB, compile=compile)
+    for shape in [(7,), (5, 7), (2, 3, 7)]:
+        logits = torch.randn(*shape)
+        torch.testing.assert_close(probabilities(logits), torch.softmax(logits, -1))
+    model = load(source, generics={"N": 4}, root="Scale", std_root=STDLIB, compile=compile)
+    with torch.no_grad():
+        dict(model.named_parameters())["root.weight"].copy_(torch.arange(4.0))
+    x = torch.randn(2, 3, 4)
+    torch.testing.assert_close(model(x), x * torch.arange(4.0))

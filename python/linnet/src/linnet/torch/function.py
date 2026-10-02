@@ -167,10 +167,8 @@ class Function:
             elif generic["kind"] == "dtype":
                 bindings[generic["name"]] = env.dtypes[int(generic["var"])]
             else:
-                raise PlanError(
-                    f"`{self.name}` has a shape pack, which generated code cannot take yet; "
-                    "run it interpreted (compile=False)"
-                )
+                # A shape pack's dimensions, as `linnet torch --bind S=2,3` takes them.
+                bindings[generic["name"]] = ",".join(map(str, env.packs[int(generic["sym"])]))
         key = (tuple(sorted(bindings.items())), device, backend)
         generated = self._generated.get(key)
         if generated is None:

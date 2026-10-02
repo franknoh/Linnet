@@ -136,7 +136,8 @@ linnet jax   ...same options...
 ```
 
 All four export one entry with every generic bound (`--bind`; defaults
-apply). The bound values must satisfy the root block's and the entry's
+apply; a shape pack takes its dimensions comma-separated, `--bind S=2,3`,
+or none, `--bind S=`). The bound values must satisfy the root block's and the entry's
 `where` clauses: `H % Heads == 0` with `H=5 Heads=2` is an error, not a model
 that splits five features into two heads of two. Calls are inlined, `static for` is unrolled, index notation becomes
 broadcasts, gathers, and reductions, and `while` becomes the format's loop.
