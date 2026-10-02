@@ -20,7 +20,7 @@ import torch
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
 from linnet.serve import Completion, Engine, Request
-from linnet.torch import load
+from linnet.torch import LinnetModule, load
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
@@ -488,6 +488,69 @@ def test_torch_cuda_graphs_sample(model_files: tuple[Path, Path]) -> None:
     assert [c.tokens for c in done] == [c.tokens for c in expected]
 
 
+def _reference_logprobs(
+    model: LinnetModule, request: Request, tokens: list[int], top: int
+) -> tuple[list[float], list[list[tuple[int, float]]]]:
+    """Each token's log-probability, and the `top` most likely there, from the
+    whole sequence run again for every token."""
+    ids = list(request.prompt)
+    chosen: list[float] = []
+    alternatives: list[list[tuple[int, float]]] = []
+    for token in tokens:
+        logits: torch.Tensor = model.run_entry("forward", [torch.tensor([ids], dtype=torch.int32)])
+        scores = logits[0, -1].float().log_softmax(-1)
+        chosen.append(float(scores[token]))
+        values, best = scores.topk(top)
+        alternatives.append([(int(t), float(v)) for t, v in zip(best, values, strict=True)])
+        ids.append(token)
+    return chosen, alternatives
+
+
+@pytest.mark.parametrize(
+    ("backend", "pack"), [("torch", 48), ("torch", 0), ("jax", 0), ("onnx", 0)]
+)
+def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, pack: int) -> None:
+    """A request with `logprobs` gets its tokens' log-probabilities and the
+    most likely tokens with theirs, as the model gives them over the whole
+    sequence -- greedy or drawn, beside a request that asked for none."""
+    source, weights = model_files
+    reference = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    model: Any = reference
+    if backend == "jax":
+        pytest.importorskip("jax")
+        from linnet.jax import load_model
+
+        model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    elif backend == "onnx":
+        pytest.importorskip("onnxruntime")
+        from linnet.onnx import load_model as load_onnx
+
+        model = load_onnx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    requests = [
+        Request(prompt=[3, 9, 4], max_new_tokens=5, id=0, logprobs=3),
+        Request(prompt=[7, 1], max_new_tokens=4, id=1),
+        Request(prompt=[2, 2, 8, 5], max_new_tokens=6, id=2, logprobs=0, temperature=1.0, seed=3),
+    ]
+    options: dict[str, Any] = {"graphs": False, "pack": pack} if backend == "torch" else {}
+    done, _ = Engine(model, buckets=[8, 16, 32], **options).run(requests)
+    assert done[1].logprobs == [] and done[1].top_logprobs == []
+    for completion in (done[0], done[2]):
+        wanted = completion.request.logprobs
+        assert wanted is not None
+        chosen, alternatives = _reference_logprobs(
+            reference, completion.request, completion.tokens, 3
+        )
+        np.testing.assert_allclose(completion.logprobs, chosen, rtol=1e-4, atol=1e-4)
+        assert [len(top) for top in completion.top_logprobs] == [wanted] * len(completion.tokens)
+        for got, expected in zip(completion.top_logprobs, alternatives, strict=True):
+            assert [t for t, _ in got] == [t for t, _ in expected[:wanted]]
+            np.testing.assert_allclose(
+                [v for _, v in got], [v for _, v in expected[:wanted]], rtol=1e-4, atol=1e-4
+            )
+    # Greedy: each token is the most likely one.
+    assert [top[0][0] for top in done[0].top_logprobs] == done[0].tokens
+
+
 def test_tokens_stream_and_requests_cancel(model_files: tuple[Path, Path]) -> None:
     """`on_token` sees every token as it is read, `reason` set on the last;
     `cancel` ends a request mid-decode and frees its row for the next."""
@@ -581,6 +644,7 @@ def test_server_speaks_openai(model_files: tuple[Path, Path]) -> None:
         expected = letters.decode(
             _greedy(model, Request(prompt=letters.encode(prompt), max_new_tokens=8))
         )
+        expected_completion = expected
         greedy = {"prompt": prompt, "max_tokens": 8, "temperature": 0}
         status, text = _post(f"{base}/completions", greedy)
         answer = json.loads(text)
@@ -629,7 +693,54 @@ def test_server_speaks_openai(model_files: tuple[Path, Path]) -> None:
             == _post(f"{base}/completions", drawn)[1].split('"text"')[1]
         )
 
-        assert _post(f"{base}/completions", {**greedy, "n": 2})[0] == 400
+        # Several choices: each its own request, the same when greedy, and
+        # seeded draws continuing from `seed`.
+        status, text = _post(f"{base}/completions", {**greedy, "n": 2})
+        answer = json.loads(text)
+        assert [c["text"] for c in answer["choices"]] == [expected_completion] * 2
+        assert [c["index"] for c in answer["choices"]] == [0, 1]
+        assert answer["usage"]["completion_tokens"] == 16
+        pair = json.loads(_post(f"{base}/completions", {**drawn, "n": 2})[1])["choices"]
+        next_seed = json.loads(_post(f"{base}/completions", {**drawn, "seed": 6})[1])["choices"]
+        assert pair[1]["text"] == next_seed[0]["text"]
+        status, text = _post(f"{base}/completions", {**greedy, "n": 2, "stream": True})
+        events = _events(text)
+        for index in (0, 1):
+            pieces = [e["choices"][0] for e in events if e["choices"][0]["index"] == index]
+            assert "".join(p["text"] for p in pieces) == expected_completion
+            assert pieces[-1]["finish_reason"] == "length"
+
+        # Log probabilities: the chosen token's, and the most likely tokens'.
+        status, text = _post(f"{base}/completions", {**greedy, "logprobs": 2})
+        logprobs = json.loads(text)["choices"][0]["logprobs"]
+        assert logprobs["tokens"] == list(expected_completion)
+        assert logprobs["text_offset"] == list(range(8))
+        for value, top in zip(logprobs["token_logprobs"], logprobs["top_logprobs"], strict=True):
+            assert len(top) == 2 and value <= 0 and max(top.values()) == value
+        status, text = _post(
+            f"{base}/chat/completions", {**chat, "logprobs": True, "top_logprobs": 3}
+        )
+        content = json.loads(text)["choices"][0]["logprobs"]["content"]
+        assert "".join(entry["token"] for entry in content) == expected
+        assert all(len(entry["top_logprobs"]) == 3 for entry in content)
+        assert content[0]["bytes"] == list(content[0]["token"].encode())
+        status, text = _post(f"{base}/chat/completions", {**chat, "logprobs": True, "stream": True})
+        streamed = [
+            entry
+            for e in _events(text)
+            if e["choices"] and e["choices"][0]["logprobs"]
+            for entry in e["choices"][0]["logprobs"]["content"]
+        ]
+        assert [entry["token"] for entry in streamed] == [entry["token"] for entry in content]
+
+        # `echo` puts the prompt first.
+        status, text = _post(f"{base}/completions", {**greedy, "echo": True})
+        assert json.loads(text)["choices"][0]["text"] == prompt + expected_completion
+
+        assert _post(f"{base}/completions", {**greedy, "n": 0})[0] == 400
+        assert _post(f"{base}/completions", {**greedy, "echo": True, "logprobs": 1})[0] == 400
+        assert _post(f"{base}/completions", {**greedy, "logprobs": 21})[0] == 400
+        assert _post(f"{base}/chat/completions", {**chat, "top_logprobs": 2})[0] == 400
         assert _post(f"{base}/completions", {**greedy, "top_p": 0})[0] == 400
         assert _post(f"{base}/completions", {"prompt": "x" * 60})[0] == 400
         assert _post(f"{base}/embeddings", {})[0] == 404
