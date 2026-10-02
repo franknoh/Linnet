@@ -5,6 +5,8 @@ does, including where the shapes alone could not say which geometry is meant.
 Before they had one, both exports wrote the canonical gather, whose index
 table for a VAE's first convolution has 2.4 billion entries."""
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+
 from __future__ import annotations
 
 import os
@@ -170,3 +172,135 @@ def test_onnx_runtime_folds_batch_norm_into_the_convolution(tmp_path: Path) -> N
     np.testing.assert_array_equal(placed, got)
     kept = model.run_entry("forward", [x.numpy()], keep_on_device=True)
     np.testing.assert_array_equal(kept.numpy(), got)
+
+
+SHAPES_SOURCE = """\
+module tests.conv_shapes
+
+use std.nn.conv::{Conv1d, Conv2dRect, conv1d, conv2d_rect}
+
+pub entry signal<B: Dim, L: Dim>(
+    x: Tensor[B, 3, L; f32],
+    weight: Tensor[4, 3, 5; f32],
+    bias: Tensor[4; f32],
+) -> Tensor[B, 4, (L + 2 * 2 - 5) / 2 + 1; f32] {
+    return conv1d<B, 3, 4, L, 5, 2, 2, f32>(x, weight, some(bias))
+}
+
+pub entry rectangle<B: Dim, H: Dim, W: Dim>(
+    x: Tensor[B, 3, H, W; f32],
+    weight: Tensor[4, 3, 3, 5; f32],
+) -> Tensor[B, 4, (H + 2 * 1 - 3) / 1 + 1, (W + 2 * 2 - 5) / 2 + 1; f32] {
+    return conv2d_rect<B, 3, 4, H, W, 3, 5, 1, 2, 1, 2, f32>(x, weight, none)
+}
+
+pub block Model {
+    sub signal_conv: Conv1d<3, 4, 5, 2, 2, f32>
+    sub image_conv: Conv2dRect<3, 4, 3, 5, 1, 2, 1, 2, f32>
+
+    pub entry forward<B: Dim, L: Dim, H: Dim, W: Dim>(
+        signal: Tensor[B, 3, L; f32],
+        image: Tensor[B, 3, H, W; f32],
+    ) -> (
+        Tensor[B, 4, (L + 2 * 2 - 5) / 2 + 1; f32],
+        Tensor[B, 4, (H + 2 * 1 - 3) / 1 + 1, (W + 2 * 2 - 5) / 2 + 1; f32],
+    ) {
+        return (signal_conv.forward(signal), image_conv.forward(image))
+    }
+}
+"""
+
+
+def _shapes_case(
+    tmp_path: Path,
+) -> tuple[Path, dict[str, torch.Tensor], dict[str, tuple[tuple[np.ndarray, ...], np.ndarray]]]:
+    """The source, the block's weights, and per function its inputs and what
+    `F.conv1d` / `F.conv2d` give for them."""
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    source = tmp_path / "conv_shapes.linnet"
+    source.write_text(SHAPES_SOURCE, encoding="utf-8")
+    weights = {
+        "signal_conv.weight": torch.randn(4, 3, 5),
+        "signal_conv.bias": torch.randn(4),
+        "image_conv.weight": torch.randn(4, 3, 3, 5),
+    }
+    signal, image = torch.randn(2, 3, 11), torch.randn(2, 3, 6, 9)
+    one = functional.conv1d(
+        signal, weights["signal_conv.weight"], weights["signal_conv.bias"], stride=2, padding=2
+    )
+    two = functional.conv2d(image, weights["image_conv.weight"], stride=(1, 2), padding=(1, 2))
+    cases = {
+        "signal": (
+            (
+                signal.numpy(),
+                weights["signal_conv.weight"].numpy(),
+                weights["signal_conv.bias"].numpy(),
+            ),
+            one.numpy(),
+        ),
+        "rectangle": ((image.numpy(), weights["image_conv.weight"].numpy()), two.numpy()),
+    }
+    return source, weights, cases
+
+
+@pytest.mark.parametrize("compile", [False, True])
+@pytest.mark.parametrize("name", ["signal", "rectangle"])
+def test_conv1d_and_rectangular_conv2d_in_pytorch(tmp_path: Path, compile: bool, name: str) -> None:
+    """Interpreted, `numerics="exact"` runs the canonical gather; generated
+    under the default numerics, `F.conv1d` and `F.conv2d` with a tuple
+    geometry."""
+    from linnet.torch import load_function
+
+    source, _, cases = _shapes_case(tmp_path)
+    numerics = "fast" if compile else "exact"
+    function = load_function(source, name, std_root=STDLIB, numerics=numerics, compile=compile)
+    inputs, expected = cases[name]
+    got = function(*(torch.tensor(value) for value in inputs))
+    np.testing.assert_allclose(got.numpy(), expected, atol=1e-5, rtol=1e-5)
+    if compile:
+        assert ("F.conv1d(" if name == "signal" else "F.conv2d(") in function.generated_source()
+
+
+@pytest.mark.parametrize("name", ["signal", "rectangle"])
+def test_conv1d_and_rectangular_conv2d_in_jax_and_onnx(tmp_path: Path, name: str) -> None:
+    source, _, cases = _shapes_case(tmp_path)
+    inputs, expected = cases[name]
+    pytest.importorskip("jax")
+    from linnet.jax import load_function as load_jax_function
+
+    function = load_jax_function(source, name, std_root=STDLIB)
+    np.testing.assert_allclose(np.asarray(function(*inputs)), expected, atol=1e-5, rtol=1e-5)
+    assert "conv_general_dilated" in function.generated_source()
+
+    onnxruntime = pytest.importorskip("onnxruntime")
+    from linnet.onnx import export_function
+
+    generics: dict[str, int | str] = (
+        {"B": 2, "L": 11} if name == "signal" else {"B": 2, "H": 6, "W": 9}
+    )
+    exported = export_function(source, name, generics=generics, std_root=STDLIB)
+    assert any(node.op_type == "Conv" for node in exported.model.graph.node)
+    session = onnxruntime.InferenceSession(
+        exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
+    )
+    feeds = {port.name: value for port, value in zip(exported.inputs, inputs, strict=True)}
+    (got,) = session.run(None, feeds)
+    np.testing.assert_allclose(got, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_conv1d_and_rectangular_conv2d_under_xla(tmp_path: Path) -> None:
+    """The blocks, through StableHLO's `convolution` with one and two
+    spatial axes."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from linnet.jax import load as load_jax
+
+    source, weights, cases = _shapes_case(tmp_path)
+    path = tmp_path / "model.safetensors"
+    save_file(weights, str(path))
+    function = load_jax(source, generics={}, weights=path, std_root=STDLIB, root="Model")
+    signal, image = cases["signal"][0][0], cases["rectangle"][0][0]
+    one, two = function(jnp.asarray(signal), jnp.asarray(image))  # pyright: ignore[reportUnknownMemberType]
+    np.testing.assert_allclose(np.asarray(one), cases["signal"][1], atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(np.asarray(two), cases["rectangle"][1], atol=1e-5, rtol=1e-5)

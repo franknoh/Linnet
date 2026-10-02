@@ -25,7 +25,7 @@ import torch
 
 from ..plan import Env, Plan, PlanError
 from .dtypes import torch_dtype
-from .native import NATIVE, causal_mask, conv2d, group_norm, max_pool2d, upsample_nearest2d
+from .native import NATIVE, causal_mask, convolution, group_norm, max_pool2d, upsample_nearest2d
 
 Value = Any
 
@@ -284,12 +284,23 @@ class Interpreter:
             if selected == "torch.tril":
                 assert result_type is not None
                 return [causal_mask(env.shape(result_type["shape"]), self.device)]
-            if selected == "torch.nn.functional.conv2d":
+            if selected in (
+                "torch.nn.functional.conv1d",
+                "torch.nn.functional.conv2d",
+                "torch.nn.functional.conv2d(rect)",
+            ):
                 callee = self.plan.functions[attrs["callee"]]
                 callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
-                stride = self._generic_dim(callee, callee_env, "Stride")
-                pad = self._generic_dim(callee, callee_env, "Pad")
-                return [conv2d(operands, stride, pad)]
+
+                def dim(name: str) -> int:
+                    return self._generic_dim(callee, callee_env, name)
+
+                if selected.endswith("(rect)"):
+                    strides, pads = [dim("StrideH"), dim("StrideW")], [dim("PadH"), dim("PadW")]
+                else:
+                    axes = 1 if selected.endswith("conv1d") else 2
+                    strides, pads = [dim("Stride")] * axes, [dim("Pad")] * axes
+                return [convolution(operands, strides, pads)]
             if selected == "torch.nn.functional.group_norm":
                 callee = self.plan.functions[attrs["callee"]]
                 callee_env = self._callee_env(callee, attrs["substitution"], env, operands)

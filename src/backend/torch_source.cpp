@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -603,20 +604,33 @@ public:
             return define("F.group_norm(" + name(0) + ", " + std::to_string(*groups) + ", " +
                           name(1) + ", " + name(2) + ", " + scalar(3) + ")");
         }
-        if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
-            operands[0] && operands[1]) {
-            // `F.conv2d` takes the window geometry as arguments. It comes from
-            // the call's own `Stride` and `Pad`: recovering it from the shapes
-            // is ambiguous (a 3x3 window taking 4 positions to 2 fits stride 1
-            // without padding and stride 2 with one), and a wrong guess is a
-            // silently wrong answer. Without the generics, the body runs.
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!stride || !pad) {
+        if (is_convolution(implementation_base) && operands.size() == 3 && operands[0] &&
+            operands[1]) {
+            // `F.conv1d`/`F.conv2d` take the window geometry as arguments. It
+            // comes from the call's own generics: recovering it from the
+            // shapes is ambiguous (a 3x3 window taking 4 positions to 2 fits
+            // stride 1 without padding and stride 2 with one), and a wrong
+            // guess is a silently wrong answer. Without them, the body runs.
+            const auto window = conv_window(implementation_base);
+            if (!window) {
                 return std::nullopt;
             }
-            return define("F.conv2d(" + name(0) + ", " + name(1) + ", " + name(2) + ", stride=" +
-                          std::to_string(*stride) + ", padding=" + std::to_string(*pad) + ")");
+            // One number when every axis agrees, as for a square window.
+            const auto tuple = [](const std::vector<std::int64_t>& values) {
+                if (std::adjacent_find(values.begin(), values.end(), std::not_equal_to<>()) ==
+                    values.end()) {
+                    return std::to_string(values.front());
+                }
+                std::string text = "(";
+                for (std::size_t i = 0; i < values.size(); ++i) {
+                    text += i == 0 ? "" : ", ";
+                    text += std::to_string(values[i]);
+                }
+                return text + (values.size() == 1 ? ",)" : ")");
+            };
+            const char* function = window->strides.size() == 1 ? "F.conv1d(" : "F.conv2d(";
+            return define(function + name(0) + ", " + name(1) + ", " + name(2) + ", stride=" +
+                          tuple(window->strides) + ", padding=" + tuple(window->pads) + ")");
         }
         if (implementation_base == "torch.ops.aten._weight_int4pack_mm" && operands.size() == 5 &&
             operands[0] && operands[1] && operands[2] && operands[3]) {

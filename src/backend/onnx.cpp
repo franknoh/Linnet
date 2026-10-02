@@ -228,11 +228,10 @@ public:
             at[0] != nullptr && at[1] != nullptr) {
             return node("Gather", {*at[0], *at[1]}, "axis = -1", shape, dtype);
         }
-        if (implementation_base == "torch.nn.functional.conv2d" && operands.size() == 3 &&
-            at[0] != nullptr && at[1] != nullptr) {
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!stride || !pad) {
+        if (is_convolution(implementation_base) && operands.size() == 3 && at[0] != nullptr &&
+            at[1] != nullptr) {
+            const auto window = conv_window(implementation_base);
+            if (!window) {
                 return std::nullopt;
             }
             // ONNX Runtime has no bf16 convolution: convolve in f32 and
@@ -245,13 +244,15 @@ public:
             if (at[2] != nullptr) {
                 inputs.push_back(as_kind(*at[2]));
             }
-            const std::string out =
-                node("Conv",
-                     inputs,
-                     "strides = [" + int_list({*stride, *stride}) + "], pads = [" +
-                         int_list({*pad, *pad, *pad, *pad}) + "]",
-                     shape,
-                     kind);
+            // Pads are every axis's beginning, then every axis's end.
+            Dims pads = window->pads;
+            pads.insert(pads.end(), window->pads.begin(), window->pads.end());
+            const std::string out = node("Conv",
+                                         inputs,
+                                         "strides = [" + int_list(window->strides) + "], pads = [" +
+                                             int_list(pads) + "]",
+                                         shape,
+                                         kind);
             return kind == dtype ? out : convert({out, shape, kind}, dtype);
         }
         if (implementation_base == "torch.nn.functional.interpolate(nearest)" &&
