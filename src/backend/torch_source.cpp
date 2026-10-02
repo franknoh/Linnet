@@ -1,10 +1,10 @@
 #include "linnet/backend/torch_source.hpp"
 
 #include <algorithm>
-#include <functional>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
