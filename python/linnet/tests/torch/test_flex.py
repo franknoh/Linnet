@@ -56,6 +56,19 @@ where
         let own[i, j] = segments[i] == segments[j] && positions[j] <= positions[i]
         return grouped_attention(query, keys, values, 0.25, some(own))
     }
+
+    // `B` prompts of up to `P` tokens, each causal up to its own length: a
+    // mask per sequence over many queries.
+    pub entry prompts(
+        query: Tensor[B, H, P, D; T],
+        keys: Tensor[B, Hk, P, D; T],
+        values: Tensor[B, Hk, P, D; T],
+        lengths: Tensor[B; i32],
+    ) -> Tensor[B, H, P, D; T] {
+        let slots = iota<i32>(P)
+        let seen[b, i, j] = slots[j] <= slots[i] && slots[j] < lengths[b]
+        return grouped_attention_rows(query, keys, values, 0.25, seen)
+    }
 }
 """
 
@@ -106,6 +119,17 @@ def test_a_step_attends_by_blocks_for_whole_groups_only(source: Path) -> None:
     assert "_attend(" in _generated(source, "packed", "fast", H=14, Hk=2)
 
 
+def test_prompts_with_a_mask_each_keep_the_arithmetic(source: Path) -> None:
+    """FlexAttention's kernel for many queries gives wrong results when each
+    sequence of a batch has its own mask -- its block lists computed in the
+    same compiled graph (PyTorch 2.14) -- so such prompts keep the
+    arithmetic, while one query a row and one mask for all keep
+    FlexAttention."""
+    assert "_attend(" not in _generated(source, "prompts", "fast")
+    assert "_attend(" in _generated(source, "rows", "fast")
+    assert "_attend(" in _generated(source, "packed", "fast")
+
+
 def _packed_inputs(device: str) -> list[torch.Tensor]:
     generator = torch.Generator().manual_seed(1)
     lengths = [100, 37, 90, 29]  # 256 tokens, the last prompt ending the pack
@@ -123,10 +147,19 @@ def _rows_inputs(device: str) -> list[torch.Tensor]:
     return [t.to(device) for t in [*tensors, torch.tensor([5, 127, 64], dtype=torch.int32)]]
 
 
+def _prompts_inputs(device: str) -> list[torch.Tensor]:
+    generator = torch.Generator().manual_seed(3)
+    shapes = [(3, 4, 256, 16), (3, 2, 256, 16), (3, 2, 256, 16)]
+    tensors = [torch.randn(*shape, generator=generator).to(torch.bfloat16) for shape in shapes]
+    return [t.to(device) for t in [*tensors, torch.tensor([100, 256, 37], dtype=torch.int32)]]
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention runs on CUDA")
-@pytest.mark.parametrize("entry", ["rows", "packed"])
+@pytest.mark.parametrize("entry", ["rows", "packed", "prompts"])
 def test_flex_attention_agrees_with_the_arithmetic(source: Path, entry: str) -> None:
-    inputs = (_rows_inputs if entry == "rows" else _packed_inputs)("cuda")
+    inputs = {"rows": _rows_inputs, "packed": _packed_inputs, "prompts": _prompts_inputs}[entry](
+        "cuda"
+    )
     eager = load(source, generics=GENERICS, std_root=STDLIB, device="cuda", compile=True)
     compiled = load(source, generics=GENERICS, std_root=STDLIB, device="cuda", compile="inductor")
     expected = eager.run_entry(entry, inputs).float()

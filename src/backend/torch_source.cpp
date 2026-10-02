@@ -774,8 +774,10 @@ public:
                 block_k = queries == 1 ? 64 : 128;
                 const std::int64_t group = query[1] / key[1];
                 const bool whole_group = (group & (group - 1)) == 0;
+                // As for `_attend`: many queries only under one mask for the
+                // whole batch.
                 if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0) &&
-                    (queries > 1 || (mask[0] > 1 && whole_group))) {
+                    (queries > 1 ? mask[0] == 1 : mask[0] > 1 && whole_group)) {
                     const std::string sizes =
                         std::to_string(queries) + ", " + std::to_string(keys) + ", " +
                         std::to_string(block_q) + ", " + std::to_string(block_k);
@@ -845,8 +847,12 @@ public:
                 // the query heads of a key head are a power of two.
                 const std::int64_t group = query->shape[1] / key->shape[1];
                 const bool whole_group = (group & (group - 1)) == 0;
+                // Many queries take FlexAttention only under one mask for the
+                // whole batch: with a mask per sequence, block lists computed
+                // in the same compiled graph as the kernel give wrong results
+                // (PyTorch 2.14), where FlexAttention's decoding kernel is right.
                 if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0) &&
-                    (queries > 1 || (rows_differ && whole_group))) {
+                    (queries > 1 ? !rows_differ : rows_differ && whole_group)) {
                     flex_helpers_ = true;
                     const std::string sizes =
                         std::to_string(queries) + ", " + std::to_string(keys) + ", " +

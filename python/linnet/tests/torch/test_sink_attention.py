@@ -59,23 +59,26 @@ def _reference(
 
 
 def _inputs(
-    device: str, queries: int, keys: int, dtype: torch.dtype = torch.float32
+    device: str, queries: int, keys: int, dtype: torch.dtype = torch.float32, batch: int = 2
 ) -> tuple[torch.Tensor, ...]:
     generator = torch.Generator(device=device).manual_seed(0)
 
     def normal(*shape: int) -> torch.Tensor:
         return torch.randn(*shape, generator=generator, device=device).to(dtype)
 
-    query, key, value = normal(2, 8, queries, 64), normal(2, 2, keys, 64), normal(2, 2, keys, 64)
+    query, key, value = (
+        normal(batch, 8, queries, 64),
+        normal(batch, 2, keys, 64),
+        normal(batch, 2, keys, 64),
+    )
     sinks = normal(8) * 2
     # Each sequence at its own length, causal within it, and one query of the
     # second that sees nothing: its output is all sink, so zero.
-    at = (
-        torch.arange(queries, device=device)[:, None]
-        + torch.tensor([keys - queries, 3], device=device)[:, None, None]
-    )
+    ends = torch.tensor([keys - queries, 3][:batch], device=device)
+    at = torch.arange(queries, device=device)[:, None] + ends[:, None, None]
     mask = torch.arange(keys, device=device)[None, None, :] <= at
-    mask[1, 0] = False
+    if batch > 1:
+        mask[1, 0] = False
     return query, key, value, sinks, mask
 
 
@@ -93,14 +96,15 @@ def test_the_sink_takes_its_share(tmp_path: Path, numerics: str, compile: bool) 
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention runs on CUDA")
-@pytest.mark.parametrize("queries", [128, 1])
-def test_flex_attention_folds_the_sink_in(tmp_path: Path, queries: int) -> None:
+@pytest.mark.parametrize(("queries", "batch"), [(128, 1), (1, 2), (128, 2)])
+def test_flex_attention_folds_the_sink_in(tmp_path: Path, queries: int, batch: int) -> None:
     """Under `torch.compile` on CUDA, FlexAttention over the blocks the mask
-    reaches (a prompt's 128 queries, or one query per row of a serving
-    step), the sink folded in from its log-sum-exp."""
+    reaches -- a prompt's 128 queries under one mask, or one query per row
+    of a serving step -- the sink folded in from its log-sum-exp. Many
+    queries with a mask per sequence take the two products instead."""
     source = tmp_path / "sinks.linnet"
     source.write_text(SOURCE, encoding="utf-8")
     attend = load_function(source, "attend", std_root=STDLIB, numerics="fast", compile="inductor")
-    inputs = _inputs("cuda", queries, 256, torch.bfloat16)
+    inputs = _inputs("cuda", queries, 256, torch.bfloat16, batch)
     got = attend(*inputs)
     torch.testing.assert_close(got.double(), _reference(*inputs), atol=2e-2, rtol=2e-2)
