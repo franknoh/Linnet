@@ -28,6 +28,9 @@ where Inner % 2 == 0 {
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit in groups: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
+| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: two E2M1 values a byte (low = even element) in blocks of 32, an E8M0 scale byte a block |
+| `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied straight from MXFP4, each slot its own input |
+| `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, every slot of a row reading the row's one input (`x: [R, 1, In]`) |
 
 ## Group-wise 4-bit weights
 
@@ -53,6 +56,21 @@ takes 24.8 ms this way, against 17.5 ms in bf16. XLA has no fused kernel
 for a 4-bit weight: left in the step, the dequantization runs as its own
 pass every call (44 tokens per second for 8B), so JAX dequantizes once when
 the model loads and then computes, and holds its weights, as in bf16.
+
+## MXFP4 experts
+
+gpt-oss publishes its experts in MXFP4, 4.25 bits a weight. The bodies of
+`mxfp4_experts` and `mxfp4_experts_shared` dequantize every expert, gather
+the chosen ones and multiply, accumulating in `f32`; since the
+dequantization reads nothing but weights, a backend that prepares
+weight-only work (`--prepare`) does it once at load and keeps the experts in
+16 bits. PyTorch on CUDA instead runs a Triton kernel (`linnet.torch.kernels`)
+for a decoding step's few rows: each chosen expert's bytes are read as they
+are, a quarter of a 16-bit weight's, and unpacked in registers (an E2M1
+nibble's bits placed in an `f16`, the block's scale applied once per 32
+weights). On an H100, gpt-oss-20b decodes at 270 tokens per second this
+way, against 202 with its experts dequantized. More rows (a prompt, a
+serving step) go through the bodies.
 
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
 rounding each group to the nearest level:
