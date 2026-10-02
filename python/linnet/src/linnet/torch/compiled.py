@@ -53,6 +53,10 @@ class CompiledLinnetModule(LinnetModule):
         # which remove the per-kernel launch cost that dominates decoding),
         # or None for eager.
         self._backend = backend
+        # The process group of a sharded model (`load(tensor_parallel=...)` on
+        # a card with `Shards`), which each generated module's `_all_reduce`
+        # sums over.
+        self.shard_group: Any = None
         self._generic_arguments = dict(generics)
         self._compiled: dict[tuple[Any, ...], _Generated] = {}
         # Per call signature (entry, input shapes and dtypes, generics, backend):
@@ -360,6 +364,8 @@ class CompiledLinnetModule(LinnetModule):
         module: Any = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        if self.shard_group is not None and hasattr(module, "_GROUP"):
+            module._GROUP = self.shard_group
         if self.tensor_parallel is not None:
             from .parallel import SplitFunctional
 
