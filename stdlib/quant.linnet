@@ -1,6 +1,7 @@
 module std.quant
 
 use std.nn.linear::{linear}
+use std.nn.moe::{combine_experts, linear_experts_shared}
 
 // Weight quantization as ordinary source: a quantized parameter is an
 // integer tensor plus its scales, and dequantization is arithmetic the
@@ -228,4 +229,34 @@ pub op mxfp4_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
     let chosen[r, k, o, i] = weight[experts[r, k], o, i]
     let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, 0, i]) * cast<f32>(chosen[r, k, o, i])
     return cast<T>(y)
+}
+
+// `std.nn.moe::linear_experts_shared` with the experts' weights in MXFP4: a
+// mixture's gate and up projections for many rows at once -- a prompt, a
+// serving step -- `y[r, k, o] = sum_i x[r, i] * W[experts[r, k], o, i]`.
+// The body dequantizes every expert and takes `linear_experts_shared`'s
+// dense form, which a backend that prepares weight-only work does once at
+// load; PyTorch on CUDA instead multiplies each expert by the rows that
+// chose it, unpacking its four-bit blocks in registers.
+pub op mxfp4_linear_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
+    x: Tensor[R, G * 32; T],
+    blocks: Tensor[E, Out, G, 16; u8],
+    scales: Tensor[E, Out, G; u8],
+    experts: Tensor[R, K; i64],
+) -> Tensor[R, K, Out; T] {
+    return linear_experts_shared(x, dequantize_mxfp4<E, Out, G, T>(blocks, scales), experts)
+}
+
+// `std.nn.moe::combine_experts` with the experts' weights in MXFP4: a
+// mixture's down projection for many rows at once,
+// `y[r, o] = sum_k weights[r, k] * sum_i x[r, k, i] * W[experts[r, k], o, i]`,
+// as `mxfp4_linear_experts_shared` is to `linear_experts_shared`.
+pub op mxfp4_combine_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
+    x: Tensor[R, K, G * 32; T],
+    blocks: Tensor[E, Out, G, 16; u8],
+    scales: Tensor[E, Out, G; u8],
+    experts: Tensor[R, K; i64],
+    weights: Tensor[R, K; T],
+) -> Tensor[R, Out; T] {
+    return combine_experts(x, dequantize_mxfp4<E, Out, G, T>(blocks, scales), experts, weights)
 }

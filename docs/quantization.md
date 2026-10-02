@@ -31,6 +31,8 @@ where Inner % 2 == 0 {
 | `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: two E2M1 values a byte (low = even element) in blocks of 32, an E8M0 scale byte a block |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied straight from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, every slot of a row reading the row's one input (`x: [R, 1, In]`) |
+| `mxfp4_linear_experts_shared(x, blocks, scales, experts)` | `std.nn.moe::linear_experts_shared` with MXFP4 experts, for many rows at once (`x: [R, In]`) |
+| `mxfp4_combine_experts(x, blocks, scales, experts, weights)` | `std.nn.moe::combine_experts` with MXFP4 experts: each row's products weighed and summed |
 
 ## Group-wise 4-bit weights
 
@@ -75,9 +77,27 @@ time -- each 32-bit word of a block shifted and masked into four pairs of
 `f16`s, every E2M1 nibble's bits placed in one -- with the block's scale
 applied once per 32 weights. On an H100 it reads gpt-oss-20b's experts at
 about 2 TB/s for one to four rows, where unpacking each nibble on its own
-read 1.4; with that earlier kernel gpt-oss-20b decoded at 270 tokens per
-second, against 202 with its experts dequantized. More rows (a prompt, a
-serving step) go through the bodies.
+read 1.4, and gpt-oss-20b decodes at 297 tokens per second (vLLM 303).
+
+Many rows at once -- a prompt, a serving step -- take
+`mxfp4_linear_experts_shared` and `mxfp4_combine_experts`, whose bodies
+dequantize every expert and take `std.nn.moe`'s dense form (prepared once at
+load where a backend prepares). On a Hopper GPU in bf16, PyTorch instead
+sorts the (row, choice) pairs by expert and multiplies each expert by its
+pairs' inputs (`linnet.torch.moe`): with OpenAI's
+[`triton_kernels`](https://github.com/triton-lang/triton/tree/main/python/triton_kernels)
+installed, its MXFP4 product reads the four-bit weights in a layout swizzled
+for the GPU once; without it, the experts are dequantized to bf16 once and
+`torch._grouped_mm` multiplies them. `triton_kernels` is not on PyPI; install
+the one matching your Triton:
+
+```bash
+pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(python -c 'import triton; print(triton.__version__)')#subdirectory=python/triton_kernels"
+```
+
+With it, gpt-oss-20b on one H100 takes a 512-token prompt in 20.5 ms rather
+than 25.0 and a 64-row serving step in 8.3 ms rather than 11.5, and serves
+256 requests at 4702 tokens per second (vLLM 4313).
 
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
 rounding each group to the nearest level:
