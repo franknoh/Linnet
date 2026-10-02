@@ -1,0 +1,7 @@
+module tests.negative
+
+// Negative indices are not part of the language: write `x[N - 1]`.
+pub fn last<N: Dim>(x: Tensor[N; f32]) -> f32
+where N > 0 {
+    return x[-1]
+}

@@ -66,4 +66,4 @@ When weight metadata is available, a binder SHOULD validate:
 - optional parameter absence;
 - unexpected external tensors according to configured strictness.
 
-Shape or dtype mismatch is an error by default. The reference binders ignore external tensors no parameter names.
+Shape or dtype mismatch is an error by default. The reference binders ignore external tensors that no parameter names.

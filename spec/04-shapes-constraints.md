@@ -30,6 +30,15 @@ const HeadDim = Hidden / Heads
 
 Compile-time constants MUST be pure and evaluable without runtime tensor data.
 
+An unannotated constant keeps the contextual type of its value: an integer constant is a compile-time integer usable in shapes and adopts a dtype where it is used (§1.7), and a floating constant adopts a `Float` dtype likewise. An annotated constant has the declared type, which may be a scalar or an enum:
+
+```text
+pub const THETA: f32 = 500000.0
+pub const POOLING: Pooling = Pooling.ClassToken
+```
+
+Only integer constants participate in dimension expressions.
+
 ## 4.3 `where` constraints
 
 ```text

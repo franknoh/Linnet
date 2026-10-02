@@ -57,6 +57,7 @@ Every module has an implicit, non-shadowable language prelude containing only co
 - primitive casts and tensor-shape functions such as `cast`, `reshape`, `permute`, `broadcast_to`, `concat`, and `pad`;
 - primitive data functions such as `iota`, `fill`, `gather`, and `scatter`;
 - primitive elementwise math functions such as `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, and `abs`;
+- `min`, `max`, and the integer shifts `shl` and `shr`;
 - `select`.
 
 The prelude MUST remain small and model-independent. `linear`, `softmax`, `attention`, `rope`, normalization layers, convolutions, and similar semantic operations are library code and are not implicit prelude names.
@@ -73,6 +74,8 @@ exp log sqrt rsqrt sin cos tanh (x)    x must have a Float dtype
 abs(x)                         x must have a Numeric dtype
 min(a, b)  max(a, b)           elementwise on Numeric operands of one dtype;
                                on two compile-time integers, a dimension
+shl(x, bits)  shr(x, bits)     integer shifts; `shr` is arithmetic for signed
+                               dtypes and logical for unsigned ones (§5.4)
 select(condition, a, b)        condition is bool; a and b share one dtype
 reshape(x, shape)              element counts must be provably equal
 broadcast_to(x, shape)         each trailing axis of x must equal the target or be 1

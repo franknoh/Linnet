@@ -51,6 +51,8 @@ implies:
 
 Conflicting domains are a static shape error.
 
+An index position may hold a computed integer instead of an index variable, such as `labels[b]` in `x[b, labels[b]]`. It reads the position the value holds; it gives no domain to the axis it addresses, and a value outside that axis has no defined result (§5.8).
+
 ## 6.5 Repeated indices in one tensor
 
 Repeated indices in a single tensor expression select a diagonal; they do not imply reduction.

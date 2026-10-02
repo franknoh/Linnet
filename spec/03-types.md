@@ -27,7 +27,7 @@ Tensor[H; i32]
 
 A tensor rank is the number of dimensions before `;` after shape-pack expansion.
 
-Zero-rank tensor syntax is reserved. Scalar values SHOULD use scalar types instead of rank-zero tensors in the initial language version.
+Zero-rank tensor syntax is reserved: `Tensor[; f32]` is an error, and scalar values use scalar types. Where a backend has no scalars of its own, an entry's scalar inputs and results cross its boundary as rank-zero tensors.
 
 ## 3.3 Shape packs
 
@@ -100,7 +100,9 @@ struct KVPair<K: DType, V: DType> {
 }
 ```
 
-Struct fields are immutable values in the initial language version.
+Struct fields are immutable values in the initial language version. A field is read with `value.field`.
+
+The initial language version has no expression that constructs a struct value; a struct name is not callable. Construction syntax is reserved for a future version, so struct types are currently useful only as declared types.
 
 ## 3.8 Enums
 
@@ -112,6 +114,19 @@ enum MaskKind {
     Causal,
 }
 ```
+
+A variant is written `MaskKind.Causal`. A `match` over an enum names its variants in the arms:
+
+```text
+const MASK: MaskKind = MaskKind.Causal
+
+let scores = match MASK {
+    Causal => causal_mask(scores)
+    None => scores
+}
+```
+
+Every arm is checked. When the scrutinee is a constant, as here, the choice is made when the program is compiled and a backend evaluates only the chosen arm.
 
 Payload-carrying enum variants are reserved for a future version. `Option<T>` behavior is provided directly through `T?`.
 
@@ -147,7 +162,7 @@ Compile-time structural arrays are written:
 [DecoderLayer<Hidden, T>; Layers]
 ```
 
-They are not runtime tensors. They are intended for repeated sub-block declarations and `static for` traversal.
+They are not runtime tensors. They are intended for repeated sub-block declarations and `static for` traversal. A structural array is indexed with exactly one compile-time integer, as in `layers[0]`.
 
 ## 3.11 Dtype conversion
 

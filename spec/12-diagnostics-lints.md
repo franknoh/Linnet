@@ -47,9 +47,19 @@ Recommended lints:
 - parameter declared optional but always force-unwrapped after future option utilities;
 - numerically suspicious forms once numerical analysis is introduced.
 
+The reference implementation reports:
+
+| Code | Lint |
+| --- | --- |
+| `W1001` | unused import |
+| `W1002` | unused local |
+| `W1003` | a block member (`param`, `buffer`, `state`, `sub`) its block never uses |
+
+A local or block member whose name begins with `_` is exempt. Lints are reported only for programs without errors.
+
 ## 12.4 `--strict`
 
-`linnet check --strict` promotes configured warnings to errors for CI.
+`linnet check --strict` promotes configured warnings to errors for CI; `linnet lint` is `check` with every warning failing.
 
 Strict mode MUST NOT change program semantics, dtype rules, shape rules, optimizer legality, or backend output. It changes only acceptance policy for lint severities.
 
