@@ -7,6 +7,7 @@ and `jax.vmap`."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import jax
@@ -96,3 +97,43 @@ def test_mistakes_are_reported() -> None:
         cross_entropy(np.zeros((2, 3), dtype=np.int64), np.zeros(2, dtype=np.int64))
     with pytest.raises(LinnetError, match="has size 4 where `B` is 2"):
         cross_entropy(np.zeros((2, 3), dtype=np.float32), np.zeros(4, dtype=np.int64))
+
+
+PACKS = """\
+module tests.packs
+
+use std.nn.softmax::{softmax}
+
+pub entry probabilities<*S: Shape, N: Dim>(logits: Tensor[*S, N; f32]) -> Tensor[*S, N; f32] {
+    return softmax(logits)
+}
+
+pub block Scale<N: Dim> {
+    param weight: Tensor[N; f32]
+
+    pub entry forward<*S: Shape>(x: Tensor[*S, N; f32]) -> Tensor[*S, N; f32] {
+        return x * weight
+    }
+}
+"""
+
+
+def test_a_shape_pack_binds_from_each_call(tmp_path: Path) -> None:
+    """`*S` binds to the input's leading axes, as generated JAX and through
+    StableHLO for a block's entry."""
+    from linnet.jax import load
+
+    source = tmp_path / "packs.linnet"
+    source.write_text(PACKS, encoding="utf-8")
+    probabilities = load_function(source, std_root=STDLIB)
+    for shape in [(7,), (5, 7), (2, 3, 7)]:
+        logits = np.random.default_rng(0).standard_normal(shape).astype(np.float32)
+        np.testing.assert_allclose(
+            probabilities(logits), jax.nn.softmax(logits, axis=-1), rtol=1e-5, atol=1e-6
+        )
+    weight = np.arange(4, dtype=np.float32)
+    scale = load(
+        source, generics={"N": 4}, weights={"weight": weight}, root="Scale", std_root=STDLIB
+    )
+    x = np.random.default_rng(1).standard_normal((2, 3, 4)).astype(np.float32)
+    np.testing.assert_allclose(np.asarray(scale(x)), x * weight, rtol=1e-6)

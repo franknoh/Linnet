@@ -27,7 +27,7 @@ import numpy as np
 
 from ..compiler import LinnetError, run_compiler, std_arguments
 from ..plan import Plan, compile_plan
-from .load import _LINNET_DTYPES  # pyright: ignore[reportPrivateUsage]
+from .load import _LINNET_DTYPES, _unpack  # pyright: ignore[reportPrivateUsage]
 
 # NumPy dtype names back to Linnet's, for binding a dtype generic.
 _NAMES: dict[str, str] = {np.dtype(dtype).name: name for name, dtype in _LINNET_DTYPES.items()}
@@ -124,10 +124,7 @@ class Function:
             self._bind_dtype(param["type"]["dtype"], value, name, bindings)
             units: list[Any] = param["type"]["shape"]
             shape = tuple(int(size) for size in np.shape(value))
-            if any(isinstance(unit, dict) and "pack" in unit for unit in units):
-                raise LinnetError(f"input `{name}` has a shape pack, which JAX cannot take yet")
-            if len(units) != len(shape):
-                raise LinnetError(f"input `{name}` has rank {len(shape)}, expected {len(units)}")
+            units, shape = _unpack(units, shape, name, bindings)
             for unit, size in zip(units, shape, strict=True):
                 if isinstance(unit, dict) and "sym" in unit:
                     symbol = str(unit["name"])

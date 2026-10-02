@@ -284,8 +284,33 @@ private:
                 subst.dims[generic.symbol] = shape::Poly(value);
                 break;
             }
-            case GenericKind::Pack:
-                fail("shape-pack generics of the root block or entry are not supported");
+            case GenericKind::Pack: {
+                // The pack's dimensions, comma-separated: `--bind S=2,3`, or
+                // nothing for an empty pack (`--bind S=`).
+                if (text == nullptr) {
+                    fail(std::string(owner) + " shape pack `" + std::string(generic.name) +
+                         "` needs dimensions: pass --bind " + std::string(generic.name) +
+                         "=2,3 (or nothing after `=` for none)");
+                }
+                Shape pack;
+                std::string_view rest = *text;
+                while (!rest.empty()) {
+                    const std::size_t comma = rest.find(',');
+                    const std::string part(rest.substr(0, comma));
+                    std::int64_t value = 0;
+                    const char* end = part.c_str() + part.size();
+                    if (part.empty() || std::from_chars(part.c_str(), end, value).ptr != end ||
+                        value < 0) {
+                        fail("`" + *text + "` is not a list of dimensions for `" +
+                             std::string(generic.name) + "`");
+                    }
+                    pack.push_back(ShapeElem::of(shape::Poly(value)));
+                    rest = comma == std::string_view::npos ? std::string_view{}
+                                                           : rest.substr(comma + 1);
+                }
+                subst.packs[generic.symbol] = std::move(pack);
+                break;
+            }
             case GenericKind::DType: {
                 DType dtype;
                 if (text != nullptr) {

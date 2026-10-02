@@ -189,10 +189,7 @@ class LinnetFunction:
                 continue
             shape = cast(list[Any], declared["shape"])
             actual = tuple(int(d) for d in np.shape(value))
-            if len(shape) != len(actual):
-                raise LinnetError(
-                    f"input `{argument['name']}` has rank {len(actual)}, expected {len(shape)}"
-                )
+            shape, actual = _unpack(shape, actual, str(argument["name"]), bindings)
             for unit, size in zip(shape, actual, strict=True):
                 if isinstance(unit, dict) and "sym" in unit:
                     name = str(cast(dict[str, Any], unit)["name"])
@@ -331,6 +328,29 @@ class LinnetFunction:
 
     def __call__(self, *inputs: Any, state: Any = None) -> Any:
         return self.apply(self._weights, *inputs, state=state)
+
+
+def _unpack(
+    units: list[Any], shape: tuple[int, ...], name: str, bindings: dict[str, Any]
+) -> tuple[list[Any], tuple[int, ...]]:
+    """An input's declared units and its shape with a shape pack's axes taken
+    out and bound (`S` to `"2,3"`, as `linnet jax --bind` takes it): the
+    pack covers whatever axes the other units leave."""
+    packs = [i for i, unit in enumerate(units) if isinstance(unit, dict) and "pack" in unit]
+    if len(packs) > 1:
+        raise LinnetError(f"input `{name}` has more than one shape pack")
+    fixed = len(units) - len(packs)
+    if (packs and len(shape) < fixed) or (not packs and len(shape) != fixed):
+        expected = f"at least {fixed}" if packs else str(fixed)
+        raise LinnetError(f"input `{name}` has rank {len(shape)}, expected {expected}")
+    if not packs:
+        return units, shape
+    at, width = packs[0], len(shape) - fixed
+    pack = str(units[at]["name"])
+    sizes = ",".join(map(str, shape[at : at + width]))
+    if bindings.setdefault(pack, sizes) != sizes:
+        raise LinnetError(f"input `{name}` disagrees on shape pack `{pack}`")
+    return units[:at] + units[at + 1 :], shape[:at] + shape[at + width :]
 
 
 def _platform() -> str:
