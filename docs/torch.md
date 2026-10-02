@@ -161,8 +161,24 @@ model = linnet.torch.load("model.linnet", generics=generics, weights="weights/",
 
 `device_map` puts whole blocks on different GPUs, which then take turns;
 tensor parallelism splits every large weight across them, so they work on
-each layer at once. With `tensor_parallel=mesh`, each process of a
-`torch.distributed` job holds its slice of the weights as DTensors: the
+each layer at once.
+
+A model can say how it splits. The zoo's Llama-shaped decoders have a
+`Shards` generic (1 by default): one shard holds `Heads / Shards` query
+heads, `KvHeads / Shards` key and value heads, and `Inner / Shards` hidden
+units, and the projections back out of them end in
+`std.nn.parallel::all_reduce`, the sum over the shards, which on one device
+is the value itself. With `tensor_parallel=mesh`, each process runs the
+model with `Shards` bound to the mesh size on its own part of every weight
+the checkpoint holds `Shards` times over, read from the checkpoint alone
+along the one axis that differs, and `all_reduce` sums across the processes.
+The entries are the generated code of one shard on ordinary tensors, so a
+shard's query, key and value projections still join into one product (and
+gate and up into another), and the decoding step still replays as one CUDA
+graph with its all-reduces inside.
+
+A model without `Shards` is split from the outside: each
+process of a `torch.distributed` job holds its slice of the weights as DTensors: the
 projections into the heads and the feed-forward width split by output, the
 projections back by input, the KV caches by heads, and everything else
 copied to each (`linnet.parallel.DEFAULT_RULES`; `tp_rules={"*.experts.*": 0}`
