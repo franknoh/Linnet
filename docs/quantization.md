@@ -70,10 +70,13 @@ dequantization reads nothing but weights, a backend that prepares
 weight-only work (`--prepare`) does it once at load and keeps the experts in
 16 bits. PyTorch on CUDA instead runs a Triton kernel (`linnet.torch.kernels`)
 for a decoding step's few rows: each chosen expert's bytes are read as they
-are, a quarter of a 16-bit weight's, and unpacked in registers (an E2M1
-nibble's bits placed in an `f16`, the block's scale applied once per 32
-weights). On an H100, gpt-oss-20b decodes at 270 tokens per second this
-way, against 202 with its experts dequantized. More rows (a prompt, a
+are, a quarter of a 16-bit weight's, and unpacked in registers eight at a
+time -- each 32-bit word of a block shifted and masked into four pairs of
+`f16`s, every E2M1 nibble's bits placed in one -- with the block's scale
+applied once per 32 weights. On an H100 it reads gpt-oss-20b's experts at
+about 2 TB/s for one to four rows, where unpacking each nibble on its own
+read 1.4; with that earlier kernel gpt-oss-20b decoded at 270 tokens per
+second, against 202 with its experts dequantized. More rows (a prompt, a
 serving step) go through the bodies.
 
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
