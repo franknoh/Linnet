@@ -530,6 +530,11 @@ public:
                           "torch.arange(" + std::to_string(span) + ", device=" + name(0) +
                           ".device), " + name(1) + ")");
         }
+        if (implementation_base == "torch.distributed.all_reduce" && operands.size() == 1 &&
+            operands[0]) {
+            shards_helper_ = true;
+            return define("_all_reduce(" + name(0) + ")");
+        }
         if (implementation_base == "torch.Tensor.index_put(tokens)" && operands.size() == 4 &&
             operands[0] && operands[1] && operands[2] && operands[3]) {
             // `write_tokens`: token p at (rows[p], positions[p]), every head;
@@ -852,6 +857,9 @@ public:
         }
         if (flex_helpers_) {
             out += flex_helpers();
+        }
+        if (shards_helper_) {
+            out += shards_helper();
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1506,6 +1514,22 @@ private:
     // results put back in the rows' order. `offs` ends each expert's rows;
     // counting rather than `bincount` keeps it on the device, so the step can
     // be a CUDA graph.
+    static std::string shards_helper() {
+        return "# The process group a sharded model's processes run over, which the\n"
+               "# runtime sets (`load(tensor_parallel=...)`); None for one process.\n"
+               "_GROUP = None\n"
+               "\n\n"
+               "def _all_reduce(x):\n"
+               "    \"\"\"`std.nn.parallel::all_reduce`: the sum over the shards' "
+               "processes.\"\"\"\n"
+               "    if _GROUP is None:\n"
+               "        return x\n"
+               "    from torch.distributed import _functional_collectives as funcol\n"
+               "\n"
+               "    return funcol.all_reduce(x, \"sum\", _GROUP)\n"
+               "\n\n";
+    }
+
     static std::string flex_helpers() {
         return "def _flex_blocks(mask, queries, keys, block_q, block_k, once=False):\n"
                "    \"\"\"The key blocks each query block of `mask` ([rows or 1, queries, "
@@ -1537,6 +1561,13 @@ private:
                "\n"
                "    return (*listed(reached & ~whole), *listed(whole))\n"
                "\n\n"
+               "def _split(value):\n"
+               "    \"\"\"Whether `value` is split from the outside (a DTensor), which\n"
+               "    FlexAttention does not take.\"\"\"\n"
+               "    from torch.distributed.tensor import DTensor\n"
+               "\n"
+               "    return isinstance(value, DTensor)\n"
+               "\n\n"
                "def _attend(query, key, value, mask, scale, blocks, block_q, block_k):\n"
                "    \"\"\"Attention under a boolean mask (true attends): FlexAttention over "
                "the\n"
@@ -1546,7 +1577,8 @@ private:
                "    batch, heads, queries, width = query.shape\n"
                "    keys = key.shape[2]\n"
                "    rows = mask.reshape(-1, queries, keys)\n"
-               "    if blocks is not None and torch.compiler.is_compiling():\n"
+               "    if blocks is not None and torch.compiler.is_compiling() and not "
+               "_split(query):\n"
                "        from torch.nn.attention.flex_attention import BlockMask, "
                "flex_attention\n"
                "\n"
@@ -1711,6 +1743,7 @@ private:
     bool int4_helpers_ = false;                      // `_int4_pack` and `_int4_linear` are used
     bool experts_helper_ = false;                    // `_linear_experts` is used
     bool flex_helpers_ = false;                      // `_flex_blocks` and `_attend` are used
+    bool shards_helper_ = false;                     // `_all_reduce` is used
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value

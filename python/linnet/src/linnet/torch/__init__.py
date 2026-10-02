@@ -100,10 +100,18 @@ def load(
         the loss with `torch.amp.GradScaler` as for any autocast model.
 
         `tensor_parallel=mesh` (a one-dimensional `DeviceMesh`, in every process
-        of a `torch.distributed` job) splits the weights over the mesh as
-        `linnet.parallel` says (`tp_rules` overrides it by path pattern) and the
-        KV caches by heads, as DTensors; entries run the same code on every
-        process and DTensor adds the collectives. Results come back whole.
+        of a `torch.distributed` job) runs the model split over the mesh. A
+        model whose root block has a `Shards` generic says how itself: each
+        process runs it with `Shards` bound to the mesh size, on its own part
+        of every weight the checkpoint holds `Shards` times over (read from
+        the checkpoint alone, along the one axis that differs), and its
+        `std.nn.parallel::all_reduce` calls sum across the processes. The
+        entries are ordinary generated code on local tensors, so sibling
+        projections still join and a step still replays as one CUDA graph,
+        its all-reduces inside. Any other model has its weights split as
+        `linnet.parallel` says (`tp_rules` overrides it by path pattern) and
+        its KV caches by heads, as DTensors, and DTensor adds the collectives.
+        Results come back whole either way.
 
         `trainable=True` makes the parameters require gradients: every entry is
         ordinary differentiable PyTorch arithmetic (interpreted or generated), so
@@ -136,6 +144,18 @@ def load(
         return placed
     if compile is None:
         compile = torch.device(device).type == "cuda"
+    # A model that says how it splits (a `Shards` generic) runs one shard per
+    # process; any other is split from the outside, as DTensors.
+    mesh: Any = (
+        tensor_parallel
+        if tensor_parallel is not None
+        and any(g["name"] == "Shards" for g in plan.root.get("generics", []))
+        else None
+    )
+    if mesh is not None:
+        if not compile:
+            raise PlanError("a sharded model runs as generated code: pass compile=")
+        generics = {**generics, "Shards": mesh.size()}
     module: LinnetModule
     if compile:
         module = CompiledLinnetModule(
@@ -149,13 +169,17 @@ def load(
         )
     else:
         module = LinnetModule(plan, generics, torch.device(device))
+    shard = (mesh.get_local_rank(), mesh.size()) if mesh is not None else None
     if weights is not None:
-        bind_weights(module, weights, bindings, strict=strict, cast_dtype=cast_dtype)
+        bind_weights(module, weights, bindings, strict=strict, cast_dtype=cast_dtype, shard=shard)
     if trainable:
         for parameter in module.parameters():
             parameter.requires_grad_(True)
     module.amp = precision
-    if tensor_parallel is not None:
+    if mesh is not None:
+        assert isinstance(module, CompiledLinnetModule)
+        module.shard_group = mesh.get_group()
+    elif tensor_parallel is not None:
         from .parallel import distribute
 
         distribute(module, tensor_parallel, tp_rules)

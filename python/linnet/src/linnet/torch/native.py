@@ -51,6 +51,12 @@ def _write_tokens(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     )
 
 
+def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    """`std.nn.parallel::all_reduce` in one process, which holds the whole
+    model: the sum over one shard is the value itself."""
+    return args[0]
+
+
 def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
@@ -295,6 +301,7 @@ NATIVE: dict[str, Native] = {
     "torch.Tensor.index_copy": _index_copy,
     "torch.Tensor.index_put": _index_put,
     "torch.Tensor.index_put(tokens)": _write_tokens,
+    "torch.distributed.all_reduce": _one_shard,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,

@@ -367,6 +367,7 @@ def bind_weights(
     bindings: str | Path | None = None,
     strict: bool = True,
     cast_dtype: bool = False,
+    shard: tuple[int, int] | None = None,
 ) -> None:
     """Loads SafeTensors weights into the module.
 
@@ -381,6 +382,11 @@ def bind_weights(
     bf16, or a bf16 one checked in f32, without writing a converted copy.
     Any other mismatch (an integer where a float is expected) still means the
     binding is wrong, and is still an error.
+
+    `shard=(index, count)` binds one shard of a model split `count` ways
+    (its `Shards` generic): a tensor the checkpoint holds `count` times over
+    along one axis is read as its `index`-th part along that axis, from the
+    file, without loading the rest.
     """
     from safetensors import safe_open  # type: ignore[import-untyped]
 
@@ -425,6 +431,7 @@ def bind_weights(
 
     problems: list[str] = []
     assignments: list[tuple[str, str, Path]] = []
+    parts: dict[str, tuple[int, int]] = {}  # path -> (axis, extent) of its shard
     for path, tensor in _all_tensors(module):
         source = mapping.get(path, path)
         owner, leaf = owner_of(module, path)
@@ -436,6 +443,10 @@ def bind_weights(
             continue
         _, shape, dtype_name = available[source]
         expected_dtype = tensor.dtype
+        axis = _shard_axis(shape, list(tensor.shape), shard[1]) if shard is not None else None
+        if axis is not None:
+            parts[path] = (axis, tensor.shape[axis])
+            shape = list(tensor.shape)
         if shape != list(tensor.shape):
             problems.append(f"`{source}` has shape {shape}, `{path}` needs {list(tensor.shape)}")
         elif safetensor_dtypes.get(dtype_name) != expected_dtype and not (
@@ -453,7 +464,15 @@ def bind_weights(
     with torch.no_grad():
         for path, source, file in assignments:
             with cast(Any, safe_open(str(file), framework="pt")) as handle:
-                loaded = cast(torch.Tensor, handle.get_tensor(source))
+                if path in parts:
+                    assert shard is not None
+                    axis, extent = parts[path]
+                    index = (slice(None),) * axis + (
+                        slice(shard[0] * extent, (shard[0] + 1) * extent),
+                    )
+                    loaded = cast(torch.Tensor, handle.get_slice(source)[index])
+                else:
+                    loaded = cast(torch.Tensor, handle.get_tensor(source))
             owner, leaf = owner_of(module, path)
             getattr(owner, leaf).copy_(loaded)
             owner.absent_params.discard(leaf)
@@ -463,6 +482,17 @@ def bind_weights(
         entries = getattr(module, cache, None)
         if isinstance(entries, dict):
             entries.clear()
+
+
+def _shard_axis(full: list[int], local: list[int], count: int) -> int | None:
+    """The one axis along which a checkpoint tensor of shape `full` holds
+    `count` shards of shape `local`, or None."""
+    if count <= 1 or len(full) != len(local):
+        return None
+    differ = [axis for axis, (f, n) in enumerate(zip(full, local, strict=True)) if f != n]
+    if len(differ) == 1 and full[differ[0]] == local[differ[0]] * count:
+        return differ[0]
+    return None
 
 
 def _all_tensors(module: LinnetModule) -> list[tuple[str, torch.Tensor]]:
