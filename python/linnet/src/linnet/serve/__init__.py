@@ -229,9 +229,9 @@ class Engine:
     each padded at its end to the smallest of `pack_sizes` that holds it: by
     default 512, 1024, 1536, 2048, 3072 and 4096, scaled to `pack`.
     `pack=0` keeps the grouped passes. A card that also has `step_packed`
-    takes the step of the rows already decoding in the last such pass of a
-    step (`mix=False` keeps them apart); the rows that pass admits take
-    their first step with the next.
+    takes the step of the rows already decoding in the smallest such pass of
+    a step, if it fits the second of `pack_sizes` (`mix=False` keeps them
+    apart); the rows that pass admits take their first step with the next.
     """
 
     def __init__(
@@ -266,6 +266,10 @@ class Engine:
             buckets.append(limit)
         self.buckets = sorted({b for b in buckets if b <= limit})
         self.mix = mix and bool(self.pack) and self.backend.mixes
+        # The largest pass that takes the decoding rows' step along: the
+        # prompts that arrive while others decode are few, and each size
+        # `step_packed` runs at is one more compiled pass at warmup.
+        self.mix_size = self.pack_sizes[min(1, len(self.pack_sizes) - 1)] if self.mix else 0
         self.pad = pad
         self.max_group = max(1, max_group)
         self._seeds = random.Random()
@@ -288,7 +292,7 @@ class Engine:
                 # a while to do -- before the requests' clock starts.
                 for _ in range(2):
                     self.backend.prefill_packed([[self.pad]], [0], [Sampling()], size, self.pad)
-                    if self.mix:
+                    if self.mix and size <= self.mix_size:
                         self.backend.step_packed(
                             [[self.pad]], [0], [Sampling()], size, self.pad, mode([])
                         )
@@ -397,8 +401,14 @@ class Engine:
         admitted.sort(key=lambda c: len(c.request.prompt))
         placed = list(zip(free, admitted, strict=False))
         passes = self._packed(placed)
-        # With rows already decoding, the last pass carries their step.
-        mixed = passes.pop() if passes and decoding and self.mix else None
+        # With rows already decoding, the smallest pass carries their step,
+        # if it is small enough.
+        mixed = None
+        if passes and decoding and self.mix:
+            smallest = min(passes, key=lambda batch: sum(len(c.request.prompt) for _, c in batch))
+            if sum(len(c.request.prompt) for _, c in smallest) <= self.mix_size:
+                passes.remove(smallest)
+                mixed = smallest
         for batch in passes:
             now = time.perf_counter() - self._start
             prompts = [list(c.request.prompt) for _, c in batch]
