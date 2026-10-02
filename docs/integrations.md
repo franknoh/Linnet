@@ -106,9 +106,21 @@ end-of-sequence tokens from it and the checkpoint's generation config.
 (others compile when first seen). Requests take `max_tokens`
 (`max_completion_tokens`), `temperature` (1 unless given, as OpenAI has it),
 `top_p`, `top_k`, `seed`, and `stop` (up to four strings, cut from the text
-and never streamed); more than one choice (`n`), log probabilities, and
-`echo` are refused. `linnet.serve.server.Server(engine, tokenizer, name=...)`
-is the same server around an engine of one's own.
+and never streamed).
+
+| Field | Does |
+| --- | --- |
+| `n` | that many choices, each its own request in the batch; with a `seed`, choice `i` draws with `seed + i` |
+| `logprobs` (completions), `logprobs` and `top_logprobs` (chat) | each token's log-probability and up to 20 alternatives, in OpenAI's two formats, from the model's logits before temperature and filtering |
+| `echo` (completions) | the prompt before the completion's text |
+
+A step computes log probabilities only when a request in it asks, outside
+the step's CUDA graph, so serving without them costs nothing extra.
+`echo` with `logprobs` is refused: it would need the prompt's own log
+probabilities, which a prompt pass does not return.
+`linnet.serve.server.Server(engine, tokenizer, name=...)` is the same
+server around an engine of one's own, and `Request(logprobs=k)` asks the
+engine itself for them.
 
 Work that reads nothing but weights -- dequantizing a quantized
 checkpoint, say -- runs once when a model is loaded for inference, not on

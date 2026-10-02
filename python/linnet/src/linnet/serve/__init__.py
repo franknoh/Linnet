@@ -46,9 +46,11 @@ run as generated source; with `linnet.jax.load_model` both are XLA programs.
 Decoding is greedy unless a request sets a `temperature`; then its tokens
 are drawn on the device, from its `top_k` and `top_p` tokens when it sets
 those (see `linnet.serve.sampling`), and a request with the same `seed`
-draws the same tokens whatever else is in the batch. A request's
-`on_token` is called with its completion as each token is read, which is
-how a server streams. `python -m linnet.serve` serves a Nest model over
+draws the same tokens whatever else is in the batch. A request that sets
+`logprobs` also gets each token's log-probability under the model, and the
+`logprobs` most likely tokens with theirs; a pass computes them only when a
+request in it asks. A request's `on_token` is called with its completion as
+each token is read, which is how a server streams. `python -m linnet.serve` serves a Nest model over
 HTTP (`linnet.serve.server`).
 """
 
@@ -73,7 +75,9 @@ class Request:
     and then the fewest whose probabilities reach `top_p`. `seed` (its low
     32 bits) fixes the draws; without one the engine picks one. `on_token`
     is called with the completion each time a token of it is read, with
-    `reason` set on its last."""
+    `reason` set on its last. `logprobs` asks for each token's
+    log-probability, and that many alternatives with theirs (0 for none):
+    log-softmax of the model's logits, before temperature and filtering."""
 
     prompt: Sequence[int]
     max_new_tokens: int
@@ -84,6 +88,7 @@ class Request:
     top_p: float = 1.0
     seed: int | None = None
     on_token: Callable[[Completion], None] | None = None
+    logprobs: int | None = None
 
 
 @dataclass
@@ -97,6 +102,12 @@ class Completion:
     finished: float = 0.0
     reason: str = ""  # "length", "eos", "cache", or what `Engine.cancel` gave
     sampling: Sampling = field(default_factory=Sampling)  # its seed chosen
+    # With `Request.logprobs`: each token's log-probability, and the most
+    # likely tokens at its position as (token, log-probability), best first.
+    logprobs: list[float] = field(default_factory=list[float])
+    top_logprobs: list[list[tuple[int, float]]] = field(
+        default_factory=list[list[tuple[int, float]]]
+    )
 
     @property
     def ttft(self) -> float:
@@ -126,9 +137,17 @@ class Stats:
 
 
 class _Tokens(Protocol):
-    """Token ids a queued pass produces; `tolist` waits for them."""
+    """Token ids a queued pass produces; `tolist` waits for them.
+    `logprobs` is each token's log-probability and the ids and
+    log-probabilities of the most likely tokens, when the pass computed
+    them."""
 
     def tolist(self) -> list[int]: ...
+    def logprobs(self) -> _Logprobs | None: ...
+
+
+# (chosen, top ids, top log-probabilities), one entry per row of a pass.
+_Logprobs = tuple[list[float], list[list[int]], list[list[float]]]
 
 
 class _Backend(Protocol):
@@ -136,7 +155,9 @@ class _Backend(Protocol):
     `prefill` queues a prompt pass, sets its rows' sampling, and sets them to
     the token drawn after each prompt, at the position after it; `decode`
     queues a step for every row and advances them all, `need` saying what
-    drawing the rows in use takes (`sampling.mode`)."""
+    drawing the rows in use takes (`sampling.mode`). `top` is -1 when no row
+    of the pass wants log-probabilities, and otherwise the most
+    alternatives one wants."""
 
     slots: int
     max_seq: int
@@ -148,6 +169,7 @@ class _Backend(Protocol):
         slots: list[int],
         lengths: list[int],
         sampling: list[Sampling],
+        top: int = -1,
     ) -> _Tokens: ...
     def prefill_packed(
         self,
@@ -156,8 +178,9 @@ class _Backend(Protocol):
         sampling: list[Sampling],
         size: int,
         pad: int,
+        top: int = -1,
     ) -> _Tokens: ...
-    def decode(self, need: int) -> _Tokens: ...
+    def decode(self, need: int, top: int = -1) -> _Tokens: ...
 
 
 @dataclass
@@ -347,7 +370,12 @@ class Engine:
             prompts = [list(c.request.prompt) for _, c in batch]
             size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
             tokens = self.backend.prefill_packed(
-                prompts, [slot for slot, _ in batch], [c.sampling for _, c in batch], size, self.pad
+                prompts,
+                [slot for slot, _ in batch],
+                [c.sampling for _, c in batch],
+                size,
+                self.pad,
+                _top(c for _, c in batch),
             )
             self._prefills += 1
             for slot, completion in batch:
@@ -370,6 +398,7 @@ class Engine:
                 [slot for slot, _ in batch],
                 [len(p) for p in prompts],
                 [c.sampling for _, c in batch],
+                _top(c for _, c in batch),
             )
             self._prefills += 1
             for slot, completion in batch:
@@ -383,7 +412,8 @@ class Engine:
             # stays queued while the passes before it are read.
             owners = [(slot, slot, c) for slot, c in enumerate(rows) if c is not None]
             need = mode(c.sampling for _, _, c in owners)
-            self._queued.append(_Queued(self.backend.decode(need), owners, prompts=False))
+            top = _top(c for _, _, c in owners)
+            self._queued.append(_Queued(self.backend.decode(need, top), owners, prompts=False))
             self._steps += 1
             ahead = 1
         finished: list[Completion] = []
@@ -393,12 +423,20 @@ class Engine:
 
     def _read(self, queued: _Queued) -> list[Completion]:
         produced = queued.tokens.tolist()
+        logprobs = queued.tokens.logprobs()
         now = time.perf_counter() - self._start
         finished: list[Completion] = []
         for index, slot, completion in queued.owners:
             if completion.reason:
                 continue  # finished a step earlier; this token ran along
             completion.tokens.append(produced[index])
+            wanted = completion.request.logprobs
+            if wanted is not None and logprobs is not None:
+                chosen, ids, values = logprobs
+                completion.logprobs.append(chosen[index])
+                completion.top_logprobs.append(
+                    list(zip(ids[index][:wanted], values[index][:wanted], strict=True))
+                )
             if queued.prompts:
                 completion.first_token = now
                 self._positions[slot] = len(completion.request.prompt)
@@ -448,6 +486,35 @@ class Engine:
         else:
             return False
         return True
+
+
+def _top(completions: Iterable[Completion]) -> int:
+    """What a pass computes of log-probabilities (see `_Backend`)."""
+    wanted = [c.request.logprobs for c in completions if c.request.logprobs is not None]
+    return max(wanted, default=-1)
+
+
+def _logprobs_torch(logits: Any, produced: Any, top: int) -> tuple[Any, Any, Any]:
+    """Each row's token's log-probability and its `top` most likely tokens,
+    from the model's logits, before temperature and filtering."""
+    scores = logits.float().log_softmax(-1)
+    chosen = scores.gather(-1, produced.long().reshape(-1, 1)).reshape(-1)
+    values, ids = scores.topk(max(top, 1), -1)
+    return chosen, ids[:, :top], values[:, :top]
+
+
+def _logprobs_numpy(logits: Any, produced: Any, top: int) -> _Logprobs:
+    import numpy as numpy_module
+
+    np: Any = numpy_module
+    scores = logits.astype(np.float32)
+    peak = scores.max(-1, keepdims=True)
+    scores = scores - peak - np.log(np.exp(scores - peak).sum(-1, keepdims=True))
+    rows = np.arange(scores.shape[0])
+    chosen = scores[rows, np.asarray(produced).reshape(-1)]
+    ids = np.argsort(-scores, axis=-1, kind="stable")[:, :top]
+    values = np.take_along_axis(scores, ids, -1)
+    return chosen.tolist(), ids.tolist(), values.tolist()
 
 
 def _backend_for(model: Any, graphs: bool) -> _Backend:
@@ -519,6 +586,7 @@ class _TorchBackend:
         slots: list[int],
         lengths: list[int],
         sampling: list[Sampling],
+        top: int = -1,
     ) -> _Tokens:
         torch = self.torch
         rows, at = self._put(slots), self._put(lengths)
@@ -536,7 +604,7 @@ class _TorchBackend:
         )
         self.tokens[index, 0] = first.to(torch.int32)
         self.positions[index] = at
-        return _TorchTokens(first)
+        return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
     def prefill_packed(
         self,
@@ -545,6 +613,7 @@ class _TorchBackend:
         sampling: list[Sampling],
         size: int,
         pad: int,
+        top: int = -1,
     ) -> _Tokens:
         torch = self.torch
         tokens: list[int] = []
@@ -590,9 +659,9 @@ class _TorchBackend:
         )
         self.tokens[index, 0] = first.to(torch.int32)
         self.positions[index] = at
-        return _TorchTokens(first)
+        return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
-    def decode(self, need: int) -> _Tokens:
+    def decode(self, need: int, top: int = -1) -> _Tokens:
         logits = self.model.run_entry(
             "decode_rows", [self.tokens, self.positions], compile=self.step_compile
         )
@@ -603,27 +672,37 @@ class _TorchBackend:
         # A row whose request has finished computes along until the engine
         # reads that it has; its position stays inside the cache.
         self.positions.add_(1).clamp_(max=self.max_seq - 1)
-        return _TorchTokens(produced)
+        return _TorchTokens(produced, _logprobs_torch(logits, produced, top) if top >= 0 else None)
 
 
 class _TorchTokens:
-    def __init__(self, values: Any) -> None:
+    def __init__(self, values: Any, logprobs: tuple[Any, Any, Any] | None = None) -> None:
         import torch
 
         self.ready: Any = None
-        self.values: Any
+        parts = [values, *(logprobs or ())]
         if values.device.type == "cuda":
-            self.values = torch.empty(values.shape, dtype=values.dtype, pin_memory=True)
-            self.values.copy_(values, non_blocking=True)
+            host = [torch.empty(p.shape, dtype=p.dtype, pin_memory=True) for p in parts]
+            for target, part in zip(host, parts, strict=True):
+                target.copy_(part, non_blocking=True)
+            parts = host
             self.ready = torch.cuda.Event()
             self.ready.record()
-        else:
-            self.values = values
+        self.values: Any = parts[0]
+        self.extra: list[Any] = parts[1:]
 
     def tolist(self) -> list[int]:
         if self.ready is not None:
             self.ready.synchronize()
         return self.values.tolist()
+
+    def logprobs(self) -> _Logprobs | None:
+        if not self.extra:
+            return None
+        if self.ready is not None:
+            self.ready.synchronize()
+        chosen, ids, values = self.extra
+        return chosen.tolist(), ids.tolist(), values.tolist()
 
 
 class _Grouped:
@@ -640,6 +719,7 @@ class _Grouped:
         sampling: list[Sampling],
         size: int,
         pad: int,
+        top: int = -1,
     ) -> _Tokens:
         raise NotImplementedError("packed prompt passes run with the PyTorch backend")
 
@@ -665,23 +745,48 @@ class _JaxBackend(_Grouped):
         self._hold([], [])
         last = self.max_seq - 1
 
+        def logprobs(logits: Any, produced: Any, top: int) -> Any:
+            if top < 0:
+                return ()
+            scores = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
+            chosen = jnp.take_along_axis(scores, produced[:, None], -1)[:, 0]
+            values, ids = jax.lax.top_k(scores, max(top, 1))
+            return chosen, ids[:, :top], values[:, :top]
+
         # `held` is each row's temperature, top-k, top-p, and seed key.
         def admit(
-            tokens: Any, positions: Any, logits: Any, rows: Any, lengths: Any, held: Any, need: int
+            tokens: Any,
+            positions: Any,
+            logits: Any,
+            rows: Any,
+            lengths: Any,
+            held: Any,
+            need: int,
+            top: int,
         ) -> Any:
             temperature, top_k, top_p, keys = held
             first = draw_jax(
                 logits, temperature[rows], top_k[rows], top_p[rows], keys[rows], lengths, need
             )
-            return tokens.at[rows, 0].set(first), positions.at[rows].set(lengths), first
+            return (
+                tokens.at[rows, 0].set(first),
+                positions.at[rows].set(lengths),
+                first,
+                logprobs(logits, first, top),
+            )
 
-        def advance(logits: Any, positions: Any, held: Any, need: int) -> Any:
+        def advance(logits: Any, positions: Any, held: Any, need: int, top: int) -> Any:
             temperature, top_k, top_p, keys = held
             produced = draw_jax(logits, temperature, top_k, top_p, keys, positions + 1, need)
-            return produced.reshape(-1, 1), jnp.minimum(positions + 1, last), produced
+            return (
+                produced.reshape(-1, 1),
+                jnp.minimum(positions + 1, last),
+                produced,
+                logprobs(logits, produced, top),
+            )
 
-        self._admit: Any = jax.jit(admit, static_argnames="need")
-        self._advance: Any = jax.jit(advance, static_argnames="need")
+        self._admit: Any = jax.jit(admit, static_argnames=("need", "top"))
+        self._advance: Any = jax.jit(advance, static_argnames=("need", "top"))
 
     def _put(self, values: list[Any], dtype: Any = None) -> Any:
         return self.jnp.asarray(self.np.asarray(values, dtype=dtype or self.np.int32))
@@ -707,32 +812,43 @@ class _JaxBackend(_Grouped):
         slots: list[int],
         lengths: list[int],
         sampling: list[Sampling],
+        top: int = -1,
     ) -> _Tokens:
         rows, at = self._put(slots), self._put(lengths)
         logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at])
         self._hold(slots, sampling)
-        self.tokens, self.positions, first = self._admit(
-            self.tokens, self.positions, logits, rows, at, self.held, need=mode(sampling)
+        self.tokens, self.positions, first, logprobs = self._admit(
+            self.tokens, self.positions, logits, rows, at, self.held, need=mode(sampling), top=top
         )
-        return _JaxTokens(first)
+        return _JaxTokens(first, logprobs)
 
-    def decode(self, need: int) -> _Tokens:
+    def decode(self, need: int, top: int = -1) -> _Tokens:
         logits = self.model.run_entry("decode_rows", [self.tokens, self.positions])
-        self.tokens, self.positions, produced = self._advance(
-            logits, self.positions, self.held, need=need
+        self.tokens, self.positions, produced, logprobs = self._advance(
+            logits, self.positions, self.held, need=need, top=top
         )
-        return _JaxTokens(produced)
+        return _JaxTokens(produced, logprobs)
 
 
 class _JaxTokens:
-    def __init__(self, values: Any) -> None:
+    def __init__(self, values: Any, logprobs: tuple[Any, ...] = ()) -> None:
         self.values = values
-        values.copy_to_host_async()
+        self.extra = logprobs
+        for part in (values, *logprobs):
+            part.copy_to_host_async()
 
     def tolist(self) -> list[int]:
         import numpy as np
 
         return np.asarray(self.values).tolist()
+
+    def logprobs(self) -> _Logprobs | None:
+        import numpy as np
+
+        if not self.extra:
+            return None
+        chosen, ids, values = (np.asarray(part).tolist() for part in self.extra)
+        return chosen, ids, values
 
 
 class _OnnxBackend(_Grouped):
@@ -761,9 +877,12 @@ class _OnnxBackend(_Grouped):
         slots: list[int],
         lengths: list[int],
         sampling: list[Sampling],
+        top: int = -1,
     ) -> _Tokens:
         np = self.np
         need = mode(sampling)
+        # The argmax in the graph unless the logits themselves are needed.
+        on_device = not need and top < 0
         out = self.model.run_entry(
             "prefill_slots",
             [
@@ -771,27 +890,43 @@ class _OnnxBackend(_Grouped):
                 np.asarray(slots, dtype=np.int32),
                 np.asarray(lengths, dtype=np.int32),
             ],
-            argmax=not need,
+            argmax=on_device,
         )
-        first = out.reshape(-1) if not need else draw_numpy(out, sampling, lengths, need)
+        first = out.reshape(-1) if on_device else draw_numpy(out, sampling, lengths, need)
         for slot, row in zip(slots, sampling, strict=True):
             self.sampling[slot] = row
         self.tokens[slots, 0] = first
         self.positions[slots] = lengths
-        return first
+        return _HostTokens(first, _logprobs_numpy(out, first, top) if top >= 0 else None)
 
-    def decode(self, need: int) -> _Tokens:
+    def decode(self, need: int, top: int = -1) -> _Tokens:
         np = self.np
+        on_device = not need and top < 0
         out = self.model.run_entry(
-            "decode_rows", [self.tokens, self.positions], argmax=not need, cuda_graph=True
+            "decode_rows", [self.tokens, self.positions], argmax=on_device, cuda_graph=True
         )
-        if need:
-            produced = draw_numpy(out, self.sampling, self.positions + 1, need)
-        else:
+        if on_device:
             produced = out.reshape(-1)
+        else:
+            produced = draw_numpy(out, self.sampling, self.positions + 1, need)
         self.tokens = produced.astype(np.int32).reshape(self.slots, 1)
         self.positions = np.minimum(self.positions + 1, self.max_seq - 1)
-        return produced
+        return _HostTokens(produced, _logprobs_numpy(out, produced, top) if top >= 0 else None)
+
+
+class _HostTokens:
+    """A pass's tokens already on the host, and its log-probabilities when
+    it computed them."""
+
+    def __init__(self, values: Any, logprobs: _Logprobs | None) -> None:
+        self.values = values
+        self.computed = logprobs
+
+    def tolist(self) -> list[int]:
+        return self.values.tolist()
+
+    def logprobs(self) -> _Logprobs | None:
+        return self.computed
 
 
 __all__ = ["Completion", "Engine", "Request", "Sampling", "Stats"]
