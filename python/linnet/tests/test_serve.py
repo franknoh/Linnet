@@ -116,6 +116,59 @@ where
         return head.forward(ends)
     }
 
+    // `prefill_packed`'s prompts and `decode_rows`'s step for every row in one
+    // pass: the projections run once over all `P + Batch` tokens, each
+    // token's key and value go to its row at its position, and the prompts
+    // attend among themselves while each row's step attends over its row.
+    // Logits after each prompt's last token, then each row's step.
+    pub entry step_packed<P: Dim>(
+        tokens: Tensor[P; i32],
+        rows: Tensor[P; i32],
+        at: Tensor[P; i32],
+        segments: Tensor[P; i32],
+        last: Tensor[Batch; i32],
+        step_tokens: Tensor[Batch, 1; i32],
+        step_at: Tensor[Batch; i32],
+    ) -> Tensor[2 * Batch, Vocab; T]
+    where P > 0 {
+        let every = concat(tokens, reshape(step_tokens, [Batch]), axis = 0)
+        let every_at = concat(at, step_at, axis = 0)
+        let x =
+            embedding.forward(reshape(every, [1, P + Batch])) +
+            reshape(positions.forward(every_at), [1, P + Batch, H])
+        let k = heads<1, P + Batch>(k_proj.forward(x))
+        let v = heads<1, P + Batch>(v_proj.forward(x))
+        let every_row = concat(rows, iota<i32>(Batch), axis = 0)
+        cache_k = write_tokens(cache_k, k, every_row, every_at)
+        cache_v = write_tokens(cache_v, v, every_row, every_at)
+        let q = heads<1, P + Batch>(q_proj.forward(x))
+        let own[i, j] = segments[i] == segments[j] && at[j] <= at[i]
+        let prompts = grouped_attention(
+            q[:, :, 0:P, :],
+            k[:, :, 0:P, :],
+            v[:, :, 0:P, :],
+            rsqrt(cast<f32>(H / Heads)),
+            some(own),
+        )
+        let slots = iota<i32>(MaxSeq)
+        let seen[b, s] = slots[s] <= step_at[b]
+        let steps = grouped_attention_rows(
+            permute(q[:, :, P:P + Batch, :], [2, 1, 0, 3]),
+            cache_k,
+            cache_v,
+            rsqrt(cast<f32>(H / Heads)),
+            reshape(seen, [Batch, 1, MaxSeq]),
+        )
+        let mixed = concat(
+            merge<1, P>(prompts),
+            permute(merge<Batch, 1>(steps), [1, 0, 2]),
+            axis = 1,
+        )
+        let out = x + mixed
+        let ends[m, h] = out[0, cast<i64>(last[m]), h]
+        return head.forward(concat(ends, out[0, P:P + Batch, :], axis = 0))
+    }
+
     pub entry decode_rows(
         tokens: Tensor[Batch, 1; i32],
         at: Tensor[Batch; i32],
@@ -387,6 +440,34 @@ def test_onnx_bf16_values_cross_as_bits() -> None:
     assert bits.dtype == np.uint16
     back = _decode(bits, 16)
     np.testing.assert_allclose(back, values, rtol=4e-3)
+
+
+def test_steps_ride_along_with_prompts(
+    model_files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step that admits prompts while other rows decode takes their step
+    in the same pass (`step_packed`): the same tokens as passes apart."""
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    requests = _requests()
+    apart, _ = Engine(model, graphs=False, pack=48, mix=False).run(requests)
+    engine = Engine(model, graphs=False, pack=48)
+    assert engine.mix
+    passes: list[int] = []
+    step_packed = engine.backend.step_packed
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        passes.append(len(args[0]))
+        return step_packed(*args, **kwargs)
+
+    monkeypatch.setattr(engine.backend, "step_packed", counted)
+    together, _ = engine.run(requests)
+    # Rows freed one by one while others decoded, so prompts went in with
+    # their steps.
+    assert passes
+    assert [c.tokens for c in together] == [c.tokens for c in apart]
+    for completion in together:
+        assert completion.tokens == _greedy(model, completion.request)
 
 
 def test_requests_arriving_while_others_run(model_files: tuple[Path, Path]) -> None:
