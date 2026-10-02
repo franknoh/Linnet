@@ -296,10 +296,10 @@ private:
                 std::string_view rest = *text;
                 while (!rest.empty()) {
                     const std::size_t comma = rest.find(',');
-                    const std::string_view part = rest.substr(0, comma);
+                    const std::string part(rest.substr(0, comma));
                     std::int64_t value = 0;
-                    const auto* end = part.data() + part.size();
-                    if (part.empty() || std::from_chars(part.data(), end, value).ptr != end ||
+                    const char* end = part.c_str() + part.size();
+                    if (part.empty() || std::from_chars(part.c_str(), end, value).ptr != end ||
                         value < 0) {
                         fail("`" + *text + "` is not a list of dimensions for `" +
                              std::string(generic.name) + "`");
