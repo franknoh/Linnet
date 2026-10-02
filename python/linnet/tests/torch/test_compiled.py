@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
@@ -117,6 +118,45 @@ def test_decode_replays_as_one_cuda_graph() -> None:
     fast = graphed._fast.values()  # pyright: ignore[reportPrivateUsage]
     captured = [prepared for prepared in fast if prepared.generated.captured]
     assert len(captured) == 1 and captured[0].graph is not None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_a_compile_under_capture_defers_the_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A step that has to compile again when it is captured -- which a
+    capture cannot -- runs that call as it is and captures on the next."""
+    reference = load(LLAMA, generics=GENERICS, std_root=STDLIB, device="cuda", compile=True)
+    graphed = load(
+        LLAMA, generics=GENERICS, std_root=STDLIB, device="cuda", compile="reduce-overhead"
+    )
+    weights = _weights(reference)
+    reference.load_state_dict(weights, strict=False)
+    graphed.load_state_dict(weights, strict=False)
+    assert isinstance(graphed, CompiledLinnetModule)
+    from torch._dynamo.exc import TorchRuntimeError  # pyright: ignore[reportPrivateUsage]
+
+    capture = graphed._capture  # pyright: ignore[reportPrivateUsage]
+    attempts: list[int] = []
+
+    def compiles_once(prepared: Any, static: list[torch.Tensor]) -> Any:
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise TorchRuntimeError("torch.compile cannot JIT compile during CUDA graph capture.")
+        return capture(prepared, static)
+
+    monkeypatch.setattr(graphed, "_capture", compiles_once)
+    tokens = torch.randint(0, 11, (2, 6), dtype=torch.int32, device="cuda")
+    for pos in range(6):
+        step = torch.tensor(pos, dtype=torch.int32, device="cuda")
+        torch.testing.assert_close(
+            graphed.run_entry("decode", [tokens[:, pos : pos + 1], step]),
+            reference.run_entry("decode", [tokens[:, pos : pos + 1], step]),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+    # The second call's capture failed; the third's held.
+    assert attempts == [0, 1]
+    fast = graphed._fast.values()  # pyright: ignore[reportPrivateUsage]
+    assert any(prepared.graph is not None for prepared in fast if prepared.generated.captured)
 
 
 def test_sibling_linears_run_as_one_product() -> None:
