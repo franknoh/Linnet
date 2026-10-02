@@ -124,7 +124,7 @@ A slice `start:stop:step` keeps its axis with extent `max(0, (min(stop, D) - sta
 
 Inside index notation (section 6) every tensor access MUST index all axes, using index variables, a pack index, or integers. An integer there may be computed from runtime data, typically another tensor's element, as in `x[b, labels[b]]`; such an access is a gather (§6.4).
 
-*Informative:* the reference exporters accept a runtime index inside index notation; outside it they currently require compile-time indices, so `let v[k] = x[at[k]]` is the portable spelling.
+Outside index notation an access with a runtime index means the same as the comprehension over the axes that remain: `x[i, :]` is `let r[j] = x[i, j]`, and `x[i, 1:3]` slices that result. Core IR lowers it that way, so every backend reads it as a gather.
 
 ## 5.9 Shape literals
 

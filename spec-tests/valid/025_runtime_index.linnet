@@ -1,0 +1,16 @@
+module tests.runtime_index
+
+// Integer indices known only at run time, outside index notation: each
+// reads the position it holds, as a gather.
+pub entry pick<N: Dim, M: Dim>(
+    x: Tensor[N, M; f32],
+    i: i64,
+    j: i32,
+) -> (f32, Tensor[M; f32], Tensor[N; f32]) {
+    return (x[i, j], x[i], x[:, j])
+}
+
+pub entry window<N: Dim, M: Dim>(x: Tensor[N, M; f32], i: i64) -> Tensor[2; f32]
+where M >= 3 {
+    return x[i, 1:3]
+}
