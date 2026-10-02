@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed as dist
-import torch.multiprocessing as mp
 from safetensors.torch import save_file  # type: ignore[import-untyped]
+from torch.multiprocessing.spawn import spawn
 
 from linnet.torch import load
 
@@ -96,7 +96,7 @@ def test_each_process_holds_its_part_and_gets_the_whole_result(tmp_path: Path) -
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     out = str(tmp_path / "result")
-    mp.spawn(_shard, args=(port, str(source), str(weights), out), nprocs=2, join=True)
+    spawn(_shard, args=(port, str(source), str(weights), out), nprocs=2, join=True)
     for rank in range(2):
         result = torch.load(f"{out}.{rank}")
         torch.testing.assert_close(result["y"], expected, atol=1e-5, rtol=1e-5)

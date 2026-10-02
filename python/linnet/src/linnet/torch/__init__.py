@@ -144,13 +144,18 @@ def load(
         return placed
     if compile is None:
         compile = torch.device(device).type == "cuda"
-    shards = tensor_parallel is not None and any(
-        g["name"] == "Shards" for g in plan.root.get("generics", [])
+    # A model that says how it splits (a `Shards` generic) runs one shard per
+    # process; any other is split from the outside, as DTensors.
+    mesh: Any = (
+        tensor_parallel
+        if tensor_parallel is not None
+        and any(g["name"] == "Shards" for g in plan.root.get("generics", []))
+        else None
     )
-    if shards:
+    if mesh is not None:
         if not compile:
             raise PlanError("a sharded model runs as generated code: pass compile=")
-        generics = {**generics, "Shards": tensor_parallel.size()}
+        generics = {**generics, "Shards": mesh.size()}
     module: LinnetModule
     if compile:
         module = CompiledLinnetModule(
@@ -164,16 +169,16 @@ def load(
         )
     else:
         module = LinnetModule(plan, generics, torch.device(device))
-    shard = (tensor_parallel.get_local_rank(), tensor_parallel.size()) if shards else None
+    shard = (mesh.get_local_rank(), mesh.size()) if mesh is not None else None
     if weights is not None:
         bind_weights(module, weights, bindings, strict=strict, cast_dtype=cast_dtype, shard=shard)
     if trainable:
         for parameter in module.parameters():
             parameter.requires_grad_(True)
     module.amp = precision
-    if shards:
+    if mesh is not None:
         assert isinstance(module, CompiledLinnetModule)
-        module.shard_group = tensor_parallel.get_group()
+        module.shard_group = mesh.get_group()
     elif tensor_parallel is not None:
         from .parallel import distribute
 
