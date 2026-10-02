@@ -754,6 +754,46 @@ public:
                 " * " + name(1));
             return operands[2] ? define(scaled + " + " + name(2)) : scaled;
         }
+        if (implementation_base == "linnet.sink_attention" && operands.size() == 6 && operands[0] &&
+            operands[1] && operands[5]) {
+            // FlexAttention under `torch.compile` where its blocks pay off, as
+            // for `_attend` -- the sink folded in from its log-sum-exp -- and
+            // otherwise two products around the softmax with the sink in it.
+            sink_helper_ = true;
+            flex_helpers_ = true;
+            const Dims& query = operands[0]->shape;
+            const Dims& key = operands[1]->shape;
+            const Dims& mask = operands[5]->shape;
+            std::string blocks = "None";
+            const std::int64_t block_q = 128;
+            std::int64_t block_k = 128;
+            if (query.size() == 4 && key.size() == 4 && mask.size() == 3 && key[1] > 0 &&
+                query[1] % key[1] == 0 && query[3] >= 16 && query[3] <= 256) {
+                const std::int64_t queries = query[2];
+                const std::int64_t keys = key[2];
+                block_k = queries == 1 ? 64 : 128;
+                const std::int64_t group = query[1] / key[1];
+                const bool whole_group = (group & (group - 1)) == 0;
+                if (keys % block_k == 0 && (queries <= block_q || queries % block_q == 0) &&
+                    (queries > 1 || (mask[0] > 1 && whole_group))) {
+                    const std::string sizes =
+                        std::to_string(queries) + ", " + std::to_string(keys) + ", " +
+                        std::to_string(block_q) + ", " + std::to_string(block_k);
+                    const std::string key_of = name(5) + "/" + sizes;
+                    auto found = flex_blocks_.find(key_of);
+                    if (found == flex_blocks_.end()) {
+                        found = flex_blocks_
+                                    .emplace(key_of,
+                                             define("_flex_blocks(" + name(5) + ", " + sizes + ")"))
+                                    .first;
+                    }
+                    blocks = found->second;
+                }
+            }
+            return define("_sink_attend(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ", " + name(5) + ", " + scalar(4) + ", " + blocks + ", " +
+                          std::to_string(block_q) + ", " + std::to_string(block_k) + ")");
+        }
         if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5) {
             // A square causal mask becomes `is_causal=True`, which lets PyTorch
@@ -892,6 +932,9 @@ public:
         }
         if (flex_helpers_) {
             out += flex_helpers();
+        }
+        if (sink_helper_) {
+            out += sink_helper();
         }
         if (shards_helper_) {
             out += shards_helper();
@@ -1589,6 +1632,65 @@ private:
                "\n\n";
     }
 
+    static std::string sink_helper() {
+        return "def _sink_attend(query, key, value, sinks, mask, scale, blocks, block_q, "
+               "block_k):\n"
+               "    \"\"\"`std.nn.attention::sink_attention`: attention whose softmax also\n"
+               "    counts one logit per query head, that share then dropped. Compiled for\n"
+               "    CUDA, FlexAttention over the blocks the mask reaches, each row scaled by\n"
+               "    the share its keys keep against the sink, `sigmoid(lse - sink)`;\n"
+               "    otherwise two products around the softmax with the sink in it.\"\"\"\n"
+               "    batch, heads, queries, width = query.shape\n"
+               "    kv_heads, keys = key.shape[1], key.shape[2]\n"
+               "    group = heads // kv_heads\n"
+               "    rows = mask.reshape(-1, queries, keys)\n"
+               "    sink = sinks.float()\n"
+               "    if blocks is not None and torch.compiler.is_compiling() and not "
+               "_split(query):\n"
+               "        from torch.nn.attention.flex_attention import BlockMask, "
+               "flex_attention\n"
+               "\n"
+               "        per_row = rows.shape[0] > 1\n"
+               "\n"
+               "        def mask_mod(b, h, q, kv):\n"
+               "            return rows[b if per_row else 0, q, kv]\n"
+               "\n"
+               "        count, order, whole_count, whole_order = blocks\n"
+               "        block_mask = BlockMask.from_kv_blocks(\n"
+               "            count,\n"
+               "            order,\n"
+               "            whole_count,\n"
+               "            whole_order,\n"
+               "            BLOCK_SIZE=(block_q, block_k),\n"
+               "            mask_mod=mask_mod,\n"
+               "            seq_lengths=(queries, keys),\n"
+               "        )\n"
+               "        out, lse = flex_attention(\n"
+               "            query,\n"
+               "            key,\n"
+               "            value,\n"
+               "            block_mask=block_mask,\n"
+               "            scale=scale,\n"
+               "            enable_gqa=group > 1,\n"
+               "            return_lse=True,\n"
+               "        )\n"
+               "        keep = torch.sigmoid(lse.float() - sink[:, None])\n"
+               "        return (out.float() * keep[..., None]).to(query.dtype)\n"
+               "    grouped = query.reshape(batch, kv_heads, group * queries, width)\n"
+               "    scores = torch.matmul(grouped, key.transpose(-1, -2)).float() * scale\n"
+               "    scores = scores.reshape(batch, kv_heads, group, queries, keys)\n"
+               "    scores = scores.masked_fill(~rows.reshape(rows.shape[0], 1, 1, queries, "
+               "keys), -1e30)\n"
+               "    sink = sink.reshape(1, kv_heads, group, 1, 1)\n"
+               "    peak = torch.maximum(scores.amax(-1, keepdim=True), sink)\n"
+               "    shifted = torch.exp(scores - peak)\n"
+               "    total = shifted.sum(-1, keepdim=True) + torch.exp(sink - peak)\n"
+               "    weights = (shifted / total).to(value.dtype)\n"
+               "    weights = weights.reshape(batch, kv_heads, group * queries, keys)\n"
+               "    return torch.matmul(weights, value).reshape(batch, heads, queries, width)\n"
+               "\n\n";
+    }
+
     static std::string shards_helper() {
         return "# The process group a sharded model's processes run over, which the\n"
                "# runtime sets (`load(tensor_parallel=...)`); None for one process.\n"
@@ -1829,6 +1931,7 @@ private:
     bool int4_helpers_ = false;                      // `_int4_pack` and `_int4_linear` are used
     bool experts_helper_ = false;                    // `_linear_experts` is used
     bool flex_helpers_ = false;                      // `_flex_blocks` and `_attend` are used
+    bool sink_helper_ = false;                       // `_sink_attend` is used
     bool shards_helper_ = false;                     // `_all_reduce` is used
     bool mxfp4_helper_ = false;                      // `_mxfp4_experts` is used
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
