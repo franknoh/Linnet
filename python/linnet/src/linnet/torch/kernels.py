@@ -234,4 +234,55 @@ def int4_linear(
     return y if split == 1 else y.sum(0).to(x.dtype)
 
 
-__all__ = ["int4_linear", "mxfp4_experts"]
+@triton.jit
+def one_shot_all_reduce_kernel(
+    x_ptr,
+    out_ptr,
+    buffers_ptr,
+    flags_ptr,
+    counters_ptr,
+    n,
+    capacity,
+    rank: tl.constexpr,
+    world: tl.constexpr,
+    block_size: tl.constexpr,
+):
+    block = tl.program_id(0)
+    # This block's call count, kept by it alone: the epoch the same
+    # block of every process agrees on, as they all make the same calls.
+    epoch = tl.load(counters_ptr + block) + 1
+    tl.store(counters_ptr + block, epoch)
+    # Two slots, alternating: a peer may still be reading this call's
+    # predecessor's part, never the one before that, which it finished
+    # before it flagged the predecessor.
+    slot = (epoch % 2).to(tl.int64) * capacity
+    dtype = x_ptr.dtype.element_ty
+    offsets = block * block_size + tl.arange(0, block_size)
+    live = offsets < n
+    x = tl.load(x_ptr + offsets, mask=live, other=0.0)
+    mine = tl.load(buffers_ptr + rank).to(tl.pointer_type(dtype))
+    tl.store(mine + slot + offsets, x, mask=live)
+    tl.debug_barrier()
+    # This block's part is in place: tell every peer, in its flags at
+    # (block, rank), then wait until every peer has told us.
+    for peer in tl.static_range(world):
+        if peer != rank:
+            theirs = tl.load(flags_ptr + peer).to(tl.pointer_type(tl.int32))
+            tl.atomic_xchg(theirs + block * world + rank, epoch, sem="release", scope="sys")
+    own = tl.load(flags_ptr + rank).to(tl.pointer_type(tl.int32))
+    for peer in tl.static_range(world):
+        if peer != rank:
+            seen = tl.atomic_add(own + block * world + peer, 0, sem="acquire", scope="sys")
+            while seen < epoch:
+                seen = tl.atomic_add(own + block * world + peer, 0, sem="acquire", scope="sys")
+    tl.debug_barrier()
+    total = x.to(tl.float32)
+    for peer in tl.static_range(world):
+        if peer != rank:
+            part = tl.load(buffers_ptr + peer).to(tl.pointer_type(dtype))
+            read = tl.load(part + slot + offsets, mask=live, other=0.0, volatile=True)
+            total += read.to(tl.float32)
+    tl.store(out_ptr + offsets, total.to(dtype), mask=live)
+
+
+__all__ = ["int4_linear", "mxfp4_experts", "one_shot_all_reduce_kernel"]
