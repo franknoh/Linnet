@@ -1,4 +1,5 @@
-"""Materialize Linnet models as PyTorch modules, and export PyTorch modules as Linnet."""
+"""Materialize Linnet models as PyTorch modules and Linnet functions as PyTorch
+functions, and export PyTorch modules as Linnet."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import torch
 from ..plan import Plan, PlanError, compile_plan
 from .compiled import CompiledLinnetModule
 from .export import ExportError, ExportResult, export_linnet
+from .function import Function, load_function
 from .module import LinnetModule, bind_weights
 from .placement import Placement
 from .placement import apply as apply_placement
@@ -21,6 +23,7 @@ __all__ = [
     "CompiledLinnetModule",
     "ExportError",
     "ExportResult",
+    "Function",
     "LinnetModule",
     "Placement",
     "Plan",
@@ -29,6 +32,7 @@ __all__ = [
     "compile_plan",
     "export_linnet",
     "load",
+    "load_function",
 ]
 
 

@@ -69,16 +69,20 @@ void print_usage(std::FILE* out) {
         "Usage: linnet <command> [options]\n"
         "\n"
         "Commands:\n"
-        "  plan [--root <Block>] [--std <dir>] [--numerics exact|equivalent|fast]\n"
-        "       [--no-optimize] <file>\n"
+        "  plan [--root <Block> | --functions] [--std <dir>]\n"
+        "       [--numerics exact|equivalent|fast] [--no-optimize] <file>\n"
         "                                       Print the materializer plan (JSON) of a\n"
-        "                                       root block and everything it uses\n"
+        "                                       root block and everything it uses; with\n"
+        "                                       --functions, of the module-level entries\n"
         "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
         "            [--numerics exact|equivalent|fast]\n"
         "            [--optionals present|absent] [--absent <param>]...\n"
         "            [--absent-file <file>] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
-        "                                       static shapes; parameters are arguments\n"
+        "                                       static shapes; parameters are arguments.\n"
+        "                                       --entry names an entry of the root block\n"
+        "                                       or a module-level entry (a function of\n"
+        "                                       its inputs alone, exported on its own)\n"
         "  onnx [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
         "  torch [same options as stablehlo] [--place <block>=<slot>]...\n"
@@ -521,10 +525,13 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     std::string numerics = "exact";
     std::string_view path;
     bool is_optimized = true;
+    bool functions = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (arg == "--no-optimize") {
             is_optimized = false;
+        } else if (arg == "--functions") {
+            functions = true;
         } else if (arg == "--std" || arg == "--root" || arg == "--numerics") {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
@@ -540,6 +547,9 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     }
     if (path.empty()) {
         return usage_error("plan requires a file");
+    }
+    if (functions && !root.empty()) {
+        return usage_error("plan takes --root or --functions, not both");
     }
     SourceManager sources;
     DiagnosticSink sink;
@@ -571,7 +581,7 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
         opt::run_pipeline(core, opt::optimizing_passes(*allowed));
     }
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
-    const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules});
+    const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules, functions});
     if (!plan) {
         std::fprintf(stderr, "linnet: %s\n", plan.error().c_str());
         return exit_failure;

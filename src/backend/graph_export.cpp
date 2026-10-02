@@ -66,16 +66,16 @@ public:
     }
 
     std::string run() {
-        const EntityId root = find_root();
+        // No root block: the entry is a module-level one, a function of its
+        // inputs alone, with no `self`, parameters, or state.
+        const std::optional<EntityId> root = find_root();
         const ir::Function& entry = find_entry(root);
-        const Substitution root_subst = root_bindings(root);
-
-        Val self;
-        self.kind = Val::Kind::Block;
-        self.block = root;
-        self.subst = root_subst;
+        const Substitution root_subst = root ? root_bindings(*root) : Substitution{};
 
         if (placing()) {
+            if (!root) {
+                fail("placement spreads a model's blocks over devices; a function has none");
+            }
             if (!target_.supports_placement()) {
                 fail("this target cannot place blocks on devices; placement is for `torch`");
             }
@@ -92,14 +92,24 @@ public:
         Frame frame;
         frame.subst = entry_bindings(entry, root_subst);
         const ir::Block& body = module_.block(module_.region(entry.body).blocks.front());
-        frame.values[body.arguments.front()] = self;
-        for (std::size_t i = 1; i < body.arguments.size(); ++i) {
+        std::size_t first_input = 0;
+        if (root) {
+            Val self;
+            self.kind = Val::Kind::Block;
+            self.block = *root;
+            self.subst = root_subst;
+            frame.values[body.arguments.front()] = self;
+            first_input = 1;
+        }
+        for (std::size_t i = first_input; i < body.arguments.size(); ++i) {
             const ir::ValueId argument = body.arguments[i];
             Val value = tensor_value(module_.value(argument).type, frame.subst);
             value.name = target_.input(module_.value(argument).name, value.shape, value.dtype);
             frame.values[argument] = value;
         }
-        collect_parameters(root, root_subst, "");
+        if (root) {
+            collect_parameters(*root, root_subst, "");
+        }
         frames_.push_back(std::move(frame));
         const std::vector<Val> results = run_block(body);
         frames_.pop_back();
@@ -123,7 +133,7 @@ public:
         return target_.finish(outputs,
                               final_states,
                               model_.module_paths.at(options_.root_module),
-                              std::string(model_.entities[root].name),
+                              root ? std::string(model_.entities[*root].name) : std::string(),
                               std::string(model_.entities[entry.entity].name));
     }
 
@@ -145,7 +155,28 @@ private:
 
     // ------------------------------------------------------------- roots
 
-    EntityId find_root() const {
+    // The root block, or nothing for a module-level entry: one `--entry`
+    // names without `--root`, or the only one of a file whose blocks have
+    // no entries.
+    std::optional<EntityId> find_root() const {
+        if (options_.root.empty()) {
+            if (!options_.entry.empty() && is_module_entry(options_.entry)) {
+                for (EntityId id = 0; id < model_.entities.size(); ++id) {
+                    const Entity& entity = model_.entities[id];
+                    if (entity.kind == EntityKind::Block && entity.parent == no_entity &&
+                        entity.module == options_.root_module &&
+                        has_entry_named(id, options_.entry)) {
+                        fail("both the module and block `" + std::string(entity.name) +
+                             "` have an entry `" + options_.entry + "`: pass --root " +
+                             std::string(entity.name) + " for the block's, or rename one");
+                    }
+                }
+                return std::nullopt;
+            }
+            if (!any_block_entry() && is_module_entry("")) {
+                return std::nullopt;
+            }
+        }
         std::vector<EntityId> candidates;
         for (EntityId id = 0; id < model_.entities.size(); ++id) {
             const Entity& entity = model_.entities[id];
@@ -176,21 +207,50 @@ private:
         return candidates.front();
     }
 
-    const ir::Function& find_entry(EntityId root) const {
+    // Whether `owner` (a block, or `no_entity` for the root module itself)
+    // declares an entry called `name`; any entry for an empty `name`.
+    bool has_entry_named(EntityId owner, std::string_view name) const {
+        for (const ir::Function& function : module_.functions()) {
+            const Entity& entity = model_.entities[function.entity];
+            if (function.is_entry && entity.parent == owner &&
+                entity.module == options_.root_module && (name.empty() || entity.name == name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool is_module_entry(std::string_view name) const { return has_entry_named(no_entity, name); }
+
+    bool any_block_entry() const {
+        for (const ir::Function& function : module_.functions()) {
+            const Entity& entity = model_.entities[function.entity];
+            if (function.is_entry && entity.parent != no_entity &&
+                entity.module == options_.root_module) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const ir::Function& find_entry(std::optional<EntityId> root) const {
+        const EntityId owner = root.value_or(no_entity);
+        const char* const where = root ? "the block" : "the module";
         const ir::Function* found = nullptr;
         for (const ir::Function& function : module_.functions()) {
             const Entity& entity = model_.entities[function.entity];
-            if (!function.is_entry || entity.parent != root) {
+            if (!function.is_entry || entity.parent != owner ||
+                entity.module != options_.root_module) {
                 continue;
             }
             if (!options_.entry.empty() ? entity.name == options_.entry : found == nullptr) {
                 found = &function;
             } else if (options_.entry.empty()) {
-                fail("the block has several entries; name one with --entry");
+                fail(std::string(where) + " has several entries; name one with --entry");
             }
         }
         if (found == nullptr) {
-            fail(options_.entry.empty() ? "the block has no entry"
+            fail(options_.entry.empty() ? std::string(where) + " has no entry"
                                         : "no entry named `" + options_.entry + "`");
         }
         return *found;

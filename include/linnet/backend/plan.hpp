@@ -20,6 +20,9 @@ struct PlanOptions {
     std::string root; // name of the root block; empty selects the only block with entries
     std::uint32_t root_module = 0;
     std::span<const ast::Ast* const> modules; // the syntax trees the IR was lowered from
+    // No root block: `root` is null and the manifest empty, for running the
+    // module-level entries (functions of their inputs alone).
+    bool functions = false;
 };
 
 std::expected<std::string, std::string> export_plan(ir::Module& module, const PlanOptions& options);

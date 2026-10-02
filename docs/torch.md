@@ -207,6 +207,34 @@ Entries are ordinary differentiable PyTorch arithmetic, interpreted or
 generated, so autograd needs nothing else. `state` members are detached
 between calls: they carry values, not gradients.
 
+## Functions
+
+An `entry` declared at module level, outside any block, is a function of
+its inputs alone: a loss, a preprocessing step, a reward
+(`examples/09-functions`). `load_function` returns one as a PyTorch
+function.
+
+```python
+from linnet.torch import load, load_function
+
+model = load("functions.linnet", generics={"In": 64, "Classes": 10}, trainable=True)
+cross_entropy = load_function("functions.linnet", "cross_entropy")
+loss = cross_entropy(model(x), labels)
+loss.backward()
+```
+
+Its generics are bound from each call's inputs, dimensions from shapes and
+dtype generics from dtypes, so one function serves every batch size and
+dtype. One the inputs leave open is given by name (`positions(offset,
+N=8)`), and a Python number passes for a scalar input. `compile=` works as
+for `load`: source generated per binding of the generics (through
+`torch.compile` or as CUDA graphs when a backend is named), or the
+interpreter; unset, it is generated for inputs on a CUDA device. Either way
+autograd differentiates the function, so a loss written in Linnet trains a
+model as `torch.nn.functional`'s would. A model's own entries can call the
+same functions -- the example's `Classifier.loss` does -- which keeps a
+training objective inside the model's program.
+
 ## Exporting a PyTorch model
 
 ```python

@@ -38,6 +38,12 @@ struct TensorInfo {
     sema::ScalarKind dtype = sema::ScalarKind::F32;
 };
 
+// What an export is of, for the document's header: `Block.entry`, or the
+// entry's name alone when it is a module-level one (no block).
+inline std::string entry_label(const std::string& block_name, const std::string& entry_name) {
+    return block_name.empty() ? entry_name : block_name + "." + entry_name;
+}
+
 enum class Elementwise : std::uint8_t {
     Add,
     Sub,

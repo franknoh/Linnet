@@ -96,6 +96,29 @@ Mixed precision takes f32 master parameters and computes in bf16:
 parameters given to `apply` to `bf16` on every call, so `jax.grad` returns
 gradients in f32 for an f32 optimizer state. `numerics="equivalent"` keeps
 softmax, normalization, and attention accumulating in f32.
+## load_function
+
+```python
+from linnet.jax import load_function
+
+cross_entropy = load_function("functions.linnet", "cross_entropy")
+
+def loss(params):
+    return cross_entropy(f.apply(params, tokens), labels)
+
+grads = jax.grad(loss)(f.parameters)
+```
+
+An `entry` declared at module level, outside any block, is a function of
+its inputs alone: a loss, a preprocessing step, a reward
+(`examples/09-functions`). `load_function` runs one as `jax.numpy` code
+that `linnet jax` generates for each binding of its generics, under
+`jax.jit`. The generics are bound from the inputs' shapes and dtypes, also
+inside `jax.grad`, `jax.jit`, and `jax.vmap`, which hand the function the
+abstract arrays they trace; one the inputs leave open is given by name
+(`positions(offset, N=8)`). `load_function` turns on `jax_enable_x64`, so
+`int64` inputs made before the first call stay 64-bit.
+
 ## Flax NNX
 
 ```python

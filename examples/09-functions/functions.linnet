@@ -1,0 +1,81 @@
+module examples.functions
+
+use std.nn.linear::{Linear}
+
+// Functions: entries declared at module level, outside any block. With no
+// parameters or state, each is a function of its inputs alone -- the parts
+// of a training or evaluation loop around a model: a loss, preprocessing, a
+// reward. Every backend exports one on its own, and in PyTorch and JAX it
+// differentiates like the rest of the program.
+
+// Mean cross-entropy of `logits` against class `labels`, in f32 whatever the
+// logits' dtype: the log-sum-exp of each row, its maximum taken out for
+// stability, less the labelled logit.
+pub entry cross_entropy<B: Dim, V: Dim, T: Float>(
+    logits: Tensor[B, V; T],
+    labels: Tensor[B; i64],
+) -> f32 {
+    let x = cast<f32>(logits)
+    let peak[b] = max[v] x[b, v]
+    let total[b] = sum[v] exp(x[b, v] - peak[b])
+    let loss[b] = log(total[b]) + peak[b] - x[b, labels[b]]
+    return sum[b] loss[b] / cast<f32>(B)
+}
+
+// Images as a vision model takes them: bytes in height-width-channel order
+// become floats in channel-height-width order, scaled to [0, 1] and
+// normalized per channel.
+pub entry normalize_images<B: Dim, H: Dim, W: Dim, C: Dim>(
+    pixels: Tensor[B, H, W, C; u8],
+    mean: Tensor[C; f32],
+    std: Tensor[C; f32],
+) -> Tensor[B, C, H, W; f32] {
+    let scaled[b, c, h, w] = (cast<f32>(pixels[b, h, w, c]) / 255.0 - mean[c]) / std[c]
+    return scaled
+}
+
+// The log-probability a policy gave each token it produced: the log-softmax
+// of the logits at every position, read at that position's token. Summed
+// over a sequence, it is what a policy-gradient update scales by the reward.
+pub entry token_log_probs<B: Dim, S: Dim, V: Dim, T: Float>(
+    logits: Tensor[B, S, V; T],
+    tokens: Tensor[B, S; i64],
+) -> Tensor[B, S; f32] {
+    let x = cast<f32>(logits)
+    let peak[b, s] = max[v] x[b, s, v]
+    let total[b, s] = sum[v] exp(x[b, s, v] - peak[b, s])
+    let chosen[b, s] = x[b, s, tokens[b, s]] - peak[b, s] - log(total[b, s])
+    return chosen
+}
+
+// A reward for generated sequences: the fraction of each reference's tokens
+// (its first `lengths[b]`, at least one) the generation reproduces, less
+// `penalty` times the fraction it gets wrong, so that a mostly wrong answer
+// scores below zero.
+pub entry match_reward<B: Dim, S: Dim>(
+    generated: Tensor[B, S; i64],
+    reference: Tensor[B, S; i64],
+    lengths: Tensor[B; i64],
+    penalty: f32,
+) -> Tensor[B; f32] {
+    let position = iota<i64>(S)
+    let hit[b, s] = (generated[b, s] == reference[b, s]) & (position[s] < lengths[b])
+    let matched[b] = sum[s] cast<f32>(hit[b, s])
+    let length[b] = cast<f32>(lengths[b])
+    let reward[b] = (matched[b] - penalty * (length[b] - matched[b])) / length[b]
+    return reward
+}
+
+// A model's entries can call the functions too: `loss` is the classifier's
+// training objective, computed in the same program as its logits.
+pub block Classifier<In: Dim, Classes: Dim, T: Float = f32> {
+    sub head: Linear<In, Classes, T>
+
+    pub entry forward<B: Dim>(x: Tensor[B, In; T]) -> Tensor[B, Classes; T] {
+        return head.forward(x)
+    }
+
+    pub entry loss<B: Dim>(x: Tensor[B, In; T], labels: Tensor[B; i64]) -> f32 {
+        return cross_entropy(head.forward(x), labels)
+    }
+}

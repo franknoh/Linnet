@@ -16,6 +16,8 @@ hand-written PyTorch references.
 | `07-vit` | A Vision Transformer: patches cut with `reshape` and `permute` whose element counts the checker proves from `Height % Patch == 0`, a class token concatenated after `broadcast_to`, a position table sized by `(Height / Patch) * (Width / Patch) + 1`, unmasked attention (`none`), and a pooling strategy chosen by matching a compile-time `enum` constant. |
 | `08-clip` | A CLIP-style dual encoder as a package whose towers are separate modules sharing one encoder module: the vision tower runs it without a mask (`none`), the text tower with `some(causal_mask(...))`, and the root block exposes three entries over the same parameters — `embed_image`, `embed_text`, and `similarity`, an L2-normalized contraction scaled by a learned temperature stored as a `Tensor[1; f32]`. |
 
+| `09-functions` | Functions: entries at module level, outside any block, with no parameters or state -- a cross-entropy loss whose dtype generic follows the logits, image preprocessing from `u8` pixels, per-token log-probabilities for a policy gradient, and a sequence reward with a scalar `f32` input -- and a classifier block whose `loss` entry calls the loss function in the model's own program. |
+
 Weights bind by parameter path (`linnet inspect --parameters`); the models
 have no implicit initialization, so the tests fill them with random tensors
 through SafeTensors.

@@ -379,7 +379,8 @@ class _Reader:
             for name, data in cast(dict[str, Any], document["blocks"]).items()
         }
         functions = [self.function(cast(dict[str, Any], f)) for f in document["functions"]]
-        root = cast(dict[str, Any], document["root"])
+        # A plan of functions (`--functions`) has no root block.
+        root = cast(dict[str, Any], document["root"] or {"name": ""})
         return Program(
             version=version,
             module=str(document["module"]),

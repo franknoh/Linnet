@@ -1064,7 +1064,8 @@ public:
         std::string out = "<ir_version: 10, opset_import: " + opsets +
                           ", producer_name: \"linnet\", "
                           "doc_string: \"" +
-                          block_name + "." + entry_name + " from module " + module_path + "\"";
+                          entry_label(block_name, entry_name) + " from module " + module_path +
+                          "\"";
         if (!metadata_.empty()) {
             out += ", metadata_props: [";
             for (std::size_t i = 0; i < metadata_.size(); ++i) {
