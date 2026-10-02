@@ -545,6 +545,17 @@ public:
             return define("_mxfp4_experts(" + x + ", " + name(1) + ", " + name(2) + ", " + name(3) +
                           ")");
         }
+        if ((implementation_base == "linnet.mxfp4_grouped(shared)" && operands.size() == 4) ||
+            (implementation_base == "linnet.mxfp4_grouped(combine)" && operands.size() == 5)) {
+            mxfp4_helper_ = true;
+            mxfp4_grouped_helper_ = true;
+            std::string call =
+                "_mxfp4_grouped(" + name(0) + ", " + name(1) + ", " + name(2) + ", " + name(3);
+            if (operands.size() == 5) {
+                call += ", " + name(4);
+            }
+            return define(call + ")");
+        }
         if (implementation_base == "torch.distributed.all_reduce" && operands.size() == 1 &&
             operands[0]) {
             shards_helper_ = true;
@@ -947,6 +958,9 @@ public:
         }
         if (mxfp4_helper_) {
             out += mxfp4_helper();
+        }
+        if (mxfp4_grouped_helper_) {
+            out += mxfp4_grouped_helper();
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1697,6 +1711,51 @@ private:
                "\n\n";
     }
 
+    static std::string mxfp4_grouped_helper() {
+        return "try:\n"
+               "    from linnet.torch.moe import available as _mxfp4_grouped_available\n"
+               "    from linnet.torch.moe import mxfp4_grouped as _mxfp4_grouped_op\n"
+               "except ImportError:  # the experts dequantized, as the bodies do\n"
+               "    _mxfp4_grouped_op = None\n"
+               "\n\n"
+               "def _mxfp4_grouped(x, blocks, scales, experts, weights=None):\n"
+               "    \"\"\"`std.quant::mxfp4_linear_experts_shared` (no `weights`, `x` [R, "
+               "In])\n"
+               "    and `mxfp4_combine_experts` (`x` [R, K, In], the products weighed by\n"
+               "    `weights` and summed per row). On a Hopper GPU in bf16,\n"
+               "    `linnet.torch.moe` multiplies each expert by the rows that chose it\n"
+               "    (`triton_kernels`' MXFP4 product where installed, bf16 experts\n"
+               "    otherwise); elsewhere every expert is dequantized and multiplied in\n"
+               "    the dense form the bodies take.\"\"\"\n"
+               "    rows, chosen = experts.shape\n"
+               "    count, out_features = blocks.shape[0], blocks.shape[1]\n"
+               "    shared = weights is None\n"
+               "    if _mxfp4_grouped_op is not None and _mxfp4_grouped_available(x):\n"
+               "        y = _mxfp4_grouped_op(x, blocks, scales, experts, shared)\n"
+               "        if shared:\n"
+               "            return y\n"
+               "        return (y.float() * weights.float()[..., None]).sum(1).to(x.dtype)\n"
+               "    table = torch.tensor(_FP4, dtype=torch.float32, device=x.device)\n"
+               "    values = torch.stack([table[(blocks & 15).long()], table[(blocks >> "
+               "4).long()]], dim=-1)\n"
+               "    factor = torch.exp2(scales.float() - 127)[..., None]\n"
+               "    weight = (values.reshape(*blocks.shape[:-1], 32) * factor).reshape(count, "
+               "out_features, -1)\n"
+               "    weight = weight.to(x.dtype)\n"
+               "    width = weight.shape[-1]\n"
+               "    if shared:\n"
+               "        every = F.linear(x, weight.reshape(count * out_features, width))\n"
+               "        every = every.reshape(rows, count, out_features)\n"
+               "        return every.gather(1, experts[..., None].expand(rows, chosen, "
+               "out_features))\n"
+               "    placed = torch.zeros(rows, count, width, dtype=x.dtype, device=x.device)\n"
+               "    placed.scatter_add_(1, experts[..., None].expand(rows, chosen, width), "
+               "weights[..., None] * x)\n"
+               "    joined = weight.permute(1, 0, 2).reshape(out_features, count * width)\n"
+               "    return F.linear(placed.reshape(rows, count * width), joined)\n"
+               "\n\n";
+    }
+
     static std::string shards_helper() {
         return "# The process group a sharded model's processes run over, which the\n"
                "# runtime sets (`load(tensor_parallel=...)`); None for one process.\n"
@@ -1940,6 +1999,7 @@ private:
     bool sink_helper_ = false;                       // `_sink_attend` is used
     bool shards_helper_ = false;                     // `_all_reduce` is used
     bool mxfp4_helper_ = false;                      // `_mxfp4_experts` is used
+    bool mxfp4_grouped_helper_ = false;              // `_mxfp4_grouped` is used
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value

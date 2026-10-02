@@ -86,6 +86,54 @@ def _mxfp4_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch
     return mxfp4_experts(x.expand(-1, experts.shape[1], -1), blocks, scales, experts)
 
 
+def mxfp4_grouped(
+    x: torch.Tensor,
+    blocks: torch.Tensor,
+    scales: torch.Tensor,
+    experts: torch.Tensor,
+    weights: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """`std.quant::mxfp4_linear_experts_shared` (no `weights`) and
+    `mxfp4_combine_experts`: `linnet.torch.moe` on a Hopper GPU in bf16
+    (each expert times the rows that chose it), every expert dequantized
+    and multiplied in the bodies' dense form otherwise."""
+    rows, chosen = experts.shape
+    count, out_features = blocks.shape[0], blocks.shape[1]
+    shared = weights is None
+    from .moe import available
+    from .moe import mxfp4_grouped as grouped
+
+    if available(x):
+        y = grouped(x, blocks, scales, experts, shared)
+        if weights is None:
+            return y
+        return (y.float() * weights.float()[..., None]).sum(1).to(x.dtype)
+    table = torch.tensor(_FP4, dtype=torch.float32, device=x.device)
+    values = torch.stack([table[(blocks & 15).long()], table[(blocks >> 4).long()]], dim=-1)
+    factor = torch.exp2(scales.float() - 127)[..., None]
+    weight = (values.reshape(*blocks.shape[:-1], 32) * factor).reshape(count, out_features, -1)
+    weight = weight.to(x.dtype)
+    width = weight.shape[-1]
+    if weights is None:
+        every = functional.linear(x, weight.reshape(count * out_features, width))
+        every = every.reshape(rows, count, out_features)
+        return every.gather(1, experts[..., None].expand(rows, chosen, out_features))
+    placed = torch.zeros(rows, count, width, dtype=x.dtype, device=x.device)
+    placed.scatter_add_(1, experts[..., None].expand(rows, chosen, width), weights[..., None] * x)
+    joined = weight.permute(1, 0, 2).reshape(out_features, count * width)
+    return functional.linear(placed.reshape(rows, count * width), joined)
+
+
+def _mxfp4_grouped_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, blocks, scales, experts = args
+    return mxfp4_grouped(x, blocks, scales, experts)
+
+
+def _mxfp4_grouped_combine(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    x, blocks, scales, experts, weights = args
+    return mxfp4_grouped(x, blocks, scales, experts, weights)
+
+
 def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.parallel::all_reduce` and `all_gather` in one process, which
     holds the whole model: one shard's sum, or its slices side by side, is the
@@ -364,6 +412,8 @@ NATIVE: dict[str, Native] = {
     "linnet.sink_attention": _sink_attention,
     "linnet.mxfp4_experts": _mxfp4_experts,
     "linnet.mxfp4_experts(shared)": _mxfp4_experts_shared,
+    "linnet.mxfp4_grouped(shared)": _mxfp4_grouped_shared,
+    "linnet.mxfp4_grouped(combine)": _mxfp4_grouped_combine,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
     "torch.softmax": _softmax,
