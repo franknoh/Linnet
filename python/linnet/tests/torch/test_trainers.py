@@ -1,6 +1,6 @@
 """`CausalLM` inside the trainers it answers for: `transformers.Trainer`
-with gradient accumulation, and TRL's `SFTTrainer` with its token accuracy
-and entropy read off the logits, over the Llama example on the CPU."""
+with gradient accumulation, and TRL's `SFTTrainer` with each of its losses
+and its token accuracy and entropy, over the Llama example on the CPU."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportMissingTypeStubs=false
 
@@ -118,11 +118,14 @@ def _tokenizer() -> Any:
     )
 
 
-def test_trl_sft_trainer(model: LinnetModule, tmp_path: Path) -> None:
+@pytest.mark.parametrize("loss_type", ["chunked_nll", "nll"])
+def test_trl_sft_trainer(model: LinnetModule, tmp_path: Path, loss_type: str) -> None:
+    """TRL's default loss reads `base_model`'s states and the output head;
+    `nll` reads the logits."""
     before = _weights(model)
     trainer = trl.SFTTrainer(
-        model=CausalLM(model, bucket=8, logits=True, name="llama-example"),
-        args=trl.SFTConfig(**_args(tmp_path), bf16=False, max_length=8),
+        model=CausalLM(model, bucket=8, logits=loss_type == "nll", name="llama-example"),
+        args=trl.SFTConfig(**_args(tmp_path), bf16=False, max_length=8, loss_type=loss_type),
         train_dataset=datasets.Dataset.from_list(_rows()),
         processing_class=_tokenizer(),
     )

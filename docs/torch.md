@@ -283,18 +283,22 @@ TRL's padding-free batches. Packed lengths round up to a multiple of
 `transformers.Trainer` passes, the loss is the sum over that count, so
 gradient accumulation takes the mean over the whole step.
 
-TRL's `SFTTrainer` also reads the logits for its token accuracy and entropy:
+TRL's `SFTTrainer` takes the same model:
 
 ```python
-trainer = trl.SFTTrainer(model=CausalLM(model, logits=True), args=trl.SFTConfig(...),
+trainer = trl.SFTTrainer(model=CausalLM(model), args=trl.SFTConfig(...),
                          train_dataset=data, processing_class=tokenizer)
 ```
 
-`logits=True` runs the model's `hidden_packed` entry (every Nest decoder
-card has one) and returns `[rows, width, Vocab]` logits in the input's
-layout, computed without gradients. They take the memory a transformers
-model's would. `gradient_checkpointing=True`, TRL's default, only warns:
-with `compile="inductor"`, set `activation_memory_budget` instead.
+Its default loss (`chunked_nll`) computes the cross-entropy itself, a block
+of tokens at a time. It reads the hidden states from `CausalLM.base_model`
+and the head from `get_output_embeddings()`. Both come from the model's
+`hidden_packed` entry, which every Nest decoder card has. With
+`loss_type="nll"`, TRL reads the logits instead. Pass `logits=True` to get
+them in the input's layout, computed without gradients; they take the
+memory a transformers model's would. `gradient_checkpointing=True`, TRL's
+default, only warns: with `compile="inductor"`, set
+`activation_memory_budget` instead.
 
 On one H100, Llama 3.1 8B with LoRA adapters (rank 16, every attention
 and MLP projection) trains on Alpaca as follows:

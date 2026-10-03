@@ -116,3 +116,22 @@ def test_logits_come_in_the_input_layout(model: LinnetModule) -> None:
     assert not full.logits[1, 4:].any()
     with pytest.raises(AttributeError, match="logits=True"):
         _ = plain.logits
+
+
+def test_the_backbone_and_head_give_the_loss(model: LinnetModule) -> None:
+    """`base_model`'s states in the input's layout, through the output head,
+    give the logits `forward` gives; the weights are not saved twice."""
+    lm = CausalLM(model)
+    input_ids = torch.tensor([[3, 1, 4, 1, 5, 9], [2, 6, 5, 3, 0, 0]])
+    attention_mask = torch.tensor([[1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 0, 0]])
+    hidden = lm.base_model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+    head = lm.get_output_embeddings()
+    assert head.bias is None
+    logits = hidden @ head.weight.T
+    with torch.no_grad():
+        first = model.run_entry("forward", [input_ids[:1].to(torch.int32)])[0]
+    torch.testing.assert_close(logits[0].detach(), first, atol=1e-5, rtol=1e-5)
+    assert not hidden[1, 4:].any()
+    logits.sum().backward()
+    assert head.weight.grad is not None
+    assert len(lm.state_dict()) == len(model.state_dict())

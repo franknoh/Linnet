@@ -16,15 +16,18 @@ model = CausalLM(nest.load("llama-3.1-8b-instruct", backend="torch", device="cud
 trainer = transformers.Trainer(model=model, args=..., train_dataset=..., data_collator=...)
 ```
 
-TRL's `SFTTrainer` also reads the logits, for its token accuracy and
-entropy: `CausalLM(model, logits=True)` returns them, from the model's
-`hidden_packed` entry.
+TRL's `SFTTrainer` computes the loss itself by default (`chunked_nll`), a
+block of tokens at a time, from `base_model`'s hidden states and
+`get_output_embeddings()`; both come from the model's `hidden_packed`
+entry. With `loss_type="nll"` it reads the logits for its token accuracy
+and entropy: `CausalLM(model, logits=True)` returns them.
 """
 
 from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,7 +35,7 @@ import torch
 
 from ..plan import PlanError
 from .loss import linear_cross_entropy
-from .module import LinnetModule
+from .module import LinnetModule, owner_of
 
 # transformers' label for a position to leave out of the loss.
 IGNORE = -100
@@ -60,8 +63,10 @@ class CausalLM(torch.nn.Module):
     Vocab]` in the input's layout (zero at padding), computed without
     gradients from the `hidden` entry's states and the `head` weight, which
     then also give the loss. They cost the memory transformers' own models
-    spend on them. `config` and `generation_config` hold the few fields
-    trainers read and write (`name` is the model's name there)."""
+    spend on them. `base_model` and `get_output_embeddings` give the states
+    and the head to a trainer that computes the loss itself. `config` and
+    `generation_config` hold the few fields trainers read and write (`name`
+    is the model's name there)."""
 
     # `transformers.Trainer` then passes `num_items_in_batch`.
     accepts_loss_kwargs = True
@@ -78,8 +83,6 @@ class CausalLM(torch.nn.Module):
         name: str = "",
     ):
         super().__init__()
-        if logits and hidden not in model.entries:
-            raise PlanError(f"logits need the model's `{hidden}` entry, which it does not have")
         self.model = model
         self.entry = entry
         self.bucket = bucket
@@ -109,10 +112,8 @@ class CausalLM(torch.nn.Module):
         )
         if not self.return_logits:
             return Output(loss=self.model.run_entry(self.entry, inputs))
-        if self.head in getattr(self.model, "lora_paths", []):
-            raise PlanError(f"logits read `{self.head}` alone; leave the output head unadapted")
-        states = self.model.run_entry(self.hidden, inputs[:3])
-        weight = self.model.get_parameter("root." + self.head)
+        states = self._states(inputs)
+        weight = self.get_output_embeddings().weight
         loss = linear_cross_entropy(states, weight, inputs[3], inputs[4])
         keep = _kept(input_ids, attention_mask)
         with torch.no_grad():
@@ -120,6 +121,43 @@ class CausalLM(torch.nn.Module):
             logits = flat.new_zeros((*input_ids.shape, flat.shape[-1]))
             logits[keep] = flat
         return Output(loss=loss, logits=logits)
+
+    @property
+    def base_model(self) -> Callable[..., SimpleNamespace]:
+        """The decoder without its output head, as TRL's `chunked_nll` loss
+        calls it: `last_hidden_state`, `[rows, width, H]` in the input's
+        layout (zero at padding), from the `hidden` entry. Not a submodule,
+        so the weights are not saved twice."""
+
+        def backbone(
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.Tensor | None = None,
+            **_: Any,
+        ) -> SimpleNamespace:
+            inputs, _count = packed(input_ids, attention_mask, None, position_ids, self.bucket)
+            states = self._states(inputs)
+            keep = _kept(input_ids, attention_mask)
+            shape = (*input_ids.shape, states.shape[-1])
+            hidden = states.new_zeros(shape).index_put((keep,), states[: int(keep.sum())])
+            return SimpleNamespace(last_hidden_state=hidden, hidden_states=None)
+
+        return backbone
+
+    def get_output_embeddings(self) -> SimpleNamespace:
+        """The output head's `weight` (and `bias`, None when absent)."""
+        if self.head in getattr(self.model, "lora_paths", []):
+            raise PlanError(f"`{self.head}` is read alone here; leave the output head unadapted")
+        owner, leaf = owner_of(self.model, self.head)
+        bias = None
+        if leaf == "weight" and "bias" in owner._parameters and "bias" not in owner.absent_params:
+            bias = owner.get_parameter("bias")
+        return SimpleNamespace(weight=owner.get_parameter(leaf), bias=bias)
+
+    def _states(self, inputs: list[torch.Tensor]) -> torch.Tensor:
+        if self.hidden not in self.model.entries:
+            raise PlanError(f"the model has no `{self.hidden}` entry, which this needs")
+        return self.model.run_entry(self.hidden, inputs[:3])
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs: Any = None) -> None:
         """Trainers call this for `gradient_checkpointing=True` (TRL's
