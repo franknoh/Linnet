@@ -253,6 +253,24 @@ def _greedy(model: torch.nn.Module, request: Request) -> list[int]:
     return out
 
 
+def test_load_weights_serves_the_new_weights(model_files: tuple[Path, Path]) -> None:
+    """A model trained elsewhere copied into a running engine: its compiled
+    passes then decode with the new weights, the old never seen again."""
+    source, weights = model_files
+    served = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(served, graphs=False, buckets=[8, 16, 32])
+    requests = _requests()
+    engine.run(requests)
+    trained = load(source, generics=GENERICS, std_root=STDLIB, weights=weights)
+    with torch.no_grad():
+        for parameter in trained.parameters():
+            parameter.mul_(1.5).add_(0.1)
+    engine.load_weights(trained)
+    done, _ = engine.run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(trained, completion.request)
+
+
 @pytest.mark.parametrize("pack", [48, 0])
 def test_torch(model_files: tuple[Path, Path], pack: int) -> None:
     """Prompts packed end to end into passes (`prefill_packed`), or grouped

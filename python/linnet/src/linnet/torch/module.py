@@ -346,6 +346,39 @@ class LinnetModule(nn.Module):
         `CompiledLinnetModule.merge_lora`. The interpreter has none."""
         return []
 
+    def copy_weights(self, source: LinnetModule) -> None:
+        """Copies `source`'s weights into this model's, in place: a policy
+        being trained into the copy a serving engine samples from. Every
+        parameter and bound buffer goes by path, cast to this model's dtype.
+        A weight `source` adapts (`add_lora`) arrives with its adapter's
+        product added in, so this model needs no adapters."""
+        adapted: set[str] = set()
+        scale = 0.0
+        lora = getattr(source, "lora", None)
+        if lora is not None:
+            _, rank, alpha = lora
+            adapted = set(getattr(source, "lora_paths", []))
+            scale = alpha / rank
+        theirs = dict(_all_tensors(source))
+        with torch.no_grad():
+            for path, tensor in _all_tensors(self):
+                if path not in theirs:
+                    raise PlanError(f"`{path}` is not among the source model's weights")
+                value = theirs[path]
+                owner, leaf = owner_of(self, path)
+                their_owner, _ = owner_of(source, path)
+                absent = leaf in owner.absent_params
+                if absent != (leaf in their_owner.absent_params):
+                    raise PlanError(f"`{path}` is bound in only one of the two models")
+                if absent:
+                    continue
+                if path in adapted:
+                    down = their_owner.get_parameter("lora_a").float()
+                    up = their_owner.get_parameter("lora_b").float()
+                    value = value.float() + (up @ down) * scale
+                if value.data_ptr() != tensor.data_ptr():
+                    tensor.copy_(value)
+
     def save_weights(
         self,
         path: str | Path,

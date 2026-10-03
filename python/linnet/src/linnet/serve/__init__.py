@@ -335,6 +335,19 @@ class Engine:
         )
         return order, stats
 
+    def load_weights(self, source: Any) -> None:
+        """Copies `source`'s weights into the model this engine serves, in
+        place, between runs: a policy in training sampled with its latest
+        weights. Compiled passes and CUDA graphs stay. PyTorch models only
+        (`LinnetModule.copy_weights`)."""
+        if self.busy:
+            raise RuntimeError("the engine is still completing requests")
+        model = getattr(self.backend, "model", None)
+        copy = getattr(model, "copy_weights", None)
+        if copy is None:
+            raise ValueError("only a `linnet.torch` model's weights can be replaced")
+        copy(source)
+
     # ---- step by step, for a server whose requests arrive while it runs
 
     def reset(self) -> None:

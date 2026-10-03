@@ -1,0 +1,185 @@
+"""GRPO (`linnet.train.grpo`): group advantages, the clipped surrogate's
+gradient, weights copied from a policy with adapters into the model that
+samples, and a policy that learns what its reward asks for."""
+
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+
+from __future__ import annotations
+
+import itertools
+import random
+from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
+import torch
+from safetensors.torch import save_file  # type: ignore[import-untyped]
+
+from linnet.serve import Completion, Request
+from linnet.torch import LinnetModule, load
+from linnet.train.grpo import Prompt, group_advantages, grpo, grpo_loss
+
+REPO = Path(__file__).resolve().parents[4]
+STDLIB = REPO / "stdlib"
+LLAMA = REPO / "examples/05-llama/src/lib.linnet"
+GENERICS: dict[str, int | str] = {
+    "Vocab": 11,
+    "H": 8,
+    "Heads": 4,
+    "KvHeads": 2,
+    "Inner": 16,
+    "Layers": 2,
+    "Batch": 1,
+    "MaxSeq": 8,
+    "T": "f32",
+}
+TOKENS = torch.tensor([[3, 1, 4, 1, 5, 9, 2]], dtype=torch.int32)
+
+
+@pytest.fixture
+def weights(tmp_path: Path) -> Path:
+    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
+    generator = torch.Generator().manual_seed(0)
+    tensors = {
+        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
+        for name, parameter in skeleton.named_parameters()
+        if not name.endswith(".bias")
+    }
+    path = tmp_path / "model.safetensors"
+    save_file(tensors, str(path))
+    return path
+
+
+def _model(weights: Path, **options: object) -> LinnetModule:
+    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # type: ignore[arg-type]
+
+
+def test_group_advantages() -> None:
+    assert group_advantages([1, 3, 5, 5], 2, scale=False) == [-1, 1, 0, 0]
+    scaled = group_advantages([0, 2, 7, 7], 2)
+    assert scaled[0] == pytest.approx(-1 / (2**0.5 + 1e-4)) and scaled[2:] == [0, 0]
+
+
+def test_the_surrogate_is_the_policy_gradient_until_clipped() -> None:
+    log_probs = torch.tensor([-1.0, -2.0, -0.5, -0.5], requires_grad=True)
+    advantages = torch.tensor([1.0, -2.0, 1.0, -1.0])
+    weights = torch.tensor([0.25, 0.25, 0.25, 0.0])
+    loss, share, _ = grpo_loss(log_probs, log_probs.detach(), advantages, weights)
+    loss.backward()
+    assert log_probs.grad is not None
+    torch.testing.assert_close(log_probs.grad, -advantages * weights)
+    assert float(share) == 0
+
+    # A ratio past 1 + 0.2 for a good token stops its gradient; for a bad
+    # token the larger penalty stands.
+    log_probs.grad = None
+    old = log_probs.detach() - torch.tensor([0.5, 0.5, 0.0, 0.0])
+    loss, share, _ = grpo_loss(log_probs, old, advantages, weights)
+    loss.backward()
+    grad = log_probs.grad
+    assert grad is not None and float(grad[0]) == 0 and float(grad[1]) != 0
+    assert float(share) == pytest.approx(0.25)
+
+
+def test_copied_weights_carry_the_adapters(weights: Path) -> None:
+    policy = _model(weights, compile=True, trainable=True)
+    policy.add_lora("layers.*.attention.*_proj.weight", rank=2, alpha=4)
+    trained = [p for p in policy.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trained, lr=5e-2)
+    for _ in range(3):
+        policy.run_entry("forward", [TOKENS]).square().mean().backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+    served = _model(weights, compile=True)
+    with torch.no_grad():
+        before = served.run_entry("forward", [TOKENS])
+        served.copy_weights(policy)
+        after = served.run_entry("forward", [TOKENS])
+        expected = policy.run_entry("forward", [TOKENS])
+    assert not torch.allclose(before, expected)
+    torch.testing.assert_close(after, expected, atol=1e-5, rtol=1e-5)
+
+
+class _Sampler:
+    """Draws completions from the Llama example's `forward`, as `Engine`
+    would from its cache: every request's prompt the same length."""
+
+    def __init__(self, model: LinnetModule) -> None:
+        self.model = model
+
+    def load_weights(self, source: LinnetModule) -> None:
+        self.model.copy_weights(source)
+
+    def run(self, requests: Sequence[Request]) -> tuple[list[Completion], None]:
+        rows = [list(r.prompt) for r in requests]
+        draws = [torch.Generator().manual_seed(r.seed or 0) for r in requests]
+        for _ in range(requests[0].max_new_tokens):
+            with torch.no_grad():
+                logits = self.model.run_entry("forward", [torch.tensor(rows, dtype=torch.int32)])
+            probs = torch.softmax(logits[:, -1] / requests[0].temperature, -1)
+            for row, p, draw in zip(rows, probs, draws, strict=True):
+                row.append(int(torch.multinomial(p, 1, generator=draw)))
+        done = [
+            Completion(request, row[len(request.prompt) :])
+            for request, row in zip(requests, rows, strict=True)
+        ]
+        return done, None
+
+
+def _prompts() -> itertools.cycle[Prompt]:
+    rng = random.Random(0)
+    return itertools.cycle([Prompt([rng.randrange(11), rng.randrange(11)]) for _ in range(8)])
+
+
+def _threes(_: Prompt, completion: list[int]) -> float:
+    return sum(token == 3 for token in completion) / len(completion)
+
+
+def test_grpo_learns_what_the_reward_asks(weights: Path) -> None:
+    torch.manual_seed(0)
+    policy = _model(weights, compile=True, trainable=True)
+    trained = [p for p in policy.parameters() if p.requires_grad]
+    history = grpo(
+        policy,
+        _Sampler(_model(weights)),
+        _prompts(),
+        _threes,
+        optimizer=torch.optim.AdamW(trained, lr=3e-2),
+        steps=10,
+        group=6,
+        prompts_per_step=4,
+        max_new_tokens=6,
+        tokens=64,
+    )
+    rewards = [step.reward for step in history]
+    assert len(rewards) == 10
+    assert sum(rewards[-3:]) / 3 > sum(rewards[:3]) / 3 + 0.1, rewards
+    # One optimizer step per sample: the ratio is 1, so nothing is clipped.
+    assert all(step.clipped == 0 and step.kl is None for step in history)
+
+
+def test_grpo_reuses_samples_against_a_reference(weights: Path) -> None:
+    policy = _model(weights, compile=True, trainable=True)
+    trained = [p for p in policy.parameters() if p.requires_grad]
+    history = grpo(
+        policy,
+        _Sampler(_model(weights)),
+        _prompts(),
+        _threes,
+        optimizer=torch.optim.AdamW(trained, lr=3e-2),
+        steps=2,
+        group=4,
+        prompts_per_step=2,
+        max_new_tokens=6,
+        tokens=64,
+        iterations=2,
+        beta=0.1,
+        reference=_model(weights, compile=True),
+    )
+    assert len(history) == 2
+    assert all(step.kl is not None and step.kl >= 0 for step in history)
+    # The second step starts after the first moved the policy away.
+    assert history[1].kl is not None and history[1].kl > 0
+    with pytest.raises(ValueError, match="reference"):
+        grpo(policy, None, [], _threes, optimizer=torch.optim.SGD(trained), steps=1, beta=0.1)

@@ -54,14 +54,18 @@ class Batch:
     """Sequences packed into `P` positions: token `p` is at `positions[p]` of
     sequence `segments[p]` and predicts `targets[p]` (the next token of its
     sequence) where `mask[p]` is 1. Padding is one more sequence, masked
-    out."""
+    out. `items[s]` is sequence `s`'s index among the examples packed."""
 
     tokens: torch.Tensor  # [P] i32
     positions: torch.Tensor  # [P] i32
     segments: torch.Tensor  # [P] i32
     targets: torch.Tensor  # [P] i64
     mask: torch.Tensor  # [P] f32
-    sequences: int = 0
+    items: list[int] = field(default_factory=lambda: list[int]())
+
+    @property
+    def sequences(self) -> int:
+        return len(self.items)
 
     @property
     def count(self) -> int:
@@ -86,9 +90,9 @@ def pack(
     (`tokens` when omitted) is cut to it. Each batch's unused positions are
     padding, so every batch has one shape and the model compiles once."""
     limit = min(tokens, max_length) if max_length is not None else tokens
-    pending: list[tuple[list[int], list[bool]]] = []
+    pending: list[tuple[int, list[int], list[bool]]] = []
     used = 0
-    for example in examples:
+    for item, example in enumerate(examples):
         sequence = list(example.tokens)[:limit]
         if len(sequence) < 2:
             continue
@@ -100,19 +104,19 @@ def pack(
         if used + len(sequence) > tokens:
             yield _batch(pending, tokens)
             pending, used = [], 0
-        pending.append((sequence, learned))
+        pending.append((item, sequence, learned))
         used += len(sequence)
     if pending:
         yield _batch(pending, tokens)
 
 
-def _batch(sequences: list[tuple[list[int], list[bool]]], size: int) -> Batch:
+def _batch(sequences: list[tuple[int, list[int], list[bool]]], size: int) -> Batch:
     tokens: list[int] = []
     positions: list[int] = []
     segments: list[int] = []
     targets: list[int] = []
     mask: list[float] = []
-    for index, (sequence, learned) in enumerate(sequences):
+    for index, (_, sequence, learned) in enumerate(sequences):
         tokens += sequence
         positions += range(len(sequence))
         segments += [index] * len(sequence)
@@ -131,7 +135,7 @@ def _batch(sequences: list[tuple[list[int], list[bool]]], size: int) -> Batch:
         torch.tensor(segments, dtype=torch.int32),
         torch.tensor(targets, dtype=torch.int64),
         torch.tensor(mask, dtype=torch.float32),
-        len(sequences),
+        [item for item, _, _ in sequences],
     )
 
 
