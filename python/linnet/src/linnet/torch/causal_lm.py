@@ -40,7 +40,14 @@ class CausalLM(torch.nn.Module):
     whole. Rows are sequences, their padding given by `attention_mask`; with
     `position_ids`, a position 0 starts a new sequence within a row (the
     padding-free batches of TRL's `DataCollatorWithFlattening`). Packed
-    lengths are padded up to a multiple of `bucket`, so few shapes compile."""
+    lengths are padded up to a multiple of `bucket`, so few shapes compile.
+
+    Given `num_items_in_batch` (as `transformers.Trainer` passes it, the
+    labelled positions of every micro-batch of a step), the loss is the sum
+    over it instead, so accumulated steps take the mean over all of them."""
+
+    # `transformers.Trainer` then passes `num_items_in_batch`.
+    accepts_loss_kwargs = True
 
     def __init__(self, model: LinnetModule, *, entry: str = "loss_packed", bucket: int = 256):
         super().__init__()
@@ -54,9 +61,12 @@ class CausalLM(torch.nn.Module):
         attention_mask: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
+        num_items_in_batch: torch.Tensor | int | None = None,
         **_: Any,
     ) -> dict[str, torch.Tensor]:
-        inputs, count = packed(input_ids, attention_mask, labels, position_ids, self.bucket)
+        inputs, count = packed(
+            input_ids, attention_mask, labels, position_ids, self.bucket, num_items_in_batch
+        )
         loss = self.model.run_entry(self.entry, inputs)
         return {"loss": loss, "num_items": count}
 
@@ -67,9 +77,11 @@ def packed(
     labels: torch.Tensor | None,
     position_ids: torch.Tensor | None,
     bucket: int,
+    over: torch.Tensor | int | None = None,
 ) -> tuple[list[torch.Tensor], torch.Tensor]:
-    """`loss_packed`'s inputs for a transformers-style batch, and the count
-    of labelled positions the loss is the mean over."""
+    """`loss_packed`'s inputs for a transformers-style batch, and its count
+    of labelled positions. The loss is the mean over them, or the sum over
+    `over` when given."""
     device = input_ids.device
     rows, width = input_ids.shape
     keep = (
@@ -101,7 +113,8 @@ def packed(
     targets = following.flatten()[flat]
     learned = targets != IGNORE
     count = learned.sum()
-    weights = learned.float() / count.clamp_min(1).float()
+    divisor = count if over is None else torch.as_tensor(over, device=device)
+    weights = learned.float() / divisor.clamp_min(1).float()
     targets = torch.where(learned, targets, torch.zeros_like(targets)).to(torch.int64)
 
     size = tokens.numel()

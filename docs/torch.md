@@ -279,7 +279,9 @@ entry, so neither the padding nor the whole logits cost anything. `labels`
 follow transformers: `-100` leaves a position out, and the shift happens
 inside. With `position_ids`, a 0 starts a new sequence within a row, as in
 TRL's padding-free batches. Packed lengths round up to a multiple of
-`bucket` (256), so few shapes compile.
+`bucket` (256), so few shapes compile. Given `num_items_in_batch`, which
+`transformers.Trainer` passes, the loss is the sum over that count, so
+gradient accumulation takes the mean over the whole step.
 
 ### Reinforcement learning
 
