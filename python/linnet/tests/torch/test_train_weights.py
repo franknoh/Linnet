@@ -98,9 +98,8 @@ def test_gradients_reach_every_weight_after_running_without_them(
     with torch.no_grad():
         after = model.run_entry("forward", [TOKENS])
     assert not torch.allclose(before, after)
-    assert model.root.q_proj.weight in [
-        p for group in optimizer.param_groups for p in group["params"]
-    ]
+    held = [p for group in optimizer.param_groups for p in group["params"]]
+    assert any(p is model.root.q_proj.weight for p in held)
 
 
 @pytest.mark.parametrize("compile", [False, True])
