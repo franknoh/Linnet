@@ -236,6 +236,26 @@ step. On one H100, Llama 3.1 8B trains its layers (7 B parameters, SGD) over
 4096 packed tokens at 10.9K tokens per second in 29 GiB this way, against
 9.2K and 42.5 GiB as generated source without `torch.compile`.
 
+### Supervised fine-tuning
+
+```python
+from linnet.train import Example, cosine_schedule, pack, train
+
+examples = [Example.prompted(prompt, completion) for prompt, completion in data]
+optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-5)
+history = train(model, pack(examples, tokens=4096), optimizer=optimizer, steps=1000,
+                accumulate=8, schedule=cosine_schedule(optimizer, 100, 1000), save_to="run/")
+```
+
+`pack` packs examples into batches of exactly `tokens` positions, padding
+the rest so the model compiles once. `Example.prompted` learns only the
+completion. `train` runs the model's `loss_packed` entry; every Nest decoder
+card and `examples/05-llama` have one. It sums `accumulate` batches per
+optimizer step, weighing each by the step's total count of learned
+positions, then clips the gradient norm to `clip` (1.0) and steps the
+schedule. It saves the weights to `save_to`, or the adapters alone after
+`add_lora`.
+
 ### Low-rank adapters
 
 ```python
