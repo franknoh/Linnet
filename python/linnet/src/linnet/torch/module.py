@@ -329,12 +329,30 @@ class LinnetModule(nn.Module):
             if wanted[id(parameter)]
         ]
 
+    def add_lora(
+        self,
+        patterns: str | Sequence[str],
+        *,
+        rank: int = 16,
+        alpha: float = 32.0,
+        seed: int = 0,
+    ) -> list[str]:
+        """Low-rank adapters: see `CompiledLinnetModule.add_lora`. The
+        interpreter has none; load with `compile=True`."""
+        raise PlanError("adapters need generated code: load with compile=True")
+
+    def merge_lora(self) -> list[str]:
+        """Adds the adapters into their weights: see
+        `CompiledLinnetModule.merge_lora`. The interpreter has none."""
+        return []
+
     def save_weights(
         self,
         path: str | Path,
         *,
         names: str = "checkpoint",
         dtype: torch.dtype | None = None,
+        include: Sequence[str] | None = None,
     ) -> Path:
         """Writes the weights to one SafeTensors file: every parameter and
         `buffer` the weights supplied, never `state`, and no optional
@@ -343,7 +361,9 @@ class LinnetModule(nn.Module):
         takes that checkpoint's place: `linnet.hf.export(card, weights=...)`
         reads it. `names="linnet"` names each by its parameter path. Paths
         bound to one checkpoint tensor (a tied embedding) are written once.
-        `dtype` converts floating-point tensors as they are written."""
+        `dtype` converts floating-point tensors as they are written. `include`
+        keeps only the paths matching one of its glob patterns: adapters
+        alone are `include=["*.lora_a", "*.lora_b"]`."""
         from ..weights import LazyBytes, write_safetensors
 
         if names not in ("checkpoint", "linnet"):
@@ -361,6 +381,10 @@ class LinnetModule(nn.Module):
             owner, leaf = owner_of(self, tensor_path)
             if leaf in owner.absent_params or any(
                 tensor_path.startswith(prefix + ".") for prefix in absent_subs
+            ):
+                continue
+            if include is not None and not any(
+                fnmatch.fnmatchcase(tensor_path, pattern) for pattern in include
             ):
                 continue
             name = (

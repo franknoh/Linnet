@@ -297,6 +297,15 @@ struct GraphExportOptions {
     // (tensor parallelism) are joined only by gathering them, so a runtime
     // that splits them turns this off.
     bool fuse = true;
+    // Generated PyTorch only: low-rank adapters (LoRA) on the weights whose
+    // path matches one of these glob patterns (`layers.*.attention.*.weight`).
+    // A `linear` over such a weight adds `(x @ A.T) @ B.T * alpha / rank`,
+    // with `A` and `B` parameters of the weight's block: `lora_a`
+    // [rank, in] and `lora_b` [out, rank]. Needs `prepare` off: a joined or
+    // prepared weight is no longer the parameter the pattern names.
+    std::vector<std::string> lora;
+    std::int64_t lora_rank = 0;
+    double lora_alpha = 0.0;
     // StableHLO and generated JAX only: f32 products (matrix products,
     // convolutions, attention) at full f32 precision. XLA otherwise runs
     // them at the device's default, which on an NVIDIA GPU since Ampere is

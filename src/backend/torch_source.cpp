@@ -10,6 +10,8 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace linnet::backend {
@@ -74,9 +76,38 @@ std::string real_text(double value) {
 }
 
 // The generated module: straight-line PyTorch over static shapes.
+// Whether `text` matches the glob `pattern`: `*` any run of characters,
+// `?` any one.
+bool glob_match(std::string_view pattern, std::string_view text) {
+    std::size_t p = 0;
+    std::size_t t = 0;
+    std::size_t star = std::string_view::npos;
+    std::size_t resume = 0;
+    while (t < text.size()) {
+        if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == text[t])) {
+            ++p;
+            ++t;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star = p++;
+            resume = t;
+        } else if (star != std::string_view::npos) {
+            p = star + 1;
+            t = ++resume;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == '*') {
+        ++p;
+    }
+    return p == pattern.size();
+}
+
 class TorchTarget : public GraphTarget {
 public:
-    TorchTarget(bool prepare, bool fuse) : prepare_(prepare), fuse_(fuse) {}
+    explicit TorchTarget(const TorchSourceOptions& options)
+        : prepare_(options.prepare), fuse_(options.fuse), lora_(options.lora),
+          lora_rank_(options.lora_rank), lora_alpha_(options.lora_alpha) {}
 
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         (void)shape;
@@ -95,6 +126,7 @@ public:
         parameters_.push_back(path);
         parameter_types_.emplace_back(shape, dtype);
         arguments_.push_back(argument);
+        parameters_end_ = arguments_.size();
         return argument;
     }
 
@@ -733,7 +765,18 @@ public:
                           ".dtype)");
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
-            return define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
+            std::string product =
+                define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
+            const std::optional<TensorInfo>& weight = operands[1];
+            const auto path = lora_target(name(1));
+            if (!weight || !path || weight->shape.size() != 2) {
+                return product;
+            }
+            const auto [a, b] = adapters(*path, weight->shape, weight->dtype);
+            const std::string low =
+                define("F.linear(F.linear(" + name(0) + ", " + a + "), " + b + ")");
+            return define(product + " + " + low + " * " +
+                          real_text(lora_alpha_ / static_cast<double>(lora_rank_)));
         }
         // `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and
         // bf16 inputs themselves, so their results are bit-identical to the
@@ -1734,6 +1777,51 @@ private:
 
     // `std.nn.loss`'s output-head forms: `linnet.torch.loss` a block of rows
     // at a time; without it, the logits whole, as the bodies compute.
+    // The parameter path of `argument` when it names a weight an adapter
+    // pattern matches.
+    std::optional<std::string> lora_target(const std::string& argument) const {
+        if (lora_.empty() || argument.size() < 2 || argument[0] != 'p' ||
+            !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
+                return std::isdigit(static_cast<unsigned char>(c)) != 0;
+            })) {
+            return std::nullopt;
+        }
+        const std::size_t index = std::stoul(argument.substr(1));
+        if (index >= parameters_.size() || !parameters_[index].ends_with(".weight")) {
+            return std::nullopt;
+        }
+        const std::string& path = parameters_[index];
+        if (std::any_of(lora_.begin(), lora_.end(), [&](const std::string& pattern) {
+                return glob_match(pattern, path);
+            })) {
+            return path;
+        }
+        return std::nullopt;
+    }
+
+    // The adapter parameters of the weight at `path` ([out, in]): `lora_a`
+    // [rank, in] and `lora_b` [out, rank] of its block, made once. They go
+    // after the other parameters among `main`'s arguments.
+    std::pair<std::string, std::string>
+    adapters(const std::string& path, const Dims& weight, ScalarKind dtype) {
+        if (const auto found = adapters_.find(path); found != adapters_.end()) {
+            return found->second;
+        }
+        const std::string block = path.substr(0, path.size() - std::string_view(".weight").size());
+        const auto add = [&](const std::string& adapter, const Dims& shape) {
+            const std::string argument = "p" + std::to_string(parameters_.size());
+            parameters_.push_back(block + "." + adapter);
+            parameter_types_.emplace_back(shape, dtype);
+            arguments_.insert(arguments_.begin() + static_cast<std::ptrdiff_t>(parameters_end_),
+                              argument);
+            ++parameters_end_;
+            return argument;
+        };
+        const std::string a = add("lora_a", {lora_rank_, weight[1]});
+        const std::string b = add("lora_b", {weight[0], lora_rank_});
+        return adapters_.emplace(path, std::make_pair(a, b)).first->second;
+    }
+
     static std::string loss_helper() {
         return "try:\n"
                "    from linnet.torch.loss import linear_cross_entropy as _linear_cross_entropy\n"
@@ -2052,13 +2140,27 @@ private:
     std::size_t loops_ = 0;
     std::size_t next_ = 0;
     std::vector<std::pair<Dims, ScalarKind>> parameter_types_; // shape and dtype, PARAMETERS order
+
+    // Adapters (`TorchSourceOptions::lora`): the patterns over weight paths,
+    // where the parameters end among `arguments_`, and each adapted weight's
+    // `A` and `B` arguments.
+    std::vector<std::string> lora_;
+    std::int64_t lora_rank_ = 0;
+    double lora_alpha_ = 0.0;
+    std::size_t parameters_end_ = 0;
+    std::map<std::string, std::pair<std::string, std::string>> adapters_;
 };
 
 } // namespace
 
 std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                                             const TorchSourceOptions& options) {
-    TorchTarget target(options.prepare, options.fuse);
+    if (!options.lora.empty() && (options.prepare || options.lora_rank <= 0)) {
+        return std::unexpected(options.prepare
+                                   ? "adapters need the weights unprepared (no --prepare)"
+                                   : "adapters need a positive rank");
+    }
+    TorchTarget target(options);
     return export_graph(module, options, target);
 }
 
