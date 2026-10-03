@@ -784,9 +784,15 @@ public:
             // otherwise two products around the softmax with the sink in it.
             sink_helper_ = true;
             flex_helpers_ = true;
-            const Dims& query = operands[0]->shape;
-            const Dims& key = operands[1]->shape;
-            const Dims& mask = operands[5]->shape;
+            const std::optional<TensorInfo>& query_operand = operands[0];
+            const std::optional<TensorInfo>& key_operand = operands[1];
+            const std::optional<TensorInfo>& mask_operand = operands[5];
+            if (!query_operand || !key_operand || !mask_operand) {
+                return std::nullopt;
+            }
+            const Dims& query = query_operand->shape;
+            const Dims& key = key_operand->shape;
+            const Dims& mask = mask_operand->shape;
             std::string blocks = "None";
             const std::int64_t block_q = 128;
             std::int64_t block_k = 128;
