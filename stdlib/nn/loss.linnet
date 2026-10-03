@@ -1,0 +1,73 @@
+module std.nn.loss
+
+use std.nn.linear::{linear}
+
+// Losses and log-probabilities over flattened tokens: `logits` is [N, V],
+// one row per token, and every result is f32 whatever the logits' dtype.
+// The `linear_` forms take the hidden states and the output head instead of
+// the logits, so a backend can compute them a block of tokens at a time
+// without the [N, V] logits; their bodies multiply first.
+
+// Log-probabilities over the last axis: each logit less the log-sum-exp of
+// its row, the row's maximum taken out for stability.
+pub op log_softmax<*S: Shape, V: Dim, T: Float>(
+    logits: Tensor[*S, V; T],
+) -> Tensor[*S, V; f32] {
+    let x = cast<f32>(logits)
+    let peak[*s] = max[v] x[*s, v]
+    let total[*s] = sum[v] exp(x[*s, v] - peak[*s])
+    let y[*s, v] = x[*s, v] - peak[*s] - log(total[*s])
+    return y
+}
+
+// The log-probability each row gives its target token.
+pub op token_log_probs<N: Dim, V: Dim, T: Float>(
+    logits: Tensor[N, V; T],
+    targets: Tensor[N; i64],
+) -> Tensor[N; f32] {
+    let x = cast<f32>(logits)
+    let peak[n] = max[v] x[n, v]
+    let total[n] = sum[v] exp(x[n, v] - peak[n])
+    let y[n] = x[n, targets[n]] - peak[n] - log(total[n])
+    return y
+}
+
+// Cross-entropy summed over the tokens, each weighed: `sum_n weights[n] *
+// -log p(targets[n])`. A weight of 0 leaves a token out (padding, a
+// prompt); `mask / count` gives the mean over `count` tokens, which may span
+// more than this call (gradient accumulation).
+pub op cross_entropy<N: Dim, V: Dim, T: Float>(
+    logits: Tensor[N, V; T],
+    targets: Tensor[N; i64],
+    weights: Tensor[N; f32],
+) -> f32 {
+    let picked = token_log_probs(logits, targets)
+    return sum[n] -weights[n] * picked[n]
+}
+
+// `token_log_probs` of `linear(hidden, weight)`: an output head and the
+// log-probabilities of the targets under it.
+pub op linear_token_log_probs<N: Dim, H: Dim, V: Dim, T: Float>(
+    hidden: Tensor[N, H; T],
+    weight: Tensor[V, H; T],
+    targets: Tensor[N; i64],
+) -> Tensor[N; f32] {
+    return token_log_probs(linear(hidden, weight), targets)
+}
+
+// `cross_entropy` of `linear(hidden, weight)`: an output head and its loss.
+pub op linear_cross_entropy<N: Dim, H: Dim, V: Dim, T: Float>(
+    hidden: Tensor[N, H; T],
+    weight: Tensor[V, H; T],
+    targets: Tensor[N; i64],
+    weights: Tensor[N; f32],
+) -> f32 {
+    return cross_entropy(linear(hidden, weight), targets, weights)
+}
+
+// The entropy of each row's distribution, `-sum_v p(v) log p(v)`.
+pub op entropy<N: Dim, V: Dim, T: Float>(logits: Tensor[N, V; T]) -> Tensor[N; f32] {
+    let logp = log_softmax(logits)
+    let h[n] = sum[v] -exp(logp[n, v]) * logp[n, v]
+    return h
+}

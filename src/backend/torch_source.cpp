@@ -556,6 +556,18 @@ public:
             }
             return define(call + ")");
         }
+        if (implementation_base == "linnet.linear_cross_entropy" && operands.size() == 4 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            loss_helper_ = true;
+            return define("_linear_cross_entropy(" + name(0) + ", " + name(1) + ", " + name(2) +
+                          ", " + name(3) + ")");
+        }
+        if (implementation_base == "linnet.linear_token_log_probs" && operands.size() == 3 &&
+            operands[0] && operands[1] && operands[2]) {
+            loss_helper_ = true;
+            return define("_linear_token_log_probs(" + name(0) + ", " + name(1) + ", " + name(2) +
+                          ")");
+        }
         if (implementation_base == "torch.distributed.all_reduce" && operands.size() == 1 &&
             operands[0]) {
             shards_helper_ = true;
@@ -961,6 +973,9 @@ public:
         }
         if (mxfp4_grouped_helper_) {
             out += mxfp4_grouped_helper();
+        }
+        if (loss_helper_) {
+            out += loss_helper();
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1711,6 +1726,26 @@ private:
                "\n\n";
     }
 
+    // `std.nn.loss`'s output-head forms: `linnet.torch.loss` a block of rows
+    // at a time; without it, the logits whole, as the bodies compute.
+    static std::string loss_helper() {
+        return "try:\n"
+               "    from linnet.torch.loss import linear_cross_entropy as _linear_cross_entropy\n"
+               "    from linnet.torch.loss import linear_token_log_probs as "
+               "_linear_token_log_probs\n"
+               "except ImportError:\n"
+               "\n"
+               "    def _linear_token_log_probs(hidden, weight, targets):\n"
+               "        logits = (hidden @ weight.T).float()\n"
+               "        picked = logits.gather(1, targets.long()[:, None]).squeeze(1)\n"
+               "        return picked - torch.logsumexp(logits, dim=-1)\n"
+               "\n"
+               "    def _linear_cross_entropy(hidden, weight, targets, weights):\n"
+               "        return -(weights.float() * _linear_token_log_probs(hidden, weight, "
+               "targets)).sum()\n"
+               "\n\n";
+    }
+
     static std::string mxfp4_grouped_helper() {
         return "try:\n"
                "    from linnet.torch.moe import available as _mxfp4_grouped_available\n"
@@ -2000,6 +2035,7 @@ private:
     bool shards_helper_ = false;                     // `_all_reduce` is used
     bool mxfp4_helper_ = false;                      // `_mxfp4_experts` is used
     bool mxfp4_grouped_helper_ = false;              // `_mxfp4_grouped` is used
+    bool loss_helper_ = false;                       // `_linear_cross_entropy` is used
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value

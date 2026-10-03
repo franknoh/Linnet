@@ -134,6 +134,20 @@ def _mxfp4_grouped_combine(args: list[Any], _result: torch.dtype | None) -> torc
     return mxfp4_grouped(x, blocks, scales, experts, weights)
 
 
+def _linear_cross_entropy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    from .loss import linear_cross_entropy
+
+    hidden, weight, targets, weights = args
+    return linear_cross_entropy(hidden, weight, targets, weights)
+
+
+def _linear_token_log_probs(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+    from .loss import linear_token_log_probs
+
+    hidden, weight, targets = args
+    return linear_token_log_probs(hidden, weight, targets)
+
+
 def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.parallel::all_reduce` and `all_gather` in one process, which
     holds the whole model: one shard's sum, or its slices side by side, is the
@@ -413,6 +427,8 @@ NATIVE: dict[str, Native] = {
     "linnet.mxfp4_experts": _mxfp4_experts,
     "linnet.mxfp4_experts(shared)": _mxfp4_experts_shared,
     "linnet.mxfp4_grouped(shared)": _mxfp4_grouped_shared,
+    "linnet.linear_cross_entropy": _linear_cross_entropy,
+    "linnet.linear_token_log_probs": _linear_token_log_probs,
     "linnet.mxfp4_grouped(combine)": _mxfp4_grouped_combine,
     "torch.matmul": _matmul,
     "torch.nn.functional.linear": _linear,
