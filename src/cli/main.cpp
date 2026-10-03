@@ -86,11 +86,13 @@ void print_usage(std::FILE* out) {
         "  onnx [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
         "  torch [same options as stablehlo] [--place <block>=<slot>]...\n"
-        "        [--offload <block>]... [--prepare] [--no-fuse]\n"
+        "        [--offload <block>]... [--fully-shard <block>]... [--prepare] [--no-fuse]\n"
         "        [--lora <pattern>]... [--lora-rank <r>] [--lora-alpha <a>] <file>\n"
         "                                       Print an entry as PyTorch source; --place\n"
         "                                       runs a block on a device slot, --offload\n"
         "                                       streams its parameters in from the host,\n"
+        "                                       --fully-shard gathers them from every\n"
+        "                                       process when the block runs (FSDP),\n"
         "                                       and --prepare moves weight-only work into\n"
         "                                       a `prepare` function run once at load,\n"
         "                                       where sibling linear layers join into one\n"
@@ -340,7 +342,7 @@ int run_graph_export(std::span<const std::string_view> args,
         const std::string_view arg = args[i];
         if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
             arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload" ||
-            arg == "--absent" || arg == "--absent-file" ||
+            arg == "--fully-shard" || arg == "--absent" || arg == "--absent-file" ||
             (format == "torch" &&
              (arg == "--lora" || arg == "--lora-rank" || arg == "--lora-alpha"))) {
             if (i + 1 == args.size()) {
@@ -387,7 +389,7 @@ int run_graph_export(std::span<const std::string_view> args,
                         export_options.absent.insert(line);
                     }
                 }
-            } else if (arg == "--place" || arg == "--offload") {
+            } else if (arg == "--place" || arg == "--offload" || arg == "--fully-shard") {
                 // A block path, with or without its trailing `.`: `layers.3`.
                 const std::size_t equals = value.find('=');
                 std::string prefix(arg == "--place" ? value.substr(0, equals) : value);
@@ -399,6 +401,10 @@ int run_graph_export(std::span<const std::string_view> args,
                 }
                 if (arg == "--offload") {
                     export_options.offload.push_back(prefix);
+                    continue;
+                }
+                if (arg == "--fully-shard") {
+                    export_options.fully_shard.push_back(prefix);
                     continue;
                 }
                 if (equals == std::string_view::npos) {

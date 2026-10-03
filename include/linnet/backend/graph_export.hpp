@@ -148,6 +148,10 @@ public:
         return value.name;
     }
     virtual void release(const std::vector<std::string>& names) { (void)names; }
+    // Fully sharded parameters (see `GraphExportOptions::fully_shard`): a
+    // target that supports them gathers a parameter's parts into the whole.
+    virtual bool supports_fully_shard() const { return false; }
+    virtual std::string gather(const TensorInfo& value) { return value.name; }
     virtual std::string slice(const TensorInfo& value,
                               const Dims& starts,
                               const Dims& limits,
@@ -288,6 +292,11 @@ struct GraphExportOptions {
     // Blocks whose parameters stay on the host: each is transferred to the
     // block's slot when first used and released when the block returns.
     std::vector<std::string> offload;
+    // Blocks whose parameters are split across processes (fully sharded
+    // data parallelism): each is gathered whole when first used and released
+    // when the block returns. One device per process, so not with placement
+    // or offload.
+    std::vector<std::string> fully_shard;
     // Generated Python only: split computation that reads nothing but
     // parameters (dequantizing MXFP4 experts, say) into a `prepare` function
     // the runtime calls once per loaded model rather than on every call.

@@ -487,6 +487,17 @@ public:
         body_ += line + "\n";
     }
 
+    // Fully sharded parameters: `_gather` joins a parameter's parts from
+    // every process into the whole, in the dtype the model computes in.
+    bool supports_fully_shard() const override { return true; }
+    std::string gather(const TensorInfo& value) override {
+        gather_helper_ = true;
+        const std::string name = "v" + std::to_string(next_++);
+        body_ +=
+            indent_ + name + " = _gather(" + value.name + ", " + torch_dtype(value.dtype) + ")\n";
+        return name;
+    }
+
     std::optional<std::string> native_call(const std::string& implementation,
                                            const std::vector<std::optional<TensorInfo>>& operands,
                                            const Dims& shape,
@@ -1025,6 +1036,9 @@ public:
         }
         if (loss_helper_) {
             out += loss_helper();
+        }
+        if (gather_helper_) {
+            out += "from linnet.torch.fsdp import gather as _gather\n\n";
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -2130,6 +2144,7 @@ private:
     bool mxfp4_helper_ = false;                      // `_mxfp4_experts` is used
     bool mxfp4_grouped_helper_ = false;              // `_mxfp4_grouped` is used
     bool loss_helper_ = false;                       // `_linear_cross_entropy` is used
+    bool gather_helper_ = false;                     // `_gather` joins sharded parameters
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value
@@ -2159,6 +2174,11 @@ std::expected<std::string, std::string> export_torch_source(ir::Module& module,
         return std::unexpected(options.prepare
                                    ? "adapters need the weights unprepared (no --prepare)"
                                    : "adapters need a positive rank");
+    }
+    if (!options.fully_shard.empty() && (options.prepare || !options.lora.empty())) {
+        return std::unexpected(options.prepare
+                                   ? "sharded weights are gathered as they are used (no --prepare)"
+                                   : "sharded weights take no adapters");
     }
     TorchTarget target(options);
     return export_graph(module, options, target);

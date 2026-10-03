@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -213,6 +213,8 @@ def train(
         device = next(model.parameters()).device
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     trained = [p for group in optimizer.param_groups for p in group["params"]]
+    # One process saves; a sharded model is gathered to be saved, by every one.
+    saves = not distributed or dist.get_rank() == 0 or bool(getattr(model, "fully_sharded", ()))
     history = History()
     iterator = iter(batches)
     while steps is None or len(history.steps) < steps:
@@ -239,7 +241,7 @@ def train(
         if distributed:
             _all_reduce_gradients(trained)
             dist.all_reduce(total)
-        norm = float(torch.nn.utils.clip_grad_norm_(trained, clip)) if clip is not None else None
+        norm = _clip(trained, clip) if clip is not None else None
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         if schedule is not None:
@@ -257,26 +259,58 @@ def train(
         history.steps.append(record)
         if on_step is not None:
             on_step(record)
-        first = not distributed or dist.get_rank() == 0
-        if first and save_to is not None and save_every and record.step % save_every == 0:
+        if saves and save_to is not None and save_every and record.step % save_every == 0:
             _save(model, Path(save_to))
-    if (not distributed or dist.get_rank() == 0) and save_to is not None and history.steps:
+    if saves and save_to is not None and history.steps:
         _save(model, Path(save_to))
     return history
 
 
 def _all_reduce_gradients(parameters: list[torch.Tensor]) -> None:
     """Sums every gradient across processes: one collective per tensor, all
-    in flight at once, so no buffer the size of the model is made."""
+    in flight at once, so no buffer the size of the model is made. A
+    parameter split by `fully_shard` has its part summed already."""
     import torch.distributed as dist
 
     pending = [
         dist.all_reduce(parameter.grad, async_op=True)
         for parameter in parameters
-        if parameter.grad is not None
+        if parameter.grad is not None and not _split(parameter)
     ]
     for work in pending:
         work.wait()
+
+
+def _split(tensor: torch.Tensor) -> bool:
+    return callable(getattr(tensor, "to_local", None))
+
+
+def _clip(parameters: list[torch.Tensor], limit: float) -> float:
+    """Scales the gradients to a norm of `limit` at most; returns the norm
+    before. The parts of split parameters add up across processes."""
+    grads = [p.grad for p in parameters if p.grad is not None]
+    if not any(_split(g) for g in grads):
+        return float(torch.nn.utils.clip_grad_norm_(parameters, limit))
+    import torch.distributed as dist
+
+    # A part of a split gradient adds to the others; a scalar kept whole on
+    # every process (`Replicate`) counts once.
+    split = [cast(Any, g) for g in grads if _split(g)]
+    local = [g.to_local() for g in split if g.placements[0].is_shard()]
+    whole = [g for g in grads if not _split(g)]
+    whole += [g.to_local() for g in split if not g.placements[0].is_shard()]
+    device = [*local, *whole][0].device
+    squares = torch.zeros((), dtype=torch.float32, device=device)
+    for g in local:
+        squares = squares + g.float().pow(2).sum()
+    dist.all_reduce(squares)
+    for g in whole:
+        squares = squares + g.float().pow(2).sum().to(device)
+    norm = squares.sqrt()
+    scale = (limit / (norm + 1e-6)).clamp(max=1.0)
+    for g in [*local, *whole]:
+        g.mul_(scale.to(g.dtype))
+    return float(norm)
 
 
 def _save(model: Any, directory: Path) -> None:

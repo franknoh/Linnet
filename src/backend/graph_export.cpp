@@ -72,7 +72,18 @@ public:
         const ir::Function& entry = find_entry(root);
         const Substitution root_subst = root ? root_bindings(*root) : Substitution{};
 
-        if (placing()) {
+        if (!options_.fully_shard.empty()) {
+            if (!root) {
+                fail("sharding splits a model's parameters; a function has none");
+            }
+            if (!target_.supports_fully_shard()) {
+                fail("this target cannot gather sharded parameters; sharding is for `torch`");
+            }
+            if (!options_.placement.empty() || !options_.offload.empty()) {
+                fail("sharded blocks run on each process's one device: not with placement or "
+                     "offload");
+            }
+        } else if (placing()) {
             if (!root) {
                 fail("placement spreads a model's blocks over devices; a function has none");
             }
@@ -958,7 +969,10 @@ private:
 
     // ------------------------------------------------------- placement
 
-    bool placing() const { return !options_.placement.empty() || !options_.offload.empty(); }
+    bool placing() const {
+        return !options_.placement.empty() || !options_.offload.empty() ||
+               !options_.fully_shard.empty();
+    }
 
     // The slot a member path runs on: the longest placement key it starts
     // with, or slot 0.
@@ -974,9 +988,12 @@ private:
         return slot;
     }
 
+    // Offloaded or sharded: the parameter is not whole on the device until
+    // its block asks for it.
     bool offloaded(const std::string& path) const {
-        return std::ranges::any_of(
-            options_.offload, [&](const std::string& prefix) { return path.starts_with(prefix); });
+        const auto under = [&](const std::string& prefix) { return path.starts_with(prefix); };
+        return std::ranges::any_of(options_.offload, under) ||
+               std::ranges::any_of(options_.fully_shard, under);
     }
 
     int current_slot() const { return slots_.back(); }
@@ -1017,7 +1034,9 @@ private:
             }
         }
         Val out = value;
-        out.name = target_.transfer(info(value), slot);
+        out.name = from == host && !options_.fully_shard.empty()
+                       ? target_.gather(info(value))
+                       : target_.transfer(info(value), slot);
         out.slot = slot;
         if (from == host && !releases_.empty()) {
             releases_.back().push_back(out.name);
@@ -1574,7 +1593,8 @@ private:
             slots_.push_back(slot_of(path));
             target_.set_slot(current_slot());
             entered = true;
-            unit = std::ranges::find(options_.offload, path) != options_.offload.end();
+            unit = std::ranges::find(options_.offload, path) != options_.offload.end() ||
+                   std::ranges::find(options_.fully_shard, path) != options_.fully_shard.end();
             if (unit) {
                 releases_.emplace_back();
                 released_keys_.emplace_back();

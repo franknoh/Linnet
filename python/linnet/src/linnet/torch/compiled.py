@@ -74,6 +74,8 @@ class CompiledLinnetModule(LinnetModule):
         # generated source adds them for, and the weights adapted.
         self.lora: tuple[tuple[str, ...], int, float] | None = None
         self.lora_paths: list[str] = []
+        # Units whose parameters are split across processes (`fully_shard`).
+        self.fully_sharded: tuple[str, ...] = ()
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
         self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
@@ -139,6 +141,8 @@ class CompiledLinnetModule(LinnetModule):
         changes that). Returns the adapted weights' paths."""
         if self.lora is not None:
             raise PlanError("the model already has adapters; merge them first")
+        if self.fully_sharded:
+            raise PlanError("a sharded model takes no adapters")
         if rank <= 0:
             raise PlanError("the adapter rank must be positive")
         chosen = [patterns] if isinstance(patterns, str) else list(patterns)
@@ -267,7 +271,13 @@ class CompiledLinnetModule(LinnetModule):
             # unmarked, a replay would copy each of them in first.
             for value in (*generated.constants, *prepared.prepared):
                 _mark_static(value)
-        outputs = list(generated.main(*arguments))
+        if self.fully_sharded and generated.eager:
+            from .fsdp import regathered
+
+            with regathered():
+                outputs = list(generated.main(*arguments))
+        else:
+            outputs = list(generated.main(*arguments))
         if cuda_graphs:
             # Graph outputs are overwritten by the next replay; keep copies
             # of everything but a state written in place, which is the
@@ -517,9 +527,11 @@ class CompiledLinnetModule(LinnetModule):
             for pattern in patterns:
                 command += ["--lora", pattern]
             command += ["--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]
+        for unit in self.fully_sharded:
+            command += ["--fully-shard", unit]
         if self.placement is not None and not self.placement.trivial:
             command += self.placement.flags()
-        elif not trains and self.lora is None:
+        elif not trains and self.lora is None and not self.fully_sharded:
             # Weight-only work once at load; a model being trained keeps it
             # in the graph, where gradients flow through it.
             command.append("--prepare")
@@ -557,6 +569,7 @@ class CompiledLinnetModule(LinnetModule):
             and self.interpreter.device.type == "cuda"
             and (self.placement is None or self.placement.trivial)
             and not trains
+            and not self.fully_sharded
         )
         if captured:
             if backend == "reduce-overhead":
@@ -593,6 +606,7 @@ class CompiledLinnetModule(LinnetModule):
             list(getattr(module, "CONSTANTS", [])),
             captured,
             [list(group) for group in getattr(module, "FUSED", [])],
+            backend is None,
         )
 
     def generated_source(self, entry: str | None = None) -> str:
@@ -733,3 +747,4 @@ class _Generated:
     constant_names: list[str] = field(default_factory=list[str])  # `CONSTANTS`
     captured: bool = False  # replayed as a CUDA graph captured by hand
     fused: list[list[str]] = field(default_factory=list[list[str]])  # `FUSED`
+    eager: bool = True  # `main` runs without `torch.compile`

@@ -262,6 +262,38 @@ every copy takes the same step. Pass
 `torch.distributed.optim.ZeroRedundancyOptimizer` to split the optimizer
 state. Only the first process saves.
 
+### Sharded training
+
+`fully_shard` splits every parameter across the processes (FSDP). Each
+process then holds a part of the weights, the gradients and the optimizer
+state:
+
+```python
+from linnet.torch import fully_shard
+
+torch.distributed.init_process_group("nccl")
+model = nest.load(card, backend="torch", device=f"cuda:{rank}", compile="inductor",
+                  trainable=True)
+fully_shard(model)  # parts in f32; gathered in the model's dtype
+optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-5)
+train(model, pack(examples_of_this_process, tokens=4096), optimizer=optimizer, steps=1000)
+```
+
+- Each process keeps its part of each parameter in `dtype` (f32), and the
+  optimizer updates those parts.
+- The generated code gathers each parameter, in the dtype the model
+  computes in, just before its block runs, and drops it after.
+- Gradients are summed back into the parts in f32.
+- Backward gathers again rather than keep the whole weights: under
+  `compile="inductor"` through recomputation, otherwise through saved-tensor
+  hooks.
+- `save_weights` gathers the parts. Every process calls it, and the first
+  writes the file.
+
+PyTorch's own `fully_shard` cannot shard a Linnet model. It gathers a
+module's parameters in hooks around that module's `forward`, and generated
+code computes every block in one function without calling any of them.
+
 ### Other trainers
 
 `CausalLM` gives a Linnet decoder the call a transformers-style trainer
