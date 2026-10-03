@@ -116,15 +116,24 @@ class _Sampler:
     def run(self, requests: Sequence[Request]) -> tuple[list[Completion], None]:
         rows = [list(r.prompt) for r in requests]
         draws = [torch.Generator().manual_seed(r.seed or 0) for r in requests]
+        # Each token's log-probability before temperature, as `Engine` reports.
+        chosen: list[list[float]] = [[] for _ in requests]
         for _ in range(requests[0].max_new_tokens):
             with torch.no_grad():
                 logits = self.model.run_entry("forward", [torch.tensor(rows, dtype=torch.int32)])
             probs = torch.softmax(logits[:, -1] / requests[0].temperature, -1)
-            for row, p, draw in zip(rows, probs, draws, strict=True):
-                row.append(int(torch.multinomial(p, 1, generator=draw)))
+            logs = torch.log_softmax(logits[:, -1], -1)
+            for row, p, log, draw, mine in zip(rows, probs, logs, draws, chosen, strict=True):
+                token = int(torch.multinomial(p, 1, generator=draw))
+                row.append(token)
+                mine.append(float(log[token]))
         done = [
-            Completion(request, row[len(request.prompt) :])
-            for request, row in zip(requests, rows, strict=True)
+            Completion(
+                request,
+                row[len(request.prompt) :],
+                logprobs=mine if request.logprobs is not None else [],
+            )
+            for request, row, mine in zip(requests, rows, chosen, strict=True)
         ]
         return done, None
 
@@ -293,3 +302,58 @@ def test_a_resumed_grpo_run_ends_where_an_unbroken_one_does(weights: Path, tmp_p
     theirs = dict(unbroken.named_parameters())
     for name, parameter in resumed.named_parameters():
         torch.testing.assert_close(parameter.detach(), theirs[name].detach())
+
+
+def test_the_correction_weighs_each_token() -> None:
+    log_probs = torch.tensor([-1.0, -2.0, -0.5], requires_grad=True)
+    advantages = torch.tensor([1.0, -2.0, 1.0])
+    weights = torch.tensor([0.5, 0.25, 0.25])
+    correction = torch.tensor([0.5, 2.0, 1.0])
+    loss, _, _ = grpo_loss(
+        log_probs, log_probs.detach(), advantages, weights, correction=correction
+    )
+    loss.backward()
+    assert log_probs.grad is not None
+    torch.testing.assert_close(log_probs.grad, -advantages * weights * correction)
+
+
+def test_corrections_for_the_same_policy_change_nothing(weights: Path) -> None:
+    """An engine computing the policy's own log-probabilities: no mismatch,
+    and the steps of an uncorrected run."""
+
+    def run(cap: float | None) -> tuple[LinnetModule, list[float | None]]:
+        policy = _model(weights, compile=True, trainable=True)
+        trained = [p for p in policy.parameters() if p.requires_grad]
+        history = grpo(
+            policy,
+            _Sampler(_model(weights)),
+            _prompts(),
+            _threes,
+            optimizer=torch.optim.AdamW(trained, lr=3e-2),
+            steps=3,
+            group=4,
+            prompts_per_step=2,
+            max_new_tokens=6,
+            tokens=64,
+            correction_cap=cap,
+        )
+        return policy, [step.mismatch for step in history]
+
+    plain, none = run(None)
+    corrected, mismatches = run(2.0)
+    assert none == [None] * 3
+    assert all(m is not None and m < 1e-4 for m in mismatches)
+    theirs = dict(plain.named_parameters())
+    for name, parameter in corrected.named_parameters():
+        torch.testing.assert_close(parameter.detach(), theirs[name].detach(), atol=1e-4, rtol=1e-3)
+    with pytest.raises(ValueError, match="temperature 1"):
+        grpo(
+            plain,
+            _Sampler(_model(weights)),
+            _prompts(),
+            _threes,
+            optimizer=torch.optim.SGD([p for p in plain.parameters() if p.requires_grad]),
+            steps=1,
+            temperature=0.7,
+            correction_cap=2.0,
+        )
