@@ -142,6 +142,7 @@ def grpo(
     schedule: Any = None,
     entry: str = "log_probs_packed",
     seed: int = 0,
+    warmup: bool = True,
     on_step: Callable[[GrpoStep], None] | None = None,
 ) -> list[GrpoStep]:
     """Trains `policy` with GRPO for `steps` steps or until `prompts` run out.
@@ -167,7 +168,11 @@ def grpo(
     reduced into the parts of a policy split by `fully_shard`), and the
     step's numbers cover every process. A process with fewer batches runs
     empty ones, so every process makes the same calls. Give each process its
-    own `seed`; all stop when any runs out of prompts."""
+    own `seed`; all stop when any runs out of prompts.
+
+    `warmup` first compiles every pass the engine can run
+    (`Engine.warmup`). Otherwise a pass size first met mid-run compiles
+    then, and under `torch.distributed` every other process waits for it."""
     import torch.distributed as dist
 
     if beta and reference is None:
@@ -179,6 +184,8 @@ def grpo(
     stop = frozenset(eos)
     source = iter(prompts)
     history: list[GrpoStep] = []
+    if warmup and callable(getattr(engine, "warmup", None)):
+        engine.warmup()
     for step in range(1, steps + 1):
         chosen = [_prompt(p) for p in itertools.islice(source, prompts_per_step)]
         if distributed:
