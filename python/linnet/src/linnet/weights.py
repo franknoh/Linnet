@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import struct
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -120,16 +120,26 @@ def iter_safetensors(weights: str | Path) -> Iterator[RawTensor]:
         yield RawTensor(name, location.dtype, location.shape, location.read())
 
 
+@dataclass(frozen=True, slots=True)
+class LazyBytes:
+    """A tensor's bytes, produced only when written: `nbytes` long, from
+    `read()`. Saving a model holds one tensor's copy at a time."""
+
+    nbytes: int
+    read: Callable[[], bytes]
+
+
 def write_safetensors(
     path: str | Path,
-    tensors: Iterable[tuple[str, str, tuple[int, ...], TensorLocation | bytes]],
+    tensors: Iterable[tuple[str, str, tuple[int, ...], TensorLocation | LazyBytes | bytes]],
     metadata: Mapping[str, str] | None = None,
 ) -> Path:
     """Writes a SafeTensors file from raw tensors, streaming those given as locations.
 
-    `tensors` yields `(name, dtype, shape, data)` with `data` either bytes or
-    a `TensorLocation` to copy from; sizes come from the location, so a
-    checkpoint larger than memory copies without loading it whole.
+    `tensors` yields `(name, dtype, shape, data)` with `data` bytes, a
+    `TensorLocation` to copy from, or `LazyBytes` read as it is written; sizes
+    come from the location or the `nbytes` given, so a checkpoint larger than
+    memory copies without loading it whole.
     """
     entries = list(tensors)
     header: dict[str, Any] = {}
@@ -137,7 +147,7 @@ def write_safetensors(
         header["__metadata__"] = dict(metadata)
     offset = 0
     for name, dtype, shape, data in entries:
-        size = data.nbytes if isinstance(data, TensorLocation) else len(data)
+        size = data.nbytes if isinstance(data, TensorLocation | LazyBytes) else len(data)
         header[name] = {
             "dtype": dtype,
             "shape": list(shape),
@@ -151,7 +161,7 @@ def write_safetensors(
     with target.open("wb") as out:
         out.write(struct.pack("<Q", len(encoded)))
         out.write(encoded)
-        for _, _, _, data in entries:
+        for name, _, _, data in entries:
             if isinstance(data, TensorLocation):
                 with data.file.open("rb") as source:
                     source.seek(data.start)
@@ -160,6 +170,11 @@ def write_safetensors(
                         chunk = source.read(min(remaining, 64 << 20))
                         out.write(chunk)
                         remaining -= len(chunk)
+            elif isinstance(data, LazyBytes):
+                chunk = data.read()
+                if len(chunk) != data.nbytes:
+                    raise LinnetError(f"`{name}` produced {len(chunk)} bytes, not {data.nbytes}")
+                out.write(chunk)
             else:
                 out.write(data)
     return target

@@ -57,8 +57,8 @@ LinnetModule(
 ```
 
 `?` marks an optional parameter, `state` a KV-cache member. `state_dict()`
-uses the Linnet parameter paths (`layers.0.attention.q_proj.weight`), so
-checkpoints move both ways between PyTorch and Linnet.
+names each tensor `root.` and its Linnet path
+(`root.layers.0.attention.q_proj.weight`).
 
 `load` checks the program with `linnet plan` without running it. With
 `weights`, it checks every tensor's name, shape and dtype against the
@@ -76,7 +76,7 @@ from the inputs.
 | `compile=False` | the interpreter. Default elsewhere |
 | `compile="inductor"` | generated source through `torch.compile` |
 | `compile="reduce-overhead"` | CUDA graphs; see [CUDA graphs](#cuda-graphs) |
-| `trainable=True` | parameters require gradients |
+| `trainable=True` | parameters require gradients; glob patterns (`["layers.*.mlp.*"]`) choose a subset. See [Training](#training) |
 | `bindings="bindings.json"` | maps Linnet paths to checkpoint tensor names |
 | `cast_dtype=True` | converts floating-point weights to the model's dtype as they are read |
 | `amp="bf16"` or `"f16"` | mixed precision under `torch.autocast`; weights keep the model's dtype (`T=f32` keeps f32 masters) and gradients arrive in f32. With `"f16"`, scale the loss with `torch.amp.GradScaler` |
@@ -208,10 +208,26 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 loss = criterion(model(tokens), labels)
 loss.backward()
 optimizer.step()
+model.save_weights("trained.safetensors")
 ```
 
 Entries are differentiable, interpreted or generated. `state` members are
 detached between calls.
+
+| Call | Effect |
+| --- | --- |
+| `trainable=True`, or `model.set_trainable(True)` | every floating-point parameter trains |
+| `trainable=["layers.*.mlp.*"]` | only parameters whose path matches a glob pattern; returns the paths |
+| `model.save_weights(path)` | one SafeTensors file under the checkpoint's own names, so it replaces that checkpoint (`linnet.hf.export(card, weights=path)` exports it) |
+| `model.save_weights(path, names="linnet")` | the same under Linnet paths |
+| `model.save_weights(path, dtype=torch.bfloat16)` | converts floating-point tensors as it writes |
+
+Parameters the checkpoint ties (two paths bound to one tensor, such as an
+embedding and its output head) load as one parameter and are written once.
+Optional parameters the checkpoint lacks never train and are not written.
+A model trains without weight-only work done ahead or hand-captured CUDA
+graphs; a model that ran without gradients compiles its entries again once
+any parameter requires them.
 
 ## Functions
 

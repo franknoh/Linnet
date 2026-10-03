@@ -60,10 +60,14 @@ class CompiledLinnetModule(LinnetModule):
         self.shard_group: Any = None
         self._generic_arguments = dict(generics)
         self._compiled: dict[tuple[Any, ...], _Generated] = {}
-        # Per call signature (entry, input shapes and dtypes, generics, backend):
-        # the compiled entry and where its parameters and states live, so a
-        # decoding step does not re-derive them. `bind_weights` clears it.
+        # Per call signature (entry, input shapes and dtypes, generics,
+        # backend, whether the model trains): the compiled entry and where its
+        # parameters and states live, so a decoding step does not re-derive
+        # them. `bind_weights` clears it.
         self._fast: dict[tuple[Any, ...], _Prepared] = {}
+        # The parameters, listed once: whether any requires gradients is
+        # asked on every call. Cleared when a parameter object is replaced.
+        self._parameter_list: list[torch.nn.Parameter] | None = None
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
         self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
@@ -86,19 +90,36 @@ class CompiledLinnetModule(LinnetModule):
             self._backend if compile is None else compile if isinstance(compile, str) else None
         )
         cuda_graphs = backend in ("reduce-overhead", "cudagraphs")
+        trains = self.trains()
         signature = (
             name,
             tuple((tuple(value.shape), value.dtype) for value in inputs),
             tuple(sorted((generics or {}).items())),
             backend,
+            trains,
         )
         prepared = self._fast.get(signature)
         if prepared is None:
-            prepared = self._prepare(name, inputs, generics or {}, backend)
+            prepared = self._prepare(name, inputs, generics or {}, backend, trains)
             self._fast[signature] = prepared
         if prepared.generated.captured:
             return self._replay(prepared, inputs)
         return self._call(prepared, inputs, cuda_graphs)
+
+    def trains(self) -> bool:
+        """Whether any parameter requires gradients. A model being trained
+        runs without weight-only work done ahead (`prepare`), without joined
+        weights, and without hand-captured CUDA graphs: each would hold values
+        computed from the weights before an update, or replace the parameter
+        objects an optimizer holds."""
+        if self._parameter_list is None:
+            self._parameter_list = list(self.parameters())
+        return any(parameter.requires_grad for parameter in self._parameter_list)
+
+    def forget_parameters(self) -> None:
+        """Called when parameter objects are replaced (bound weights tied, a
+        group joined into one buffer)."""
+        self._parameter_list = None
 
     def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Any:
         generated = prepared.generated
@@ -145,7 +166,12 @@ class CompiledLinnetModule(LinnetModule):
             prepared.next_states, generated.next_states, outputs[generated.results :], strict=True
         ):
             if _same(value, by_path.get(path)):
-                continue  # written in place: the buffer already holds it
+                # Written in place: the buffer already holds it. A write from
+                # values that require gradients leaves the buffer in this
+                # call's graph; the next call starts from its value alone.
+                if value.requires_grad:
+                    value.detach_()
+                continue
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
 
@@ -230,15 +256,16 @@ class CompiledLinnetModule(LinnetModule):
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str],
         backend: str | None,
+        trains: bool,
     ) -> _Prepared:
         function = self.entries[name]
         params = function["body"]["args"][1:]
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
         bindings = self._bindings(function, inputs, generics)
-        key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend)
+        key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend, trains)
         if key not in self._compiled:
-            self._compiled[key] = self._compile(name, bindings, backend)
+            self._compiled[key] = self._compile(name, bindings, backend, trains)
         generated = self._compiled[key]
         return _Prepared(
             generated,
@@ -295,6 +322,7 @@ class CompiledLinnetModule(LinnetModule):
                         part = torch.nn.Parameter(part, requires_grad=tensor.requires_grad)
                     setattr(owner, leaf, part)
                     offset += tensor.shape[0]
+            self.forget_parameters()
 
     # ---- one compilation per entry and shape
 
@@ -347,7 +375,9 @@ class CompiledLinnetModule(LinnetModule):
                 absent += [prefix + sub for sub in sorted(module.absent_subs)]
         return tuple(absent)
 
-    def _compile(self, entry: str, bindings: dict[str, str], backend: str | None) -> _Generated:
+    def _compile(
+        self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
+    ) -> _Generated:
         command = [find_compiler(), "torch", "--root", self.plan.root["name"], "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
@@ -362,7 +392,7 @@ class CompiledLinnetModule(LinnetModule):
             command += ["--bind", f"{name}={value}"]
         if self.placement is not None and not self.placement.trivial:
             command += self.placement.flags()
-        elif not any(parameter.requires_grad for parameter in self.parameters()):
+        elif not trains:
             # Weight-only work once at load; a model being trained keeps it
             # in the graph, where gradients flow through it.
             command.append("--prepare")
@@ -399,7 +429,7 @@ class CompiledLinnetModule(LinnetModule):
             backend in ("reduce-overhead", "cudagraphs")
             and self.interpreter.device.type == "cuda"
             and (self.placement is None or self.placement.trivial)
-            and not any(parameter.requires_grad for parameter in self.parameters())
+            and not trains
         )
         if captured:
             if backend == "reduce-overhead":

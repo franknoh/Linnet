@@ -2,15 +2,16 @@
 
 The module hierarchy mirrors the block hierarchy of the Linnet source: every
 `sub` is a child module (a `ModuleList` for arrays), every `param` an
-`nn.Parameter`, every `buffer` a registered buffer, so that `state_dict()` uses
-the canonical Linnet parameter paths. Entries become methods; `forward` calls
-the entry named `forward`, or the only entry.
+`nn.Parameter`, every `buffer` a registered buffer, so `state_dict()` names
+each tensor `root.` and its Linnet parameter path. Entries become methods;
+`forward` calls the entry named `forward`, or the only entry.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -166,6 +167,9 @@ class LinnetModule(nn.Module):
         self.amp: torch.dtype | None = None
         # The DeviceMesh weights are split over (`load(tensor_parallel=...)`).
         self.tensor_parallel: Any = None
+        # The checkpoint tensor each parameter path was bound from
+        # (`bind_weights`), for writing the weights back under those names.
+        self.weight_names: dict[str, str] = {}
         root = plan.root
         env = Env()
         for generic in root["generics"]:
@@ -298,6 +302,118 @@ class LinnetModule(nn.Module):
         """The `state` members by parameter path, in manifest order."""
         return [entry["path"] for entry in self.plan.manifest if entry["kind"] == "state"]
 
+    def set_trainable(self, trainable: bool | str | Sequence[str]) -> list[str]:
+        """Chooses the parameters that require gradients and returns their
+        paths. `True` is every floating-point parameter, `False` none, and a
+        glob pattern or a list of them (`"layers.*.mlp.*"`) those whose path
+        matches. A parameter the weights left out never trains. Parameters
+        tied to one checkpoint tensor are one tensor: it trains if any of its
+        paths matches."""
+        patterns = [trainable] if isinstance(trainable, str) else trainable
+        wanted: dict[int, bool] = {}
+        tensors: dict[int, torch.nn.Parameter] = {}
+        for path, parameter in self.root.named_parameters(remove_duplicate=False):
+            owner, leaf = owner_of(self, path)
+            if isinstance(patterns, bool):
+                match = patterns
+            else:
+                match = any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+            use = match and parameter.is_floating_point() and leaf not in owner.absent_params
+            wanted[id(parameter)] = wanted.get(id(parameter), False) or use
+            tensors[id(parameter)] = parameter
+        for key, parameter in tensors.items():
+            parameter.requires_grad_(wanted[key])
+        return [
+            path
+            for path, parameter in self.root.named_parameters(remove_duplicate=False)
+            if wanted[id(parameter)]
+        ]
+
+    def save_weights(
+        self,
+        path: str | Path,
+        *,
+        names: str = "checkpoint",
+        dtype: torch.dtype | None = None,
+    ) -> Path:
+        """Writes the weights to one SafeTensors file: every parameter and
+        `buffer` the weights supplied, never `state`, and no optional
+        parameter they left out. `names="checkpoint"` names each tensor as the
+        checkpoint it was bound from did (through its bindings), so the file
+        takes that checkpoint's place: `linnet.hf.export(card, weights=...)`
+        reads it. `names="linnet"` names each by its parameter path. Paths
+        bound to one checkpoint tensor (a tied embedding) are written once.
+        `dtype` converts floating-point tensors as they are written."""
+        from ..weights import LazyBytes, write_safetensors
+
+        if names not in ("checkpoint", "linnet"):
+            raise PlanError('names must be "checkpoint" or "linnet"')
+        if self.tensor_parallel is not None or getattr(self, "shard_group", None) is not None:
+            raise PlanError("a model split across processes cannot be saved as one file")
+        absent_subs = [
+            prefix
+            for prefix, (parent, sub) in _optional_subs(self).items()
+            if sub in parent.absent_subs
+        ]
+        written: dict[str, tuple[str, torch.Tensor]] = {}
+        entries: list[tuple[str, str, tuple[int, ...], Any]] = []
+        for tensor_path, tensor in _all_tensors(self):
+            owner, leaf = owner_of(self, tensor_path)
+            if leaf in owner.absent_params or any(
+                tensor_path.startswith(prefix + ".") for prefix in absent_subs
+            ):
+                continue
+            name = (
+                self.weight_names.get(tensor_path, tensor_path)
+                if names == "checkpoint"
+                else tensor_path
+            )
+            if name in written:
+                first, kept = written[name]
+                if kept is not tensor and not torch.equal(kept, tensor):
+                    raise PlanError(
+                        f"`{first}` and `{tensor_path}` both come from `{name}` but now differ"
+                    )
+                continue
+            written[name] = (tensor_path, tensor)
+            target = dtype if dtype is not None and tensor.is_floating_point() else tensor.dtype
+            entries.append(
+                (
+                    name,
+                    _SAFETENSORS_DTYPES[target],
+                    tuple(tensor.shape),
+                    LazyBytes(tensor.numel() * target.itemsize, _bytes_of(tensor, target)),
+                )
+            )
+        return write_safetensors(path, entries, metadata={"format": "pt"})
+
+
+_SAFETENSORS_DTYPES: dict[torch.dtype, str] = {
+    torch.bool: "BOOL",
+    torch.int8: "I8",
+    torch.int16: "I16",
+    torch.int32: "I32",
+    torch.int64: "I64",
+    torch.uint8: "U8",
+    torch.uint16: "U16",
+    torch.uint32: "U32",
+    torch.uint64: "U64",
+    torch.float16: "F16",
+    torch.bfloat16: "BF16",
+    torch.float32: "F32",
+    torch.float64: "F64",
+}
+
+
+def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
+    """Reads `tensor` as `dtype` into host bytes, when called."""
+
+    def read() -> bytes:
+        value = tensor.detach().to(device="cpu", dtype=dtype).contiguous()
+        return value.reshape(-1).view(torch.uint8).numpy().tobytes()
+
+    return read
+
 
 def bind_generics(env: Env, declared: list[dict[str, Any]], given: Mapping[str, int | str]) -> None:
     """Binds an entry's generics that are given explicitly by name."""
@@ -383,6 +499,7 @@ def bind_weights(
     strict: bool = True,
     cast_dtype: bool = False,
     shard: tuple[int, int] | None = None,
+    tie: bool = False,
 ) -> None:
     """Loads SafeTensors weights into the module.
 
@@ -402,6 +519,10 @@ def bind_weights(
     (its `Shards` generic): a tensor the checkpoint holds `count` times over
     along one axis is read as its `index`-th part along that axis, from the
     file, without loading the rest.
+
+    `tie=True` makes parameters bound to one checkpoint tensor (an embedding
+    and an output head the checkpoint ties) one `nn.Parameter`, so training
+    updates them together and the weights are held once.
     """
     from safetensors import safe_open  # type: ignore[import-untyped]
 
@@ -494,6 +615,9 @@ def bind_weights(
             owner, leaf = owner_of(module, path)
             getattr(owner, leaf).copy_(loaded)
             owner.absent_params.discard(leaf)
+            module.weight_names[path] = source
+    if tie:
+        _tie(module, [(path, source, parts.get(path)) for path, source, _ in assignments])
     # An optional sub-block is present when every parameter it requires was
     # bound (and something was): a checkpoint without its weights leaves it out.
     bound = {path for path, _, _ in assignments}
@@ -517,6 +641,23 @@ def bind_weights(
         entries = getattr(module, cache, None)
         if isinstance(entries, dict):
             entries.clear()
+    forget = getattr(module, "forget_parameters", None)
+    if callable(forget):
+        forget()  # tying replaced parameters
+
+
+def _tie(module: LinnetModule, bound: list[tuple[str, str, tuple[int, int] | None]]) -> None:
+    """Makes the parameters bound from the same checkpoint tensor, and the
+    same part of it, one parameter: the first path's."""
+    first: dict[tuple[str, tuple[int, int] | None], torch.nn.Parameter] = {}
+    for path, source, part in bound:
+        owner, leaf = owner_of(module, path)
+        tensor = getattr(owner, leaf)
+        if not isinstance(tensor, torch.nn.Parameter):
+            continue
+        kept = first.setdefault((source, part), tensor)
+        if kept is not tensor and kept.shape == tensor.shape and kept.dtype == tensor.dtype:
+            setattr(owner, leaf, kept)
 
 
 def _shard_axis(full: list[int], local: list[int], count: int) -> int | None:
@@ -544,11 +685,13 @@ def _optional_subs(module: LinnetModule) -> dict[str, tuple[BlockModule, str]]:
 
 
 def _all_tensors(module: LinnetModule) -> list[tuple[str, torch.Tensor]]:
+    """Every parameter and bound buffer by path, a tied tensor under each of
+    its paths."""
     tensors: list[tuple[str, torch.Tensor]] = []
     prefix = "root."
-    for name, parameter in module.named_parameters():
+    for name, parameter in module.named_parameters(remove_duplicate=False):
         tensors.append((name.removeprefix(prefix), parameter))
-    for name, buffer in module.named_buffers():
+    for name, buffer in module.named_buffers(remove_duplicate=False):
         path = name.removeprefix(prefix)
         owner, leaf = owner_of(module, path)
         if leaf not in owner.state_names:  # state is never bound from weights

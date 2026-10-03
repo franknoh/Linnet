@@ -3,7 +3,7 @@ functions, and export PyTorch modules as Linnet."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ def load(
     optimize: bool = True,
     numerics: str = "fast",
     compile: bool | str | None = None,
-    trainable: bool = False,
+    trainable: bool | str | Sequence[str] = False,
     device_map: str | Mapping[str, str | int] | None = None,
     max_memory: Mapping[int | str, int | str] | None = None,
     offload: bool = True,
@@ -121,8 +121,12 @@ def load(
         `trainable=True` makes the parameters require gradients: every entry is
         ordinary differentiable PyTorch arithmetic (interpreted or generated), so
         `loss.backward()` and any `torch.optim` optimizer train the model without
-        a model-specific Python class. `state` members stay detached between
-        calls.
+        a model-specific Python class. A glob pattern or a list of them
+        (`trainable=["layers.*.mlp.*"]`) trains only the parameters whose path
+        matches; `model.set_trainable` changes the choice later. Parameters the
+        checkpoint ties (bound from one tensor) are one parameter. `state`
+        members stay detached between calls, and `model.save_weights` writes
+        the trained weights.
     """
     plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
     if amp not in (None, "bf16", "f16"):
@@ -176,10 +180,11 @@ def load(
         module = LinnetModule(plan, generics, torch.device(device))
     shard = (mesh.get_local_rank(), mesh.size()) if mesh is not None else None
     if weights is not None:
-        bind_weights(module, weights, bindings, strict=strict, cast_dtype=cast_dtype, shard=shard)
+        bind_weights(
+            module, weights, bindings, strict=strict, cast_dtype=cast_dtype, shard=shard, tie=True
+        )
     if trainable:
-        for parameter in module.parameters():
-            parameter.requires_grad_(True)
+        module.set_trainable(trainable)
     module.amp = precision
     if mesh is not None:
         from .collectives import prepare
@@ -207,7 +212,7 @@ def _load_placed(
     strict: bool,
     numerics: str,
     compile: bool | str | None,
-    trainable: bool,
+    trainable: bool | str | Sequence[str],
     device_map: str | Mapping[str, str | int],
     max_memory: Mapping[int | str, int | str] | None,
     offload: bool,
@@ -241,6 +246,5 @@ def _load_placed(
     apply_placement(module, placement)
     module.placement = placement
     if trainable:
-        for parameter in module.parameters():
-            parameter.requires_grad_(True)
+        module.set_trainable(trainable)
     return module

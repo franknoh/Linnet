@@ -56,7 +56,10 @@ def test_sgd_fits_a_linnet_mlp(tmp_path: Path, compile: bool) -> None:
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.normal_(0, 0.3)
-    assert all(p.requires_grad for p in model.parameters())
+    # Without weights the optional biases are absent: the model computes
+    # without them, and they do not train.
+    trained = {name for name, p in model.named_parameters() if p.requires_grad}
+    assert trained == {"root.up.weight", "root.down.weight"}
 
     target_weight = torch.tensor([[1.0, -2.0, 0.5]])
     x = torch.randn(256, 3)
