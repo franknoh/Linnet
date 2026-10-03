@@ -283,6 +283,31 @@ TRL's padding-free batches. Packed lengths round up to a multiple of
 `transformers.Trainer` passes, the loss is the sum over that count, so
 gradient accumulation takes the mean over the whole step.
 
+TRL's `SFTTrainer` takes the same model:
+
+```python
+trainer = trl.SFTTrainer(model=CausalLM(model), args=trl.SFTConfig(...),
+                         train_dataset=data, processing_class=tokenizer)
+```
+
+Its default loss (`chunked_nll`) computes the cross-entropy itself, a block
+of tokens at a time. It reads the hidden states from `CausalLM.base_model`
+and the head from `get_output_embeddings()`. Both come from the model's
+`hidden_packed` entry, which every Nest decoder card has. With
+`loss_type="nll"`, TRL reads the logits instead. Pass `logits=True` to get
+them in the input's layout, computed without gradients; they take the
+memory a transformers model's would. `gradient_checkpointing=True`, TRL's
+default, only warns: with `compile="inductor"`, set
+`activation_memory_budget` instead.
+
+On one H100, Llama 3.1 8B with LoRA adapters (rank 16, every attention
+and MLP projection) trains on Alpaca as follows:
+
+| Trainer | Batches | Result |
+| --- | --- | --- |
+| `linnet.train`, `compile="inductor"` | 4096 packed tokens | 260 ms per step (15.7K tokens/s), 36 GiB; held-out loss 1.91 to 1.37 in 40 steps |
+| `transformers.Trainer`, `compile=True` | 8 padded rows, 2 per step | 20 steps in 7 s, 22 GiB; loss 1.93 to 1.19 |
+
 ### Reinforcement learning
 
 ```python
@@ -311,6 +336,11 @@ history = grpo(policy, engine, [Prompt(ids, answer) for ids, answer in data], re
 ratio is then clipped to `1 - clip[0]`, `1 + clip[1]`. `beta` adds a KL
 penalty against `reference`, a frozen copy of the model. `grpo_loss` is the
 loss alone, for another loop. Training runs in one process.
+
+On one H100, GRPO with LoRA on Llama 3.1 8B (16 prompts, 8 completions
+each, up to 128 tokens) takes 1.1 s to sample and 0.6 s to train a step
+after compiling; copying the weights into the engine, adapters merged,
+takes 104 ms. Peak memory for both models is 59 GiB.
 
 ### Low-rank adapters
 
