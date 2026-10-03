@@ -166,7 +166,9 @@ class CausalLM(torch.nn.Module):
         new = [tags] if isinstance(tags, str) else list(tags)
         self.model_tags = sorted({*self.model_tags, *new})
 
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs: Any = None) -> None:
+    def gradient_checkpointing_enable(
+        self, gradient_checkpointing_kwargs: Any = None, **_: Any
+    ) -> None:
         """Trainers call this for `gradient_checkpointing=True` (TRL's
         default). Linnet entries keep their activations; with
         `compile="inductor"`, `activation_memory_budget` recomputes them."""
