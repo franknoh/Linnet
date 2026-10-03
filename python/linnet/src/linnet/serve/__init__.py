@@ -155,6 +155,11 @@ class _Tokens(Protocol):
 _Logprobs = tuple[list[float], list[list[int]], list[list[float]]]
 
 
+# Per prompt of a packed pass, the rows that share it: each takes the
+# prompt's cache rows and draws its own first token, with its own sampling.
+_Copies = list[list[tuple[int, Sampling]]]
+
+
 class _Backend(Protocol):
     """Holds each row's next token, position, and sampling on the device.
     `prefill` queues a prompt pass, sets its rows' sampling, and sets them to
@@ -185,6 +190,7 @@ class _Backend(Protocol):
         size: int,
         pad: int,
         top: int = -1,
+        copies: _Copies | None = None,
     ) -> _Tokens: ...
     def decode(self, need: int, top: int = -1) -> _Tokens: ...
     def step_packed(
@@ -197,6 +203,7 @@ class _Backend(Protocol):
         need: int,
         top: int = -1,
         step_top: int = -1,
+        copies: _Copies | None = None,
     ) -> tuple[_Tokens, _Tokens]: ...
 
 
@@ -244,6 +251,7 @@ class Engine:
         max_group: int = 8,
         pack: int = 4096,
         mix: bool = True,
+        share: bool = True,
     ) -> None:
         self.backend: _Backend = _backend_for(model, graphs)
         limit = self.backend.max_seq
@@ -272,6 +280,7 @@ class Engine:
         self.mix_size = self.pack_sizes[min(1, len(self.pack_sizes) - 1)] if self.mix else 0
         self.pad = pad
         self.max_group = max(1, max_group)
+        self.share = share and bool(self.pack)
         self._seeds = random.Random()
 
     @property
@@ -413,6 +422,20 @@ class Engine:
         admitted = [self._waiting.popleft() for _ in range(min(len(free), len(self._waiting)))]
         admitted.sort(key=lambda c: len(c.request.prompt))
         placed = list(zip(free, admitted, strict=False))
+        # Prompts admitted together that are the same pass once; the rows
+        # sharing one copy its cache rows (`share`).
+        sharing: dict[int, list[tuple[int, Completion]]] = {}
+        if self.share:
+            first: dict[tuple[int, ...], int] = {}
+            leaders: list[tuple[int, Completion]] = []
+            for slot, completion in placed:
+                key = tuple(completion.request.prompt)
+                if key in first:
+                    sharing.setdefault(first[key], []).append((slot, completion))
+                else:
+                    first[key] = slot
+                    leaders.append((slot, completion))
+            placed = leaders
         passes = self._packed(placed)
         # With rows already decoding, the smallest pass carries their step,
         # if it is small enough.
@@ -426,19 +449,21 @@ class Engine:
             now = time.perf_counter() - self._start
             prompts = [list(c.request.prompt) for _, c in batch]
             size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
+            everyone, copies = _shared(batch, sharing)
             tokens = self.backend.prefill_packed(
                 prompts,
                 [slot for slot, _ in batch],
                 [c.sampling for _, c in batch],
                 size,
                 self.pad,
-                _top(c for _, c in batch),
+                _top(c for _, c in everyone),
+                copies,
             )
             self._prefills += 1
-            for slot, completion in batch:
+            for slot, completion in everyone:
                 completion.admitted = now
                 rows[slot] = completion
-            owners = [(i, slot, c) for i, (slot, c) in enumerate(batch)]
+            owners = [(i, slot, c) for i, (slot, c) in enumerate(everyone)]
             self._queued.append(_Queued(tokens, owners, prompts=True))
         if self.pack:
             placed = []
@@ -471,23 +496,25 @@ class Engine:
             # Every row in use steps but those this pass fills, which have no
             # token to step from yet.
             stepping = [(slot, slot, c) for slot, c in enumerate(rows) if c is not None]
-            first, stepped = self.backend.step_packed(
+            everyone, copies = _shared(mixed, sharing)
+            prompted, stepped = self.backend.step_packed(
                 prompts,
                 [slot for slot, _ in mixed],
                 [c.sampling for _, c in mixed],
                 size,
                 self.pad,
                 mode(c.sampling for _, _, c in stepping),
-                _top(c for _, c in mixed),
+                _top(c for _, c in everyone),
                 _top(c for _, _, c in stepping),
+                copies,
             )
             self._prefills += 1
             self._steps += 1
-            for slot, completion in mixed:
+            for slot, completion in everyone:
                 completion.admitted = now
                 rows[slot] = completion
-            owners = [(i, slot, c) for i, (slot, c) in enumerate(mixed)]
-            self._queued.append(_Queued(first, owners, prompts=True))
+            owners = [(i, slot, c) for i, (slot, c) in enumerate(everyone)]
+            self._queued.append(_Queued(prompted, owners, prompts=True))
             self._queued.append(_Queued(stepped, stepping, prompts=False))
             ahead = 2
         elif any(row is not None for row in rows):
@@ -571,6 +598,16 @@ class Engine:
         return True
 
 
+def _shared(
+    batch: list[tuple[int, Completion]], sharing: dict[int, list[tuple[int, Completion]]]
+) -> tuple[list[tuple[int, Completion]], _Copies]:
+    """A pass's rows, its prompts' then those sharing them, in the order the
+    backend returns their tokens; and per prompt, the rows sharing it."""
+    extra = [pair for slot, _ in batch for pair in sharing.get(slot, [])]
+    copies = [[(s, c.sampling) for s, c in sharing.get(slot, [])] for slot, _ in batch]
+    return [*batch, *extra], copies
+
+
 def _top(completions: Iterable[Completion]) -> int:
     """What a pass computes of log-probabilities (see `_Backend`)."""
     wanted = [c.request.logprobs for c in completions if c.request.logprobs is not None]
@@ -636,6 +673,7 @@ class _TorchBackend:
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
         self.sampling = [Sampling()] * self.slots
+        self._row_states: list[tuple[Any, str]] | None = None
         self._hold([], [])
         # Compiled, drawing reads the logits a few times, not once for each
         # step of the hash; the batch dimension varies without recompiling.
@@ -746,6 +784,7 @@ class _TorchBackend:
         size: int,
         pad: int,
         top: int = -1,
+        copies: _Copies | None = None,
     ) -> _Tokens:
         # A few pass sizes, each compiled like the step (and replayed as a CUDA
         # graph): FlexAttention runs only under `torch.compile`, and a pass
@@ -753,6 +792,7 @@ class _TorchBackend:
         logits = self.model.run_entry(
             "prefill_packed", self._pack(prompts, slots, size, pad), compile=self.step_compile
         )[: len(prompts)]
+        logits, prompts, slots, sampling = self._share(logits, prompts, slots, sampling, copies)
         first = self._admit(logits, prompts, slots, sampling)
         return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
@@ -766,6 +806,7 @@ class _TorchBackend:
         need: int,
         top: int = -1,
         step_top: int = -1,
+        copies: _Copies | None = None,
     ) -> tuple[_Tokens, _Tokens]:
         """`prefill_packed` and `decode` in one pass. The rows the prompts
         fill step along from no token of theirs: their step is written at
@@ -780,7 +821,9 @@ class _TorchBackend:
             compile=self.step_compile,
         )
         stepped = self._advance(logits[self.slots :], need)
-        prompted = logits[: len(prompts)]
+        prompted, prompts, slots, sampling = self._share(
+            logits[: len(prompts)], prompts, slots, sampling, copies
+        )
         first = self._admit(prompted, prompts, slots, sampling)
         return (
             _TorchTokens(first, _logprobs_torch(prompted, first, top) if top >= 0 else None),
@@ -789,6 +832,49 @@ class _TorchBackend:
                 _logprobs_torch(logits[self.slots :], stepped, step_top) if step_top >= 0 else None,
             ),
         )
+
+    def _share(
+        self,
+        logits: Any,
+        prompts: list[list[int]],
+        slots: list[int],
+        sampling: list[Sampling],
+        copies: _Copies | None,
+    ) -> tuple[Any, list[list[int]], list[int], list[Sampling]]:
+        """The pass's prompts, then the rows that share them: each copies its
+        prompt's cache rows and takes its logits."""
+        if not copies or not any(copies):
+            return logits, prompts, slots, sampling
+        order = list(range(len(prompts)))
+        sources: list[int] = []
+        targets: list[int] = []
+        shared = list(sampling)
+        for i, extra in enumerate(copies):
+            for slot, row in extra:
+                order.append(i)
+                sources.append(slots[i])
+                targets.append(slot)
+                shared.append(row)
+        self._copy_rows(sources, targets)
+        index = self._put(order).long()
+        return logits[index], [prompts[i] for i in order], [*slots, *targets], shared
+
+    def _copy_rows(self, sources: list[int], targets: list[int]) -> None:
+        """Copies whole rows of every state whose first axis is the row (the
+        KV caches), in place, so captured graphs keep their addresses."""
+        if self._row_states is None:
+            self._row_states = [
+                (module, leaf)
+                for module in self.model.modules()
+                for leaf in getattr(module, "state_names", ())
+                if isinstance(getattr(module, leaf, None), self.torch.Tensor)
+                and getattr(module, leaf).dim() > 0
+                and getattr(module, leaf).shape[0] == self.slots
+            ]
+        source, target = self._put(sources).long(), self._put(targets).long()
+        for module, leaf in self._row_states:
+            state = getattr(module, leaf)
+            state.index_copy_(0, target, state.index_select(0, source))
 
     def _advance(self, logits: Any, need: int) -> Any:
         """Draws every row's next token from its step's logits and moves the
@@ -856,6 +942,7 @@ class _Grouped:
         size: int,
         pad: int,
         top: int = -1,
+        copies: _Copies | None = None,
     ) -> _Tokens:
         raise NotImplementedError("packed prompt passes run with the PyTorch backend")
 
@@ -869,6 +956,7 @@ class _Grouped:
         need: int,
         top: int = -1,
         step_top: int = -1,
+        copies: _Copies | None = None,
     ) -> tuple[_Tokens, _Tokens]:
         raise NotImplementedError("packed prompt passes run with the PyTorch backend")
 

@@ -271,6 +271,43 @@ def test_load_weights_serves_the_new_weights(model_files: tuple[Path, Path]) -> 
         assert completion.tokens == _greedy(trained, completion.request)
 
 
+def test_identical_prompts_share_one_pass(model_files: tuple[Path, Path]) -> None:
+    """Four samples each of two prompts: each prompt passes once, the rows
+    sharing it copy its cache, and every row draws what it would alone."""
+    source, weights = model_files
+    requests = [
+        Request(prompt=[5 + i, 9, 2, 7], max_new_tokens=6, temperature=1.0, seed=100 * i + k)
+        for i in range(2)
+        for k in range(4)
+    ]
+
+    def run(share: bool) -> tuple[list[list[int]], list[int]]:
+        model = load(
+            source,
+            generics={**GENERICS, "Batch": 8},
+            std_root=STDLIB,
+            weights=weights,
+            compile=True,
+        )
+        engine = Engine(model, graphs=False, pack=48, share=share)
+        passed: list[int] = []
+        prefill = engine.backend.prefill_packed
+
+        def counting(prompts: list[list[int]], *args: Any, **kwargs: Any) -> Any:
+            passed.append(sum(len(p) for p in prompts))
+            return prefill(prompts, *args, **kwargs)
+
+        engine.backend.prefill_packed = counting  # type: ignore[method-assign]
+        done, _ = engine.run(requests)
+        return [c.tokens for c in done], passed
+
+    shared, shared_passed = run(True)
+    alone, alone_passed = run(False)
+    assert shared == alone
+    assert sum(shared_passed) == 8 and sum(alone_passed) == 32
+    assert len({tuple(tokens) for tokens in shared[:4]}) > 1  # each row its own draws
+
+
 @pytest.mark.parametrize("pack", [48, 0])
 def test_torch(model_files: tuple[Path, Path], pack: int) -> None:
     """Prompts packed end to end into passes (`prefill_packed`), or grouped

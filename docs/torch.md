@@ -377,7 +377,8 @@ history = grpo(policy, engine, [Prompt(ids, answer) for ids, answer in data], re
 
 1. `engine.load_weights(policy)` copies the policy's weights into the
    engine's model, adapters merged in.
-2. The engine samples `group` completions of each prompt.
+2. The engine samples `group` completions of each prompt. It passes each
+   prompt once and copies its cache rows to the rest of the group.
 3. `reward(prompt, completion)` scores each one. Its advantage is its reward
    less its group's mean, over the group's standard deviation.
 4. The policy recomputes the completions' log-probabilities with its
