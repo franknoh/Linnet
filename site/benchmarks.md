@@ -16,16 +16,18 @@ A single request -- a chat turn, an agent's next step -- waits on how fast
 one token follows another. For each decoder: Linnet's fastest path on one GPU
 (its generated PyTorch replayed as CUDA graphs, or XLA) against vLLM on the
 same checkpoint, a 512-token prompt and then 128 tokens chosen greedily,
-batch 1.
+batch 1. vLLM runs with its prefix cache off: every timed call sends the same
+prompt, which it would otherwise take from the cache rather than compute.
 
 <ZooClaims part="matchups" ids="vllm" />
 
 Portability costs nothing here. The generated code calls the kernels a
 hand-written implementation would -- fused attention, cuBLAS, cuDNN -- and a
 whole decoding step replays as one CUDA graph or runs as one XLA program, so
-the host is out of the loop between tokens. gpt-oss is at parity: vLLM reads
-its experts as MXFP4 in fused kernels, a quarter of the bytes Linnet reads
-from the copy it dequantizes when the model loads.
+the host is out of the loop between tokens. gpt-oss's experts are read as
+MXFP4, the four-bit form its checkpoint ships: by a Triton kernel of
+Linnet's own for a decoding step's few rows, and by OpenAI's
+`triton_kernels` for a prompt's many.
 
 ## Faster than PyTorch's and JAX's own implementations {#own-framework}
 
@@ -70,24 +72,24 @@ backend.
 
 <ZooClaims part="matchups" ids="serve,serve-triton" />
 
-vLLM's paged attention and scheduler keep it ahead from about 1 B parameters
-up. Below that a step is bound by launches, and one CUDA graph per step puts
-Linnet ahead. Behind Triton, `linnet.serve` outpaces Triton's own vLLM
-backend on every decoder but gpt-oss. The time to first token is mostly time
-spent waiting for a free row, for every stack.
+Up to 4 B parameters Linnet serves faster: a step is bound by launches
+there, and one CUDA graph per step removes them, while the prompts go in
+packed end to end. From 7 B up the two come within 3% of each other, vLLM's
+paged attention and scheduler a little ahead, and gpt-oss -- its experts read
+as MXFP4 with OpenAI's `triton_kernels` -- is 24% ahead. Behind Triton,
+`linnet.serve` outpaces Triton's own vLLM backend on every decoder. The time
+to first token is mostly time spent waiting for a free row, for every stack.
 
 ## Where Linnet is behind {#behind}
 
-Split across two GPUs, one request at a time, vLLM keeps a clear lead:
+Split across two GPUs, one request at a time, vLLM keeps a small lead:
 
 <ZooClaims part="matchups" ids="tp" />
 
-Linnet's PyTorch step on two GPUs replays as one CUDA graph per process, its
-all-reduces inside, but it splits the weights as DTensors: vLLM joins each
-layer's projections on every GPU and uses its own one-shot all-reduce, which
-a split held as DTensors cannot. Serving above 1 B (above) and gpt-oss's
-serving, where vLLM's fused MXFP4 experts read a quarter of the bytes, are
-the other places Linnet trails.
+Each process runs its own shard of the generated code -- its projections
+joined, its small all-reduces summed by a one-shot Triton kernel over
+symmetric memory, the output head split by vocabulary -- and replays it as
+one CUDA graph.
 
 The offloaded rows run Llama 3.1 8B and Qwen3 8B on a GPU capped at 8 GiB:
 half the layers stay on the device and the rest stream in from host memory

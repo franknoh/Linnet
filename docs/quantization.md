@@ -77,7 +77,7 @@ time -- each 32-bit word of a block shifted and masked into four pairs of
 `f16`s, every E2M1 nibble's bits placed in one -- with the block's scale
 applied once per 32 weights. On an H100 it reads gpt-oss-20b's experts at
 about 2 TB/s for one to four rows, where unpacking each nibble on its own
-read 1.4, and gpt-oss-20b decodes at 297 tokens per second (vLLM 303).
+read 1.4.
 
 Many rows at once -- a prompt, a serving step -- take
 `mxfp4_linear_experts_shared` and `mxfp4_combine_experts`, whose bodies
@@ -96,8 +96,8 @@ pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(p
 ```
 
 With it and CUDA graphs, gpt-oss-20b on one H100 takes a 512-token prompt in
-14.4 ms rather than 25.0, decodes at 367 tokens per second, and serves 256
-requests at 5349 tokens per second (vLLM 303 and 4313). Without CUDA graphs
+14.1 ms rather than 25.0, decodes at 368 tokens per second, and serves 256
+requests at 5349 tokens per second (vLLM 17.8 ms, 299 and 4313). Without CUDA graphs
 each routed product also costs `triton_kernels`' Python on the host, about
 0.4 ms a call, which a captured step does not pay: the same prompt takes
 34.9 ms under `torch.compile` alone.

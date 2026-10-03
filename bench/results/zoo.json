@@ -731,10 +731,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 2.8009,
-      "throughput_per_s": 855.1924,
-      "load_s": 5.1397,
-      "peak_vram_mib": 1590.8
+      "latency_ms": 2.1472,
+      "throughput_per_s": 1106.6184,
+      "load_s": 6.184,
+      "peak_vram_mib": 1558.9
      },
      "first_token": null,
      "max_abs_diff": 0.06286907196044922,
@@ -746,10 +746,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 3.7232,
-      "throughput_per_s": 851.5802,
-      "load_s": 9.1867,
-      "peak_vram_mib": 1560.8
+      "latency_ms": 2.1549,
+      "throughput_per_s": 1110.7647,
+      "load_s": 10.0434,
+      "peak_vram_mib": 1590.9
      },
      "first_token": null,
      "max_abs_diff": 0.06287145614624023,
@@ -761,10 +761,10 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 1.979,
-      "throughput_per_s": 974.6701,
-      "load_s": 7.137,
-      "peak_vram_mib": 2368.0
+      "latency_ms": 1.3945,
+      "throughput_per_s": 1100.1847,
+      "load_s": 6.0258,
+      "peak_vram_mib": 2434.1
      },
      "first_token": null,
      "max_abs_diff": 0.0625,
@@ -1029,10 +1029,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 5.1475,
-      "throughput_per_s": 587.6765,
-      "load_s": 9.1146,
-      "peak_vram_mib": 2442.8
+      "latency_ms": 3.656,
+      "throughput_per_s": 578.6878,
+      "load_s": 9.1031,
+      "peak_vram_mib": 2428.9
      },
      "first_token": null,
      "max_abs_diff": 0.11434412002563477,
@@ -1044,10 +1044,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 5.7584,
-      "throughput_per_s": 687.1713,
-      "load_s": 15.0301,
-      "peak_vram_mib": 2430.8
+      "latency_ms": 3.2436,
+      "throughput_per_s": 594.4762,
+      "load_s": 16.0628,
+      "peak_vram_mib": 2424.9
      },
      "first_token": null,
      "max_abs_diff": 0.1145319938659668,
@@ -1059,10 +1059,10 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 4.8349,
-      "throughput_per_s": 515.8713,
-      "load_s": 7.0491,
-      "peak_vram_mib": 2788.0
+      "latency_ms": 2.7097,
+      "throughput_per_s": 557.9241,
+      "load_s": 6.025,
+      "peak_vram_mib": 2880.1
      },
      "first_token": null,
      "max_abs_diff": 0.140625,
@@ -1311,13 +1311,13 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 38.3932,
-      "throughput_per_s": 36.7723,
-      "load_s": 7.0343,
-      "peak_vram_mib": 20344.8
+      "latency_ms": 31.5562,
+      "throughput_per_s": 48.7605,
+      "load_s": 12.0374,
+      "peak_vram_mib": 20350.9
      },
      "first_token": null,
-     "max_abs_diff": 1.0888938903808594,
+     "max_abs_diff": 1.0265884399414062,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
     },
@@ -1326,13 +1326,13 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 29.6941,
-      "throughput_per_s": 40.0286,
-      "load_s": 15.0554,
-      "peak_vram_mib": 20344.8
+      "latency_ms": 27.0603,
+      "throughput_per_s": 47.267,
+      "load_s": 15.0466,
+      "peak_vram_mib": 20354.9
      },
      "first_token": null,
-     "max_abs_diff": 1.0886340141296387,
+     "max_abs_diff": 1.0261340141296387,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
     },
@@ -1341,13 +1341,13 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 21.7821,
-      "throughput_per_s": 37.2937,
-      "load_s": 11.0621,
-      "peak_vram_mib": 3474.0
+      "latency_ms": 25.6082,
+      "throughput_per_s": 47.728,
+      "load_s": 6.0249,
+      "peak_vram_mib": 3948.1
      },
      "first_token": null,
-     "max_abs_diff": 2.234375,
+     "max_abs_diff": 1.046875,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
     }
@@ -1411,10 +1411,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 9.8873,
-      "decode_tok_s": 302.73,
-      "load_s": 95.2076,
-      "peak_vram_mib": 70788.8
+      "ttft_ms": 17.8426,
+      "decode_tok_s": 298.791,
+      "load_s": 50.2254,
+      "peak_vram_mib": 70830.9
      },
      "first_token": 220.0,
      "max_abs_diff": null,
@@ -1441,13 +1441,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 30.5662,
-      "decode_tok_s": 197.8043,
-      "load_s": 2.8192,
-      "peak_vram_mib": 54574.0
+      "ttft_ms": 14.1085,
+      "decode_tok_s": 367.667,
+      "load_s": 3.2082,
+      "peak_vram_mib": 29442.9
      },
      "first_token": null,
-     "max_abs_diff": 0.0625,
+     "max_abs_diff": 0.1875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -1456,13 +1456,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 32.8618,
-      "decode_tok_s": 145.7364,
-      "load_s": 3.0095,
-      "peak_vram_mib": 54574.0
+      "ttft_ms": 34.8174,
+      "decode_tok_s": 199.9374,
+      "load_s": 3.1149,
+      "peak_vram_mib": 29392.9
      },
      "first_token": null,
-     "max_abs_diff": 0.0625,
+     "max_abs_diff": 0.1875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -1471,14 +1471,14 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 116.8524,
-      "decode_tok_s": 145.437,
-      "load_s": 8.2929,
-      "peak_vram_mib": 15202.3,
-      "driver_vram_mib": 33398.0
+      "ttft_ms": 121.5836,
+      "decode_tok_s": 140.9147,
+      "load_s": 8.6146,
+      "peak_vram_mib": 15212.4,
+      "driver_vram_mib": 33406.9
      },
      "first_token": null,
-     "max_abs_diff": 0.109375,
+     "max_abs_diff": 0.203125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -1487,11 +1487,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 47.4837,
-      "decode_tok_s": 298.8349,
-      "load_s": 8.6804,
+      "ttft_ms": 46.549,
+      "decode_tok_s": 292.6927,
+      "load_s": 8.962,
       "peak_vram_mib": 51737.6,
-      "driver_vram_mib": 66164.0
+      "driver_vram_mib": 66172.9
      },
      "first_token": null,
      "max_abs_diff": 0.06640625,
@@ -1541,10 +1541,10 @@
      "method": "Linnet ONNX f16 -> ONNX Runtime (CUDA)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 102.2962,
-      "decode_tok_s": 21.7413,
-      "load_s": 0.1846,
-      "peak_vram_mib": 70006.0
+      "ttft_ms": 107.2959,
+      "decode_tok_s": 21.4191,
+      "load_s": 0.2372,
+      "peak_vram_mib": 70018.9
      },
      "first_token": null,
      "max_abs_diff": 0.1923828125,
@@ -1568,14 +1568,14 @@
      "method": "Linnet ONNX bf16 -> ONNX Runtime (CUDA)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 116.9133,
-      "decode_tok_s": 19.3308,
-      "load_s": 0.364,
-      "peak_vram_mib": 69742.0
+      "ttft_ms": 112.9582,
+      "decode_tok_s": 21.2191,
+      "load_s": 0.2056,
+      "peak_vram_mib": 69494.9
      },
      "first_token": null,
-     "max_abs_diff": 0.1953125,
-     "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; logits copied to the host each step for the argmax",
+     "max_abs_diff": 0.1875,
+     "notes": "bf16; ONNX Runtime's CUDA execution provider; first calls build the sessions; the argmax taken in the graph, each step replayed as a CUDA graph on the CUDA provider",
      "error": null
     },
     {
@@ -1650,11 +1650,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 790.5248,
-      "serve_s": 41.4509,
-      "load_s": 6.6939,
-      "serve_ttft_ms": 18268.2979,
-      "peak_vram_mib": 61072.0
+      "serve_tok_s": 5349.2359,
+      "serve_s": 6.1257,
+      "load_s": 5.7259,
+      "serve_ttft_ms": 2632.1338,
+      "peak_vram_mib": 31332.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -1666,12 +1666,12 @@
      "method": "Linnet jax (linnet.serve, XLA)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 1662.7005,
-      "serve_s": 19.7077,
-      "load_s": 11.0536,
-      "serve_ttft_ms": 8592.0683,
-      "peak_vram_mib": 56188.0,
-      "driver_vram_mib": 66294.0
+      "serve_tok_s": 1676.0087,
+      "serve_s": 19.5512,
+      "load_s": 10.1528,
+      "serve_ttft_ms": 8486.6241,
+      "peak_vram_mib": 56091.6,
+      "driver_vram_mib": 66306.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -1695,11 +1695,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 769.6225,
-      "serve_s": 42.5767,
-      "load_s": 62.0848,
-      "serve_ttft_ms": 17705.7176,
-      "peak_vram_mib": 63224.4
+      "serve_tok_s": 5839.1862,
+      "serve_s": 5.6117,
+      "load_s": 705.3848,
+      "serve_ttft_ms": 2377.9824,
+      "peak_vram_mib": 31914.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -1766,10 +1766,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 7.6992,
-      "decode_tok_s": 839.7203,
-      "load_s": 23.9422,
-      "peak_vram_mib": 69720.8
+      "ttft_ms": 5.9449,
+      "decode_tok_s": 696.2508,
+      "load_s": 46.9601,
+      "peak_vram_mib": 69720.9
      },
      "first_token": 2213.0,
      "max_abs_diff": null,
@@ -1796,13 +1796,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 0.8322,
-      "decode_tok_s": 1964.5418,
-      "load_s": 0.5948,
-      "peak_vram_mib": 1126.0
+      "ttft_ms": 0.7713,
+      "decode_tok_s": 1896.8174,
+      "load_s": 0.4614,
+      "peak_vram_mib": 1144.9
      },
      "first_token": null,
-     "max_abs_diff": 1.0,
+     "max_abs_diff": 1.25,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -1811,13 +1811,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 1.6453,
-      "decode_tok_s": 700.2886,
-      "load_s": 1.1308,
-      "peak_vram_mib": 1024.0
+      "ttft_ms": 1.5868,
+      "decode_tok_s": 552.8212,
+      "load_s": 0.4721,
+      "peak_vram_mib": 1022.9
      },
      "first_token": null,
-     "max_abs_diff": 1.0,
+     "max_abs_diff": 1.25,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -1826,11 +1826,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 1.9035,
-      "decode_tok_s": 1429.6612,
-      "load_s": 0.6171,
-      "peak_vram_mib": 512.0,
-      "driver_vram_mib": 1132.0
+      "ttft_ms": 1.2287,
+      "decode_tok_s": 1847.5688,
+      "load_s": 0.5154,
+      "peak_vram_mib": 514.0,
+      "driver_vram_mib": 1140.9
      },
      "first_token": null,
      "max_abs_diff": 0.75,
@@ -1842,14 +1842,14 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 1.9801,
-      "decode_tok_s": 911.4301,
-      "load_s": 0.6188,
-      "peak_vram_mib": 642.0,
-      "driver_vram_mib": 1646.0
+      "ttft_ms": 1.3133,
+      "decode_tok_s": 1714.8557,
+      "load_s": 0.4765,
+      "peak_vram_mib": 514.0,
+      "driver_vram_mib": 1140.9
      },
      "first_token": null,
-     "max_abs_diff": 1.0,
+     "max_abs_diff": 1.25,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -2319,10 +2319,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 14.0836,
-      "decode_tok_s": 156.9455,
-      "load_s": 43.519,
-      "peak_vram_mib": 69060.8
+      "ttft_ms": 16.4966,
+      "decode_tok_s": 152.0496,
+      "load_s": 74.586,
+      "peak_vram_mib": 69060.9
      },
      "first_token": 198.0,
      "max_abs_diff": null,
@@ -2349,13 +2349,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 12.2742,
-      "decode_tok_s": 167.6796,
-      "load_s": 3.5653,
-      "peak_vram_mib": 23360.0
+      "ttft_ms": 13.0439,
+      "decode_tok_s": 161.3011,
+      "load_s": 3.1,
+      "peak_vram_mib": 23314.9
      },
      "first_token": null,
-     "max_abs_diff": 0.09375,
+     "max_abs_diff": 0.0625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -2364,10 +2364,10 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 14.3775,
-      "decode_tok_s": 135.3845,
-      "load_s": 3.6513,
-      "peak_vram_mib": 16238.0
+      "ttft_ms": 13.1169,
+      "decode_tok_s": 140.9598,
+      "load_s": 3.3466,
+      "peak_vram_mib": 23310.9
      },
      "first_token": null,
      "max_abs_diff": 0.0625,
@@ -2379,11 +2379,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 16.7506,
-      "decode_tok_s": 165.9424,
-      "load_s": 10.2277,
+      "ttft_ms": 16.5989,
+      "decode_tok_s": 166.6193,
+      "load_s": 10.6726,
       "peak_vram_mib": 16703.0,
-      "driver_vram_mib": 33396.0
+      "driver_vram_mib": 33408.9
      },
      "first_token": null,
      "max_abs_diff": 0.09375,
@@ -2395,11 +2395,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 15.9538,
-      "decode_tok_s": 169.8739,
-      "load_s": 10.527,
-      "peak_vram_mib": 16701.5,
-      "driver_vram_mib": 33394.0
+      "ttft_ms": 15.713,
+      "decode_tok_s": 166.3079,
+      "load_s": 10.5815,
+      "peak_vram_mib": 16703.0,
+      "driver_vram_mib": 33406.9
      },
      "first_token": null,
      "max_abs_diff": 0.09619140625,
@@ -2576,11 +2576,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4858.3108,
-      "serve_s": 6.7447,
-      "load_s": 6.7787,
-      "serve_ttft_ms": 3131.45,
-      "peak_vram_mib": 29202.0
+      "serve_tok_s": 5593.7928,
+      "serve_s": 5.8579,
+      "load_s": 6.5231,
+      "serve_ttft_ms": 2668.665,
+      "peak_vram_mib": 29348.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2625,11 +2625,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4484.326,
-      "serve_s": 7.3072,
-      "load_s": 31.0461,
-      "serve_ttft_ms": 3275.5222,
-      "peak_vram_mib": 30104.4
+      "serve_tok_s": 5376.755,
+      "serve_s": 6.0944,
+      "load_s": 645.4065,
+      "serve_ttft_ms": 2558.7239,
+      "peak_vram_mib": 29020.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2715,13 +2715,13 @@
     },
     {
      "key": "linnet-tp-torch",
-     "method": "Linnet torch (tensor parallel on 2 GPUs, DTensor)",
+     "method": "Linnet torch (tensor parallel on 2 GPUs, shards)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 11.3636,
-      "decode_tok_s": 179.924,
-      "load_s": 6.4962,
-      "peak_vram_mib": 48337.8
+      "ttft_ms": 10.1391,
+      "decode_tok_s": 236.3574,
+      "load_s": 4.1179,
+      "peak_vram_mib": 26701.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2749,10 +2749,9 @@
      "method": "vLLM (tensor parallel on 2 GPUs)",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 11.117,
-      "decode_tok_s": 246.9036,
-      "load_s": 275.5359,
-      "peak_vram_mib": 142713.8
+      "ttft_ms": 11.9209,
+      "decode_tok_s": 245.7791,
+      "load_s": 320.7345
      },
      "first_token": 198.0,
      "max_abs_diff": null,
@@ -2945,10 +2944,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 15.2672,
-      "decode_tok_s": 164.9488,
-      "load_s": 97.2142,
-      "peak_vram_mib": 67804.8
+      "ttft_ms": 14.8476,
+      "decode_tok_s": 158.4808,
+      "load_s": 73.4652,
+      "peak_vram_mib": 67804.9
      },
      "first_token": 1054.0,
      "max_abs_diff": null,
@@ -2975,13 +2974,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 12.3957,
-      "decode_tok_s": 176.0321,
-      "load_s": 3.105,
-      "peak_vram_mib": 21884.0
+      "ttft_ms": 12.7246,
+      "decode_tok_s": 169.2229,
+      "load_s": 2.9401,
+      "peak_vram_mib": 21816.9
      },
      "first_token": null,
-     "max_abs_diff": 0.09375,
+     "max_abs_diff": 0.0859375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -2990,13 +2989,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 13.7008,
-      "decode_tok_s": 139.8444,
-      "load_s": 3.1366,
-      "peak_vram_mib": 14746.0
+      "ttft_ms": 12.8674,
+      "decode_tok_s": 143.293,
+      "load_s": 3.1796,
+      "peak_vram_mib": 21816.9
      },
      "first_token": null,
-     "max_abs_diff": 0.09375,
+     "max_abs_diff": 0.0859375,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -3005,11 +3004,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 18.2536,
-      "decode_tok_s": 177.2061,
-      "load_s": 18.7322,
+      "ttft_ms": 16.0048,
+      "decode_tok_s": 174.1609,
+      "load_s": 10.1895,
       "peak_vram_mib": 14528.6,
-      "driver_vram_mib": 17012.0
+      "driver_vram_mib": 17020.9
      },
      "first_token": null,
      "max_abs_diff": 0.13037109375,
@@ -3021,11 +3020,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 16.5143,
-      "decode_tok_s": 177.5154,
-      "load_s": 10.1434,
+      "ttft_ms": 15.2997,
+      "decode_tok_s": 174.0794,
+      "load_s": 10.9077,
       "peak_vram_mib": 14528.6,
-      "driver_vram_mib": 17010.0
+      "driver_vram_mib": 17018.9
      },
      "first_token": null,
      "max_abs_diff": 0.1279296875,
@@ -3205,11 +3204,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4970.9569,
-      "serve_s": 6.5919,
-      "load_s": 6.4323,
-      "serve_ttft_ms": 3071.9286,
-      "peak_vram_mib": 27678.0
+      "serve_tok_s": 5780.7004,
+      "serve_s": 5.6685,
+      "load_s": 6.2459,
+      "serve_ttft_ms": 2598.7297,
+      "peak_vram_mib": 27858.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -3254,11 +3253,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4579.4816,
-      "serve_s": 7.1554,
-      "load_s": 30.0544,
-      "serve_ttft_ms": 3289.8579,
-      "peak_vram_mib": 28560.4
+      "serve_tok_s": 5487.1427,
+      "serve_s": 5.9718,
+      "load_s": 652.4048,
+      "serve_ttft_ms": 2513.4568,
+      "peak_vram_mib": 27538.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -3680,10 +3679,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 9.2931,
-      "throughput_per_s": 213.186,
-      "load_s": 11.206,
-      "peak_vram_mib": 7032.8
+      "latency_ms": 6.785,
+      "throughput_per_s": 266.7118,
+      "load_s": 12.0294,
+      "peak_vram_mib": 7104.9
      },
      "first_token": null,
      "max_abs_diff": 2.3369617462158203,
@@ -3695,10 +3694,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 8.3538,
-      "throughput_per_s": 216.7539,
-      "load_s": 16.0592,
-      "peak_vram_mib": 6008.8
+      "latency_ms": 6.6003,
+      "throughput_per_s": 263.4713,
+      "load_s": 18.1015,
+      "peak_vram_mib": 7064.9
      },
      "first_token": null,
      "max_abs_diff": 2.393662452697754,
@@ -3710,10 +3709,10 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 8.0271,
-      "throughput_per_s": 219.9421,
-      "load_s": 10.0412,
-      "peak_vram_mib": 3665.6
+      "latency_ms": 3.9722,
+      "throughput_per_s": 269.6263,
+      "load_s": 6.0248,
+      "peak_vram_mib": 3202.1
      },
      "first_token": null,
      "max_abs_diff": 1.25390625,
@@ -3780,10 +3779,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 11.9557,
-      "decode_tok_s": 249.8231,
-      "load_s": 38.3797,
-      "peak_vram_mib": 68418.8
+      "ttft_ms": 11.9081,
+      "decode_tok_s": 242.4694,
+      "load_s": 67.522,
+      "peak_vram_mib": 68418.9
      },
      "first_token": 4146.0,
      "max_abs_diff": null,
@@ -3810,13 +3809,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 7.0588,
-      "decode_tok_s": 273.9296,
-      "load_s": 1.852,
-      "peak_vram_mib": 8510.0
+      "ttft_ms": 7.0482,
+      "decode_tok_s": 264.4589,
+      "load_s": 1.5079,
+      "peak_vram_mib": 8508.9
      },
      "first_token": null,
-     "max_abs_diff": 0.15625,
+     "max_abs_diff": 0.140625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -3825,13 +3824,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 7.8035,
-      "decode_tok_s": 220.9203,
-      "load_s": 1.9084,
-      "peak_vram_mib": 8394.0
+      "ttft_ms": 7.9049,
+      "decode_tok_s": 211.1561,
+      "load_s": 1.5233,
+      "peak_vram_mib": 8388.9
      },
      "first_token": null,
-     "max_abs_diff": 0.1171875,
+     "max_abs_diff": 0.140625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -3840,11 +3839,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 10.9036,
-      "decode_tok_s": 297.6954,
-      "load_s": 5.0772,
+      "ttft_ms": 9.7582,
+      "decode_tok_s": 292.0403,
+      "load_s": 4.9865,
       "peak_vram_mib": 8468.5,
-      "driver_vram_mib": 17010.0
+      "driver_vram_mib": 17018.9
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -3856,11 +3855,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 9.1167,
-      "decode_tok_s": 298.3057,
-      "load_s": 5.1519,
+      "ttft_ms": 9.2692,
+      "decode_tok_s": 291.7483,
+      "load_s": 4.9375,
       "peak_vram_mib": 8468.5,
-      "driver_vram_mib": 17010.0
+      "driver_vram_mib": 17018.9
      },
      "first_token": null,
      "max_abs_diff": 0.3125,
@@ -4008,11 +4007,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 5151.7645,
-      "serve_s": 6.3605,
-      "load_s": 6.0531,
-      "serve_ttft_ms": 2772.9846,
-      "peak_vram_mib": 24326.0
+      "serve_tok_s": 6667.7277,
+      "serve_s": 4.9144,
+      "load_s": 4.8038,
+      "serve_ttft_ms": 2131.3224,
+      "peak_vram_mib": 24598.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -4057,11 +4056,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4645.3352,
-      "serve_s": 7.054,
-      "load_s": 29.0547,
-      "serve_ttft_ms": 3149.548,
-      "peak_vram_mib": 24916.4
+      "serve_tok_s": 6328.1437,
+      "serve_s": 5.1781,
+      "load_s": 290.2227,
+      "serve_ttft_ms": 2123.5876,
+      "peak_vram_mib": 25540.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -4175,10 +4174,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 9.3224,
-      "decode_tok_s": 510.9727,
-      "load_s": 21.6662,
-      "peak_vram_mib": 70818.8
+      "ttft_ms": 7.5766,
+      "decode_tok_s": 707.2257,
+      "load_s": 57.8255,
+      "peak_vram_mib": 70740.9
      },
      "first_token": 13.0,
      "max_abs_diff": null,
@@ -4205,13 +4204,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 1.8738,
-      "decode_tok_s": 915.9129,
-      "load_s": 0.844,
-      "peak_vram_mib": 2330.0
+      "ttft_ms": 1.8202,
+      "decode_tok_s": 907.8411,
+      "load_s": 0.6809,
+      "peak_vram_mib": 2364.9
      },
      "first_token": null,
-     "max_abs_diff": 0.1796875,
+     "max_abs_diff": 0.140625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -4220,13 +4219,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 3.432,
-      "decode_tok_s": 311.6331,
-      "load_s": 0.8076,
-      "peak_vram_mib": 2016.0
+      "ttft_ms": 3.1363,
+      "decode_tok_s": 322.186,
+      "load_s": 0.7988,
+      "peak_vram_mib": 2648.4
      },
      "first_token": null,
-     "max_abs_diff": 0.1796875,
+     "max_abs_diff": 0.140625,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -4235,11 +4234,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 4.2914,
-      "decode_tok_s": 571.4388,
-      "load_s": 0.8517,
-      "peak_vram_mib": 1574.6,
-      "driver_vram_mib": 2672.0
+      "ttft_ms": 3.2252,
+      "decode_tok_s": 1046.6275,
+      "load_s": 0.7699,
+      "peak_vram_mib": 1572.0,
+      "driver_vram_mib": 2680.9
      },
      "first_token": null,
      "max_abs_diff": 0.3125,
@@ -4251,14 +4250,14 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 3.3799,
-      "decode_tok_s": 457.059,
-      "load_s": 0.7203,
+      "ttft_ms": 3.006,
+      "decode_tok_s": 1055.1375,
+      "load_s": 0.7733,
       "peak_vram_mib": 1572.0,
-      "driver_vram_mib": 2672.0
+      "driver_vram_mib": 2680.9
      },
      "first_token": null,
-     "max_abs_diff": 0.234375,
+     "max_abs_diff": 0.2734375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -4435,11 +4434,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 26638.8924,
-      "serve_s": 1.2301,
-      "load_s": 4.9929,
-      "serve_ttft_ms": 614.0639,
-      "peak_vram_mib": 3128.0
+      "serve_tok_s": 34643.1222,
+      "serve_s": 0.9459,
+      "load_s": 3.9007,
+      "serve_ttft_ms": 403.374,
+      "peak_vram_mib": 3064.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -4484,11 +4483,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 12755.3432,
-      "serve_s": 2.569,
-      "load_s": 25.0505,
-      "serve_ttft_ms": 1416.4857,
-      "peak_vram_mib": 3784.4
+      "serve_tok_s": 24210.5693,
+      "serve_s": 1.3535,
+      "load_s": 621.3705,
+      "serve_ttft_ms": 558.7801,
+      "peak_vram_mib": 4092.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -4602,10 +4601,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 10.8218,
-      "decode_tok_s": 236.4863,
-      "load_s": 65.8653,
-      "peak_vram_mib": 69632.8
+      "ttft_ms": 11.5033,
+      "decode_tok_s": 230.4122,
+      "load_s": 95.5022,
+      "peak_vram_mib": 69632.9
      },
      "first_token": 198.0,
      "max_abs_diff": null,
@@ -4632,10 +4631,10 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 7.8291,
-      "decode_tok_s": 252.7512,
-      "load_s": 1.9651,
-      "peak_vram_mib": 12854.0
+      "ttft_ms": 7.6361,
+      "decode_tok_s": 246.7868,
+      "load_s": 1.8321,
+      "peak_vram_mib": 12812.9
      },
      "first_token": null,
      "max_abs_diff": 0.1875,
@@ -4647,13 +4646,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 9.4154,
-      "decode_tok_s": 180.6019,
-      "load_s": 1.9224,
-      "peak_vram_mib": 9358.0
+      "ttft_ms": 8.7065,
+      "decode_tok_s": 167.8208,
+      "load_s": 1.7877,
+      "peak_vram_mib": 12740.9
      },
      "first_token": null,
-     "max_abs_diff": 0.140625,
+     "max_abs_diff": 0.1875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -4662,11 +4661,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 15.7737,
-      "decode_tok_s": 260.7519,
-      "load_s": 4.9209,
+      "ttft_ms": 14.5897,
+      "decode_tok_s": 253.9874,
+      "load_s": 5.0357,
       "peak_vram_mib": 9408.3,
-      "driver_vram_mib": 17014.0
+      "driver_vram_mib": 17024.9
      },
      "first_token": null,
      "max_abs_diff": 0.09375,
@@ -4678,11 +4677,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 13.8755,
-      "decode_tok_s": 260.6361,
-      "load_s": 6.1925,
+      "ttft_ms": 13.1646,
+      "decode_tok_s": 254.6112,
+      "load_s": 4.8468,
       "peak_vram_mib": 9408.3,
-      "driver_vram_mib": 17012.0
+      "driver_vram_mib": 17022.9
      },
      "first_token": null,
      "max_abs_diff": 0.1875,
@@ -4862,11 +4861,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 6451.0826,
-      "serve_s": 5.0795,
-      "load_s": 7.0775,
-      "serve_ttft_ms": 2340.6319,
-      "peak_vram_mib": 19090.0
+      "serve_tok_s": 8196.168,
+      "serve_s": 3.998,
+      "load_s": 5.1076,
+      "serve_ttft_ms": 1666.2172,
+      "peak_vram_mib": 18540.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -4911,11 +4910,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 5563.1294,
-      "serve_s": 5.8902,
-      "load_s": 36.0509,
-      "serve_ttft_ms": 2701.8664,
-      "peak_vram_mib": 19882.4
+      "serve_tok_s": 7785.5719,
+      "serve_s": 4.2088,
+      "load_s": 659.4132,
+      "serve_ttft_ms": 1747.4601,
+      "peak_vram_mib": 18998.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5029,10 +5028,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 13.2446,
-      "decode_tok_s": 153.339,
-      "load_s": 66.0474,
-      "peak_vram_mib": 69534.8
+      "ttft_ms": 16.3082,
+      "decode_tok_s": 146.7107,
+      "load_s": 88.9639,
+      "peak_vram_mib": 69534.9
      },
      "first_token": 198.0,
      "max_abs_diff": null,
@@ -5059,10 +5058,10 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 12.6805,
-      "decode_tok_s": 159.4398,
-      "load_s": 3.8864,
-      "peak_vram_mib": 23380.0
+      "ttft_ms": 12.7236,
+      "decode_tok_s": 153.6269,
+      "load_s": 3.4564,
+      "peak_vram_mib": 23378.9
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -5074,10 +5073,10 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 14.3462,
-      "decode_tok_s": 125.9385,
-      "load_s": 3.1196,
-      "peak_vram_mib": 16568.0
+      "ttft_ms": 13.1824,
+      "decode_tok_s": 131.6183,
+      "load_s": 3.4364,
+      "peak_vram_mib": 23378.9
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -5089,11 +5088,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 19.6763,
-      "decode_tok_s": 162.0676,
-      "load_s": 10.1262,
-      "peak_vram_mib": 17172.2,
-      "driver_vram_mib": 33398.0
+      "ttft_ms": 17.2563,
+      "decode_tok_s": 158.4435,
+      "load_s": 10.5698,
+      "peak_vram_mib": 17205.2,
+      "driver_vram_mib": 33406.9
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -5105,11 +5104,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 16.8104,
-      "decode_tok_s": 161.8937,
-      "load_s": 10.5184,
-      "peak_vram_mib": 17181.2,
-      "driver_vram_mib": 33396.0
+      "ttft_ms": 16.2285,
+      "decode_tok_s": 158.7957,
+      "load_s": 10.3849,
+      "peak_vram_mib": 17205.2,
+      "driver_vram_mib": 33404.9
      },
      "first_token": null,
      "max_abs_diff": 0.09375,
@@ -5286,11 +5285,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4532.6163,
-      "serve_s": 7.2294,
-      "load_s": 7.3106,
-      "serve_ttft_ms": 3372.5767,
-      "peak_vram_mib": 29774.0
+      "serve_tok_s": 5366.7996,
+      "serve_s": 6.1057,
+      "load_s": 6.599,
+      "serve_ttft_ms": 2771.2915,
+      "peak_vram_mib": 29982.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5335,11 +5334,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 4165.7914,
-      "serve_s": 7.866,
-      "load_s": 36.0612,
-      "serve_ttft_ms": 3518.8405,
-      "peak_vram_mib": 30620.4
+      "serve_tok_s": 5118.1895,
+      "serve_s": 6.4023,
+      "load_s": 852.5496,
+      "serve_ttft_ms": 2685.138,
+      "peak_vram_mib": 30234.0
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5378,13 +5377,13 @@
     },
     {
      "key": "linnet-tp-torch",
-     "method": "Linnet torch (tensor parallel on 2 GPUs, DTensor)",
+     "method": "Linnet torch (tensor parallel on 2 GPUs, shards)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 17.6346,
-      "decode_tok_s": 150.9437,
-      "load_s": 6.2033,
-      "peak_vram_mib": 48793.8
+      "ttft_ms": 13.4081,
+      "decode_tok_s": 226.3432,
+      "load_s": 4.0552,
+      "peak_vram_mib": 27045.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5412,10 +5411,9 @@
      "method": "vLLM (tensor parallel on 2 GPUs)",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 11.1887,
-      "decode_tok_s": 229.454,
-      "load_s": 55.337,
-      "peak_vram_mib": 143659.8
+      "ttft_ms": 12.3074,
+      "decode_tok_s": 233.3369,
+      "load_s": 31.6227
      },
      "first_token": 198.0,
      "max_abs_diff": null,
@@ -5711,10 +5709,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 3.3217,
-      "throughput_per_s": 1269.3476,
-      "load_s": 4.2034,
-      "peak_vram_mib": 1538.8
+      "latency_ms": 3.1011,
+      "throughput_per_s": 1453.7138,
+      "load_s": 4.0566,
+      "peak_vram_mib": 1540.9
      },
      "first_token": null,
      "max_abs_diff": 0.08936309814453125,
@@ -5726,10 +5724,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 6.3766,
-      "throughput_per_s": 912.0355,
-      "load_s": 8.0535,
-      "peak_vram_mib": 1544.8
+      "latency_ms": 3.1806,
+      "throughput_per_s": 1242.6244,
+      "load_s": 9.0787,
+      "peak_vram_mib": 1538.9
      },
      "first_token": null,
      "max_abs_diff": 0.08936357498168945,
@@ -5741,13 +5739,13 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 6.1535,
-      "throughput_per_s": 862.0052,
-      "load_s": 7.041,
-      "peak_vram_mib": 2438.0
+      "latency_ms": 2.7641,
+      "throughput_per_s": 1220.1574,
+      "load_s": 6.0248,
+      "peak_vram_mib": 2436.1
      },
      "first_token": null,
-     "max_abs_diff": 0.03125,
+     "max_abs_diff": 0.015625,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
     }
@@ -5993,10 +5991,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 7.4155,
-      "throughput_per_s": 775.9056,
-      "load_s": 4.0642,
-      "peak_vram_mib": 2168.9
+      "latency_ms": 2.6249,
+      "throughput_per_s": 1353.5481,
+      "load_s": 5.0686,
+      "peak_vram_mib": 2586.4
      },
      "first_token": null,
      "max_abs_diff": 0.2690114974975586,
@@ -6008,10 +6006,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 6.0292,
-      "throughput_per_s": 1096.1839,
-      "load_s": 12.056,
-      "peak_vram_mib": 2174.8
+      "latency_ms": 3.3349,
+      "throughput_per_s": 1308.272,
+      "load_s": 13.1125,
+      "peak_vram_mib": 2170.9
      },
      "first_token": null,
      "max_abs_diff": 0.2690119743347168,
@@ -6023,10 +6021,10 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 7.2846,
-      "throughput_per_s": 1015.5451,
-      "load_s": 9.0435,
-      "peak_vram_mib": 2542.1
+      "latency_ms": 3.0432,
+      "throughput_per_s": 1257.9393,
+      "load_s": 6.0244,
+      "peak_vram_mib": 2594.1
      },
      "first_token": null,
      "max_abs_diff": 0.0625,
@@ -6291,10 +6289,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 5.139,
-      "throughput_per_s": 491.0233,
-      "load_s": 9.2011,
-      "peak_vram_mib": 3470.4
+      "latency_ms": 3.725,
+      "throughput_per_s": 566.3469,
+      "load_s": 10.1772,
+      "peak_vram_mib": 3584.9
      },
      "first_token": null,
      "max_abs_diff": 0.08825016021728516,
@@ -6306,10 +6304,10 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 4.8943,
-      "throughput_per_s": 549.7952,
-      "load_s": 16.069,
-      "peak_vram_mib": 3976.8
+      "latency_ms": 3.3211,
+      "throughput_per_s": 502.4204,
+      "load_s": 17.0335,
+      "peak_vram_mib": 3960.9
      },
      "first_token": null,
      "max_abs_diff": 0.08825016021728516,
@@ -6321,10 +6319,10 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 4.3323,
-      "throughput_per_s": 496.9325,
-      "load_s": 11.0709,
-      "peak_vram_mib": 2844.0
+      "latency_ms": 2.677,
+      "throughput_per_s": 539.6954,
+      "load_s": 6.0245,
+      "peak_vram_mib": 2936.1
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -6615,13 +6613,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 13.2139,
-      "load_s": 0.8499,
-      "throughput_per_s": 91.1884,
-      "peak_vram_mib": 6572.0
+      "latency_ms": 10.3502,
+      "load_s": 0.45,
+      "throughput_per_s": 111.9738,
+      "peak_vram_mib": 5666.9
      },
      "first_token": null,
-     "max_abs_diff": 0.0283203125,
+     "max_abs_diff": 0.033203125,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
     },
@@ -6630,13 +6628,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 13.5826,
-      "load_s": 0.8524,
-      "throughput_per_s": 90.805,
-      "peak_vram_mib": 6374.0
+      "latency_ms": 10.899,
+      "load_s": 0.474,
+      "throughput_per_s": 110.8202,
+      "peak_vram_mib": 4938.9
      },
      "first_token": null,
-     "max_abs_diff": 0.0283203125,
+     "max_abs_diff": 0.033203125,
      "notes": "64x64 latent (512-pixel image), bf16; throughput at batch 8",
      "error": null
     },
@@ -7213,13 +7211,13 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 9.5383,
-      "throughput_per_s": 985.5726,
-      "load_s": 8.0748,
-      "peak_vram_mib": 2434.8
+      "latency_ms": 4.0448,
+      "throughput_per_s": 1313.6112,
+      "load_s": 9.0289,
+      "peak_vram_mib": 2436.9
      },
      "first_token": null,
-     "max_abs_diff": 0.04458141326904297,
+     "max_abs_diff": 0.029298901557922363,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
     },
@@ -7228,13 +7226,13 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 5.9971,
-      "throughput_per_s": 1335.682,
-      "load_s": 15.0632,
-      "peak_vram_mib": 2424.8
+      "latency_ms": 3.9959,
+      "throughput_per_s": 1234.5646,
+      "load_s": 17.0744,
+      "peak_vram_mib": 2432.9
      },
      "first_token": null,
-     "max_abs_diff": 0.04524040222167969,
+     "max_abs_diff": 0.02989780902862549,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
     },
@@ -7243,10 +7241,10 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 4.4781,
-      "throughput_per_s": 1215.2033,
-      "load_s": 16.2324,
-      "peak_vram_mib": 3200.0
+      "latency_ms": 3.1881,
+      "throughput_per_s": 1224.837,
+      "load_s": 6.0273,
+      "peak_vram_mib": 3302.1
      },
      "first_token": null,
      "max_abs_diff": 0.03125,
@@ -7313,10 +7311,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 10.1655,
-      "decode_tok_s": 480.555,
-      "load_s": 28.2573,
-      "peak_vram_mib": 68882.8
+      "ttft_ms": 7.6756,
+      "decode_tok_s": 468.9347,
+      "load_s": 49.0287,
+      "peak_vram_mib": 68882.9
      },
      "first_token": 29.0,
      "max_abs_diff": null,
@@ -7343,13 +7341,13 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 3.6742,
-      "decode_tok_s": 509.1118,
-      "load_s": 1.1788,
-      "peak_vram_mib": 5930.0
+      "ttft_ms": 3.6137,
+      "decode_tok_s": 490.5549,
+      "load_s": 0.9945,
+      "peak_vram_mib": 5928.9
      },
      "first_token": null,
-     "max_abs_diff": 0.125,
+     "max_abs_diff": 0.1171875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -7358,13 +7356,13 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 4.8378,
-      "decode_tok_s": 254.9959,
-      "load_s": 1.0397,
-      "peak_vram_mib": 4418.0
+      "ttft_ms": 4.4958,
+      "decode_tok_s": 290.5433,
+      "load_s": 0.9695,
+      "peak_vram_mib": 5878.9
      },
      "first_token": null,
-     "max_abs_diff": 0.125,
+     "max_abs_diff": 0.1171875,
      "notes": "KV cache compiled for 768 positions",
      "error": null
     },
@@ -7373,11 +7371,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 7.6391,
-      "decode_tok_s": 570.4259,
-      "load_s": 2.2564,
+      "ttft_ms": 7.0768,
+      "decode_tok_s": 579.4945,
+      "load_s": 2.1594,
       "peak_vram_mib": 4096.4,
-      "driver_vram_mib": 8816.0
+      "driver_vram_mib": 8824.9
      },
      "first_token": null,
      "max_abs_diff": 0.140625,
@@ -7389,11 +7387,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 5.8592,
-      "decode_tok_s": 574.2354,
-      "load_s": 2.8201,
+      "ttft_ms": 6.1059,
+      "decode_tok_s": 585.1013,
+      "load_s": 2.1295,
       "peak_vram_mib": 4096.4,
-      "driver_vram_mib": 8814.0
+      "driver_vram_mib": 8822.9
      },
      "first_token": null,
      "max_abs_diff": 0.09375,
@@ -7573,11 +7571,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 9845.0642,
-      "serve_s": 3.3284,
-      "load_s": 4.9402,
-      "serve_ttft_ms": 1444.1896,
-      "peak_vram_mib": 14352.0
+      "serve_tok_s": 12996.603,
+      "serve_s": 2.5213,
+      "load_s": 4.3237,
+      "serve_ttft_ms": 1081.7163,
+      "peak_vram_mib": 14216.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -7622,11 +7620,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 7713.1907,
-      "serve_s": 4.2483,
-      "load_s": 22.0474,
-      "serve_ttft_ms": 2065.4045,
-      "peak_vram_mib": 14964.4
+      "serve_tok_s": 11194.705,
+      "serve_s": 2.9271,
+      "load_s": 812.5975,
+      "serve_ttft_ms": 1171.9786,
+      "peak_vram_mib": 14536.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -7866,10 +7864,10 @@
      "method": "vLLM",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 7.5946,
-      "decode_tok_s": 668.5672,
-      "load_s": 37.5775,
-      "peak_vram_mib": 68726.8
+      "ttft_ms": 7.2478,
+      "decode_tok_s": 649.6135,
+      "load_s": 46.3733,
+      "peak_vram_mib": 68726.9
      },
      "first_token": 29871.0,
      "max_abs_diff": null,
@@ -7896,10 +7894,10 @@
      "method": "Linnet torch (CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 2.6099,
-      "decode_tok_s": 738.7253,
-      "load_s": 0.8229,
-      "peak_vram_mib": 3950.0
+      "ttft_ms": 2.5318,
+      "decode_tok_s": 720.0422,
+      "load_s": 0.7845,
+      "peak_vram_mib": 3976.9
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -7911,10 +7909,10 @@
      "method": "Linnet torch (torch.compile, inductor)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 3.7123,
-      "decode_tok_s": 325.7547,
-      "load_s": 0.8469,
-      "peak_vram_mib": 2956.0
+      "ttft_ms": 3.3871,
+      "decode_tok_s": 330.7461,
+      "load_s": 0.805,
+      "peak_vram_mib": 3900.9
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -7926,11 +7924,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 5.9268,
-      "decode_tok_s": 769.6473,
-      "load_s": 1.4165,
+      "ttft_ms": 5.4198,
+      "decode_tok_s": 788.3695,
+      "load_s": 1.4651,
       "peak_vram_mib": 2441.0,
-      "driver_vram_mib": 4720.0
+      "driver_vram_mib": 4728.9
      },
      "first_token": null,
      "max_abs_diff": 0.09375,
@@ -7942,14 +7940,14 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 6.7905,
-      "decode_tok_s": 612.9857,
-      "load_s": 1.6382,
-      "peak_vram_mib": 2441.0,
-      "driver_vram_mib": 4720.0
+      "ttft_ms": 4.7587,
+      "decode_tok_s": 764.5415,
+      "load_s": 1.4376,
+      "peak_vram_mib": 2432.0,
+      "driver_vram_mib": 4728.9
      },
      "first_token": null,
-     "max_abs_diff": 0.15625,
+     "max_abs_diff": 0.125,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -8126,11 +8124,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 21945.7072,
-      "serve_s": 1.4931,
-      "load_s": 5.3358,
-      "serve_ttft_ms": 701.0932,
-      "peak_vram_mib": 5240.0
+      "serve_tok_s": 25091.23,
+      "serve_s": 1.306,
+      "load_s": 4.1059,
+      "serve_ttft_ms": 582.7835,
+      "peak_vram_mib": 5348.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -8175,11 +8173,11 @@
      "method": "Triton Inference Server (Python backend, linnet.serve)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 13182.7872,
-      "serve_s": 2.4857,
-      "load_s": 25.0446,
-      "serve_ttft_ms": 1353.2112,
-      "peak_vram_mib": 5908.4
+      "serve_tok_s": 18549.3663,
+      "serve_s": 1.7665,
+      "load_s": 652.4474,
+      "serve_ttft_ms": 709.7378,
+      "peak_vram_mib": 5714.4
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -8617,13 +8615,13 @@
      "method": "Triton Inference Server (ONNX Runtime backend, torch.onnx export)",
      "kind": "reference",
      "metrics": {
-      "latency_ms": 4.7071,
-      "throughput_per_s": 1084.9214,
-      "load_s": 8.0365,
-      "peak_vram_mib": 2430.9
+      "latency_ms": 3.8709,
+      "throughput_per_s": 1391.0205,
+      "load_s": 10.0334,
+      "peak_vram_mib": 2434.9
      },
      "first_token": null,
-     "max_abs_diff": 0.03959846496582031,
+     "max_abs_diff": 0.041262149810791016,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
     },
@@ -8632,13 +8630,13 @@
      "method": "Triton Inference Server (ONNX Runtime backend, Linnet ONNX)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 7.6011,
-      "throughput_per_s": 1112.4681,
-      "load_s": 14.1003,
-      "peak_vram_mib": 1893.9
+      "latency_ms": 3.8068,
+      "throughput_per_s": 1240.8185,
+      "load_s": 16.0735,
+      "peak_vram_mib": 2428.9
      },
      "first_token": null,
-     "max_abs_diff": 0.03966021537780762,
+     "max_abs_diff": 0.041286468505859375,
      "notes": "over HTTP; f32; throughput with 4 requests of batch 32 in flight",
      "error": null
     },
@@ -8647,13 +8645,13 @@
      "method": "Triton Inference Server (Python backend, Linnet torch)",
      "kind": "linnet",
      "metrics": {
-      "latency_ms": 3.8844,
-      "throughput_per_s": 1004.9995,
-      "load_s": 10.0547,
-      "peak_vram_mib": 2750.0
+      "latency_ms": 3.2134,
+      "throughput_per_s": 1272.0801,
+      "load_s": 6.0248,
+      "peak_vram_mib": 2880.1
      },
      "first_token": null,
-     "max_abs_diff": 0.01953125,
+     "max_abs_diff": 0.03125,
      "notes": "over HTTP; bf16, CUDA graphs; throughput with 4 requests of batch 32 in flight",
      "error": null
     }
@@ -8762,11 +8760,11 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "encode_ms": 13.2931,
-      "transcribe_ms": 158.1837,
-      "load_s": 2.5021,
-      "peak_vram_mib": 3697.1,
-      "driver_vram_mib": 4740.0
+      "encode_ms": 11.6973,
+      "transcribe_ms": 96.543,
+      "load_s": 2.298,
+      "peak_vram_mib": 3698.5,
+      "driver_vram_mib": 4748.9
      },
      "first_token": null,
      "max_abs_diff": 3.2890625,
@@ -8778,11 +8776,11 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "encode_ms": 9.2695,
-      "transcribe_ms": 155.5788,
-      "load_s": 2.6742,
-      "peak_vram_mib": 3614.2,
-      "driver_vram_mib": 4736.0
+      "encode_ms": 7.3225,
+      "transcribe_ms": 107.8055,
+      "load_s": 2.1349,
+      "peak_vram_mib": 3615.7,
+      "driver_vram_mib": 4744.9
      },
      "first_token": null,
      "max_abs_diff": 16.263671875,
@@ -8984,14 +8982,14 @@
      "method": "Linnet JAX (XLA, StableHLO)",
      "kind": "linnet",
      "metrics": {
-      "encode_ms": 0.9866,
-      "transcribe_ms": 38.5626,
-      "load_s": 0.217,
+      "encode_ms": 1.0177,
+      "transcribe_ms": 16.397,
+      "load_s": 0.2224,
       "peak_vram_mib": 432.3,
-      "driver_vram_mib": 1198.0
+      "driver_vram_mib": 1206.9
      },
      "first_token": null,
-     "max_abs_diff": 0.6458406448364258,
+     "max_abs_diff": 0.6507987976074219,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -9000,14 +8998,14 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "encode_ms": 1.0268,
-      "transcribe_ms": 32.8684,
-      "load_s": 0.2164,
+      "encode_ms": 1.0147,
+      "transcribe_ms": 16.6037,
+      "load_s": 0.2156,
       "peak_vram_mib": 432.3,
-      "driver_vram_mib": 1198.0
+      "driver_vram_mib": 1206.9
      },
      "first_token": null,
-     "max_abs_diff": 0.3831906318664551,
+     "max_abs_diff": 0.6820688247680664,
      "notes": "transcribed with the card's KV caches: `listen` encodes and fills the cross-attention caches, `prefill` feeds the prompt, `step` one token each; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
