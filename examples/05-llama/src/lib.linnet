@@ -114,6 +114,16 @@ where
         return linear_token_log_probs(states, lm_head.weight, targets)
     }
 
+    // Each packed position's final hidden state, after the last norm: what
+    // the output head (or a value or reward head) reads.
+    pub entry hidden_packed<P: Dim>(
+        tokens: Tensor[P; i32],
+        positions: Tensor[P; i32],
+        segments: Tensor[P; i32],
+    ) -> Tensor[P, H; T] {
+        return packed_states(tokens, positions, segments)
+    }
+
     // Logits for the last position only, as decoding needs: the final norm
     // and projection run on one row per sequence.
     pub entry next_token<B: Dim, S: Dim>(tokens: Tensor[B, S; i32]) -> Tensor[B, Vocab; T]

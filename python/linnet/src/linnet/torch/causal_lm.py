@@ -15,14 +15,23 @@ model = CausalLM(nest.load("llama-3.1-8b-instruct", backend="torch", device="cud
                            compile="inductor", trainable=True))
 trainer = transformers.Trainer(model=model, args=..., train_dataset=..., data_collator=...)
 ```
+
+TRL's `SFTTrainer` also reads the logits, for its token accuracy and
+entropy: `CausalLM(model, logits=True)` returns them, from the model's
+`hidden_packed` entry.
 """
 
 from __future__ import annotations
 
+import json
+import warnings
+from types import SimpleNamespace
 from typing import Any
 
 import torch
 
+from ..plan import PlanError
+from .loss import linear_cross_entropy
 from .module import LinnetModule
 
 # transformers' label for a position to leave out of the loss.
@@ -31,8 +40,9 @@ IGNORE = -100
 
 class CausalLM(torch.nn.Module):
     """`model(input_ids, attention_mask=None, labels=None, position_ids=None)`
-    over a Linnet model with a `loss_packed` entry; returns `{"loss": ...}`,
-    the mean cross-entropy over the labelled positions.
+    over a Linnet model with a `loss_packed` entry; returns the loss, the
+    mean cross-entropy over the labelled positions, as `output.loss` or
+    `output["loss"]`.
 
     `labels` follow transformers: the token each position's next one should
     be, `-100` to leave it out, shifted inside the model (position `p` is
@@ -44,16 +54,46 @@ class CausalLM(torch.nn.Module):
 
     Given `num_items_in_batch` (as `transformers.Trainer` passes it, the
     labelled positions of every micro-batch of a step), the loss is the sum
-    over it instead, so accumulated steps take the mean over all of them."""
+    over it instead, so accumulated steps take the mean over all of them.
+
+    With `logits=True` the output also holds `logits`, `[rows, width,
+    Vocab]` in the input's layout (zero at padding), computed without
+    gradients from the `hidden` entry's states and the `head` weight, which
+    then also give the loss. They cost the memory transformers' own models
+    spend on them. `config` and `generation_config` hold the few fields
+    trainers read and write (`name` is the model's name there)."""
 
     # `transformers.Trainer` then passes `num_items_in_batch`.
     accepts_loss_kwargs = True
 
-    def __init__(self, model: LinnetModule, *, entry: str = "loss_packed", bucket: int = 256):
+    def __init__(
+        self,
+        model: LinnetModule,
+        *,
+        entry: str = "loss_packed",
+        bucket: int = 256,
+        logits: bool = False,
+        hidden: str = "hidden_packed",
+        head: str = "lm_head.weight",
+        name: str = "",
+    ):
         super().__init__()
+        if logits and hidden not in model.entries:
+            raise PlanError(f"logits need the model's `{hidden}` entry, which it does not have")
         self.model = model
         self.entry = entry
         self.bucket = bucket
+        self.return_logits = logits
+        self.hidden = hidden
+        self.head = head
+        try:
+            vocab: int | None = model.get_parameter("root." + head).shape[0]
+        except AttributeError:
+            vocab = None
+        self.config = Config(name, vocab)
+        self.generation_config = SimpleNamespace(
+            eos_token_id=None, pad_token_id=None, bos_token_id=None
+        )
 
     def forward(
         self,
@@ -63,12 +103,79 @@ class CausalLM(torch.nn.Module):
         position_ids: torch.Tensor | None = None,
         num_items_in_batch: torch.Tensor | int | None = None,
         **_: Any,
-    ) -> dict[str, torch.Tensor]:
-        inputs, count = packed(
+    ) -> Output:
+        inputs, _count = packed(
             input_ids, attention_mask, labels, position_ids, self.bucket, num_items_in_batch
         )
-        loss = self.model.run_entry(self.entry, inputs)
-        return {"loss": loss, "num_items": count}
+        if not self.return_logits:
+            return Output(loss=self.model.run_entry(self.entry, inputs))
+        if self.head in getattr(self.model, "lora_paths", []):
+            raise PlanError(f"logits read `{self.head}` alone; leave the output head unadapted")
+        states = self.model.run_entry(self.hidden, inputs[:3])
+        weight = self.model.get_parameter("root." + self.head)
+        loss = linear_cross_entropy(states, weight, inputs[3], inputs[4])
+        keep = _kept(input_ids, attention_mask)
+        with torch.no_grad():
+            flat = states[: int(keep.sum())] @ weight.T
+            logits = flat.new_zeros((*input_ids.shape, flat.shape[-1]))
+            logits[keep] = flat
+        return Output(loss=loss, logits=logits)
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs: Any = None) -> None:
+        """Trainers call this for `gradient_checkpointing=True` (TRL's
+        default). Linnet entries keep their activations; with
+        `compile="inductor"`, `activation_memory_budget` recomputes them."""
+        warnings.warn(
+            "Linnet entries have no per-layer checkpointing; with compile='inductor', set "
+            "torch._functorch.config.activation_memory_budget to recompute activations",
+            stacklevel=2,
+        )
+
+    def gradient_checkpointing_disable(self) -> None:
+        pass
+
+
+class Output(dict[str, Any]):
+    """The loss (and logits), by key or attribute, as transformers' model
+    outputs are read."""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            hint = "; construct CausalLM(..., logits=True) for them" if name == "logits" else ""
+            raise AttributeError(f"the output has no `{name}`{hint}") from None
+
+
+class Config:
+    """The fields transformers-style trainers read off `model.config`, and
+    write: the end-of-sequence and padding tokens."""
+
+    model_type = "linnet"
+    _attn_implementation = "linnet"
+
+    def __init__(self, name: str, vocab_size: int | None) -> None:
+        self._name_or_path = name
+        self.vocab_size = vocab_size
+        self.bos_token_id: int | None = None
+        self.eos_token_id: int | list[int] | None = None
+        self.pad_token_id: int | None = None
+        self.use_cache = False
+
+    def get_text_config(self, *_: Any, **__: Any) -> Config:
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"model_type": self.model_type, **vars(self)}
+
+    def to_json_string(self, *_: Any, **__: Any) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+
+def _kept(input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+    if attention_mask is not None:
+        return attention_mask.bool()
+    return torch.ones(input_ids.shape, dtype=torch.bool, device=input_ids.device)
 
 
 def packed(
@@ -84,11 +191,7 @@ def packed(
     `over` when given."""
     device = input_ids.device
     rows, width = input_ids.shape
-    keep = (
-        attention_mask.bool()
-        if attention_mask is not None
-        else torch.ones(rows, width, dtype=torch.bool, device=device)
-    )
+    keep = _kept(input_ids, attention_mask)
     if position_ids is None:
         positions = (keep.cumsum(1) - 1).clamp_min(0)
     else:
@@ -128,4 +231,4 @@ def packed(
     return [tokens, pos, seg, targets, weights], count
 
 
-__all__ = ["IGNORE", "CausalLM", "packed"]
+__all__ = ["IGNORE", "CausalLM", "Config", "Output", "packed"]

@@ -94,3 +94,25 @@ def test_a_step_count_makes_the_loss_its_share_of_the_step(model: LinnetModule) 
     mean = CausalLM(model)(input_ids=input_ids)["loss"]
     share = CausalLM(model)(input_ids=input_ids, num_items_in_batch=torch.tensor(10))["loss"]
     torch.testing.assert_close(share, mean * 5 / 10)
+
+
+def test_logits_come_in_the_input_layout(model: LinnetModule) -> None:
+    """With `logits=True`: the same loss, through `hidden_packed`, and each
+    kept position's logits as `forward` gives them, zero at padding."""
+    input_ids = torch.tensor([[3, 1, 4, 1, 5, 9], [2, 6, 5, 3, 0, 0]])
+    attention_mask = torch.tensor([[1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 0, 0]])
+    labels = torch.tensor([[-100, -100, 4, 1, 5, 9], [2, 6, 5, 3, -100, -100]])
+    plain = CausalLM(model)(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+    full = CausalLM(model, logits=True)(
+        input_ids=input_ids, attention_mask=attention_mask, labels=labels
+    )
+    torch.testing.assert_close(full.loss, plain.loss, atol=1e-5, rtol=1e-5)
+    assert full.logits.shape == (2, 6, 11)
+    with torch.no_grad():
+        first = model.run_entry("forward", [input_ids[:1].to(torch.int32)])[0]
+        second = model.run_entry("forward", [input_ids[1:, :4].to(torch.int32)])[0]
+    torch.testing.assert_close(full.logits[0], first, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(full.logits[1, :4], second, atol=1e-5, rtol=1e-5)
+    assert not full.logits[1, 4:].any()
+    with pytest.raises(AttributeError, match="logits=True"):
+        _ = plain.logits

@@ -39,6 +39,8 @@ dev = [
     "onnxruntime>=1.18",
     "transformers>=5.17.0",
     "huggingface-hub>=1.32.0",
+    "trl>=1.14",
+    "accelerate>=1.10",
 ]
 
 [[tool.uv.index]]
