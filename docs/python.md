@@ -27,6 +27,7 @@ The compiler comes from `LINNET_BIN` or `PATH`. In a checkout,
 | `linnet.nest` | [Nest](nest.md) model zoo |
 | `linnet.torch`, `linnet.jax`, `linnet.onnx` | backends for [PyTorch](torch.md), [JAX and Flax](jax.md), [ONNX](onnx.md) |
 | `linnet.triton`, `linnet.hf`, `linnet.gguf` | [integrations](integrations.md): Triton Inference Server, Transformers (vLLM, SGLang, TGI), GGUF and Ollama |
+| `linnet.train` | [supervised fine-tuning](torch.md#supervised-fine-tuning) over packed sequences |
 
 ## Typed program
 
