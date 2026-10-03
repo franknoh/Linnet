@@ -20,6 +20,17 @@ from .placement import apply as apply_placement
 from .placement import from_map as placement_from_map
 from .placement import plan as placement_plan
 
+
+def fully_shard(
+    model: LinnetModule, mesh: Any = None, *, dtype: torch.dtype = torch.float32
+) -> list[str]:
+    """Splits `model`'s parameters across processes, gathered a block at a
+    time as it runs (FSDP): see `linnet.torch.fsdp.fully_shard`."""
+    from .fsdp import fully_shard as split
+
+    return split(model, mesh, dtype=dtype)
+
+
 __all__ = [
     "CausalLM",
     "CompiledLinnetModule",
@@ -33,6 +44,7 @@ __all__ = [
     "bind_weights",
     "compile_plan",
     "export_linnet",
+    "fully_shard",
     "load",
     "load_function",
 ]

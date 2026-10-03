@@ -396,7 +396,9 @@ class LinnetModule(nn.Module):
         bound to one checkpoint tensor (a tied embedding) are written once.
         `dtype` converts floating-point tensors as they are written. `include`
         keeps only the paths matching one of its glob patterns: adapters
-        alone are `include=["*.lora_a", "*.lora_b"]`."""
+        alone are `include=["*.lora_a", "*.lora_b"]`. A model split by
+        `fully_shard` is gathered a tensor at a time: every process calls
+        this, and the first writes the file."""
         from ..weights import LazyBytes, write_safetensors
 
         if names not in ("checkpoint", "linnet"):
@@ -410,6 +412,7 @@ class LinnetModule(nn.Module):
         ]
         written: dict[str, tuple[str, torch.Tensor]] = {}
         entries: list[tuple[str, str, tuple[int, ...], Any]] = []
+        split: list[torch.Tensor] = []
         for tensor_path, tensor in _all_tensors(self):
             owner, leaf = owner_of(self, tensor_path)
             if leaf in owner.absent_params or any(
@@ -433,6 +436,8 @@ class LinnetModule(nn.Module):
                     )
                 continue
             written[name] = (tensor_path, tensor)
+            if callable(getattr(tensor, "full_tensor", None)):
+                split.append(tensor)
             target = dtype if dtype is not None and tensor.is_floating_point() else tensor.dtype
             entries.append(
                 (
@@ -442,6 +447,15 @@ class LinnetModule(nn.Module):
                     LazyBytes(tensor.numel() * target.itemsize, _bytes_of(tensor, target)),
                 )
             )
+        if split:
+            import torch.distributed as dist
+
+            if dist.get_rank() != 0:
+                # The first process gathers each as it writes; the others
+                # join every gather in the same order.
+                for tensor in split:
+                    _whole(tensor)
+                return Path(path)
         return write_safetensors(path, entries, metadata={"format": "pt"})
 
 
@@ -462,11 +476,18 @@ _SAFETENSORS_DTYPES: dict[torch.dtype, str] = {
 }
 
 
+def _whole(tensor: torch.Tensor) -> torch.Tensor:
+    """A parameter split by `fully_shard` (a DTensor) gathered whole; any
+    other tensor as it is."""
+    full = getattr(tensor, "full_tensor", None)
+    return cast(torch.Tensor, full()) if callable(full) else tensor
+
+
 def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
     """Reads `tensor` as `dtype` into host bytes, when called."""
 
     def read() -> bytes:
-        value = tensor.detach().to(device="cpu", dtype=dtype).contiguous()
+        value = _whole(tensor).detach().to(device="cpu", dtype=dtype).contiguous()
         return value.reshape(-1).view(torch.uint8).numpy().tobytes()
 
     return read
