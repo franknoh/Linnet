@@ -229,6 +229,31 @@ A model trains without weight-only work done ahead or hand-captured CUDA
 graphs; a model that ran without gradients compiles its entries again once
 any parameter requires them.
 
+Train with `compile="inductor"`. For long packed batches, have it recompute
+activations instead of keeping them: set
+`torch._functorch.config.activation_memory_budget = 0.3` before the first
+step. On one H100, Llama 3.1 8B trains its layers (7 B parameters, SGD) over
+4096 packed tokens at 10.9K tokens per second in 29 GiB this way, against
+9.2K and 42.5 GiB as generated source without `torch.compile`.
+
+### Low-rank adapters
+
+```python
+model = load("src/model.linnet", generics={...}, weights="init/", compile="inductor")
+model.add_lora("layers.*.attention.*_proj.weight", rank=16, alpha=32)
+# ... train: only the adapters require gradients
+model.save_weights("adapters.safetensors", names="linnet", include=["*.lora_a", "*.lora_b"])
+model.merge_lora()  # plain weights again, for serving or export
+```
+
+`add_lora` gives every linear weight whose path matches a pattern a
+low-rank adapter (LoRA). The layer then computes
+`x @ W.T + (x @ A.T) @ B.T * alpha / rank`, with `A` and `B` as the weight's
+block's `lora_a` and `lora_b` parameters. `B` starts at zero, so the model
+starts unchanged. Adapters need generated code. To load saved adapters, call
+`add_lora` with the same patterns and rank, then
+`bind_weights(model, path, strict=False)`.
+
 ### Losses
 
 `std.nn.loss` holds the losses, over flattened tokens (`[N, V]` logits),

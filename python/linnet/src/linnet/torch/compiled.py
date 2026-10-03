@@ -11,12 +11,14 @@ work unchanged.
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
+import math
 import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -68,6 +70,10 @@ class CompiledLinnetModule(LinnetModule):
         # The parameters, listed once: whether any requires gradients is
         # asked on every call. Cleared when a parameter object is replaced.
         self._parameter_list: list[torch.nn.Parameter] | None = None
+        # Low-rank adapters (`add_lora`): the patterns, rank and alpha the
+        # generated source adds them for, and the weights adapted.
+        self.lora: tuple[tuple[str, ...], int, float] | None = None
+        self.lora_paths: list[str] = []
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
         self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
@@ -115,6 +121,88 @@ class CompiledLinnetModule(LinnetModule):
         if self._parameter_list is None:
             self._parameter_list = list(self.parameters())
         return any(parameter.requires_grad for parameter in self._parameter_list)
+
+    def add_lora(
+        self,
+        patterns: str | Sequence[str],
+        *,
+        rank: int = 16,
+        alpha: float = 32.0,
+        seed: int = 0,
+    ) -> list[str]:
+        """Adds a low-rank adapter (LoRA) to every linear weight whose path
+        matches a glob pattern (`"layers.*.attention.*_proj.weight"`): the
+        layer computes `x @ W.T + (x @ A.T) @ B.T * alpha / rank`, `A`
+        ([rank, in], random) and `B` ([out, rank], zero) parameters of the
+        weight's block named `lora_a` and `lora_b`. The output is unchanged
+        until `B` trains. Afterwards only the adapters train (`set_trainable`
+        changes that). Returns the adapted weights' paths."""
+        if self.lora is not None:
+            raise PlanError("the model already has adapters; merge them first")
+        if rank <= 0:
+            raise PlanError("the adapter rank must be positive")
+        chosen = [patterns] if isinstance(patterns, str) else list(patterns)
+        generator = torch.Generator().manual_seed(seed)
+        adapted: list[str] = []
+        for path, weight in self.root.named_parameters(remove_duplicate=False):
+            owner, leaf = owner_of(self, path)
+            if (
+                leaf != "weight"
+                or weight.dim() != 2
+                or not weight.is_floating_point()
+                or leaf in owner.absent_params
+                or not any(fnmatch.fnmatchcase(path, pattern) for pattern in chosen)
+            ):
+                continue
+            out_features, in_features = weight.shape
+            bound = 1.0 / math.sqrt(in_features)
+            down = (torch.rand(rank, in_features, generator=generator) * 2 - 1) * bound
+            owner.register_parameter(
+                "lora_a",
+                torch.nn.Parameter(down.to(dtype=weight.dtype, device=weight.device)),
+            )
+            zero = torch.zeros(out_features, rank, dtype=weight.dtype, device=weight.device)
+            owner.register_parameter("lora_b", torch.nn.Parameter(zero))
+            adapted.append(path)
+        if not adapted:
+            raise PlanError("no linear weight matches " + ", ".join(chosen))
+        self.lora = (tuple(chosen), rank, alpha)
+        self.lora_paths = adapted
+        self._recompile()
+        self.set_trainable(["*.lora_a", "*.lora_b"])
+        return adapted
+
+    def merge_lora(self) -> list[str]:
+        """Adds each adapter's product into its weight, `W += B @ A * alpha /
+        rank` (in f32), and removes the adapters: the model computes the same
+        as before with plain weights, ready to serve or export. Returns the
+        weights changed."""
+        if self.lora is None:
+            return []
+        _, rank, alpha = self.lora
+        with torch.no_grad():
+            for path in self.lora_paths:
+                owner, _ = owner_of(self, path)
+                weight = owner.get_parameter("weight")
+                delta = (
+                    owner.get_parameter("lora_b").float() @ owner.get_parameter("lora_a").float()
+                )
+                weight.copy_((weight.float() + delta * (alpha / rank)).to(weight.dtype))
+                del owner._parameters["lora_a"]
+                del owner._parameters["lora_b"]
+        merged = self.lora_paths
+        self.lora = None
+        self.lora_paths = []
+        self._recompile()
+        return merged
+
+    def _recompile(self) -> None:
+        """Drops every compiled entry and prepared value: the parameters
+        changed."""
+        self._compiled.clear()
+        self._fast.clear()
+        self._prepared.clear()
+        self.forget_parameters()
 
     def forget_parameters(self) -> None:
         """Called when parameter objects are replaced (bound weights tied, a
@@ -390,9 +478,14 @@ class CompiledLinnetModule(LinnetModule):
             command += ["--std", str(self._std_root)]
         for name, value in bindings.items():
             command += ["--bind", f"{name}={value}"]
+        if self.lora is not None:
+            patterns, rank, alpha = self.lora
+            for pattern in patterns:
+                command += ["--lora", pattern]
+            command += ["--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]
         if self.placement is not None and not self.placement.trivial:
             command += self.placement.flags()
-        elif not trains:
+        elif not trains and self.lora is None:
             # Weight-only work once at load; a model being trained keeps it
             # in the graph, where gradients flow through it.
             command.append("--prepare")
