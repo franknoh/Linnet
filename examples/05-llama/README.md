@@ -63,6 +63,8 @@ extra arguments and results.
 | `generate<Steps>` | `Steps` greedy tokens from `std.nn.decoding::argmax` |
 | `sample<Steps>` | `Steps` tokens drawn with a key |
 | `generate_until<MaxNew>` | up to `MaxNew` greedy tokens and their count |
+| `loss_packed<P>` | training loss over sequences packed into one row |
+| `log_probs_packed<P>` | each packed position's log-probability of its target |
 
 `generate` loops with `static for i in 0..Steps`, expanded at compile time,
 so the whole generation is one graph. `generate_until` loops
@@ -73,3 +75,9 @@ and stops once every row has produced the end token. It exports as
 `sample` splits `key` into one key per step and draws with
 `std.random::categorical`. The same key gives the same tokens in PyTorch
 and under XLA.
+
+`loss_packed` and `log_probs_packed` take several sequences packed into one
+row: `positions` gives each token's place in its sequence and `segments`
+which sequence it belongs to, and a token attends only within its own. The
+output head and its loss run through `std.nn.loss::linear_cross_entropy`,
+which PyTorch computes a block of tokens at a time.

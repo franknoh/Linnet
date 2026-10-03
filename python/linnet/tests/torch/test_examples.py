@@ -431,3 +431,79 @@ def test_llama_generate_until_stops_at_eos(tmp_path: Path) -> None:
     assert int(count) == stop + 1
     torch.testing.assert_close(tokens[:, : stop + 1], greedy[:, : stop + 1])
     assert int(tokens[:, stop + 1 :].abs().sum()) == 0
+
+
+@pytest.mark.parametrize("compile", [False, True])
+def test_llama_packed_training_matches_each_sequence(tmp_path: Path, compile: bool) -> None:
+    """`loss_packed` over three sequences packed into one row gives the loss
+    and the gradients of each sequence's own `forward`, and
+    `log_probs_packed` each position's log-probability."""
+    generics: dict[str, int | str] = {
+        "Vocab": 11,
+        "H": 8,
+        "Heads": 4,
+        "KvHeads": 2,
+        "Inner": 16,
+        "Layers": 2,
+        "Batch": 1,
+        "MaxSeq": 8,
+        "T": "f32",
+    }
+    source = EXAMPLES / "05-llama/src/lib.linnet"
+    _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
+    model = load(
+        source,
+        generics=generics,
+        std_root=STDLIB,
+        weights=tmp_path,
+        compile=compile,
+        trainable=True,
+    )
+    lengths = [5, 3, 4]
+    generator = torch.Generator().manual_seed(1)
+    sequences = [torch.randint(0, 11, (n,), generator=generator) for n in lengths]
+    tokens = torch.cat(sequences).to(torch.int32)[None]
+    positions = torch.cat([torch.arange(n) for n in lengths]).to(torch.int32)
+    segments = torch.cat([torch.full((n,), i) for i, n in enumerate(lengths)]).to(torch.int32)
+    # Each position predicts the next token of its sequence; a sequence's
+    # last position has none and weighs 0.
+    targets = torch.cat([torch.cat([s[1:], s[:1]]) for s in sequences])
+    mask = torch.cat([torch.cat([torch.ones(n - 1), torch.zeros(1)]) for n in lengths])
+    count = mask.sum()
+
+    loss: torch.Tensor = model.run_entry(
+        "loss_packed", [tokens, positions, segments, targets, mask / count]
+    )
+    loss.backward()  # pyright: ignore[reportUnknownMemberType]
+    packed = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    assert packed
+    model.zero_grad()
+
+    def logits_of(sequence: torch.Tensor) -> torch.Tensor:
+        return model.run_entry("forward", [sequence[None].to(torch.int32)])[0]
+
+    reference = (
+        torch.stack(
+            [
+                torch.nn.functional.cross_entropy(logits_of(s)[:-1], s[1:], reduction="sum")
+                for s in sequences
+            ]
+        ).sum()
+        / count
+    )
+    reference.backward()  # pyright: ignore[reportUnknownMemberType]
+    torch.testing.assert_close(loss, reference, atol=1e-5, rtol=1e-5)
+    for name, parameter in model.named_parameters():
+        if parameter.grad is not None:
+            torch.testing.assert_close(packed[name], parameter.grad, atol=1e-5, rtol=1e-4)
+
+    pieces: list[torch.Tensor] = list(torch.split(targets, lengths))
+    with torch.no_grad():
+        got = model.run_entry("log_probs_packed", [tokens, positions, segments, targets])
+        expected = torch.cat(
+            [
+                torch.log_softmax(logits_of(s), dim=-1).gather(1, t[:, None]).squeeze(1)
+                for s, t in zip(sequences, pieces, strict=True)
+            ]
+        )
+    torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
