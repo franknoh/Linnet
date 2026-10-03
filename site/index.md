@@ -135,14 +135,14 @@ StableHLO, `MatMul` and `Conv` in ONNX. On one H100, in `bf16`:
 
 | | Linnet | Reference stacks |
 | --- | --- | --- |
-| Llama 3.1 8B, decode one request | 167 tok/s (XLA), 161 (CUDA graphs) | vLLM 157, transformers compiled 110 |
+| Llama 3.1 8B, decode one request | 167 tok/s (XLA), 161 (CUDA graphs) | vLLM 152, transformers compiled 110 |
 | BERT base, forward at batch 1 | 0.74 ms (CUDA graphs) | transformers 3.60, compiled 1.67 |
 | SD VAE decoder, 512 px | 7.4 ms (XLA) | diffusers 22.0, compiled 10.4 |
 | Llama 3.1 8B, 256 requests served | 5594 tok/s (CUDA graphs) | vLLM 5658 |
-| gpt-oss 20B, decode one request | 297 tok/s (CUDA graphs) | vLLM 303, transformers 45 |
-| gpt-oss 20B, 256 requests served | G_SERVE tok/s (CUDA graphs) | vLLM 4313 |
+| gpt-oss 20B, decode one request | 368 tok/s (CUDA graphs) | vLLM 299, transformers 45 |
+| gpt-oss 20B, 256 requests served | 5349 tok/s (CUDA graphs) | vLLM 4313 |
 
-Where Linnet loses — gpt-oss's first token, and by a few percent serving 7-8 B models and splitting them across GPUs —
+Where Linnet loses — by a few percent, serving 7-8 B models and splitting them across GPUs —
 is on the [benchmarks](/benchmarks) page with every other row: 24 models, 528
 measurements.
 
