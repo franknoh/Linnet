@@ -116,6 +116,11 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
         assert fully_shard(model) == UNITS
         part = model.get_parameter("root.embedding.weight")
         assert tuple(part.to_local().shape) == ((6, 8) if rank == 0 else (5, 8))
+        # The part owns its memory; a view would keep the whole table alive.
+        for parameter in model.parameters():
+            local = parameter.to_local() if hasattr(parameter, "to_local") else None
+            if local is not None:
+                assert local.untyped_storage().nbytes() == local.numel() * local.element_size()
 
         # Backward keeps the parts: no whole weight outlives the forward.
         mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))

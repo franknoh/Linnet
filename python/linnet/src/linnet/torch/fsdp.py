@@ -119,8 +119,9 @@ def _split(
     rank = mesh.get_local_rank()
     pieces = torch.chunk(whole, mesh.size(), dim=0)
     local = pieces[rank] if rank < len(pieces) else whole.new_empty((0, *whole.shape[1:]))
+    # A copy: the chunk is a view, which would keep the whole alive.
     return DTensor.from_local(
-        local.contiguous().to(device),
+        local.to(device, copy=True),
         mesh,
         [Shard(0)],
         run_check=False,
