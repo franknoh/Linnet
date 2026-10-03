@@ -462,7 +462,7 @@ def test_llama_packed_training_matches_each_sequence(tmp_path: Path, compile: bo
     lengths = [5, 3, 4]
     generator = torch.Generator().manual_seed(1)
     sequences = [torch.randint(0, 11, (n,), generator=generator) for n in lengths]
-    tokens = torch.cat(sequences).to(torch.int32)[None]
+    tokens = torch.cat(sequences).to(torch.int32)
     positions = torch.cat([torch.arange(n) for n in lengths]).to(torch.int32)
     segments = torch.cat([torch.full((n,), i) for i, n in enumerate(lengths)]).to(torch.int32)
     # Each position predicts the next token of its sequence; a sequence's

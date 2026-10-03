@@ -92,7 +92,7 @@ where
     // head. A weight of 0 leaves a position out (a prompt, a sequence's last
     // token); `mask / count` gives the mean.
     pub entry loss_packed<P: Dim>(
-        tokens: Tensor[1, P; i32],
+        tokens: Tensor[P; i32],
         positions: Tensor[P; i32],
         segments: Tensor[P; i32],
         targets: Tensor[P; i64],
@@ -105,7 +105,7 @@ where
     // Each packed position's log-probability of `targets[p]`, as a
     // policy-gradient update weighs them.
     pub entry log_probs_packed<P: Dim>(
-        tokens: Tensor[1, P; i32],
+        tokens: Tensor[P; i32],
         positions: Tensor[P; i32],
         segments: Tensor[P; i32],
         targets: Tensor[P; i64],
@@ -211,11 +211,11 @@ where
     }
 
     fn packed_states<P: Dim>(
-        tokens: Tensor[1, P; i32],
+        tokens: Tensor[P; i32],
         positions: Tensor[P; i32],
         segments: Tensor[P; i32],
     ) -> Tensor[P, H; T] {
-        var x = embedding.forward(tokens)
+        var x = embedding.forward(reshape(tokens, [1, P]))
         static for layer in layers {
             x = layer.packed(x, positions, segments)
         }
