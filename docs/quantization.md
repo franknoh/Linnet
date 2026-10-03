@@ -113,7 +113,7 @@ pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(p
 ```
 
 With `triton_kernels` and CUDA graphs, gpt-oss-20b on one H100 decodes at
-368 tokens per second and serves 256 requests at 5349 tokens per second
+368 tokens per second and serves 256 requests at 6031 tokens per second
 (vLLM: 299 and 4313). Without CUDA graphs, `triton_kernels` adds host
 overhead to every routed product. More measurements:
 [Benchmarks](https://linnet.franknoh.dev/benchmarks).

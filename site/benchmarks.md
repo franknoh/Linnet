@@ -46,16 +46,17 @@ pairs vary the most, since their runs last a second or two.
 <ZooClaims part="matchups" ids="serve,serve-triton" />
 
 [`linnet.serve`](/docs/integrations#continuous-batching) serves faster than
-vLLM up to 4 B parameters, where a step is bound by kernel launches that one
-CUDA graph per step removes. From 7 B up the two are within 3%, vLLM a little
-ahead, except on gpt-oss, where Linnet is 24% ahead. Behind Triton Inference
-Server, `linnet.serve` outpaces Triton's own vLLM backend on every decoder.
+vLLM on every decoder. The lead is widest on small models, where a step is
+bound by kernel launches that one CUDA graph per step removes. From 4 B up it
+is 2-4%, and on gpt-oss 40%. Behind Triton Inference Server, `linnet.serve`
+outpaces Triton's own vLLM backend on every decoder.
 
-## Where Linnet is behind {#behind}
+## Two GPUs and offloading {#behind}
 
 <ZooClaims part="matchups" ids="tp" />
 
-Split across two GPUs at batch 1, vLLM keeps a small lead. The offloaded rows
+Split across two GPUs at batch 1, the two are within 4%: Linnet is ahead on
+Llama 3.1 8B, vLLM on Qwen3 8B. The offloaded rows
 run Llama 3.1 8B and Qwen3 8B on a GPU capped at 8 GiB, streaming half the
 layers from host memory: Llama peaks at 8.9 GiB and decodes 5.7 tokens per
 second, where otherwise it would not load at all. These rows show what a

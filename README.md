@@ -44,7 +44,7 @@ On one H100 in `bf16`:
 | --- | --- | --- |
 | Llama 3.1 8B, decode one request | 167 tok/s (XLA), 161 (CUDA graphs) | vLLM 152, transformers compiled 110 |
 | BERT base, forward at batch 1 | 0.74 ms (CUDA graphs) | transformers 3.60 |
-| Llama 3.1 8B, many requests at once | 5594 tok/s | vLLM 5658 |
+| Llama 3.1 8B, many requests at once | 5600 tok/s | vLLM 5449 |
 
 Every row, including where Linnet loses, is on the
 [benchmarks](https://linnet.franknoh.dev/benchmarks) page.

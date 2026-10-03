@@ -66,12 +66,12 @@ Each backend runs the checked program on its own kernels. On one H100, in
 | Llama 3.1 8B, decode one request | 167 tok/s (XLA), 161 (CUDA graphs) | vLLM 152, transformers compiled 110 |
 | BERT base, forward at batch 1 | 0.74 ms (CUDA graphs) | transformers 3.60, compiled 1.67 |
 | SD VAE decoder, 512 px | 7.4 ms (XLA) | diffusers 22.0, compiled 10.4 |
-| Llama 3.1 8B, 256 requests served | 5594 tok/s (CUDA graphs) | vLLM 5658 |
+| Llama 3.1 8B, 256 requests served | 5600 tok/s (CUDA graphs) | vLLM 5449 |
 | gpt-oss 20B, decode one request | 368 tok/s (CUDA graphs) | vLLM 299, transformers 45 |
-| gpt-oss 20B, 256 requests served | 5349 tok/s (CUDA graphs) | vLLM 4313 |
+| gpt-oss 20B, 256 requests served | 6031 tok/s (CUDA graphs) | vLLM 4313 |
 
-Linnet loses on MiniLM and ResNet-50 under ONNX Runtime, and by a few
-percent serving 7-8 B models or splitting them across GPUs. The
+Linnet loses on MiniLM and ResNet-50 under ONNX Runtime, and by 4%
+splitting Qwen3 8B across two GPUs. The
 [benchmarks](/benchmarks) page has every row: 24 models, 528 measurements.
 
 ## Targets

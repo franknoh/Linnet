@@ -1487,14 +1487,14 @@
      "method": "Linnet JAX (XLA, generated source)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 46.549,
-      "decode_tok_s": 292.6927,
-      "load_s": 8.962,
-      "peak_vram_mib": 51737.6,
-      "driver_vram_mib": 66172.9
+      "ttft_ms": 25.1606,
+      "decode_tok_s": 298.203,
+      "load_s": 9.1958,
+      "peak_vram_mib": 51298.3,
+      "driver_vram_mib": 66713.8
      },
      "first_token": null,
-     "max_abs_diff": 0.06640625,
+     "max_abs_diff": 0.109375,
      "notes": "KV cache compiled for 768 positions; peak memory is JAX's allocator peak; the driver shows its pool, which grows in whole regions",
      "error": null
     },
@@ -1650,11 +1650,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 5349.2359,
-      "serve_s": 6.1257,
-      "load_s": 5.7259,
-      "serve_ttft_ms": 2632.1338,
-      "peak_vram_mib": 31332.9
+      "serve_tok_s": 6030.6897,
+      "serve_s": 5.4335,
+      "load_s": 7.2789,
+      "serve_ttft_ms": 2302.3843,
+      "peak_vram_mib": 31330.2
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -1666,12 +1666,12 @@
      "method": "Linnet jax (linnet.serve, XLA)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 1676.0087,
-      "serve_s": 19.5512,
-      "load_s": 10.1528,
-      "serve_ttft_ms": 8486.6241,
-      "peak_vram_mib": 56091.6,
-      "driver_vram_mib": 66306.9
+      "serve_tok_s": 3117.0378,
+      "serve_s": 10.5125,
+      "load_s": 11.5176,
+      "serve_ttft_ms": 4653.5217,
+      "peak_vram_mib": 53388.5,
+      "driver_vram_mib": 67890.9
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2514,10 +2514,10 @@
      "method": "vLLM (offline, continuous batching)",
      "kind": "reference",
      "metrics": {
-      "serve_tok_s": 5657.8434,
-      "serve_s": 5.7916,
-      "load_s": 34.0047,
-      "peak_vram_mib": 70284.8
+      "serve_tok_s": 5449.4064,
+      "serve_s": 6.0131,
+      "load_s": 134.7542,
+      "peak_vram_mib": 70326.2
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2576,11 +2576,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 5593.7928,
-      "serve_s": 5.8579,
-      "load_s": 6.5231,
-      "serve_ttft_ms": 2668.665,
-      "peak_vram_mib": 29348.9
+      "serve_tok_s": 5599.6717,
+      "serve_s": 5.8518,
+      "load_s": 6.9917,
+      "serve_ttft_ms": 2508.4693,
+      "peak_vram_mib": 28440.2
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2718,10 +2718,10 @@
      "method": "Linnet torch (tensor parallel on 2 GPUs, shards)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 10.1391,
-      "decode_tok_s": 236.3574,
-      "load_s": 4.1179,
-      "peak_vram_mib": 26701.9
+      "ttft_ms": 10.8494,
+      "decode_tok_s": 238.0886,
+      "load_s": 4.7686,
+      "peak_vram_mib": 27757.0
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -2733,11 +2733,11 @@
      "method": "Linnet JAX (XLA, tensor parallel on 2 GPUs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 17.5894,
-      "decode_tok_s": 88.8113,
-      "load_s": 13.2576,
+      "ttft_ms": 16.2194,
+      "decode_tok_s": 180.8528,
+      "load_s": 16.0726,
       "peak_vram_mib": 18801.2,
-      "driver_vram_mib": 38684.0
+      "driver_vram_mib": 38733.8
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -2749,9 +2749,10 @@
      "method": "vLLM (tensor parallel on 2 GPUs)",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 11.9209,
-      "decode_tok_s": 245.7791,
-      "load_s": 320.7345
+      "ttft_ms": 11.8681,
+      "decode_tok_s": 232.9316,
+      "load_s": 285.9879,
+      "peak_vram_mib": 142713.8
      },
      "first_token": 198.0,
      "max_abs_diff": null,
@@ -3142,10 +3143,10 @@
      "method": "vLLM (offline, continuous batching)",
      "kind": "reference",
      "metrics": {
-      "serve_tok_s": 5807.7261,
-      "serve_s": 5.6421,
-      "load_s": 32.5752,
-      "peak_vram_mib": 70440.8
+      "serve_tok_s": 5545.8327,
+      "serve_s": 5.9086,
+      "load_s": 78.8043,
+      "peak_vram_mib": 70410.2
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -3204,11 +3205,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 5780.7004,
-      "serve_s": 5.6685,
-      "load_s": 6.2459,
-      "serve_ttft_ms": 2598.7297,
-      "peak_vram_mib": 27858.9
+      "serve_tok_s": 5764.4483,
+      "serve_s": 5.6845,
+      "load_s": 8.0056,
+      "serve_ttft_ms": 2447.2957,
+      "peak_vram_mib": 27929.3
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5223,10 +5224,10 @@
      "method": "vLLM (offline, continuous batching)",
      "kind": "reference",
      "metrics": {
-      "serve_tok_s": 5524.9067,
-      "serve_s": 5.931,
-      "load_s": 67.1757,
-      "peak_vram_mib": 70220.8
+      "serve_tok_s": 5295.3416,
+      "serve_s": 6.1881,
+      "load_s": 78.5185,
+      "peak_vram_mib": 70217.6
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5285,11 +5286,11 @@
      "method": "Linnet torch (linnet.serve, CUDA graphs)",
      "kind": "linnet",
      "metrics": {
-      "serve_tok_s": 5366.7996,
-      "serve_s": 6.1057,
-      "load_s": 6.599,
-      "serve_ttft_ms": 2771.2915,
-      "peak_vram_mib": 29982.9
+      "serve_tok_s": 5399.1991,
+      "serve_s": 6.069,
+      "load_s": 8.7309,
+      "serve_ttft_ms": 2609.7735,
+      "peak_vram_mib": 29190.2
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5380,10 +5381,10 @@
      "method": "Linnet torch (tensor parallel on 2 GPUs, shards)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 13.4081,
-      "decode_tok_s": 226.3432,
-      "load_s": 4.0552,
-      "peak_vram_mib": 27045.9
+      "ttft_ms": 11.7046,
+      "decode_tok_s": 211.7561,
+      "load_s": 4.9716,
+      "peak_vram_mib": 27039.2
      },
      "first_token": null,
      "max_abs_diff": null,
@@ -5395,11 +5396,11 @@
      "method": "Linnet JAX (XLA, tensor parallel on 2 GPUs)",
      "kind": "linnet",
      "metrics": {
-      "ttft_ms": 20.3679,
-      "decode_tok_s": 69.3409,
-      "load_s": 13.9352,
-      "peak_vram_mib": 20289.4,
-      "driver_vram_mib": 39170.0
+      "ttft_ms": 18.369,
+      "decode_tok_s": 130.799,
+      "load_s": 16.2622,
+      "peak_vram_mib": 19832.4,
+      "driver_vram_mib": 39209.8
      },
      "first_token": null,
      "max_abs_diff": 0.125,
@@ -5411,9 +5412,10 @@
      "method": "vLLM (tensor parallel on 2 GPUs)",
      "kind": "reference",
      "metrics": {
-      "ttft_ms": 12.3074,
-      "decode_tok_s": 233.3369,
-      "load_s": 31.6227
+      "ttft_ms": 14.1492,
+      "decode_tok_s": 220.3346,
+      "load_s": 78.7816,
+      "peak_vram_mib": 143659.8
      },
      "first_token": 198.0,
      "max_abs_diff": null,
