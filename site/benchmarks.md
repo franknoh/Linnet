@@ -36,18 +36,20 @@ them. The fair baseline on each is the implementation people run there
 today: transformers or diffusers in PyTorch (eager or under `torch.compile`,
 whichever is faster), KerasHub in JAX, the model's own `torch.onnx` export on
 ONNX Runtime, and that export behind Triton Inference Server. In PyTorch and
-JAX, Linnet's code is the faster one; on ONNX Runtime the two exports come
-out even.
+JAX, Linnet's code is the faster one on every model; on ONNX Runtime and
+behind Triton it is ahead on most, and behind on a few.
 
 <ZooClaims part="matchups" ids="pytorch,jax,onnx,triton" />
 
 In PyTorch the gap is widest where the host sets the pace -- small models,
-single decoding steps, batch-1 encoders -- and one CUDA graph removes it. The
-SD VAE decoder is where `torch.compile` stays ahead of Linnet's CUDA graphs;
-Linnet's XLA program is faster than both there (7.4 ms). KerasHub keeps the
-edge on the two smallest decoders. On ONNX Runtime the two exports land close
-together, since ONNX Runtime optimizes both graphs itself; behind Triton the
-HTTP front is most of the time for the small models.
+single decoding steps, batch-1 encoders -- and one CUDA graph removes it. It
+closes on the large convolutional models: the SD VAE decoder and the SDXL
+UNet come out even with `torch.compile`, and Linnet's XLA program decodes the
+VAE faster than both (7.4 ms). On ONNX Runtime, which optimizes both graphs
+itself, the two exports land close together on most models, but the
+reference export is faster on MiniLM and ResNet-50, by 16% and 13%. Behind
+Triton the HTTP front is most of the time for the small models, and
+ResNet-50's reference export stays 21% ahead.
 
 ## Exports run as the originals do {#exports}
 

@@ -142,7 +142,7 @@ StableHLO, `MatMul` and `Conv` in ONNX. On one H100, in `bf16`:
 | gpt-oss 20B, decode one request | 368 tok/s (CUDA graphs) | vLLM 299, transformers 45 |
 | gpt-oss 20B, 256 requests served | 5349 tok/s (CUDA graphs) | vLLM 4313 |
 
-Where Linnet loses — by a few percent, serving 7-8 B models and splitting them across GPUs —
+Where Linnet loses — MiniLM and ResNet-50 on ONNX Runtime, and by a few percent serving 7-8 B models and splitting them across GPUs —
 is on the [benchmarks](/benchmarks) page with every other row: 24 models, 528
 measurements.
 
