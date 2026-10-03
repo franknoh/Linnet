@@ -1,16 +1,16 @@
 # Quickstart
 
-Write a model, check it, and run it in PyTorch. This assumes a built
-compiler; see [Installation](https://linnet.franknoh.dev/guide/installation).
+Write a small model, check it, and run it in PyTorch. You need a built
+compiler: see [Installation](https://linnet.franknoh.dev/guide/installation).
 
-## Create a package
+## 1. Create a package
 
 ```bash
 linnet init hello-model
 cd hello-model
 ```
 
-This writes `linnet.toml` and `src/lib.linnet`. Replace `src/lib.linnet` with:
+Replace the generated `src/lib.linnet` with:
 
 ```linnet
 module hello_model
@@ -28,11 +28,11 @@ pub block Mlp<In: Dim, Hidden: Dim, Out: Dim, T: Float = f32> {
 }
 ```
 
-A `block` owns parameters and sub-blocks. `entry` marks what a backend can
-call. `In`, `Hidden`, `Out`, and `B` are dimensions the caller binds; the
-compiler checks every shape in terms of them.
+A `block` owns parameters and sub-blocks, and an `entry` is what a backend
+calls. The compiler checks every shape in terms of `In`, `Hidden`, `Out` and
+`B`.
 
-## Check it
+## 2. Check it
 
 ```bash
 linnet check .
@@ -48,14 +48,11 @@ hello_model::Mlp<In, Hidden, Out, T>
   param down.bias: Tensor[Out; T]?
 ```
 
-The last command prints the parameter manifest: the paths and shapes a
-checkpoint must provide. `?` marks an optional parameter.
+These are the tensors a checkpoint must provide; `?` marks an optional one.
+Change the result type to `Tensor[B, In; T]` and `linnet check .` reports
+the mismatch.
 
-To see the checker at work, change the result type to `Tensor[B, In; T]` and
-run `linnet check .` again. It reports the shape that does not match.
-Checking never executes anything.
-
-## Run it in PyTorch
+## 3. Run it in PyTorch
 
 ```bash
 cd python/linnet && uv sync --extra torch
@@ -70,20 +67,11 @@ model = load("hello-model/src/lib.linnet", generics={"In": 4, "Hidden": 8, "Out"
 print(model(torch.randn(3, 4)).shape)   # torch.Size([3, 2])
 ```
 
-Weights come from SafeTensors files whose tensor names are the parameter
-paths (`up.weight`, `down.weight`, ...): `load(..., weights="weights/")`.
-Details in [PyTorch](torch.md).
-
-## Editors
-
-- VS Code: the extension in `editors/vscode` highlights `.linnet` files and
-  runs `linnet lsp` for diagnostics, hover, navigation, rename, and
-  formatting.
-- Vim and Neovim: `editors/vim`, with a language server snippet in its README.
+The model now runs as a PyTorch module. Pass `weights="weights/"` to load
+SafeTensors named by parameter path; see [PyTorch](torch.md).
 
 ## Next
 
-- [Language tour](language-tour.md): the whole language on one page.
-- [Command line](tooling.md): every command.
-- `spec/` is the normative specification; `stdlib/` is the standard library,
-  written in Linnet.
+- [Language tour](language-tour.md)
+- [Command line](tooling.md)
+- [Editor setup](https://linnet.franknoh.dev/guide/installation#editors)

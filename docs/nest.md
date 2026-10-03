@@ -1,10 +1,13 @@
 # Nest
 
-Nest is the Linnet model zoo: a registry of models whose architecture is a
-checked `.linnet` source and whose weights are a SafeTensors checkpoint on
-the Hugging Face Hub. The registry lives at
-[github.com/franknoh/nest](https://github.com/franknoh/nest); browse the
-models at [nest.franknoh.dev](https://nest.franknoh.dev).
+Nest is the Linnet model zoo: each model is a checked `.linnet` source plus a
+SafeTensors checkpoint on the Hugging Face Hub. Browse it at
+[nest.franknoh.dev](https://nest.franknoh.dev); the registry is
+[github.com/franknoh/nest](https://github.com/franknoh/nest).
+
+## Load a model
+
+Install the `nest` extra (`pip install ".[nest]"` in `python/linnet`), then:
 
 ```python
 from linnet import nest
@@ -13,16 +16,21 @@ model = nest.load("tinyllama-1.1b-chat", backend="torch", numerics="fast", compi
 logits = model(tokens)
 ```
 
-`load` fetches the model's directory from the registry, downloads the
-checkpoint files from the Hub (cached by `huggingface_hub`), binds them
-through the card's `bindings.json`, and returns the backend's object:
-`linnet.torch.load` for `"torch"`, `linnet.jax.load` for `"jax"`,
-`load_source` for `"jax_source"`, `load_nnx` for `"nnx"`. Keyword arguments
-go to that loader; `generics=` overrides the card's values. A local model
-directory works in place of a name. Install with the `nest` extra
-(the `nest` extra: `pip install ".[nest]"` in `python/linnet`).
+`load` downloads the model and its checkpoint, binds the weights, and returns
+the backend's object. Other keyword arguments go to the loader; `generics=`
+overrides the card's values. A local model directory works in place of a
+name.
 
-## A model
+| `backend=` | Loader |
+| --- | --- |
+| `"torch"` | `linnet.torch.load` |
+| `"jax"` | `linnet.jax.load` |
+| `"jax_source"` | `linnet.jax.load_source` |
+| `"jax_model"` | `linnet.jax.load_model` |
+| `"onnx_model"` | `linnet.onnx.load_model` |
+| `"nnx"` | `linnet.jax.load_nnx` |
+
+## Model directory
 
 ```text
 models/<name>/
@@ -33,11 +41,8 @@ models/<name>/
   preview.svg      the main entry, drawn by `linnet.diagram`
 ```
 
-The card names the source and its root block, binds the root generics for
-this checkpoint, points at the Hub repository and files, and carries the
-title, license, summary, and links (`huggingface` is required; `github`,
-`arxiv`, `homepage` when they exist). The full schema is in the registry's
-README.
+The card names the source, root block, generics, and Hub checkpoint. Its
+full schema is in the registry's README.
 
 ## Checks
 
@@ -47,16 +52,14 @@ python -m linnet.nest preview models/gpt2 -o models/gpt2/preview.svg
 python -m linnet.nest index . -o index.json
 ```
 
-`check` is what a pull request to the registry must pass:
+Registry pull requests must pass `check`:
 
 - the README and the card's required fields;
 - the source compiles with the card's generics;
-- every parameter of the manifest has a tensor of the same shape and dtype
-  in the checkpoint, read from the SafeTensors headers on the Hub without
-  downloading (optional parameters may be absent);
-- the main entry exports to StableHLO, ONNX, PyTorch source, and JAX
-  source with the `[check]` bindings.
+- every required parameter has a checkpoint tensor of the same shape and
+  dtype, read from the SafeTensors headers on the Hub;
+- the main entry exports to StableHLO, ONNX, PyTorch source, and JAX source.
 
-`index` writes the registry document `load` and the site read: every card
-with its entries, parameter count, and files. From Python, `nest.Card.read`,
-`nest.check`, `nest.describe`, `nest.index`, and `nest.preview` do the same.
+`index` writes the registry document that `load` and the site read. In
+Python: `nest.check`, `nest.index`, `nest.preview`, `nest.describe`,
+`nest.Card.read`.

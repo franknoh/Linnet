@@ -1,8 +1,10 @@
-# 14. Versioning and Compatibility
+# 14. Versioning and compatibility
+
+Version compatibility rules.
 
 ## 14.1 Language version
 
-A package manifest declares the language version it targets:
+A package manifest declares its language version:
 
 ```toml
 [package]
@@ -11,22 +13,20 @@ language = "0.1"
 
 ## 14.2 Pre-1.0 policy
 
-Before language 1.0, syntax and semantics may evolve between minor language versions. Implementations SHOULD provide clear migration diagnostics where feasible.
+Before 1.0, minor versions may change syntax and semantics. Implementations SHOULD provide migration diagnostics where feasible.
 
-## 14.3 Stable artifact boundary
+## 14.3 Stable artifacts
 
-The long-term stable artifact is human-readable Linnet source plus declared external parameter artifacts/bindings.
-
-Internal HIR, Core IR, e-graph representation, optimizer caches, and backend Plan IR are not stable interchange formats unless separately versioned.
+Stable long-term: source plus declared parameter artifacts and bindings. Unstable unless separately versioned: compiler IRs (HIR, Core IR, Plan IR), e-graphs, optimizer caches.
 
 ## 14.4 Reserved syntax
 
-Reserved keywords and syntax forms exist so future capabilities can be introduced without reinterpreting previously valid user identifiers.
+Reserved syntax (§1.4) lets future features avoid reinterpreting previously valid identifiers.
 
-## 14.5 Standard library versioning
+## 14.5 Library versions
 
-Semantic `op` identity depends on the library/package version. A backend optimization registered for one semantic version range MUST NOT silently apply to incompatible semantics.
+Semantic `op` identity depends on the library/package version; backend optimizations registered for one semantic version range MUST NOT silently apply to incompatible semantics.
 
-## 14.6 Backend compatibility
+## 14.6 Backends
 
-A backend may reject a valid Linnet program when it cannot represent or execute required semantics. Such rejection is a backend capability error, not a source-language type error.
+A backend may reject a valid program it cannot represent or execute: a capability error, not a type error.

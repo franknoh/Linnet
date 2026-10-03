@@ -1,18 +1,10 @@
-# 12. Diagnostics, Lints, and Strict Mode
+# 12. Diagnostics and lints
+
+Errors and lints use stable codes.
 
 ## 12.1 Diagnostic structure
 
-A diagnostic SHOULD contain:
-
-- stable diagnostic code;
-- severity;
-- concise message;
-- primary source span;
-- optional secondary labeled spans;
-- optional notes;
-- optional machine-applicable fix-it.
-
-Example:
+A diagnostic SHOULD contain a stable code, severity, concise message, and primary source span, and MAY add labeled secondary spans, notes, and machine-applicable fix-its. Example:
 
 ```text
 error E2201: incompatible contraction dimensions
@@ -28,46 +20,32 @@ error E2201: incompatible contraction dimensions
 
 ## 12.2 Error versus lint
 
-Errors mean the program has no valid Linnet semantics.
+An error means the program has no valid Linnet semantics; a lint flags valid but suspicious, redundant, non-portable, or poorly styled source.
 
-Lints report valid but suspicious, redundant, non-portable, or style-problematic source.
+## 12.3 Lints
 
-## 12.3 Initial lint categories
+Recommended lints, with reference-implementation codes:
 
-Recommended lints:
-
-- unused import;
-- unused local;
-- unused parameter or buffer declaration;
+- unused import (`W1001`);
+- unused local (`W1002`);
+- unused parameter or buffer declaration (`W1003`, any unused block member: `param`, `buffer`, `state`, `sub`);
 - redundant cast;
 - redundant reshape/permute;
 - suspicious broad broadcast;
 - shadowing where readability suffers;
 - non-canonical module/file naming;
-- parameter declared optional but always force-unwrapped after future option utilities;
-- numerically suspicious forms once numerical analysis is introduced.
+- optional parameter always force-unwrapped, after future option utilities;
+- numerically suspicious forms, once numerical analysis exists.
 
-The reference implementation reports:
-
-| Code | Lint |
-| --- | --- |
-| `W1001` | unused import |
-| `W1002` | unused local |
-| `W1003` | a block member (`param`, `buffer`, `state`, `sub`) its block never uses |
-
-A local or block member whose name begins with `_` is exempt. Lints are reported only for programs without errors.
+Locals and block members whose names begin with `_` are exempt. Lints are reported only for error-free programs.
 
 ## 12.4 `--strict`
 
-`linnet check --strict` promotes configured warnings to errors for CI; `linnet lint` is `check` with every warning failing.
-
-Strict mode MUST NOT change program semantics, dtype rules, shape rules, optimizer legality, or backend output. It changes only acceptance policy for lint severities.
+`linnet check --strict` promotes configured warnings to errors; `linnet lint` fails on every warning. Strict mode MUST NOT change program semantics, dtype rules, shape rules, optimizer legality, or backend output.
 
 ## 12.5 Stable codes
 
-Once a diagnostic code is documented in a stable release, implementations SHOULD avoid reusing it for an unrelated condition.
-
-Suggested ranges:
+Implementations SHOULD NOT reuse a documented stable-release code for an unrelated condition. Suggested ranges:
 
 ```text
 E1xxx parse/module errors

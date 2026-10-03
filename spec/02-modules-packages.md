@@ -1,4 +1,6 @@
-# 2. Modules and Packages
+# 2. Modules and packages
+
+One file is one module; `linnet.toml` defines a package.
 
 ## 2.1 Module declaration
 
@@ -8,11 +10,11 @@ A source file declares one module:
 module models.llama.attention
 ```
 
-A package compiler SHOULD verify that module paths correspond consistently to source paths, but standalone checking MAY relax that relationship.
+A package compiler SHOULD verify that module paths correspond to source paths; standalone checking MAY relax this.
 
 ## 2.2 Imports
 
-Imports use logical module paths, never filesystem path strings:
+Imports use logical module paths, never filesystem paths:
 
 ```text
 use std.nn::{linear, rms_norm}
@@ -21,7 +23,7 @@ use crate.layers.decoder::{DecoderLayer}
 use my_dependency.ops::{custom_op}
 ```
 
-This is intentionally safer than executable or relative path imports. Imports MUST NOT contain `..`, absolute filesystem paths, URLs, or shell expansions.
+Imports MUST NOT contain `..`, absolute filesystem paths, URLs, or shell expansions.
 
 ### Namespaces
 
@@ -29,7 +31,7 @@ This is intentionally safer than executable or relative path imports. Imports MU
 - `crate`: current package root.
 - dependency key: a dependency declared in `linnet.toml`.
 
-`self` and `super` are reserved; support MAY be added later.
+`self` and `super` are reserved; a later version MAY support them.
 
 ### Locating modules
 
@@ -42,31 +44,30 @@ std.a.b          <standard library>/a/b.linnet
 dep.a.b          <dependency dep>/src/a/b.linnet
 ```
 
-`<package>` is the nearest directory above the importing file that contains `linnet.toml`; `dep` is a key of that manifest's `[dependencies]` table. A dependency key is an identifier and is never `std` or `crate`. Because path segments are identifiers, a logical path can never leave its root directory.
+`<package>` is the nearest directory above the importing file that contains `linnet.toml`. `dep` is a key of that manifest's `[dependencies]` table: an identifier other than `std` or `crate`.
 
-`use a.b::{x, y as z}` imports items from module `a.b`. `use a.b` imports the module itself under its last segment, so that its public items are written `b.x`.
+`use a.b::{x, y as z}` imports items from module `a.b`. `use a.b` imports the module as `b`, so its public items are written `b.x`.
 
-Import cycles between modules are rejected.
+The current implementation rejects import cycles between modules (§2.8).
 
 ## 2.3 Core prelude
 
-Every module has an implicit, non-shadowable language prelude containing only compiler-defined foundational names. The initial prelude includes:
+Every module has an implicit prelude of compiler-defined names, including:
 
 - scalar dtype names and `Tensor`;
-- generic kinds/constraints such as `Dim`, `Shape`, `DType`, `Numeric`, `Integer`, and `Float`;
-- primitive casts and tensor-shape functions such as `cast`, `reshape`, `permute`, `broadcast_to`, `concat`, and `pad`;
-- primitive data functions such as `iota`, `fill`, `gather`, and `scatter`;
-- primitive elementwise math functions such as `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, and `abs`;
-- `min`, `max`, and the integer shifts `shl` and `shr`;
-- `select`.
+- generic kinds and constraints: `Dim`, `Shape`, `DType`, `Numeric`, `Integer`, `Float`;
+- casts and shape functions: `cast`, `reshape`, `permute`, `broadcast_to`, `concat`, `pad`;
+- data functions: `iota`, `fill`, `gather`, `scatter`;
+- elementwise math: `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, `abs`;
+- `min`, `max`, `shl`, `shr`, and `select`.
 
-The prelude MUST remain small and model-independent. `linear`, `softmax`, `attention`, `rope`, normalization layers, convolutions, and similar semantic operations are library code and are not implicit prelude names.
+The prelude MUST remain small and model-independent.
 
-Prelude names may be referenced without a `use` declaration. No declaration — item, parameter, generic parameter, or local — may use a prelude name.
+Prelude names need no `use` declaration. No item, parameter, generic parameter, or local may be declared with a prelude name.
 
 ### Prelude functions
 
-In the signatures below, `x` stands for a scalar or a tensor, and the result has the shape of its tensor operands after broadcasting.
+`x` is a scalar or a tensor; the result has the broadcast shape of the tensor operands.
 
 ```text
 cast<T>(x)                     same shape, dtype T; T is required
@@ -87,7 +88,7 @@ iota<T = i64>(n)               Tensor[n; T] holding 0, 1, ..., n - 1
 fill<T>(shape, value)          T may be omitted when `value` is a typed scalar
 ```
 
-`shape` and `axes` arguments are shape literals. `pad`, `gather`, and `scatter` are reserved prelude names whose signatures are not yet specified; an implementation MUST reject calls to them rather than guess.
+`shape` and `axes` arguments are shape literals. `pad`, `gather`, and `scatter` have no specified signature; an implementation MUST reject calls to them.
 
 ## 2.4 Visibility
 
@@ -100,9 +101,7 @@ fn helper(...) { ... }
 
 ## 2.5 Package manifest
 
-The canonical project manifest is `linnet.toml`.
-
-Minimum form:
+The canonical project manifest is `linnet.toml`. Minimum form:
 
 ```toml
 [package]
@@ -114,24 +113,23 @@ language = "0.1"
 foo = { path = "../foo" }
 ```
 
-`language` names the language version the package is written for. A toolchain MUST reject a manifest whose language version it does not implement.
+`language` is the targeted language version; a toolchain MUST reject a version it does not implement.
 
 Future dependency forms MAY include pinned Git revisions and a registry. Dependency resolution MUST be reproducible when a lockfile exists.
 
 ## 2.6 Lockfile
 
-The canonical lockfile is `linnet.lock`.
-
-A lockfile is generated metadata and MUST record exact dependency identities required for deterministic package resolution. The precise serialization is implementation-defined until separately standardized.
+The canonical lockfile is `linnet.lock`. It MUST record the exact dependency identities that deterministic resolution requires; its serialization is implementation-defined.
 
 ## 2.7 Package safety
 
-Fetching a package MUST NOT execute package-provided scripts.
+A package MAY contain source, metadata, tests, and non-executable assets.
 
-A Linnet package MAY contain source, metadata, tests, and non-executable assets. Merely resolving or checking a package MUST NOT execute arbitrary code.
+- Fetching a package MUST NOT execute package-provided scripts.
+- Resolving or checking a package MUST NOT execute arbitrary code.
 
 ## 2.8 Cycles
 
 Value-level initialization cycles are forbidden.
 
-Module import cycles MAY be accepted only if the implementation can resolve declarations without order-dependent initialization. The initial implementation SHOULD reject import cycles with a clear diagnostic; a later version may permit safe declaration-only cycles.
+An implementation MAY accept module import cycles only if it can resolve declarations without order-dependent initialization. The initial implementation SHOULD reject import cycles with a clear diagnostic.

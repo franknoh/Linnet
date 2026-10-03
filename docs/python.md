@@ -1,8 +1,9 @@
 # Python package
 
-`linnet-lang` is one package, `linnet`, with a backend per framework behind
-an extra. The core needs only NumPy: it runs the compiler, reads plans and
-SafeTensors checkpoints, and gives you the compiled program as typed objects.
+`linnet-lang` is a NumPy-only core that runs the compiler and exposes the
+program as typed objects, plus a backend per framework behind an extra.
+
+## Install
 
 ```bash
 cd python/linnet
@@ -12,28 +13,22 @@ pip install ".[flax]"      # linnet.jax.load_nnx
 pip install ".[onnx]"      # linnet.onnx (add onnxruntime or onnxruntime-gpu to run models)
 ```
 
-The package is not on PyPI yet; from outside a checkout, pip installs it from
-the repository with
+It is not on PyPI yet; outside a checkout, install
 `"linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`.
+The compiler comes from `LINNET_BIN` or `PATH`. In a checkout,
+`uv sync --all-extras` installs every backend and test dependency.
 
-| Module | |
+## Modules
+
+| Module | Contents |
 | --- | --- |
-| `linnet` | `load_program`, `Program`, `compile_plan`, checkpoint reading (`read_arrays`, `read_bindings`), the compiler subprocess |
-| `linnet.ir` | the typed program: blocks, members, functions, regions, operations, symbolic dimensions and types |
-| `linnet.diagram` | architecture diagrams as SVG, TikZ, or Graphviz |
-| `linnet.nest` | [Nest](nest.md), the model zoo: cards, checks, `nest.load` |
-| `linnet.triton` | [Triton Inference Server](integrations.md) model repositories |
-| `linnet.hf` | [Transformers checkpoints](integrations.md) for vLLM, SGLang, TGI |
-| `linnet.gguf` | [GGUF and Ollama Modelfiles](integrations.md) via llama.cpp's converter |
-| `linnet.torch` | [PyTorch](torch.md): `load`, `bind_weights`, `export_linnet` |
-| `linnet.jax` | [JAX and Flax](jax.md): `load`, `load_source`, `load_nnx`, `export_linnet`, `import_stablehlo` |
-| `linnet.onnx` | [ONNX](onnx.md): `import_onnx` |
+| `linnet` | `load_program`, `Program`, `compile_plan`, `read_arrays`, `read_bindings` |
+| `linnet.ir`, `linnet.diagram` | [typed program](#typed-program), [diagrams](#diagrams) |
+| `linnet.nest` | [Nest](nest.md) model zoo |
+| `linnet.torch`, `linnet.jax`, `linnet.onnx` | backends for [PyTorch](torch.md), [JAX and Flax](jax.md), [ONNX](onnx.md) |
+| `linnet.triton`, `linnet.hf`, `linnet.gguf` | [integrations](integrations.md): Triton Inference Server, Transformers (vLLM, SGLang, TGI), GGUF and Ollama |
 
-The compiler binary comes from `LINNET_BIN` or `PATH`. In the repository,
-`cd python/linnet && uv sync --all-extras` installs every backend and the
-test dependencies.
-
-## The typed program
+## Typed program
 
 ```python
 from linnet import load_program
@@ -53,8 +48,8 @@ llama::Model<Vocab: Dim, H: Dim, Heads: Dim, KvHeads: Dim, Inner: Dim, Layers: D
   ...
 ```
 
-`load_program` runs `linnet plan` and reads the result into frozen
-dataclasses (`linnet.ir`). Nothing executes. Dimensions stay symbolic:
+`load_program` reads `linnet plan` output into frozen `linnet.ir`
+dataclasses; nothing executes. Dimensions stay symbolic:
 
 ```python
 from linnet import ir
@@ -72,19 +67,18 @@ for op in entry.body.walk():         # every operation, nested regions included
         print(op.attrs["callee"], [ir.format_type(r.type) for r in op.results])
 ```
 
-| Type | Cases |
+| Class | Fields or cases |
 | --- | --- |
+| `Program` | `root`, `manifest`, `blocks`, `functions`, `constants` |
+| `Function` | `generics`, `params`, `results`, `states`, `body` (a `Region` of `Op`s) |
 | `Dim` | `int`, `DimSymbol`, `PackSize`, `DimExpr(op, args)` with `add`, `mul`, `floordiv`, `mod`, `min`, `max` |
 | `Unit` | a `Dim` or a `Pack` (`*S`) |
 | `DType` | a name such as `"bf16"`, or `DTypeVar` |
 | `Type` | `ScalarType`, `TensorType`, `TupleType`, `OptionalType`, `ArrayType`, `NamedType` (block, struct, enum), `ShapeType`, `UnitType` |
 
-`Program` holds `root`, `manifest`, `blocks`, `functions`, and `constants`;
-`Function` has `generics`, `params`, `results`, `states`, and a `body`
-`Region` of `Op`s. `ir.substitute(type, ir.call_substitution(op))` rewrites a
-callee's types in the caller's generics. `format_dim`, `format_shape`,
-`format_type`, and `format_signature` print everything as the language
-spells it.
+`ir.substitute(type, ir.call_substitution(op))` rewrites a callee's types
+in the caller's generics. `format_dim`, `format_shape`, `format_type` and
+`format_signature` print Linnet syntax.
 
 ## Diagrams
 
@@ -93,21 +87,17 @@ python -m linnet.diagram examples/05-llama/src/lib.linnet --std stdlib \
     --entry forward --expand 1 -o forward.svg
 ```
 
-`linnet.diagram` draws one entry as a dataflow graph: inputs, the calls and
-operations of its body, loops and expanded calls as nested groups, outputs.
-Every edge is labelled with the tensor type the compiler inferred at that
-point, in the caller's generics (`T[B, S, H]`), because the plan carries it.
+`linnet.diagram` draws an entry as a dataflow graph, with each edge's
+inferred tensor type (`T[B, S, H]`).
 
-| Option | |
+| Option | Effect |
 | --- | --- |
-| `--expand N` | inline calls to sub-block methods `N` levels deep as groups; `0` shows the block structure only |
-| `--params` | add a node per parameter read |
-| `--no-arithmetic` | fold elementwise operations into the edges around them |
-| `--format svg\|tikz\|dot` | the output; inferred from `-o`'s extension (`.svg`, `.tex`, `.dot`) |
+| `--expand N` | inline sub-block calls `N` levels deep; `0` shows blocks only |
+| `--params` | a node per parameter read |
+| `--no-arithmetic` | elementwise operations folded into edges |
+| `--format svg\|tikz\|dot` | inferred from `-o` (`.svg`, `.tex`, `.dot`) |
 | `--theme light\|dark` | SVG colours |
 
-From Python, `diagram.build(program, "forward", expand=1)` returns the
-`Graph` (nodes, edges, groups), and `to_svg`, `to_tikz`, `to_dot` render it.
-The TikZ output needs `\usetikzlibrary{fit, arrows.meta}` and lays the nodes
-out itself, so it drops into a paper without Graphviz; the DOT output hands
-the layout to Graphviz instead.
+`diagram.build(program, "forward", expand=1)` returns a `Graph` for
+`to_svg`, `to_tikz` or `to_dot`. TikZ output needs
+`\usetikzlibrary{fit, arrows.meta}`; DOT needs Graphviz.

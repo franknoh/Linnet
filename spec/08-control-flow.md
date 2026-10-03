@@ -1,14 +1,14 @@
-# 8. Control Flow and Structural Iteration
+# 8. Control flow
+
+Linnet has runtime `if` and `while`, compile-time `static for`, and no recursion.
 
 ## 8.1 Runtime `if`
 
 `if` is an expression over a scalar `bool`. Both branches must have identical result types.
 
-It may lower to backend control flow or selection depending on the backend and context.
-
 ## 8.2 `static for`
 
-`static for` performs compile-time structural expansion:
+`static for` expands its body at compile time:
 
 ```text
 var x = embedding.forward(tokens)
@@ -18,13 +18,7 @@ static for layer in layers {
 }
 ```
 
-The iterable MUST be a statically known structural collection such as:
-
-- a sub-block array;
-- a compile-time integer range;
-- another future compile-time collection.
-
-The loop MUST NOT depend on runtime tensor values.
+The iterable MUST be a statically known structural collection, such as a sub-block array or a compile-time integer range. The loop MUST NOT depend on runtime tensor values.
 
 ## 8.3 Static integer ranges
 
@@ -34,7 +28,7 @@ static for i in 0..Steps {
 }
 ```
 
-`start..stop` iterates over the compile-time integers `start <= i < stop`; both bounds MUST be compile-time integers (literals, generic dimensions, or arithmetic on them). The body is expanded at compile time exactly as the array form is. The loop variable is an `i64` scalar value holding the position of each iteration: it may be cast, compared, or used in arithmetic like any scalar, but it is not a compile-time integer, so it cannot index a sub array or appear in a shape — iterate the array itself for that.
+`start..stop` iterates over the integers `start <= i < stop`. Both bounds MUST be compile-time integers: literals, generic dimensions, or arithmetic on them. The loop variable is an `i64` scalar holding the iteration's position, not a compile-time integer, so it cannot index a sub-block array or appear in a shape.
 
 ## 8.4 Runtime loops
 
@@ -48,12 +42,8 @@ while running && count < MaxNew {
 }
 ```
 
-`while` repeats its body while the condition, a scalar `bool` evaluated before each iteration, holds. The `var` locals assigned in the body are the loop's carried values: their types are fixed (§5.3), so every shape is invariant across iterations, and the body may assign `state` members (§9.3). `return` is not allowed inside a loop. Termination is the program's responsibility; a bound on a counter is the usual form.
-
-In Core IR a `while` is one operation carrying those values, with a condition region and a body region, so effects inside it are ordered like any other. Backends execute it as a loop (`stablehlo.while`, ONNX `Loop`, a Python loop in generated PyTorch), carrying every `state` member through it so writes in the body are visible after it. `for` remains reserved.
+`while` repeats its body while its condition, a scalar `bool` checked before each iteration, holds. The `var` locals assigned in the body are the carried values; their types are fixed (§5.3), so shapes are invariant across iterations. The body may assign `state` members (§9.3), and those writes are visible after the loop. `return` is not allowed inside a loop. Termination is the program's responsibility. `for` remains reserved.
 
 ## 8.5 Recursion
 
-Function, op, and block-method recursion is forbidden in the initial language version.
-
-Future recursion support, if any, MUST be explicit in the language specification rather than accidentally inherited from backend behavior.
+Function, op, and block-method recursion is forbidden in the initial language version. Future recursion support MUST be explicit in this specification, not inherited from backend behavior.

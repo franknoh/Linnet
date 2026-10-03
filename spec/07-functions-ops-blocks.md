@@ -1,4 +1,4 @@
-# 7. Functions, Semantic Operations, Blocks, and Entries
+# 7. Functions, ops, blocks, and entries
 
 ## 7.1 `fn`
 
@@ -13,13 +13,13 @@ where D % 2 == 0 {
 }
 ```
 
-A compiler may inline, duplicate, eliminate, or otherwise transform a `fn` without preserving a semantic boundary.
+A compiler may inline, duplicate, eliminate, or otherwise transform a `fn` without keeping a semantic boundary.
 
-Recursive functions are rejected in the initial language version.
+Recursive functions are rejected (§8.5).
 
 ## 7.2 `op`
 
-An `op` is a pure function with a stable semantic identity and canonical decomposition:
+An `op` is a pure function with a stable semantic identity and a canonical decomposition:
 
 ```text
 pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
@@ -36,9 +36,7 @@ pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
 }
 ```
 
-A backend MAY preserve the op, inline its body, or replace it with a proven equivalent native implementation.
-
-The op body is the normative fallback semantics unless the op is explicitly declared `extern` in a future extension.
+A backend MAY preserve the op, inline its body, or replace it with a proven equivalent native implementation. Unless declared `extern` (a future extension), the body is the normative fallback semantics.
 
 ## 7.3 Semantic identity
 
@@ -68,9 +66,9 @@ pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
 }
 ```
 
-A block is not itself a runtime tensor value. It defines a parameter/state namespace and callable methods.
+A block is not a runtime tensor value; it defines a namespace of parameters, state, and methods.
 
-A block may carry a `where` clause over its generic parameters. The constraints hold inside every member and method of the block, and MUST be provable wherever the block type is instantiated, such as in a `sub` declaration:
+A block's `where` clause holds inside every member and method and MUST be provable wherever the block is instantiated, as in a `sub`:
 
 ```text
 pub block Attention<H: Dim, Heads: Dim, T: Float>
@@ -87,11 +85,11 @@ sub q_proj: Linear<Hidden, QDim, T>
 sub layers: [DecoderLayer<Hidden, T>; Layers]
 ```
 
-Nested block declarations define deterministic parameter paths.
+Nested block declarations define deterministic parameter paths (§9.5).
 
 ## 7.6 Entries
 
-An entry is a public callable intended as a backend-visible model/program entry point:
+An entry is a public, backend-visible entry point:
 
 ```text
 pub entry forward<B: Dim, S: Dim>(
@@ -101,24 +99,22 @@ pub entry forward<B: Dim, S: Dim>(
 }
 ```
 
-A block or module MAY expose multiple entries such as `prefill`, `decode`, or `classify`.
+A block or module MAY expose multiple entries, such as `prefill` and `decode`.
 
-An entry declared at module level has no `self`: it reads no parameters or state and is a function of its inputs alone, such as a loss, a preprocessing step, or a reward. A backend exports it on its own, with its inputs as the only arguments. Other functions and entries MAY call it like any `fn`.
+A module-level entry, such as a loss, has no `self` and reads no parameters or state. A backend exports it alone, taking only its inputs. Other functions and entries MAY call it like any `fn`.
 
-The word `forward` has no intrinsic language meaning.
+`forward` has no language meaning.
 
 ## 7.7 Generic defaults
 
-Generic parameters may define defaults where unambiguous:
+A generic parameter may have a default where unambiguous:
 
 ```text
 T: Float = bf16
 ```
 
-A default generic parameter MUST satisfy its declared constraint.
+The default MUST satisfy the declared constraint.
 
 ## 7.8 Overloading
 
-User-defined name overloading by argument type is not part of the initial language version. A module cannot declare multiple functions or ops with the same name.
-
-This restriction simplifies diagnostics, tooling, import resolution, and backend semantic IDs.
+A module cannot declare two functions or ops with the same name; there is no overloading by argument type.
