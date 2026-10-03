@@ -197,6 +197,39 @@ class CompiledLinnetModule(LinnetModule):
         self._recompile()
         return merged
 
+    def copy_weights(self, source: LinnetModule) -> None:
+        """Copies `source`'s weights in (see `LinnetModule.copy_weights`).
+        Compiled entries and captured CUDA graphs stay; the weight-only
+        values computed ahead are computed again into their own tensors."""
+        super().copy_weights(source)
+        self._refresh_prepared()
+
+    def _refresh_prepared(self) -> None:
+        """Computes every prepared value again from the current weights, into
+        the tensor that already holds it."""
+        done: set[str] = set()
+        for generated in self._compiled.values():
+            keys = generated.prepared_keys
+            if not keys or all(key in done for key in keys) or generated.prepare is None:
+                continue
+            inputs: list[Any] = []
+            for name in generated.prepare_inputs:
+                if name.startswith("p"):
+                    owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
+                    inputs.append(getattr(owner, leaf))
+                else:
+                    inputs.append(generated.constants[generated.constant_names.index(name)])
+            with torch.no_grad():
+                values = generated.prepare(*inputs, self.interpreter.device)
+                for key, value in zip(keys, values, strict=True):
+                    if key in done:
+                        continue
+                    done.add(key)
+                    if key in self._prepared:
+                        _copy_into(self._prepared[key], value)
+                    else:
+                        self._prepared[key] = value
+
     def _recompile(self) -> None:
         """Drops every compiled entry and prepared value: the parameters
         changed."""
@@ -613,6 +646,24 @@ def _warm_blas(device: torch.device) -> None:
     torch.addmm(small[0], small, small)
     torch.matmul(small.float(), small.float())
     _blas_threads.warm = True
+
+
+def _copy_into(kept: Any, value: Any) -> None:
+    """Writes `value` into the tensors `kept` holds (a tensor, or a tuple of
+    them); a tensor that is already `value`'s memory stays as it is."""
+    if isinstance(kept, tuple):
+        for old, new in zip(cast(tuple[Any, ...], kept), cast(tuple[Any, ...], value), strict=True):
+            _copy_into(old, new)
+        return
+    old_tensor = cast(torch.Tensor, kept)
+    new_tensor = cast(torch.Tensor, value)
+    same = (
+        old_tensor.data_ptr() == new_tensor.data_ptr()
+        and old_tensor.shape == new_tensor.shape
+        and old_tensor.stride() == new_tensor.stride()
+    )
+    if not same:
+        old_tensor.copy_(new_tensor)
 
 
 def _table(owner: Any, leaf: str) -> tuple[dict[str, Any], str]:

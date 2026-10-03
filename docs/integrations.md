@@ -51,6 +51,7 @@ Build them from `std.nn.cache::write_slots`, `write_rows`, and
 | `engine.step()` | admits waiting requests into free rows, runs one decoding step, and returns the requests that finished, one step after they do |
 | `engine.busy` | whether anything is left |
 | `engine.cancel(completion)` | ends a request early (at a stop string, or when its client has gone) and frees its row |
+| `engine.load_weights(model)` | copies a PyTorch model's weights (adapters merged in) into the served model, in place, between runs; compiled passes and CUDA graphs stay |
 
 ### Requests
 

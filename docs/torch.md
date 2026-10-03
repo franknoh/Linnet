@@ -281,6 +281,35 @@ inside. With `position_ids`, a 0 starts a new sequence within a row, as in
 TRL's padding-free batches. Packed lengths round up to a multiple of
 `bucket` (256), so few shapes compile.
 
+### Reinforcement learning
+
+```python
+from linnet.serve import Engine
+from linnet.train.grpo import Prompt, grpo
+
+policy = nest.load(card, backend="torch", device="cuda", compile="inductor", trainable=True)
+engine = Engine(nest.load(card, backend="torch", device="cuda", compile=True))
+optimizer = torch.optim.AdamW([p for p in policy.parameters() if p.requires_grad], lr=1e-6)
+history = grpo(policy, engine, [Prompt(ids, answer) for ids, answer in data], reward,
+               optimizer=optimizer, steps=200, group=8, prompts_per_step=8, max_new_tokens=512)
+```
+
+`grpo` trains with group relative policy optimization (GRPO). Each step:
+
+1. `engine.load_weights(policy)` copies the policy's weights into the
+   engine's model, adapters merged in.
+2. The engine samples `group` completions of each prompt.
+3. `reward(prompt, completion)` scores each one. Its advantage is its reward
+   less its group's mean, over the group's standard deviation.
+4. The policy recomputes the completions' log-probabilities with its
+   `log_probs_packed` entry and takes the clipped policy-gradient step,
+   averaged over every completion token.
+
+`iterations` reuses each step's samples for that many optimizer steps; the
+ratio is then clipped to `1 - clip[0]`, `1 + clip[1]`. `beta` adds a KL
+penalty against `reference`, a frozen copy of the model. `grpo_loss` is the
+loss alone, for another loop. Training runs in one process.
+
 ### Low-rank adapters
 
 ```python
