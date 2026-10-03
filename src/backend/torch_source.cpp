@@ -493,6 +493,7 @@ public:
     std::string gather(const TensorInfo& value) override {
         gather_helper_ = true;
         const std::string name = "v" + std::to_string(next_++);
+        gathered_[name] = value.name;
         body_ +=
             indent_ + name + " = _gather(" + value.name + ", " + torch_dtype(value.dtype) + ")\n";
         return name;
@@ -1793,7 +1794,10 @@ private:
     // at a time; without it, the logits whole, as the bodies compute.
     // The parameter path of `argument` when it names a weight an adapter
     // pattern matches.
-    std::optional<std::string> lora_target(const std::string& argument) const {
+    std::optional<std::string> lora_target(const std::string& name) const {
+        // A sharded weight is used as the value gathered from its parameter.
+        const auto gathered = gathered_.find(name);
+        const std::string& argument = gathered != gathered_.end() ? gathered->second : name;
         if (lora_.empty() || argument.size() < 2 || argument[0] != 'p' ||
             !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
                 return std::isdigit(static_cast<unsigned char>(c)) != 0;
@@ -2145,6 +2149,7 @@ private:
     bool mxfp4_grouped_helper_ = false;              // `_mxfp4_grouped` is used
     bool loss_helper_ = false;                       // `_linear_cross_entropy` is used
     bool gather_helper_ = false;                     // `_gather` joins sharded parameters
+    std::map<std::string, std::string> gathered_;    // a gathered value's parameter argument
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::map<std::string, double> values_;                   // constant name -> folded scalar value
@@ -2175,10 +2180,8 @@ std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                    ? "adapters need the weights unprepared (no --prepare)"
                                    : "adapters need a positive rank");
     }
-    if (!options.fully_shard.empty() && (options.prepare || !options.lora.empty())) {
-        return std::unexpected(options.prepare
-                                   ? "sharded weights are gathered as they are used (no --prepare)"
-                                   : "sharded weights take no adapters");
+    if (!options.fully_shard.empty() && options.prepare) {
+        return std::unexpected("sharded weights are gathered as they are used (no --prepare)");
     }
     TorchTarget target(options);
     return export_graph(module, options, target);

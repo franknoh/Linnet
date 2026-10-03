@@ -400,7 +400,7 @@ class LinnetModule(nn.Module):
         keeps only the paths matching one of its glob patterns: adapters
         alone are `include=["*.lora_a", "*.lora_b"]`. A model split by
         `fully_shard` is gathered a tensor at a time: every process calls
-        this, and the first writes the file."""
+        this, and the first writes the file, whatever it holds."""
         from ..weights import LazyBytes, write_safetensors
 
         if names not in ("checkpoint", "linnet"):
@@ -449,7 +449,7 @@ class LinnetModule(nn.Module):
                     LazyBytes(tensor.numel() * target.itemsize, _bytes_of(tensor, target)),
                 )
             )
-        if split:
+        if split or getattr(self, "fully_sharded", ()):
             import torch.distributed as dist
 
             if dist.get_rank() != 0:

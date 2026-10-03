@@ -86,6 +86,11 @@ loss went from 1.91 to 1.35 in 30 steps.
 | `"inductor"` | 549 ms | 29.8K | 47.5 GiB |
 | `True` | 729 ms | 22.5K | 54.0 GiB |
 
+Add adapters (`add_lora`) before `fully_shard`. They then stay whole on
+every process, with their gradients summed. The weights they adapt do not
+train, so they are split in their own dtype, with no f32 copy. A large
+model's LoRA run fits this way. Merge the saved adapters on one process.
+
 PyTorch's own `fully_shard` cannot shard a Linnet model. It gathers a
 module's parameters in hooks around that module's `forward`, and generated
 code computes every block in one function without calling any of them.
