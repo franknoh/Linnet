@@ -18,48 +18,16 @@ hero:
 
 features:
   - title: Git understands the architecture
-    details: A model is text in one canonical format. A new head count, RoPE base, or block is a diff you review, blame, and tag like any other code.
+    details: A model is text in one canonical format. A new head count, RoPE base or block is a diff you review, blame and tag like code.
   - title: Run the model, not its repository
-    details: Checking and loading read declarative source with the compiler. No modeling code from the model's author is imported, and weights come from SafeTensors.
+    details: The compiler reads declarative source and imports no code from the model's author. It is not a sandbox, but the structure is known before anything runs.
   - title: Portable, not interpreted
-    details: Each backend gets its own native path — generated PyTorch under torch.compile or CUDA graphs, XLA, ONNX Runtime and TensorRT.
+    details: "Each backend gets its native path: generated PyTorch under torch.compile or CUDA graphs, XLA, ONNX Runtime and TensorRT."
   - title: One checked source, many runtimes
-    details: The same file loads in PyTorch, JAX, and ONNX Runtime, deploys to Triton, and exports to vLLM and llama.cpp for the Llama, Qwen2, Qwen3, Phi-3, and GPT-2 families.
+    details: The same file loads in PyTorch, JAX and ONNX Runtime, deploys to Triton, and exports to vLLM and llama.cpp for the Llama, Qwen2, Qwen3, Phi-3 and GPT-2 families.
 ---
 
-## Weights got SafeTensors. Structure deserves the same.
-
-SafeTensors made weights data: a header of names, shapes, and dtypes, then
-bytes, loaded without running pickle. The structure those weights belong to
-is still usually code — a `modeling_*.py` and a `config.json` that mean
-whatever the Python does when it runs.
-
-```text
-Usual distribution
-  structure   config.json + modeling_*.py    Python, executed to find out
-  weights     model.safetensors
-
-Linnet
-  structure   model.linnet                   checked source, read by the compiler
-  weights     model.safetensors              bound by parameter path
-```
-
-A `.linnet` file declares every parameter with its shape and dtype, so the
-checkpoint a model needs is known before any weights are read:
-
-```console
-$ linnet inspect --parameters model.linnet
-examples.model::Model<H, Inner, Layers, Vocab, T>
-  param embedding: Tensor[Vocab, H; T]
-  param layers[*].norm_weight: Tensor[H; T] x Layers
-  ...
-```
-
-Loading binds SafeTensors to those paths. The PyTorch and ONNX loaders check
-each tensor's shape and dtype against the declaration before anything runs,
-and [Nest](#nest) checks every published checkpoint the same way.
-
-## Git should understand your model architecture
+## Git understands it
 
 Two of the differences between the Llama 3.1 8B and Mistral 7B v0.3 cards in
 [Nest](https://nest.franknoh.dev), as `git diff` shows them:
@@ -84,54 +52,14 @@ Two of the differences between the Llama 3.1 8B and Mistral 7B v0.3 cards in
 +MaxSeq = 32768
 ```
 
-`linnet fmt` has one style and no options, so a diff shows what changed in
-the model rather than in its formatting. A head count, a norm, or a block
-swap goes through review like any other change; `git blame` says who moved
-the RoPE base; a tag names an architecture the way it names a release. In CI,
-`linnet check` fails a change that breaks a shape anywhere downstream, and
-the message names the shapes.
+`linnet fmt` has one style and no options, so a diff shows changes to the
+model, not its formatting. In CI, `linnet check` fails a change that breaks a
+shape anywhere downstream and names the shapes.
 
-## Run the model, not its repository
+## Benchmarks
 
-```text
-A custom architecture on the Hub         A Linnet model
-  config.json                              model.linnet
-  modeling_custom.py                       model.safetensors
-  requirements.txt
-  model.safetensors
-  trust_remote_code=True
-```
-
-A custom architecture on the Hub loads by importing Python the repository
-ships (`trust_remote_code=True`); the architecture is whatever that code does.
-A `.linnet` file is declarative. `linnet check` and every loader read it with
-the compiler, which checks shapes, dtypes, parameters, and every operation
-before anything runs, without importing code from the model's author. What
-runs afterwards is the framework you chose, executing what the compiler
-generated from the checked source.
-
-This is not a sandbox: the compiler, the frameworks, and the runtimes are
-ordinary software, and a checked model can still compute the wrong thing. The
-claim is narrower — the structure is known before anything runs, from a file
-that contains nothing else. Importing a model into Linnet from PyTorch or JAX
-traces its Python once, when the source is written; loading the result does
-not.
-
-## Portable does not mean interpreted
-
-```text
-model.linnet
-  └─ linnet check           shapes, dtypes, parameters, operations
-      └─ plan               one checked, typed program
-          ├─ PyTorch         generated source; torch.compile or CUDA graphs
-          ├─ JAX / XLA       StableHLO, or generated jax.numpy
-          ├─ ONNX            ONNX Runtime, TensorRT, Triton
-          └─ exports         transformers checkpoint (vLLM), GGUF (llama.cpp)
-```
-
-The plan is lowered to each backend's own kernels: `F.scaled_dot_product_attention`,
-`F.conv2d`, and `index_put_` in PyTorch, `dot_general` and `convolution` in
-StableHLO, `MatMul` and `Conv` in ONNX. On one H100, in `bf16`:
+Each backend runs the checked program on its own kernels. On one H100, in
+`bf16`:
 
 | | Linnet | Reference stacks |
 | --- | --- | --- |
@@ -142,57 +70,36 @@ StableHLO, `MatMul` and `Conv` in ONNX. On one H100, in `bf16`:
 | gpt-oss 20B, decode one request | 368 tok/s (CUDA graphs) | vLLM 299, transformers 45 |
 | gpt-oss 20B, 256 requests served | 5349 tok/s (CUDA graphs) | vLLM 4313 |
 
-Where Linnet loses — MiniLM and ResNet-50 on ONNX Runtime, and by a few percent serving 7-8 B models and splitting them across GPUs —
-is on the [benchmarks](/benchmarks) page with every other row: 24 models, 528
-measurements.
+Linnet loses on MiniLM and ResNet-50 under ONNX Runtime, and by a few
+percent serving 7-8 B models or splitting them across GPUs. The
+[benchmarks](/benchmarks) page has every row: 24 models, 528 measurements.
 
-## One source, many runtimes
+## Targets
 
-The same checked source is what every target starts from. Not every target
-takes every model:
+- Load in PyTorch, JAX (XLA, `jax.numpy`, Flax NNX) and ONNX Runtime (CUDA,
+  TensorRT).
+- Export StableHLO, ONNX, a Triton Inference Server model, a transformers
+  checkpoint for vLLM, and GGUF for llama.cpp and Ollama.
+- Serve with `linnet.serve`: continuous batching and an OpenAI-compatible
+  HTTP server.
+- Import from PyTorch, JAX, StableHLO and ONNX.
+- Run in ComfyUI with [linnet-comfyui](https://github.com/franknoh/linnet-comfyui).
 
-| Target | How | Scope |
-| --- | --- | --- |
-| PyTorch | `linnet.torch.load`: interpreted, generated source, `torch.compile`, CUDA graphs; training, device placement, tensor parallelism | |
-| JAX | `linnet.jax.load` (XLA), `load_source` (`jax.numpy`, `jax.grad`), `load_nnx` (Flax NNX) | |
-| StableHLO | `linnet stablehlo` | static shapes |
-| ONNX Runtime | `linnet onnx`, `linnet.onnx.export_model` and `load_model`, CUDA or TensorRT | static shapes |
-| Triton Inference Server | `linnet.triton`: a model repository over ONNX or a Python backend | ONNX: entries without state |
-| vLLM and other transformers-checkpoint servers | `linnet.hf`: a transformers checkpoint | Llama, Qwen2, Qwen3, Phi-3, and GPT-2 families |
-| llama.cpp, Ollama | `linnet.gguf`: GGUF and a Modelfile | the same families |
-| ComfyUI | [linnet-comfyui](https://github.com/franknoh/linnet-comfyui) custom nodes | PyTorch |
-| Serving | `linnet.serve`: continuous batching over PyTorch, JAX, or ONNX, with sampling and an OpenAI-compatible HTTP server | decoders with `prefill_slots` and `decode_rows` |
-
-Models also come the other way: `torch.export`, `jax.export`, StableHLO text,
-and ONNX graphs import into `.linnet` source. The
-[compatibility matrix](/compatibility) lists what each path supports.
+The [compatibility matrix](/compatibility) lists the entry points and limits
+of each target.
 
 ## Nest
 
 [Nest](https://nest.franknoh.dev) is a verified registry of checked model
-architectures and SafeTensors checkpoints. A card is `.linnet` source and a
-`nest.toml` naming its generics, license, links, and the Hub repository its
-SafeTensors live in. CI checks every card:
+architectures and SafeTensors checkpoints, 24 models from MiniLM to gpt-oss
+20B. CI checks that every card compiles, that its published checkpoint
+matches every parameter's shape and dtype, and that it exports to StableHLO,
+ONNX, PyTorch and JAX. `linnet.nest.load` loads a card by name.
 
-- the source compiles and the card's generics bind;
-- the published checkpoint's SafeTensors headers, read with two range
-  requests and nothing downloaded, match every parameter's shape and dtype;
-- the model exports to StableHLO, ONNX, PyTorch, and JAX;
-- the card has its README, license, and links.
+## The language
 
-```python
-from linnet import nest
-model = nest.load("gpt2")     # source, generics, and weights from the registry
-```
-
-It holds 24 models, from MiniLM to gpt-oss 20B, each measured against the
-stacks it usually runs on.
-
-## How it works
-
-Underneath is a small typed tensor language. Every dimension is a symbol,
-shapes and dtypes are checked before anything runs, and `where` clauses carry
-the constraints a block relies on:
+Linnet is a small typed tensor language. Every dimension is a symbol, and
+`where` clauses state the constraints a block relies on:
 
 ```linnet
 module tiny
@@ -228,34 +135,20 @@ fn heads<B: Dim, S: Dim, N: Dim, D: Dim, T: Float>(
 }
 ```
 
-The slice bounds, the `reshape`, and the head width `H / Heads` follow from
+The slice bounds, the `reshape` and the head width `H / Heads` follow from
 `H % Heads == 0`. Change `3 * H` to `2 * H` and `linnet check` points at the
 slice that no longer fits.
 
-| | |
-| --- | --- |
-| Language | blocks, generics over dimensions and dtypes, `where` constraints, index notation, `static for` and `while`, `state` for caches |
-| Standard library | linear, attention, norms, RoPE, KV caches, convolution, pooling, quantized linears, a counter-based PRNG — all written in Linnet |
-| Compiler | C++23, no external dependencies; Core IR, an optimizer, and a JSON [plan](/docs/plan-format) for materializers |
-| Tooling | `linnet fmt`, a language server for VS Code and Neovim, architecture diagrams, `linnet explain` for kernel choices |
-| Specification | a normative [spec](/spec/00-overview) and grammar, with executable spec tests |
+The compiler is C++23 with no external dependencies, and the standard
+library is written in Linnet. Not in the language: Python inside the model,
+data-dependent shapes, hidden mutation, tensor data in source.
 
-Not in the language: Python inside the model, data-dependent shapes, hidden
-mutation, tensor data in source. Tokenizers, data loading, optimizers, and
-serving policy stay in the framework.
+## Documentation
 
-## Getting started
-
-```bash
-linnet check model.linnet        # shapes, dtypes, parameters — nothing runs
-```
-
-```python
-from linnet.torch import load
-
-model = load("model.linnet", generics={"H": 512, "Heads": 8}, weights="model.safetensors")
-```
-
-[Installation](/guide/installation) sets up the compiler and the Python
-package, and [Coming from PyTorch](/guide/from-pytorch) maps what you already
-write onto Linnet.
+- [Installation](/guide/installation) and the
+  [Quickstart](/docs/getting-started)
+- [Coming from PyTorch](/guide/from-pytorch)
+- [Language tour](/docs/language-tour) and
+  [specification](/spec/00-overview)
+- [Plan format](/docs/plan-format) for materializers
+- [Benchmarks](/benchmarks) and [compatibility](/compatibility)

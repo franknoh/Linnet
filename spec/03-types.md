@@ -1,8 +1,10 @@
-# 3. Type System
+# 3. Type system
+
+Linnet's types are scalars, tensors, tuples, structs, enums, optionals, and structural arrays.
 
 ## 3.1 Scalar types
 
-Initial scalar types:
+Scalar types:
 
 ```text
 bool
@@ -13,11 +15,11 @@ u8 u16 u32 u64
 f16 bf16 f32 f64
 ```
 
-Low-bit and floating-point extensions such as `i4`, `u4`, `f8e4m3`, and `f8e5m2` are reserved for future versions.
+Types such as `i4`, `u4`, `f8e4m3`, and `f8e5m2` are reserved for future versions.
 
 ## 3.2 Tensor type syntax
 
-Tensor types separate shape from element dtype with `;`:
+`;` separates a tensor type's shape from its element dtype:
 
 ```text
 Tensor[B, S, H; bf16]
@@ -25,19 +27,19 @@ Tensor[M, N; f32]
 Tensor[H; i32]
 ```
 
-A tensor rank is the number of dimensions before `;` after shape-pack expansion.
+A tensor's rank is the number of dimensions before `;`, after shape-pack expansion.
 
-Zero-rank tensor syntax is reserved: `Tensor[; f32]` is an error, and scalar values use scalar types. Where a backend has no scalars of its own, an entry's scalar inputs and results cross its boundary as rank-zero tensors.
+Zero-rank tensor syntax is reserved: `Tensor[; f32]` is an error; scalar values use scalar types. Where a backend has no scalars, an entry's scalar inputs and results cross its boundary as rank-zero tensors.
 
 ## 3.3 Shape packs
 
-A generic shape pack is declared:
+A generic shape pack is declared as:
 
 ```text
 *S: Shape
 ```
 
-and used:
+and used as:
 
 ```text
 Tensor[*S, H; T]
@@ -47,7 +49,7 @@ A shape pack may be empty.
 
 ## 3.4 Generic kinds
 
-The initial language provides built-in generic kinds and constraints:
+Built-in generic kinds and constraints:
 
 ```text
 Dim
@@ -74,7 +76,7 @@ type Hidden<B: Dim, S: Dim, H: Dim, T: Float = bf16> =
     Tensor[B, S, H; T]
 ```
 
-Aliases are transparent; they do not create nominal runtime types.
+Aliases are transparent: they create no nominal type.
 
 ## 3.6 Tuples
 
@@ -91,7 +93,7 @@ let (q, k) = rope(q, k, positions)
 
 ## 3.7 Structs
 
-Structs provide nominal aggregate types:
+Structs are nominal aggregate types:
 
 ```text
 struct KVPair<K: DType, V: DType> {
@@ -100,9 +102,9 @@ struct KVPair<K: DType, V: DType> {
 }
 ```
 
-Struct fields are immutable values in the initial language version. A field is read with `value.field`.
+Struct fields are immutable and read with `value.field`.
 
-The initial language version has no expression that constructs a struct value; a struct name is not callable. Construction syntax is reserved for a future version, so struct types are currently useful only as declared types.
+No expression constructs a struct value, and a struct name is not callable. Construction syntax is reserved for a future version.
 
 ## 3.8 Enums
 
@@ -115,7 +117,7 @@ enum MaskKind {
 }
 ```
 
-A variant is written `MaskKind.Causal`. A `match` over an enum names its variants in the arms:
+A variant is written `MaskKind.Causal`; `match` arms name the variants:
 
 ```text
 const MASK: MaskKind = MaskKind.Causal
@@ -126,9 +128,9 @@ let scores = match MASK {
 }
 ```
 
-Every arm is checked. When the scrutinee is a constant, as here, the choice is made when the program is compiled and a backend evaluates only the chosen arm.
+Every arm is checked. When the scrutinee is a constant, the arm is chosen at compile time and a backend evaluates only that arm.
 
-Payload-carrying enum variants are reserved for a future version. `Option<T>` behavior is provided directly through `T?`.
+Payload-carrying variants are reserved for a future version.
 
 ## 3.9 Optional values
 
@@ -156,30 +158,26 @@ match bias {
 
 ## 3.10 Structural arrays
 
-Compile-time structural arrays are written:
+Compile-time structural arrays hold repeated sub-blocks for `static for` (§8.2):
 
 ```text
 [DecoderLayer<Hidden, T>; Layers]
 ```
 
-They are not runtime tensors. They are intended for repeated sub-block declarations and `static for` traversal. A structural array is indexed with exactly one compile-time integer, as in `layers[0]`.
+A structural array is not a runtime tensor. It is indexed with exactly one compile-time integer, as in `layers[0]`.
 
 ## 3.11 Dtype conversion
 
-There is no implicit tensor-to-tensor dtype promotion in the strict language core.
-
-This is an error:
+Tensor dtypes are never promoted implicitly. This is an error:
 
 ```text
 Tensor[B, H; bf16] + Tensor[B, H; f32]
 ```
 
-The author must explicitly convert:
+Convert explicitly:
 
 ```text
 cast<f32>(x) + y
 ```
 
-Contextual numeric literals remain allowed as described in the lexical specification.
-
-This rule is deliberately stricter than NumPy, PyTorch, and many host frameworks. Backends MUST preserve Linnet semantics rather than inheriting framework-specific promotion behavior.
+Backends MUST preserve Linnet semantics, not a framework's promotion behavior.

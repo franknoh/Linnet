@@ -1,8 +1,8 @@
 # Coming from PyTorch
 
 Three things change: shapes are checked before anything runs, source never
-carries weights, and one file runs in PyTorch, JAX, XLA, and ONNX Runtime.
-The operations, the parameter names, and the weights on disk stay the same.
+carries weights, and one file runs in PyTorch, JAX, XLA and ONNX Runtime.
+Operations, parameter names and weights on disk stay the same.
 
 ## The same block, twice
 
@@ -52,11 +52,11 @@ where
 
 | PyTorch | Linnet |
 | --- | --- |
-| `b, s, h = x.shape` at runtime | `B`, `S`, `H` are generics; every result shape is derived from them |
-| `.view(..., -1)` | `reshape` to a shape the checker proves from `H % Heads == 0` |
+| `b, s, h = x.shape` at runtime | `B`, `S`, `H` are generics; every shape derives from them |
+| `.view(..., -1)`: a wrong divisor reshapes silently | `reshape` to a shape proved from `H % Heads == 0`, or rejected |
 | `__init__` builds submodules | `sub norm: RmsNorm<H, T>` declares one; nothing allocates |
 | `state_dict()` keys | the same names: `norm.weight`, `qkv.weight`, `out.weight` |
-| `F.scaled_dot_product_attention` | `attention` from `stdlib/`, itself readable Linnet |
+| `F.scaled_dot_product_attention` | `attention` from `stdlib/`, written in Linnet |
 
 ## Running it
 
@@ -71,17 +71,12 @@ model = load("src/block.linnet",
              compile="inductor")               # generated source under torch.compile
 ```
 
-`numerics="fast"` goes one step further and runs softmax, normalization, and
-attention in the input dtype, as PyTorch reference models do on `bf16`;
-`"equivalent"` accumulates them in f32 like the canonical definitions.
+`numerics="fast"` runs softmax, normalization and attention in the input
+dtype, as PyTorch reference models do on `bf16`. `trainable=True` lets any
+`torch.optim` optimizer train the model. See [PyTorch](/docs/torch) and
+[JAX and Flax](/docs/jax).
 
-`print(model)` shows a module tree with the Linnet block names and shapes;
-`model.state_dict()` uses the Linnet paths, so checkpoints move in both
-directions. `trainable=True` turns on gradients and any `torch.optim`
-optimizer trains the model. The [PyTorch](/docs/torch) page has the details;
-[JAX and Flax](/docs/jax) covers `load`, `load_source`, and NNX.
-
-## Bringing a model over
+## Importing a model
 
 ```python
 from linnet.torch import export_linnet
@@ -89,25 +84,17 @@ from linnet.torch import export_linnet
 export_linnet(module, (example_input,), output="src/model.linnet", weights="weights/")
 ```
 
-`export_linnet` traces with `torch.export` and writes Linnet: children become
-`sub`s, `ModuleList`s become sub arrays, parameters keep their names, and the
-decompositions PyTorch produces (softmax, layer norm, RMS norm, GELU, SiLU)
-come back as library calls. The result is formatted and checked, or the
-export fails naming the operation it could not express. ONNX models import
-with `linnet.onnx.import_onnx`, JAX functions with `linnet.jax.export_linnet`.
+`export_linnet` traces with `torch.export` and writes checked Linnet that
+keeps the parameter names, or fails naming the operation it cannot express.
+For ONNX and JAX, use `linnet.onnx.import_onnx` and `linnet.jax.export_linnet`.
 
 ## What you get
 
 | | `nn.Module` | Linnet |
 | --- | --- | --- |
 | Shape errors | at runtime, on the first batch that reaches them | at check time, both shapes named |
-| Head split `H / Heads` | `view(..., -1)`, a wrong divisor reshapes silently | proved from `H % Heads == 0` or rejected |
 | Loading a model | runs the model's Python; `pickle` in `.pt` files | `linnet check` runs nothing; weights are SafeTensors by path |
-| Code and weights | entangled or by convention | separate by construction |
-| Other frameworks | rewrite or export a frozen graph | same source: `linnet stablehlo`, `linnet onnx`, `linnet.jax.load` |
-| Library code | opaque kernels | source in `stdlib/`, checked like yours |
-| Performance | native kernels | the same kernels from generated source, replayable as CUDA graphs, or XLA (Llama 3.1 8B decodes one request at 169 tok/s on an H100, transformers compiled at 110); see [Benchmarks](/benchmarks) |
-| Refactoring | search and hope | rename through the language server; every use is typed |
+| Performance | native kernels | the same kernels from generated source, replayable as CUDA graphs, or XLA (Llama 3.1 8B decodes one request at 167 tok/s on an H100, transformers compiled at 110); see [Benchmarks](/benchmarks) |
 
 The trade: no Python inside the model and no data-dependent shapes. Loops
 are `while` over scalars or compile-time `static for`.
@@ -117,15 +104,13 @@ are `while` over scalars or compile-time `static for`.
 | PyTorch | Linnet |
 | --- | --- |
 | `nn.Module` subclass | `block` |
-| `__init__` creating submodules | `sub name: Block<...>` |
 | `nn.Parameter` | `param name: Tensor[...; T]` |
 | `register_buffer` | `buffer`, or `state` for caches the block updates |
 | `forward` | `pub entry forward<...>(...)`; any number of entries |
 | `nn.ModuleList` | `sub layers: [Layer<...>; N]` and `static for layer in layers` |
 | `x @ w.T`, `einsum` | `matmul`, or index notation `sum[k] x[i, k] * w[j, k]` |
 | `F.softmax`, `F.layer_norm`, ... | `std.nn.softmax::softmax`, `std.nn.norm::layer_norm`, ... |
-| `state_dict()` keys | parameter paths (`linnet inspect --parameters`) |
 | `torch.export`, ONNX export | `linnet stablehlo`, `linnet onnx`, `linnet torch`, `linnet plan` |
 
-Next: the [Quickstart](/docs/getting-started) writes and runs a first model;
-the [Language tour](/docs/language-tour) covers the rest.
+Next: the [Quickstart](/docs/getting-started), then the
+[Language tour](/docs/language-tour).

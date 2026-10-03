@@ -1,16 +1,14 @@
-# 10. External Weights and Binding Manifests
+# 10. Weights and bindings
+
+Weights live outside source and bind to parameters through a declarative manifest.
 
 ## 10.1 Separation
 
-Linnet source describes structure and computation. Tensor payloads live in external artifacts.
-
-SafeTensors is a recommended first-class weight format because it naturally separates named tensor metadata and raw tensor data, but the Linnet language is not semantically tied to one storage format.
+Linnet source describes structure and computation; tensor payloads live in external artifacts. SafeTensors is a recommended first-class weight format, but the language is not semantically tied to one storage format.
 
 ## 10.2 Binding manifest
 
-A binding manifest maps canonical Linnet parameter paths to external tensor keys. A path absent from the manifest binds to the tensor of the same name.
-
-The representation Linnet's tools read is a flat JSON object from expanded parameter paths (one entry per element of a block array) to tensor keys:
+A binding manifest maps canonical parameter paths (§9.5) to external tensor keys. A path absent from the manifest binds to the tensor of the same name. Linnet's tools read a flat JSON object from expanded parameter paths, one per block-array element, to tensor keys:
 
 ```json
 {
@@ -20,7 +18,7 @@ The representation Linnet's tools read is a flat JSON object from expanded param
 }
 ```
 
-A richer serialization of the same abstract model, naming several sources and templating array indices, MAY be supported, for example as YAML:
+A richer serialization of the same model, naming several sources and templating array indices, MAY be supported, for example as YAML:
 
 ```yaml
 sources:
@@ -38,32 +36,14 @@ bindings:
     key: "model.layers.{i}.self_attn.q_proj.weight"
 ```
 
-The reference implementation reads only the JSON form.
+## 10.3 Manifests are not programs
 
-## 10.3 Binding manifests are not programs
-
-Binding manifests MUST NOT contain executable expressions, arbitrary transformations, imports, shell interpolation, Python tags, custom YAML object tags, callbacks, or conditions.
-
-Permitted behavior is limited to declarative source selection and key mapping.
-
-Tensor transformations such as transpose, reshape, dequantization, or concatenation belong in Linnet computation semantics or a separately specified artifact-conversion tool, not in the binding manifest.
+A binding manifest only selects sources and maps keys. It MUST NOT contain executable expressions, arbitrary transformations, imports, shell interpolation, Python tags, custom YAML object tags, callbacks, or conditions. Tensor transformations (transpose, reshape, dequantization, concatenation) belong in Linnet computation or a separate conversion tool.
 
 ## 10.4 Safe YAML subset
 
-If YAML is accepted, implementations MUST parse it in a safe mode that permits only ordinary scalar, mapping, and sequence nodes. Arbitrary tagged object construction is forbidden.
-
-Any serialization, JSON or YAML, represents the same abstract binding model.
+Implementations that accept YAML MUST parse it in a safe mode that permits only scalar, mapping, and sequence nodes. Arbitrary tagged object construction is forbidden.
 
 ## 10.5 Validation
 
-When weight metadata is available, a binder SHOULD validate:
-
-- required key existence;
-- duplicate bindings;
-- tensor rank;
-- concrete dimensions that are known;
-- dtype compatibility;
-- optional parameter absence;
-- unexpected external tensors according to configured strictness.
-
-Shape or dtype mismatch is an error by default. The reference binders ignore external tensors that no parameter names.
+When weight metadata is available, a binder SHOULD validate required key existence, duplicate bindings, tensor rank, known concrete dimensions, dtype compatibility, optional parameter absence, and unexpected external tensors according to configured strictness. Shape or dtype mismatch is an error by default.

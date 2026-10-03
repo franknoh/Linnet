@@ -1,12 +1,15 @@
 # JAX and Flax
 
-`linnet.jax` runs a Linnet entry in JAX three ways and exports JAX
-functions as Linnet. Like the PyTorch adapter, it has no model-specific
-code.
+`linnet.jax` runs Linnet entries in JAX and Flax and exports JAX functions
+as Linnet source.
+
+## Install
 
 ```bash
 cd python/linnet && uv sync --extra flax    # or: pip install ".[flax]"
 ```
+
+## Loaders
 
 | Function | Runs the entry as | Differentiable |
 | --- | --- | --- |
@@ -14,7 +17,7 @@ cd python/linnet && uv sync --extra flax    # or: pip install ".[flax]"
 | `load_source` | generated `jax.numpy` code under `jax.jit` | yes |
 | `load_nnx` / `to_nnx` | a Flax NNX module over either of the above | with `load_source` |
 
-## load
+## Load an entry
 
 ```python
 import jax
@@ -24,26 +27,15 @@ f = load("src/model.linnet", generics={...}, weights="weights/", std_root="stdli
 logits = jax.jit(f)(tokens)
 ```
 
-Each new combination of input shapes asks the compiler for the entry's
-StableHLO with those dimensions bound (`linnet stablehlo`), checks that every
-parameter it names is in the weights, and wraps the module as an `Exported`
-that runs on any XLA backend. Weights are device arrays passed as arguments,
-bound by the `linnet.path` names. Each optional parameter is compiled in
-when the weights have it and out when they do not, one parameter at a time.
+`load` compiles the entry to StableHLO per combination of input shapes, for
+any XLA backend. Weights bind by parameter path; an
+optional parameter is compiled in only if the weights have it.
 
-An entry that touches `state` is called with `state=` and returns the new
-state: `out, state = f(x, state=state)`, both mappings by parameter path,
-missing inputs starting at zeros.
+An entry that touches `state` takes `state=` and returns the new state:
+`out, state = f(x, state=state)`, both mappings by parameter path. Missing
+state starts at zeros.
 
-`numerics` defaults to `"fast"`: layer normalization and attention
-accumulate in the input dtype, as Flax reference models do on `bf16`.
-`"equivalent"` keeps the f32 accumulation the canonical bodies specify, and
-`"exact"` keeps every canonical body. Both also ask XLA for f32 products
-(matrix products, convolutions, attention) at full precision, where its
-default on an NVIDIA GPU since Ampere is TF32, with errors near 1e-3;
-`"fast"` leaves the default. All three loaders take it.
-
-## load_model
+## Load a model
 
 ```python
 from linnet.jax import load_model
@@ -54,23 +46,32 @@ logits = model.run_entry("prefill", [tokens, jnp.int32(0)])
 logits = model.run_entry("decode", [token, jnp.int32(position)])
 ```
 
-`load` is one entry; `load_model` is every entry of the root block over one
-copy of the weights on the device, with the block's `state` (a decoder's KV
-caches) kept there between calls in `model.state`. Each state an entry
-replaces is donated to it, so XLA writes the new cache into the old one's
-memory. The entries run as generated JAX source (`generated=False` runs
-the StableHLO export instead). `linnet.serve.Engine` takes such a model for
-continuous batching.
+`load_model` loads every entry of the root block over one copy of the
+weights. The block's `state`, such as KV caches, stays on the device in
+`model.state` and is updated in place. Entries run as generated JAX
+source; `generated=False` runs StableHLO instead. `linnet.serve.Engine`
+takes such a model for continuous batching.
 
-`load_model(..., mesh=2)` (or a one-axis `jax.sharding.Mesh`) runs the model
-tensor-parallel: each weight is placed split over the devices as
-`linnet.parallel` says -- projections into heads and feed-forward widths by
-output, projections back by input, everything else copied -- and XLA
-partitions every entry, adding the collectives the split needs. KV caches
-are split by heads. `rules={"*.lm_head.weight": 0}` adds or overrides rules by
-path pattern.
+## Numerics policy
 
-## load_source and training
+| `numerics=` | Effect |
+| --- | --- |
+| `"fast"` (default) | layer normalization and attention accumulate in the input dtype, as Flax reference models do on `bf16` |
+| `"equivalent"` | f32 accumulation as the canonical bodies specify, and f32 products at full precision |
+| `"exact"` | every canonical body, and f32 products at full precision |
+
+`"fast"` keeps XLA's default for f32 products, which on an NVIDIA GPU
+since Ampere is TF32, with errors near 1e-3. Every loader takes
+`numerics=`.
+
+## Multiple devices
+
+`load_model(..., mesh=2)`, or a one-axis `jax.sharding.Mesh`, runs the
+model tensor-parallel, splitting weights and KV caches by the
+[`linnet.parallel` rules](torch.md#tensor-parallelism).
+`rules={"*.lm_head.weight": 0}` adds or overrides rules by path pattern.
+
+## Training
 
 ```python
 from linnet.jax import load_source
@@ -84,19 +85,15 @@ def loss(params):
 grads = jax.grad(loss)(f.parameters)                 # ordinary JAX autodiff
 ```
 
-`load_source` compiles each entry with `linnet jax` instead: a module of
-straight-line `jax.numpy` (see `f.generated_source()`), run under `jax.jit`.
-Because it is plain JAX, `jax.grad`, `jax.vmap`, and any optimizer over the
-`f.parameters` dict work. `while` becomes `jax.lax.while_loop`, library
-operations become `jax.nn` calls, and state is threaded as with `load`. The
-generated module turns on `jax_enable_x64`, which Linnet's `i64` needs.
+`load_source` runs each entry as generated `jax.numpy` under `jax.jit`
+(see `f.generated_source()`), so `jax.grad`, `jax.vmap` and any optimizer
+over `f.parameters` work. It turns on `jax_enable_x64` for Linnet's `i64`.
 
-Mixed precision takes f32 master parameters and computes in bf16:
-`load_source(..., generics={..., "T": "bf16"}, cast_dtype=True)` casts the
-parameters given to `apply` to `bf16` on every call, so `jax.grad` returns
-gradients in f32 for an f32 optimizer state. `numerics="equivalent"` keeps
-softmax, normalization, and attention accumulating in f32.
-## load_function
+For mixed precision, `load_source(..., generics={..., "T": "bf16"}, cast_dtype=True)`
+keeps f32 parameters and casts them to `bf16` on every call, so gradients
+come back in f32.
+
+## Functions
 
 ```python
 from linnet.jax import load_function
@@ -109,15 +106,11 @@ def loss(params):
 grads = jax.grad(loss)(f.parameters)
 ```
 
-An `entry` declared at module level, outside any block, is a function of
-its inputs alone: a loss, a preprocessing step, a reward
-(`examples/09-functions`). `load_function` runs one as `jax.numpy` code
-that `linnet jax` generates for each binding of its generics, under
-`jax.jit`. The generics are bound from the inputs' shapes and dtypes, also
-inside `jax.grad`, `jax.jit`, and `jax.vmap`, which hand the function the
-abstract arrays they trace; one the inputs leave open is given by name
-(`positions(offset, N=8)`). `load_function` turns on `jax_enable_x64`, so
-`int64` inputs made before the first call stay 64-bit.
+`load_function` runs a module-level `entry`, a function of its inputs
+alone such as a loss (`examples/09-functions`), under `jax.jit`. Generics bind from the inputs' shapes and dtypes, also under
+`jax.grad`, `jax.jit` and `jax.vmap`. Name any the inputs leave open:
+`positions(offset, N=8)`. It turns on `jax_enable_x64`, so `int64` inputs
+made before the first call stay 64-bit.
 
 ## Flax NNX
 
@@ -153,15 +146,13 @@ Model( # Param: 38,570,496 (77.1 MB)
         ...
 ```
 
-The block hierarchy becomes nested `nnx.Module`s named after the blocks:
-`param` is an `nnx.Param`, `buffer` an `nnx.Variable`, `sub` a child module
-or an `nnx.List`. State paths are the parameter paths (`layers/0/attention/
-q_proj/weight`), so `nnx.split`, checkpoints, and sharding see the same
-names as every other backend. Absent optional parameters are `None`. Calling
-the module runs the entry on the arrays it currently holds; built on
-`load_source` (`to_nnx(load_source(...))`), `nnx.grad` trains it.
+Blocks become nested `nnx.Module`s: `param` is an `nnx.Param`, `buffer` an
+`nnx.Variable`, `sub` a child module or an `nnx.List`, and an absent
+optional parameter `None`. State paths are the parameter paths
+(`layers/0/attention/q_proj/weight`). To train with `nnx.grad`, build it
+with `to_nnx(load_source(...))`.
 
-## Exporting a JAX function
+## JAX to Linnet
 
 ```python
 from linnet.jax import export_linnet
@@ -176,25 +167,22 @@ export_linnet(
 )
 ```
 
-`export_linnet` captures `forward` with `jax.export` and translates the
-StableHLO into a plan: the parameter pytree becomes the block hierarchy
-(dict keys become members, lists and `0..n-1` dicts become sub arrays, so
-`layers.0.q` is the pytree path), `forward` becomes the root `entry`, and
-each operation becomes the primitive or index notation with the same meaning
-(`dot_general` is a `sum` comprehension, `reduce` a comprehension over the
-kept axes, row `gather` an element lookup). `import_stablehlo(text, params)`
-does the same for StableHLO text produced elsewhere.
+`export_linnet` captures `forward` with `jax.export` and writes Linnet
+source. `import_stablehlo(text, params)` does the same for StableHLO text
+from elsewhere.
 
-Decompositions JAX produces are recognized and emitted as library calls:
-`jax.nn.softmax`, `sigmoid`, `silu`, the tanh `gelu`, and `x * rsqrt(mean(x
-* x) + eps) * w` as `rms_norm`. The match is structural; anything else, and
-anything dropped (the NaN guard of `jnp.take`, which Linnet does not need),
-is listed in `ExportResult.notes`. Unmapped operations stop the export by
-name.
+| JAX | Linnet |
+| --- | --- |
+| parameter pytree | blocks: dict keys become members, lists and `0..n-1` dicts become sub arrays (`layers.0.q` is the pytree path) |
+| `forward` | the root `entry` |
+| operations | primitives or index notation |
+| `jax.nn.softmax`, `sigmoid`, `silu`, tanh `gelu`, `x * rsqrt(mean(x * x) + eps) * w` | library calls (`rms_norm` for the last) |
+
+`ExportResult.notes` lists what was recovered or dropped. An unmapped
+operation stops the export with its name.
 
 ## Tests
 
-`tests/` export a `jnp` transformer, load it back, and compare under
-`jax.jit`; run the hand-written examples through `load` and `load_source`
-against `jnp` references and the StableHLO path; thread state and `while`
-loops; and train an MLP with `jax.grad` and an NNX module with `nnx.grad`.
+The tests round-trip a `jnp` transformer, check `load` and `load_source`
+against `jnp` references, thread state and `while` loops, and train with
+`jax.grad` and `nnx.grad`.

@@ -1,9 +1,9 @@
 # Plan format
 
-`linnet plan` prints the root block as one JSON document. A materializer
-reads it to build a module, bind weights, and run entries. The plan contains
-no tensor data. With `--functions` it is a plan of the module-level entries
-instead: `root` is `null` and the manifest is empty. Version 1:
+`linnet plan` prints the root block as a JSON plan, version 1, from which
+a materializer builds a module. It holds no tensor data.
+
+## Document
 
 ```text
 { "version": 1,
@@ -22,14 +22,17 @@ instead: `root` is `null` and the manifest is empty. Version 1:
 
 | Field | Meaning |
 | --- | --- |
-| `module` | the root file's module path; function names are `module::name`, methods `module::Block.method` |
-| `manifest` | every parameter, buffer, and state member of the instantiated hierarchy; `[*]` in a path stands for each element of a sub array and `repeat` lists those lengths |
+| `module` | the root file's module path; functions are `module::name`, methods `module::Block.method` |
+| `manifest` | every parameter, buffer and state of the instantiated hierarchy; `[*]` in a path is each element of a sub array, whose lengths `repeat` lists |
 | `states` | the state members a function reads or writes, directly or through calls, relative to its block |
-| `constants` | module-level `const` items as regions yielding one value; `contextual` marks one declared without a type |
+| `constants` | module-level `const` items, each a region yielding one value; `contextual` marks an untyped declaration |
+
+`--functions` prints the module-level entries, with `root` `null` and an
+empty `manifest`.
 
 ## Dimensions and types
 
-| | |
+| Name | Form |
 | --- | --- |
 | `generic` | `{ "name", "kind": "dim" \| "shape" \| "dtype", "sym" \| "var", "default"? }`; a dtype generic also has `"class"` |
 | `dim` | an integer, `{ "sym", "name" }`, `{ "packsize", "name" }`, or `{ "op": "add" \| "mul" \| "floordiv" \| "mod" \| "min" \| "max", "args": [dim] }` |
@@ -37,20 +40,23 @@ instead: `root` is `null` and the manifest is empty. Version 1:
 | `type` | `{ "kind": "scalar", "dtype" }`, `{ "kind": "tensor", "shape": [unit], "dtype" }`, `tuple`, `optional`, `array`, or `block` / `struct` / `enum` with `name`, `module`, `args` |
 | dtype | a name such as `"bf16"`, or `{ "var", "name" }` |
 
-Dimensions stay symbolic. A materializer binds the root block's generics,
-then each block instance's, then an entry's from its inputs, and evaluates
-the expressions.
+Bind the root block's generics, then each block instance's, then an
+entry's from its inputs, and evaluate the expressions.
 
 ## Regions and operations
 
-| | |
+| Name | Form |
 | --- | --- |
 | `region` | `{ "args": [value], "ops": [op] }`; `value` is `{ "id", "name", "type" }` |
 | `op` | `{ "kind", "operands": [id], "results": [value], "attrs": {...}, "regions": [region] }` |
 
 Kinds and attributes follow the Core IR operations in
-`include/linnet/ir/ir.hpp`. `comprehension` and `reduce` list their `indices`
-with domains; `slice` lists per-axis `start`, `stop`, `step`, `squeeze` (or
-`whole` for a shape pack); calls carry `callee`, `substitution`, and
-`generics` in the callee's declaration order; `state.read` and `state.write`
-name their member; `while` has a condition region and a body region.
+`include/linnet/ir/ir.hpp`:
+
+- `comprehension`, `reduce`: `indices` with domains
+- `slice`: per-axis `start`, `stop`, `step`, `squeeze` (or `whole` for a
+  shape pack)
+- calls: `callee`, `substitution`, and `generics` in the callee's
+  declaration order
+- `state.read`, `state.write`: the member
+- `while`: a condition region and a body region

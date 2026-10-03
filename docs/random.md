@@ -1,8 +1,8 @@
 # Randomness
 
-`std.random` is a counter-based PRNG written in Linnet. There is no random
-primitive: a key is data (`Tensor[2; i64]`, two 32-bit words), Threefry-2x32
-turns keys and counters into bits, and every backend draws the same numbers.
+`std.random` draws the same random numbers on every backend from keys you
+pass; there is no hidden generator, so the same key reproduces a run. A key
+is a `Tensor[2; i64]` of two 32-bit words, expanded with Threefry-2x32.
 
 ```linnet
 use std.random::{categorical, fold_in, normal, split, uniform}
@@ -26,17 +26,6 @@ let token = categorical(key, logits)  // one draw per row, proportional to exp(l
 ## Agreement with JAX
 
 For a key from `jax.random.key(seed)` (`key_data` gives the two words),
-`split`, `bits`, `uniform`, and `fold_in` return exactly what `jax.random`
-returns under its default partitionable Threefry layout. The test suite
-checks this through the PyTorch materializer. `normal` and `categorical` use
-the same bits with their own arithmetic, so they agree across Linnet backends
-but not with JAX's versions.
-
-## Why a library
-
-The arithmetic is 64-bit integers masked to 32 bits with `&`, `|`, `^`,
-`shl`, and `shr`, so it runs wherever integer tensors do: the PyTorch
-interpreter and generated code, XLA, ONNX Runtime. Keys are threaded
-explicitly, so there is no hidden generator, and reproducing a run means
-passing the same key. The Llama example's `sample<Steps>(token, pos, key,
-temperature)` entry splits one key per step.
+`split`, `bits`, `uniform`, and `fold_in` match `jax.random` exactly under
+its default partitionable Threefry layout. `normal` and `categorical` agree
+across Linnet backends but not with JAX.

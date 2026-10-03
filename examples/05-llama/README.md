@@ -1,43 +1,9 @@
 # Llama
 
-A Llama-style decoder with grouped-query attention, rotary positions computed
-from `iota`, SwiGLU, and six entries that show most of the language: a full
-forward pass, last-position logits, a KV-cache `decode` step with `state`
-members, greedy `generate` with a compile-time range loop, keyed `sample`
-with `std.random`, and `generate_until`, a runtime `while` loop that stops at
-an end token. It is the model the benchmarks measure.
-
-## Grouped-query attention
-
-`GroupedQueryAttention<H, Heads, KvHeads, Batch, MaxSeq, T>` projects
-`KvHeads` key/value heads and repeats each for `Heads / KvHeads` query heads
-with `broadcast_to` and a reshape — a `where` clause states the divisibility
-the reshapes rely on.
-
-## State: the KV cache
-
-```linnet
-state cache_k: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
-state cache_v: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
-```
-
-`decode(x, pos)` writes the new key and value at `pos` with
-`std.nn.cache::write_at` and attends over positions `<= pos`. The runtime keeps the caches
-between calls (PyTorch: buffers with `reset_state()`); graph exports thread
-them in and out as extra arguments and results.
-
-## Loops
-
-`generate<Steps>` is `static for i in 0..Steps` — expanded at compile time,
-so the whole generation is one graph. `generate_until<MaxNew>` is `while
-running && count < MaxNew`, a runtime loop over scalar carried values, and
-exports as `stablehlo.while`, an ONNX `Loop`, or a Python loop.
-
-## Sampling with a key
-
-`sample<Steps>(token, pos, key, temperature)` splits the key once per step
-and draws with `std.random::categorical`; the same key gives the same tokens
-in PyTorch and under XLA.
+A Llama-style decoder with grouped-query attention, rotary positions,
+SwiGLU, a KV cache, and six entries from a full forward pass to generation
+loops. Its dtype generic `T` defaults to `bf16`. The benchmarks measure this
+model.
 
 ## Commands
 
@@ -56,3 +22,54 @@ model = load("examples/05-llama/src/lib.linnet", generics={...}, weights="weight
 tokens = model.run_entry("generate", [prompt, torch.tensor(0, dtype=torch.int32)],
                          generics={"Steps": 32})
 ```
+
+## Key ideas
+
+### Modules and rotary tables
+
+`src/lib.linnet` imports `GroupedQueryAttention` from `src/attention.linnet`,
+which imports `THETA` and `tables` from `src/rope.linnet`, both through
+`crate.` imports. `THETA` is the base frequency, a `pub const`.
+`tables<S, D, T>` computes the cos and sin tables at compile time from
+`iota`, so the model needs no table inputs.
+
+### Grouped-query attention
+
+`GroupedQueryAttention<H, Heads, KvHeads, Batch, MaxSeq, T>` projects
+`KvHeads` key/value heads. `std.nn.attention::grouped_attention` repeats
+each for `Heads / KvHeads` query heads with `broadcast_to` and a reshape.
+The block's `where` clause states the divisibility the reshapes rely on.
+
+### KV cache in `state`
+
+```linnet
+state cache_k: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
+state cache_v: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
+```
+
+`decode(x, pos)` writes the new key and value at `pos` with
+`std.nn.cache::write_at`, a masked `select`, then attends over positions
+`<= pos`. The runtime keeps the caches between calls; PyTorch holds them in
+buffers, reset with `reset_state()`. Graph exports thread them in and out as
+extra arguments and results.
+
+### Entries
+
+| Entry | Returns |
+| --- | --- |
+| `forward` | logits for every position |
+| `next_token` | last-position logits, sliced with `S - 1` |
+| `decode` | logits for one token at `pos`, through the per-layer KV caches |
+| `generate<Steps>` | `Steps` greedy tokens from `std.nn.decoding::argmax` |
+| `sample<Steps>` | `Steps` tokens drawn with a key |
+| `generate_until<MaxNew>` | up to `MaxNew` greedy tokens and their count |
+
+`generate` loops with `static for i in 0..Steps`, expanded at compile time,
+so the whole generation is one graph. `generate_until` loops
+`while running && count < MaxNew` at runtime over scalar carried values,
+and stops once every row has produced the end token. It exports as
+`stablehlo.while`, an ONNX `Loop`, or a Python loop.
+
+`sample` splits `key` into one key per step and draws with
+`std.random::categorical`. The same key gives the same tokens in PyTorch
+and under XLA.

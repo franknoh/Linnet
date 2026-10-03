@@ -1,8 +1,7 @@
 # Modules and packages
 
-How files find each other. A module is a file; a package is a directory with
-a `linnet.toml`; imports are logical paths that map to files without ever
-leaving their root.
+A module is a file; a package is a directory with a `linnet.toml`. Imports
+are logical paths inside their root.
 
 ## Imports
 
@@ -21,10 +20,9 @@ use shared_layers.ops                      // a dependency's module, used as `op
 | `std.a.b` | `<standard library>/a/b.linnet` |
 | `dep.a.b` | `<dependency dep>/src/a/b.linnet` |
 
-`<package>` is the nearest directory above the importing file that contains
-`linnet.toml`. The standard library directory is `--std <dir>` or
-`LINNET_STD`. Items are private unless `pub`, and modules may not import each
-other in a cycle.
+`<package>` is the nearest directory above with a `linnet.toml`;
+`<standard library>` is `--std <dir>` or `LINNET_STD`. Items are private
+unless `pub`; import cycles are errors.
 
 ## Packages
 
@@ -48,14 +46,9 @@ language = "0.1"
 shared_layers = { path = "../shared-layers" }
 ```
 
-- `language` is the language version the package targets; this toolchain
-  accepts `0.1`.
-- A dependency key is an identifier and becomes the first segment of imports
-  from that package. `std` and `crate` are reserved.
-- Only path dependencies exist. They are relative to the manifest and must
-  point at a directory with its own `linnet.toml`; their own dependencies
-  resolve relative to that manifest. Git and registry sources, and a lock
-  file, are future work.
+- `language` is the targeted language version; `0.1` is accepted.
+- A dependency's key prefixes its imports; `std` and `crate` are reserved.
+- Dependencies are only paths, relative to the manifest, each with its own
+  `linnet.toml`. Git, registries, and lock files are not supported.
 
-Resolving a package only reads files. `linnet check` never executes anything
-in it.
+Checking a package only reads its files.

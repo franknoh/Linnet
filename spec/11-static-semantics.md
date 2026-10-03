@@ -1,59 +1,49 @@
-# 11. Static Semantics
+# 11. Static semantics
+
+Programs must pass these checks before lowering.
 
 ## 11.1 Name resolution
 
-Every identifier reference MUST resolve unambiguously to a declaration visible in lexical/module scope.
-
-Unknown and ambiguous names are errors.
+Every identifier reference MUST resolve unambiguously to a declaration visible in lexical or module scope.
 
 ## 11.2 Definite declaration
 
-Locals must be declared before use.
+Locals must be declared before use, and `var` locals must be initialized.
 
-`var` locals must have an initial value; uninitialized locals are not permitted.
+## 11.3 Returns
 
-## 11.3 Return checking
-
-Every reachable return path in a non-unit function MUST return a value matching the declared return type.
-
-Implicit return of the final expression is not part of the initial language version. `return` is explicit.
+Every reachable return path in a non-unit function MUST return a value of the declared type; the final expression is never returned implicitly.
 
 ## 11.4 Dtype equality
 
-Tensor operands for arithmetic operations MUST have identical dtypes after explicit casts and contextual literal typing.
+Arithmetic tensor operands MUST have identical dtypes after explicit casts and contextual literal typing. Backend-specific implicit promotion MUST NOT leak into Linnet semantics.
 
-A backend-specific implicit promotion MUST NOT leak into Linnet semantics.
+## 11.5 Broadcasting
 
-## 11.5 Broadcast checking
+Broadcast relationships MUST be statically provable (§4.6).
 
-Broadcast relationships MUST be statically provable under the rules in the shape specification.
+## 11.6 Index expressions
 
-## 11.6 Index-expression checking
-
-For a tensor comprehension:
+In a tensor comprehension:
 
 - every output index must have a known domain;
-- every non-output index used in the expression must be bound by a reduction;
-- every reduction index must occur in the reduced expression unless a future explicit-range syntax provides its domain;
-- uses of the same index must have compatible domains;
-- repeated indices in one tensor imply diagonal selection and require compatible axes.
+- every non-output index must be bound by a reduction;
+- every reduction index must occur in the reduced expression;
+- uses of one index must have compatible domains;
+- an index repeated in one tensor selects a diagonal and requires compatible axes.
 
-## 11.7 Purity and effects
+## 11.7 Effects
 
-Initial `fn`, `op`, and `entry` bodies have no hidden effects. Structural composition and local SSA-style reassignment do not count as runtime effects. Reading and assigning `state` members (§9.3) are effects, and they are explicit: every function's state footprint is known statically.
+`fn`, `op`, and `entry` bodies have no hidden effects. Structural composition and local SSA-style reassignment are not runtime effects. `state` reads and assignments (§9.3) are explicit effects; each function's state footprint is known statically.
 
-## 11.8 Recursive cycles
+## 11.8 Recursion
 
-Direct or indirect recursive calls are errors in the initial language version.
+Direct or indirect recursive calls are errors (§8.5).
 
 ## 11.9 Exhaustive match
 
 `match` over an optional or enum MUST be exhaustive. Duplicate and unreachable arms SHOULD be diagnosed.
 
-## 11.10 Compile-time versus runtime values
+## 11.10 Compile-time values
 
-Dimensions, generic shape parameters, block-array lengths, and `static for` iteration counts are compile-time structural values.
-
-Runtime tensor contents MUST NOT influence them.
-
-This separation is required for deterministic static shape checking and portable backend lowering.
+Dimensions, generic shape parameters, block-array lengths, and `static for` iteration counts are compile-time values, which runtime tensor contents MUST NOT influence.

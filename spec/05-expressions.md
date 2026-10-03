@@ -1,10 +1,12 @@
-# 5. Expressions and Local Bindings
+# 5. Expressions and bindings
+
+Bindings, operators, calls, `if`, `match`, and indexing.
 
 ## 5.1 Purity
 
-Ordinary `fn` and `op` bodies are pure in the initial language version. They cannot mutate parameters, buffers, files, environment variables, external state, or hidden global values.
+Ordinary `fn` and `op` bodies are pure. They cannot mutate parameters, buffers, files, environment variables, external state, or hidden global values.
 
-Local `var` assignment is syntactic convenience and lowers to SSA values; it is not observable mutation outside the local function body.
+Local `var` assignment is not observable outside the function body.
 
 ## 5.2 `let`
 
@@ -12,7 +14,7 @@ Local `var` assignment is syntactic convenience and lowers to SSA values; it is 
 let q = linear(x, q_weight)
 ```
 
-A `let` binding is immutable. It may carry a type annotation, which also gives contextual literals their type:
+A `let` binding is immutable. A type annotation also gives contextual literals their type:
 
 ```text
 let scale: f32 = 0.5
@@ -31,9 +33,9 @@ var x = embedding(tokens)
 x = layer.forward(x)
 ```
 
-Only locals declared with `var` may be reassigned. Reassignment MUST preserve the statically inferred or declared type of the variable.
+Only locals declared with `var` may be reassigned. Reassignment MUST preserve the variable's declared or inferred type.
 
-Parameters, buffers, sub-blocks, function arguments, and `let` bindings cannot be reassigned. A block's `state` members (§9.3) are assigned with the same statement; that assignment is the one observable effect in the language.
+A block's `state` members (§9.3) are also assigned with this statement; that assignment is the one observable effect in the language.
 
 ## 5.4 Arithmetic
 
@@ -46,15 +48,17 @@ Supported operators:
 & | ^
 ```
 
-Arithmetic operators are defined for compatible scalar types and are elementwise-lifted to tensors of the same dtype with valid broadcasting. Integer arithmetic wraps on overflow (two's complement) at the dtype's width; `/` and `%` on integers truncate toward zero.
+Arithmetic operators apply to compatible scalars and lift elementwise to same-dtype tensors under valid broadcasting. Integer arithmetic wraps on overflow (two's complement) at the dtype's width. Integer `/` and `%` truncate toward zero.
 
-`&`, `|`, and `^` are bitwise on integer operands and elementwise logical on boolean operands (scalars or tensors, broadcast like arithmetic); they bind looser than `+` and tighter than comparisons. The prelude functions `shl(x, bits)` and `shr(x, bits)` shift integers; `shr` is arithmetic for signed dtypes and logical for unsigned ones. On compile-time integers all five fold when both operands are constants. A contextual scalar numeric literal may be lifted across a tensor, for example `x * 0.5` when `x` has floating dtype and `0.5` is representable in that dtype. General scalar variables are not implicitly converted to a tensor of a different dtype.
+`&`, `|`, and `^` are bitwise on integers and elementwise logical on booleans, scalar or tensor, broadcast like arithmetic; `mask ^ true` negates a mask. `shl(x, bits)` and `shr(x, bits)` shift integers; `shr` is arithmetic for signed dtypes and logical for unsigned ones. On compile-time integers these five fold when both operands are constants.
 
-Comparison of tensors produces a boolean tensor with broadcasted shape.
+A contextual numeric literal lifts across a tensor: `x * 0.5` is valid when `x` has a floating dtype that can represent `0.5`. A scalar variable is not implicitly converted to a tensor of a different dtype.
 
-Logical `&&`, `||`, and `!` take scalar `bool` operands only. Boolean tensors combine elementwise with `&`, `|`, and `^`; `mask ^ true` negates one.
+Comparing tensors gives a boolean tensor of the broadcast shape.
 
-Binary operators bind, from loosest to tightest: `||`; `&&`; `==` `!=`; `<` `<=` `>` `>=`; `|`; `^`; `&`; `+` `-`; `*` `/` `%`. All are left-associative. Because comparisons bind looser than the bitwise operators, combining two comparisons with `&` needs parentheses: `(a == b) & (i < n)`. Unary `!`, `-`, and `+` bind tighter than every binary operator.
+`&&`, `||`, and `!` take scalar `bool` operands only.
+
+Binary operators bind, loosest first: `||`; `&&`; `==` `!=`; `<` `<=` `>` `>=`; `|`; `^`; `&`; `+` `-`; `*` `/` `%`. All are left-associative. Unary `!`, `-`, and `+` bind tighter than every binary operator. Two comparisons combined with `&` therefore need parentheses: `(a == b) & (i < n)`.
 
 ## 5.5 Calls
 
@@ -64,13 +68,13 @@ layer.forward(x)
 cast<f32>(x)
 ```
 
-Generic arguments may be inferred where unambiguous. Explicit generic arguments bind generic parameters in declaration order, and the remainder are inferred.
+Generic arguments may be inferred where unambiguous. Explicit generic arguments bind generic parameters in declaration order; the rest are inferred.
 
-Arguments are positional, or named with `name = value`; positional arguments come first. A parameter with a default may be omitted. An optional parameter accepts `none` or an optional value; a plain value MUST be wrapped as `some(value)`.
+Arguments are positional or named (`name = value`), positional first. A parameter with a default may be omitted. An optional parameter accepts `none` or an optional value; a plain value MUST be wrapped as `some(value)`.
 
 Every `where` constraint of the callee MUST be provable at the call site from the caller's own constraints.
 
-`name<` begins a generic call only when the matching `>` is immediately followed by `(`; otherwise `<` is the comparison operator. Inside a generic argument list, an argument that is not a type is an arithmetic expression; comparison and logical operators there MUST be parenthesized.
+`name<` begins a generic call only when the matching `>` is immediately followed by `(`; otherwise `<` is a comparison. In a generic argument list, a non-type argument is an arithmetic expression, and comparison and logical operators there MUST be parenthesized.
 
 ## 5.6 `if` expression
 
@@ -83,15 +87,13 @@ let y =
     }
 ```
 
-The condition MUST be a scalar `bool`.
+The condition MUST be a scalar `bool`; for a tensor condition, use `select` or an equivalent elementwise operation.
 
 Both branches MUST have the same type, including tensor shape and dtype.
 
-Tensor-valued conditions require `select` or an equivalent elementwise operation; they are not accepted by `if`.
-
 ## 5.7 `match`
 
-Initial `match` support is required for optional values and simple enums.
+The initial version requires `match` on optional values and simple enums:
 
 ```text
 let y = match bias {
@@ -100,13 +102,11 @@ let y = match bias {
 }
 ```
 
-Patterns MUST be exhaustive.
-
-An arm pattern is a variant or binding name, `some(pattern)`, or `none`; a tuple pattern may appear only inside `some(...)`. Arms have no separator, so a tuple pattern at the start of an arm would be read as a call on the previous arm's value.
+Patterns MUST be exhaustive. An arm pattern is a variant or binding name, `some(pattern)`, or `none`. A tuple pattern may appear only inside `some(...)`.
 
 ## 5.8 Slicing and indexing
 
-Value-level tensor indexing syntax includes:
+Value-level indexing forms include:
 
 ```text
 x[i]
@@ -116,15 +116,15 @@ x[:, start:end]
 x[:, start:end:step]
 ```
 
-A slice creates a logical tensor view in HIR. Backends determine whether materialization is required.
+An integer index removes its axis. A compile-time integer index MUST be provably within the axis. A runtime integer scalar index reads the position it holds and has no defined result outside the axis. Negative indices are rejected: the last element of an axis of size `N` is `x[N - 1]`.
 
-An integer index removes its axis. It is a compile-time integer, which MUST be provably within the axis, or a runtime integer scalar, which reads the position it holds. A runtime index outside the axis has no defined result; the program is responsible for keeping it in range. Negative indices are rejected: the last element of an axis of size `N` is `x[N - 1]`.
+A slice `start:stop:step` on an axis of size `D` keeps the axis, with extent `max(0, (min(stop, D) - start + step - 1) / step)`. `start` defaults to `0`, `stop` to `D`, and `step` to `1`. Slice bounds MUST be non-negative compile-time integers and the step a positive integer constant.
 
-A slice `start:stop:step` keeps its axis with extent `max(0, (min(stop, D) - start + step - 1) / step)` for an axis of size `D`; `start` defaults to `0`, `stop` to `D`, and `step` to `1`. Slice bounds MUST be non-negative compile-time integers and the step a positive integer constant, so that the result shape never depends on runtime data. `...` stands for all axes not addressed explicitly and may appear once. Axes that belong to a shape pack cannot be indexed individually.
+`...` stands for all axes not addressed explicitly and may appear once. Axes of a shape pack cannot be indexed individually.
 
-Inside index notation (section 6) every tensor access MUST index all axes, using index variables, a pack index, or integers. An integer there may be computed from runtime data, typically another tensor's element, as in `x[b, labels[b]]`; such an access is a gather (§6.4).
+Inside index notation (section 6), every tensor access MUST index all axes, with index variables, a pack index, or integers. An integer there may come from runtime data; such an access is a gather (§6.4).
 
-Outside index notation an access with a runtime index means the same as the comprehension over the axes that remain: `x[i, :]` is `let r[j] = x[i, j]`, and `x[i, 1:3]` slices that result. Core IR lowers it that way, so every backend reads it as a gather.
+Outside index notation, an access with a runtime index means the comprehension over the remaining axes: `x[i, :]` is `let r[j] = x[i, j]`, and `x[i, 1:3]` slices that result.
 
 ## 5.9 Shape literals
 
@@ -135,9 +135,7 @@ A bracketed list of dimension expressions is a compile-time shape literal:
 [H / Heads, Heads]
 ```
 
-Shape literals are accepted only in compile-time shape contexts and by primitives that explicitly consume a shape, such as `reshape` or `broadcast_to`. They are not runtime tensor/list values.
-
-Example:
+Shape literals are not runtime values. They are accepted only in compile-time shape contexts and by primitives that consume a shape, such as `reshape`:
 
 ```text
 reshape(x, [B, Heads, S, H / Heads])
@@ -145,6 +143,4 @@ reshape(x, [B, Heads, S, H / Heads])
 
 ## 5.10 No arbitrary expression statements
 
-The initial language has no generic expression statement. Calls whose result is intentionally unused are therefore not meaningful in pure code.
-
-This restriction keeps semicolon-free syntax unambiguous and reinforces effect-free semantics.
+The initial language has no general expression statement, so an unused call result has no meaning in pure code.

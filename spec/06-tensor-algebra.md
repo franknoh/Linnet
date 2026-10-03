@@ -1,35 +1,29 @@
-# 6. Tensor Algebra and Index Notation
+# 6. Tensor algebra and index notation
 
 ## 6.1 Motivation
 
-Linnet adopts the useful part of Einstein/einsum notation while rejecting string-encoded mini-languages and implicit reductions.
-
-The canonical source syntax exposes free indices and reduction indices directly to the parser and type checker.
+Index notation follows einsum notation, with indices as source syntax and every reduction explicit.
 
 ## 6.2 Tensor comprehension
 
-A tensor comprehension is introduced by an indexed `let` binding:
+An indexed `let` binding introduces a tensor comprehension:
 
 ```text
 let c[m, n] =
     sum[k] a[m, k] * b[k, n]
 ```
 
-The indices on the left-hand side are free output indices.
-
-Reduction indices are explicitly introduced by a reduction expression.
+Left-hand-side indices are free output indices. Only a reduction expression introduces reduction indices.
 
 ## 6.3 No implicit summation
 
-The following is invalid:
+Invalid, because `j` is neither an output index nor bound by a reduction:
 
 ```text
 let y[i] = a[i, j] * b[j]
 ```
 
-because `j` is neither an output index nor explicitly bound by a reduction.
-
-The valid form is:
+Valid:
 
 ```text
 let y[i] = sum[j] a[i, j] * b[j]
@@ -37,7 +31,7 @@ let y[i] = sum[j] a[i, j] * b[j]
 
 ## 6.4 Index domains
 
-An index obtains its domain from tensor axes it indexes.
+An index takes its domain from the tensor axes it indexes.
 
 ```text
 let c[m, n] = sum[k] a[m, k] * b[k, n]
@@ -51,11 +45,11 @@ implies:
 
 Conflicting domains are a static shape error.
 
-An index position may hold a computed integer instead of an index variable, such as `labels[b]` in `x[b, labels[b]]`. It reads the position the value holds; it gives no domain to the axis it addresses, and a value outside that axis has no defined result (§5.8).
+An index position may hold a computed integer, such as `labels[b]` in `x[b, labels[b]]`. It reads the position it holds and gives its axis no domain (§5.8).
 
 ## 6.5 Repeated indices in one tensor
 
-Repeated indices in a single tensor expression select a diagonal; they do not imply reduction.
+Repeated indices in one tensor expression select a diagonal, not a reduction:
 
 ```text
 let d[i] = a[i, i]
@@ -66,18 +60,18 @@ The corresponding dimensions MUST be provably equal.
 
 ## 6.6 Shape-pack indices
 
-A variadic index pack is written with lowercase `*name` inside a comprehension:
+Inside a comprehension, a lowercase `*name` is a variadic index pack:
 
 ```text
 let y[*s, o] =
     sum[i] x[*s, i] * weight[o, i]
 ```
 
-The pack corresponds to a statically known sequence of tensor axes derived from a generic shape pack.
+The pack stands for the statically known axes of a generic shape pack.
 
 ## 6.7 Reductions
 
-Initial built-in reduction forms:
+Built-in reductions:
 
 ```text
 sum[i] expr
@@ -94,25 +88,23 @@ Multiple axes:
 sum[i, j] expr
 ```
 
-The reduced expression extends as far to the right as possible, so `x + sum[i] a[i] * b[i]` reduces the whole product.
+The reduced expression extends as far right as possible: `x + sum[i] a[i] * b[i]` reduces the whole product.
 
-Reduction names are contextual rather than reserved. `sum`, `prod`, `max`, `min`, `any`, and `all` begin a reduction only when immediately followed by an index list (`sum[i]`) or an accumulator dtype and an index list (`sum<f32>[i]`). In every other position they are ordinary identifiers, so `max(A, B)` remains a call. A value with one of these names therefore cannot be indexed directly.
+Reduction names are contextual: `sum`, `prod`, `max`, `min`, `any`, and `all` begin a reduction only when immediately followed by an index list (`sum[i]`) or an accumulator dtype and index list (`sum<f32>[i]`). Elsewhere they are identifiers, so `max(A, B)` is a call, and a value with one of these names cannot be indexed directly.
 
 ## 6.8 Accumulation dtype
 
-A numeric reduction may explicitly specify accumulator dtype:
+A numeric reduction may specify an accumulator dtype:
 
 ```text
 sum<f32>[d] cast<f32>(x[d]) * cast<f32>(y[d])
 ```
 
-Without an explicit accumulator dtype, accumulation uses the expression dtype. With one, the reduced expression MUST already have that dtype; the accumulator dtype never converts implicitly.
+Without one, accumulation uses the expression dtype. With one, the reduced expression MUST already have that dtype. `sum<T>` and `prod<T>` produce dtype `T`.
 
 `sum`, `prod`, `max`, and `min` reduce `Numeric` values; `any` and `all` reduce `bool` values.
 
-An index variable is not a value: it may appear only as a tensor index. Use `iota(N)[i]` where the position itself is needed.
-
-The result dtype of `sum<T>` and `prod<T>` is `T` unless explicitly converted afterward.
+An index variable may appear only as a tensor index; use `iota(N)[i]` for the position itself.
 
 ## 6.9 Common examples
 
@@ -134,7 +126,7 @@ Outer product:
 let c[i, j] = a[i] * b[j]
 ```
 
-Transpose-like remapping:
+Transpose:
 
 ```text
 let y[j, i] = x[i, j]
@@ -146,7 +138,7 @@ Trace:
 let t = sum[i] a[i, i]
 ```
 
-Attention score contraction:
+Attention scores:
 
 ```text
 let score[b, h, q, k] =
@@ -157,10 +149,8 @@ let score[b, h, q, k] =
 
 ## 6.10 Core IR lowering
 
-Tensor comprehensions lower to a generalized contraction/reduction representation in Core Tensor IR. The source syntax does not prescribe loop order, memory layout, tiling, or backend kernel choice.
-
-A backend or optimizer is free to choose any semantically equivalent implementation permitted by the active numeric-equivalence policy.
+Comprehensions lower to a contraction form in Core Tensor IR. Source does not prescribe loop order, memory layout, tiling, or kernels; a backend or optimizer may choose any equivalent implementation the active numeric-equivalence policy permits.
 
 ## 6.11 Compatibility `einsum`
 
-A future compatibility library MAY provide a string-based `einsum` parser, but it is not canonical language syntax and MUST lower immediately to the same typed tensor-algebra representation.
+A future compatibility library MAY provide a string-based `einsum` parser. It is not canonical syntax and MUST lower immediately to the same typed tensor-algebra representation.

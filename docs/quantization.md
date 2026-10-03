@@ -1,10 +1,9 @@
 # Quantization
 
-Quantized weights are ordinary parameters: an integer tensor plus its scales,
-declared like any `param` and dequantized by library code. The language has
-no quantized dtype. The arithmetic dtype `T` and the storage of the weights
-(`i8`, packed `i4`) stay separate, and a backend that has a fused kernel can
-select it for the dequantize-and-multiply it sees.
+Run int8, int4, group-wise 4-bit (GPTQ, AWQ), and MXFP4 weights on every
+backend. A quantized weight is an ordinary parameter, an integer tensor plus
+scales, that `std.quant` dequantizes; there is no quantized dtype, and the
+arithmetic dtype `T` is separate from the storage.
 
 ```linnet
 use std.quant::{Int4Linear, Int8Linear}
@@ -17,54 +16,52 @@ where Inner % 2 == 0 {
 }
 ```
 
-| `std.quant` | |
+Packed 4-bit formats hold two values a byte, the even element in the low
+nibble.
+
+| `std.quant` | Format |
 | --- | --- |
-| `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
-| `unpack_int4<R, H>(packed)` | two signed nibbles per byte (low = even element, high = odd) |
-| `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out; f32]`, optional bias |
 | `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale`, optional bias |
-| `unpack_uint4<R, H>(packed)` | two unsigned nibbles per byte (low = even element, high = odd) |
-| `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit in groups: `(q - zero) * scale` per group |
-| `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
-| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: two E2M1 values a byte (low = even element) in blocks of 32, an E8M0 scale byte a block |
-| `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied straight from MXFP4, each slot its own input |
-| `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, every slot of a row reading the row's one input (`x: [R, 1, In]`) |
-| `mxfp4_linear_experts_shared(x, blocks, scales, experts)` | `std.nn.moe::linear_experts_shared` with MXFP4 experts, for many rows at once (`x: [R, In]`) |
-| `mxfp4_combine_experts(x, blocks, scales, experts, weights)` | `std.nn.moe::combine_experts` with MXFP4 experts: each row's products weighed and summed |
+| `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
+| `unpack_int4<R, H>(packed)`, `unpack_uint4<R, H>(packed)` | signed or unsigned nibbles |
+| `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
+| `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
+| `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
+| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: E2M1 values in blocks of 32, one E8M0 scale byte a block |
+| `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
+| `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
+| `mxfp4_linear_experts_shared(x, blocks, scales, experts)` | `std.nn.moe::linear_experts_shared` with MXFP4 experts, many rows (`x: [R, In]`) |
+| `mxfp4_combine_experts(x, blocks, scales, experts, weights)` | `std.nn.moe::combine_experts` with MXFP4 experts |
+
+## Checkpoints
+
+A checkpoint must contain the parameter paths (`up.weight`, `up.scale`,
+...). Quantize with any tool, pack as above, and bind the result with
+`bind_weights`. `linnet explain` shows where a backend uses a fused kernel.
 
 ## Group-wise 4-bit weights
 
-`Int4GroupLinear` stores a weight as 16 levels per group of `Group`
-consecutive inputs, each group with its own scale and zero point, the scheme
-GPTQ and AWQ checkpoints use. Its weight is `[Out, In / Group, Group / 2]`
-bytes, two values a byte with the even one in the low nibble. That layout is
-ONNX Runtime's `MatMulNBits` as it is. Under `numerics="fast"` a backend runs a
-fused kernel in place of dequantize-then-multiply:
+`Int4GroupLinear` is the GPTQ and AWQ scheme: 16 levels per group of `Group`
+consecutive inputs, each group with a scale and zero point. Its layout is
+ONNX Runtime's `MatMulNBits`. Under `numerics="fast"`:
 
-| Backend | `linear_int4_groups` |
+| Backend | `linear_int4_groups` runs as |
 | --- | --- |
-| PyTorch, CUDA, `bf16`, groups of 32 to 256 | tinygemm (`_weight_int4pack_mm`) for up to 7 rows; the weights are repacked for it once, at load (`--prepare`). 8 to 128 rows (a batch of decoding requests) go through Linnet's own kernel, `linnet::int4_linear`, which unpacks each group inside the matrix product. More rows (a prompt) multiply the weight dequantized by one Triton kernel |
-| ONNX Runtime | `com.microsoft.MatMulNBits` (`f32` and `f16`; `bf16` goes through `f32`) |
-| JAX | the body, dequantized once at load (`--prepare`) |
-| everywhere else | the body: unpack, dequantize, `linear` |
+| PyTorch, CUDA, `bf16`, groups of 32 to 256 | fused int4 kernels up to 128 rows, weights repacked at load (`--prepare`); longer prompts dequantize per call |
+| ONNX Runtime | `com.microsoft.MatMulNBits` (`f32`, `f16`; `bf16` goes through `f32`) |
+| JAX | weights dequantized once at load (`--prepare`), then run as bf16 |
+| everywhere else | dequantize, then `linear` |
 
-tinygemm reads the packed weights, so a decoding step reads a quarter of
-bf16's bytes, but its time grows with the rows. Linnet's kernel reads them
-packed too and takes about as long for 8 rows as for 16, multiplying on
-tensor cores; over the projections of a Llama 3.1 8B layer on an H100 it
-takes 123 us for 8 rows where tinygemm takes 148, and 202 us for 64 where
-dequantizing first takes 359. Past 128, a prompt's rows go faster through
-cuBLAS over the weight dequantized for that call, a layer at a time. For
-Llama 3.1 8B the first token of a 512-token prompt takes 24.8 ms this way,
-against 17.5 ms in bf16. XLA has no fused kernel for a 4-bit weight: left in
-the step, the dequantization runs as its own pass every call (44 tokens per
-second for 8B), so JAX dequantizes once when the model loads and then
-computes, and holds its weights, as in bf16.
+On Llama 3.1 8B Instruct, imported GPTQ and AWQ checkpoints reach a
+perplexity of 9.98 (bf16: 9.55; rounded to nearest: 10.28) and decode at
+192 and 214 tokens per second (bf16: 134).
 
-`linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
-rounding each group to the nearest level:
+### Quantizing a checkpoint
+
+`linnet.quant.quantize_checkpoint` rounds each group of a float checkpoint
+to the nearest level:
 
 ```python
 from linnet.quant import quantize_checkpoint
@@ -74,17 +71,14 @@ quantize_checkpoint("model.safetensors", "model-int4.safetensors",
                     bindings="bindings.json")
 ```
 
-The tensors land under Linnet paths (`bindings` maps them from the
-checkpoint's names), `proj.weight` becoming `proj.weight`, `proj.scale`, and
-`proj.zero`, and everything the patterns do not match is copied as it is.
-Declaring `Int4GroupLinear` where the source had `Linear` then loads it.
+`bindings` maps checkpoint names to Linnet paths. Each matched `proj.weight`
+becomes `proj.weight`, `proj.scale`, and `proj.zero`; other tensors are
+copied. Declare `Int4GroupLinear` where the source had `Linear`.
 
-Rounding to nearest is the plainest scheme. A checkpoint someone quantized
-with calibration repacks into the same layout: `linnet.quant.import_quantized`
-reads a 4-bit GPTQ or AWQ checkpoint (the `quantization_config` in its
-`config.json` says which), unpacks its int32 words (GPTQ's zero points stored
-less one, AWQ's interleaved outputs), and writes `Int4GroupLinear`'s tensors
-under Linnet paths, the rest copied as it is:
+### Importing GPTQ and AWQ
+
+`linnet.quant.import_quantized` repacks a 4-bit GPTQ or AWQ checkpoint into
+the same layout; the `quantization_config` in its `config.json` says which:
 
 ```python
 from linnet.quant import import_quantized
@@ -93,75 +87,36 @@ import_quantized("Meta-Llama-3.1-8B-Instruct-GPTQ-INT4/", "model-int4.safetensor
                  bindings="bindings.json")
 ```
 
-A GPTQ checkpoint in activation order (`desc_act`) formed its groups over
-the inputs in another order than their own, given by `g_idx`. Its inputs are
-sorted by group, which makes each group contiguous, and the permutation is
-written as the layer's `order`: `Int4GroupLinear` takes its inputs in that
-order first (`std.quant::take_inputs`, a gather: `index_select` in PyTorch,
-`Gather` in ONNX, `jnp.take` in JAX), so no weight is rounded again.
-
-On Llama 3.1 8B Instruct (WikiText-2, eight windows of 1024 tokens), bf16 has
-a perplexity of 9.55 and rounding to nearest 10.28. The hugging-quants GPTQ
-checkpoint (activation order) imports to 9.98, and the AWQ one to 9.98. Both
-decode on the tinygemm path in 10.3 GiB, at 192 and 214 tokens per second
-(the gather costs GPTQ's order), against 134 in bf16.
+GPTQ checkpoints in activation order (`desc_act`) import without rounding
+again: the layer gets an `order` and gathers its inputs first, at some cost
+in speed.
 
 ## MXFP4 experts
 
-gpt-oss publishes its experts in MXFP4, 4.25 bits a weight. The bodies of
-`mxfp4_experts` and `mxfp4_experts_shared` dequantize every expert, gather
-the chosen ones and multiply, accumulating in `f32`; since the
-dequantization reads nothing but weights, a backend that prepares
-weight-only work (`--prepare`) does it once at load and keeps the experts in
-16 bits. PyTorch on CUDA instead runs a Triton kernel (`linnet.torch.kernels`)
-for a decoding step's few rows: each chosen expert's bytes are read as they
-are, a quarter of a 16-bit weight's, and unpacked in registers eight at a
-time -- each 32-bit word of a block shifted and masked into four pairs of
-`f16`s, every E2M1 nibble's bits placed in one -- with the block's scale
-applied once per 32 weights. On an H100 it reads gpt-oss-20b's experts at
-about 2 TB/s for one to four rows, where unpacking each nibble on its own
-read 1.4.
+MXFP4 is a 4-bit microscaling float format, 4.25 bits a weight; gpt-oss
+publishes its experts in it.
 
-Many rows at once -- a prompt, a serving step -- take
-`mxfp4_linear_experts_shared` and `mxfp4_combine_experts`, whose bodies
-dequantize every expert and take `std.nn.moe`'s dense form (prepared once at
-load where a backend prepares). On a Hopper GPU in bf16, PyTorch instead
-sorts the (row, choice) pairs by expert and multiplies each expert by its
-pairs' inputs (`linnet.torch.moe`): with OpenAI's
+| Backend | MXFP4 experts run as |
+| --- | --- |
+| PyTorch, CUDA, decoding | a Triton kernel that reads the MXFP4 bytes directly |
+| PyTorch, Hopper GPU, `bf16`, prompts and serving | grouped by expert; multiplied from MXFP4 with `triton_kernels` installed, otherwise dequantized to bf16 once |
+| JAX | dequantized to bf16 once at load (`--prepare`); on a GPU, prompts and serving grouped by expert in a Pallas kernel. Reading four times the bytes, prompts run slower than in PyTorch |
+| others with `--prepare` | dequantized once at load, kept in 16 bits |
+| everywhere else | the bodies: dequantize every expert, gather the chosen ones, multiply in `f32` |
+
+OpenAI's
 [`triton_kernels`](https://github.com/triton-lang/triton/tree/main/python/triton_kernels)
-installed, its MXFP4 product reads the four-bit weights in a layout swizzled
-for the GPU once; without it, the experts are dequantized to bf16 once and
-`torch._grouped_mm` multiplies them. `triton_kernels` is not on PyPI; install
-the one matching your Triton:
+is not on PyPI; install the one matching your Triton:
 
 ```bash
 pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(python -c 'import triton; print(triton.__version__)')#subdirectory=python/triton_kernels"
 ```
 
-With it and CUDA graphs, gpt-oss-20b on one H100 takes a 512-token prompt in
-14.1 ms rather than 25.0, decodes at 368 tokens per second, and serves 256
-requests at 5349 tokens per second (vLLM 17.8 ms, 299 and 4313). Without CUDA graphs
-each routed product also costs `triton_kernels`' Python on the host, about
-0.4 ms a call, which a captured step does not pay: the same prompt takes
-34.9 ms under `torch.compile` alone.
+With `triton_kernels` and CUDA graphs, gpt-oss-20b on one H100 decodes at
+368 tokens per second and serves 256 requests at 5349 tokens per second
+(vLLM: 299 and 4313). Without CUDA graphs, `triton_kernels` adds host
+overhead to every routed product. More measurements:
+[Benchmarks](https://linnet.franknoh.dev/benchmarks).
 
-In JAX, generated code dequantizes the experts to bf16 once, when the model
-loads (`--prepare`), and `linnet.jax.moe` multiplies the pairs by that copy.
-A decoding step's few pairs read their experts' weights inside one reduction.
-A prompt's many go through a Pallas kernel on the GPU that multiplies each
-expert by the tiles of rows that chose it. XLA's own `ragged_dot` multiplies
-every row by every expert and masks the rest, as the bodies do, so it is
-what runs on the CPU. The kernel reads the bf16 copy, four times the bytes
-of MXFP4, so a prompt takes longer than PyTorch's.
-
-## Checkpoints
-
-The parameter paths (`up.weight`, `up.scale`, ...) are what a checkpoint must
-contain. Quantize a float checkpoint with any tool, pack int4 pairs with the
-even element in the low nibble, and bind the result with `bind_weights`.
-Unpacking is `shr` and `&`, dequantization a broadcast multiply, so the same
-source runs in PyTorch, XLA, and ONNX Runtime. `linnet explain` shows where a
-backend replaced the arithmetic with a kernel.
-
-Not written yet: activation quantization, and per-group scales for 8-bit
+Not supported yet: activation quantization, and per-group scales for 8-bit
 weights.

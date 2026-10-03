@@ -1,12 +1,12 @@
 # Language tour
 
-Everything a model author needs, on one page. `spec/` is the normative
-specification; this is the short version.
+Linnet by example. `spec/` has the normative rules.
 
 ## Modules
 
-Each file declares one module and imports by logical path. Items are private
-unless marked `pub`.
+Each file is one module. Imports use logical paths: `std.` is the standard
+library, `crate.` the current package. Items are private unless
+`pub`. See [Modules and packages](modules-and-packages.md).
 
 ```linnet
 module models.mini
@@ -16,23 +16,23 @@ use std.nn.norm::{rms_norm}
 use crate.layers::{Block}
 ```
 
-`std.` is the standard library, `crate.` the current package. See
-[Modules and packages](modules-and-packages.md).
-
 ## Tensor types
 
-A tensor type is a shape and an element type:
+A tensor type is a shape and an element type. Dimensions are compile-time
+integers: literals, `Dim` generics, or arithmetic on them (`H / Heads`).
+Element types are `bool`, `i8` to `i64`, `u8` to `u64`, `f16`, `bf16`,
+`f32`, and `f64`.
 
 ```linnet
 Tensor[B, S, H; bf16]
 Tensor[H; f32]
 ```
 
-Dimensions are compile-time integers: literals, `Dim` generics, or arithmetic
-on them (`H / Heads`, `2 * S`). Scalar types are `bool`, `i8` to `i64`,
-`u8` to `u64`, `f16`, `bf16`, `f32`, `f64`.
-
 ## Functions and generics
+
+`N: Dim` is one dimension, `*S: Shape` any number of leading dimensions, and
+`T: Float` an element type (also `DType`, `Numeric`, `Integer`). Generic
+arguments are inferred, or written out as in `cast<f32>(x)`.
 
 ```linnet
 fn scale<*S: Shape, T: Float>(x: Tensor[*S; T], k: T) -> Tensor[*S; T] {
@@ -40,28 +40,17 @@ fn scale<*S: Shape, T: Float>(x: Tensor[*S; T], k: T) -> Tensor[*S; T] {
 }
 ```
 
-| Generic | Meaning |
-| --- | --- |
-| `N: Dim` | one dimension |
-| `*S: Shape` | a shape pack: any number of leading dimensions |
-| `T: Float` | an element type; constraints are `DType`, `Numeric`, `Integer`, `Float` |
-
-Generic arguments are inferred at calls (`scale(x, 0.5)`) or written out
-(`cast<f32>(x)`).
-
 ## Dtypes and broadcasting
 
-Tensors combine only with the same dtype; there is no implicit promotion.
-Literals take the dtype of their context.
+Dtypes never promote implicitly; use `cast`. Literals take the context's
+dtype. Broadcasting is right-aligned and needs each pair of axes provably
+equal or `1`.
 
 ```linnet
 let y = cast<f32>(x_bf16) + z_f32   // explicit cast
 let bad = x_bf16 + z_f32            // E2103
 let half = x * 0.5                  // 0.5 takes x's dtype
 ```
-
-Elementwise operations broadcast right-aligned, and only when each pair of
-axes is provably equal or one of them is `1`:
 
 ```linnet
 Tensor[B, S, H; T] + Tensor[H; T]   // fine
@@ -70,8 +59,9 @@ Tensor[A; f32] + Tensor[B; f32]     // E2207 unless A == B is known
 
 ## Index notation
 
-Contractions name every axis. Output indices go on the left; reduction
-indices are bound by `sum`, `prod`, `max`, `min`, `any`, or `all`.
+Contractions name every axis: outputs on the left, reductions bound by
+`sum`, `prod`, `max`, `min`, `any`, or `all`. Nothing is summed implicitly.
+`sum<f32>` sets the accumulation dtype.
 
 ```linnet
 let c[m, n] = sum[k] a[m, k] * b[k, n]          // matrix product
@@ -80,13 +70,10 @@ let t = sum[i] a[i, i]                          // trace
 let score[b, h, q, k] = sum<f32>[d] cast<f32>(q[b, h, q, d]) * cast<f32>(k[b, h, k, d])
 ```
 
-An index that is neither an output nor reduced is an error: nothing is summed
-implicitly. `sum<f32>[...]` sets the accumulation dtype.
-
 ## Constraints
 
 A `where` clause states what the shapes require. The compiler proves it at
-every call and uses it inside the body.
+every call; here, without `H % N == 0`, it would reject the `reshape`.
 
 ```linnet
 fn split_heads<B: Dim, S: Dim, H: Dim, N: Dim, T: Float>(
@@ -97,14 +84,11 @@ where H % N == 0, N > 0 {
 }
 ```
 
-Without `H % N == 0` the `reshape` cannot be shown to keep the element count
-and is rejected.
+## Ops
 
-## Operations with an identity
-
-`op` is a function whose body is the reference definition. A backend may
-replace it with a kernel that agrees with the body; `linnet explain` shows
-when it does.
+An `op`'s body is its reference definition. A backend may substitute a
+kernel that agrees with it; `linnet explain` shows where. `T?` is an
+optional, `none` or `some(v)`, and a `match` must cover both.
 
 ```linnet
 pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
@@ -120,13 +104,13 @@ pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
 }
 ```
 
-`Tensor[Out; T]?` is an optional. Its values are `none` and `some(v)`, and a
-`match` must cover both.
-
 ## Blocks
 
-A block owns parameters, state, and sub-blocks; its functions compute with
-them. `entry` marks the functions a backend exposes.
+A block holds `param` weights bound from a checkpoint, `buffer` data,
+`state` such as a KV cache (kept between calls, replaced by assignment), and
+`sub` child blocks or arrays of them. `= none` makes a `param` or `sub`
+optional. `entry` marks what a backend exposes. `linnet inspect --parameters`
+lists the parameter paths, such as `layers.0.attention.q_proj.weight`.
 
 ```linnet
 pub block Linear<In: Dim, Out: Dim, T: Float = bf16> {
@@ -153,19 +137,8 @@ pub block Model<H: Dim, Layers: Dim> {
 }
 ```
 
-| Member | Holds |
-| --- | --- |
-| `param` | a weight, bound from a checkpoint; `= none` marks it optional |
-| `buffer` | non-trainable data, bound like a parameter |
-| `state` | execution state such as a KV cache: read by name, replaced by assignment, kept between calls |
-| `sub` | a child block or an array of them; `sub pooler: Linear<H, H>? = none` is an optional one, present when the weights have it |
-
-Parameter paths follow the structure (`layers.0.attention.q_proj.weight`);
-`linnet inspect --parameters` lists them.
-
-An `entry` can also stand at module level, outside any block. It has no
-parameters or state, so it is a function of its inputs alone -- a loss, a
-preprocessing step, a reward -- and every backend exports it on its own:
+An `entry` outside any block, such as a loss, has no parameters or state
+and exports on its own.
 
 ```linnet
 pub entry mse<B: Dim, N: Dim>(predicted: Tensor[B, N; f32], target: Tensor[B, N; f32]) -> f32 {
@@ -176,18 +149,21 @@ pub entry mse<B: Dim, N: Dim>(predicted: Tensor[B, N; f32], target: Tensor[B, N;
 
 ## Loops
 
+`static for` is unrolled at compile time; `while` loops at runtime. `var`
+locals carry across iterations with fixed types.
+
 ```linnet
 static for layer in layers { ... }          // over a sub array, expanded at compile time
 static for i in 0..Steps { ... }            // over a compile-time range; i is an i64 scalar
 while running && count < MaxNew { ... }     // runtime loop over a scalar bool
 ```
 
-`var` locals assigned in a loop body carry to the next iteration; their types
-are fixed, so shapes are invariant. `static for` is unrolled by every
-backend; `while` becomes `stablehlo.while`, an ONNX `Loop`, or a Python
-loop in generated code.
-
 ## Slicing and built-ins
+
+Slicing and these calls are built in, as are `exp`, `log`, `sqrt`, `rsqrt`,
+`sin`, `cos`, `tanh`, `abs`, `min`, `max`, `shl`, `shr`, `cast<T>`, and
+`& | ^` (logical on `bool`). The rest (`softmax`, `attention`, `rms_norm`,
+`rope`, `std.random`, `std.quant`) is library code in `stdlib/`.
 
 ```linnet
 x[..., 0::2]                 // every other element of the last axis
@@ -200,15 +176,8 @@ iota(N)                      // 0, 1, ..., N - 1
 fill<f32>([B, S], 0.0)
 ```
 
-Also built in: `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, `abs`,
-`min`, `max`, `shl`, `shr`, `cast<T>`, and the operators `& | ^` (bitwise on
-integers, logical on booleans). Everything else is library code in `stdlib/`:
-`softmax`, `attention`, `rms_norm`, `rope`, random numbers (`std.random`),
-quantized weights (`std.quant`).
-
 ## Not in the language
 
-Expression statements, recursion, data-dependent shapes, mutation other than
-`var` locals and a block's own `state`, host-language escapes, and tensor
-data in source. These omissions are what make a `.linnet` file safe to check
-and load.
+No expression statements, recursion, data-dependent shapes, host-language
+escapes, tensor data in source, or mutation beyond `var` locals and a
+block's `state`.

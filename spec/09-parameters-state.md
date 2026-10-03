@@ -1,34 +1,32 @@
-# 9. Parameters, Buffers, State, and Structural Members
+# 9. Block members
+
+Members declare a block's parameters, buffers, state, and child blocks.
 
 ## 9.1 `param`
 
-`param` declares an externally supplied parameter tensor:
+`param` declares an externally supplied parameter tensor, with no payload:
 
 ```text
 param weight: Tensor[Out, In; T]
 ```
 
-A parameter declaration does not contain tensor payload data.
-
-Optional parameters are permitted:
+An optional parameter defaults to `none` and may be absent:
 
 ```text
 param bias: Tensor[Out; T]? = none
 ```
 
-The default `none` means the parameter may be absent. A non-`none` tensor initializer for `param` is forbidden.
+A `param` initializer other than `none` is forbidden.
 
 ## 9.2 `buffer`
 
-`buffer` declares persistent non-parameter data such as statistics or fixed tables:
+`buffer` declares persistent non-parameter data, such as statistics or fixed tables:
 
 ```text
 buffer running_mean: Tensor[H; f32]
 ```
 
-Payload binding is external just like `param` unless a future specification explicitly defines generated constants.
-
-Backends may map buffers to framework-specific non-trainable state.
+Its payload is bound externally, like a `param`'s.
 
 ## 9.3 `state`
 
@@ -38,57 +36,49 @@ Backends may map buffers to framework-specific non-trainable state.
 state cache: Tensor[Batch, KvHeads, MaxSeq, Head; T]
 ```
 
-A state member has a tensor type whose shape is fixed by the block's generics, like a `param`; it cannot be optional. It carries no payload: the runtime supplies the initial value (backends default to zeros) and keeps the latest value between entry calls.
+A state member has a tensor type whose shape the block's generics fix, and cannot be optional. It carries no payload: the runtime supplies the initial value (zeros by default) and keeps the latest value between entry calls.
 
-Inside the block's functions and entries, the member name reads the current value, and an assignment statement replaces it:
+Inside the block's functions and entries, the member name reads the current value, and an assignment replaces it:
 
 ```text
 cache = updated
 ```
 
-The assigned value MUST have the declared type. Reads after an assignment observe it, in program order. A function may assign only state members of its own block; a parent block reads a child's state through its path (`layers[0].attention.cache`) but cannot assign it.
+- The assigned value MUST have the declared type.
+- Reads after an assignment observe it, in program order.
+- A function may assign only its own block's state members. A parent reads a child's state through its path (`layers[0].attention.cache`) but cannot assign it.
+- Hidden global mutation is not permitted.
+- The optimizer MUST NOT merge, remove, or reorder state reads and writes relative to one another.
 
-State flow is explicit. In Core IR every read and write is an operation on the block instance, ordered within its region, and each function records the state members it touches directly or through the functions it calls. The optimizer MUST NOT merge, remove, or reorder these operations relative to one another. Backends thread the values: a graph export takes the initial values as extra inputs and returns the final values as extra results, and a framework materializer keeps them as the module's non-trainable state, reset on request. Hidden global mutation is not permitted.
-
-State members appear in the parameter manifest with kind `state`; weight files never contain them.
+State members appear in the parameter manifest with kind `state`. Weight files never contain them.
 
 ## 9.4 `sub`
 
-`sub` declares structural child blocks:
+`sub` declares child blocks:
 
 ```text
 sub norm: RMSNorm<Hidden, T>
 sub layers: [DecoderLayer<Hidden, T>; Layers]
 ```
 
-A child block may be optional, present or absent as a whole, like an optional `param`:
+A child block may be optional, present or absent as a whole:
 
 ```text
 sub pooler: Linear<Hidden, Hidden, T>? = none
 ```
 
-Its value is `some(block)` or `none`, read with `match`. Every parameter inside it is optional in the manifest (§9.6). A materializer treats the block as absent when the weights lack any parameter it requires (one declared without `?`), and as present otherwise. An array of blocks cannot be optional.
+Its value is `some(block)` or `none`, read with `match`. Every parameter inside it is optional in the manifest. A materializer treats the block as absent when the weights lack any parameter it requires (one declared without `?`), and as present otherwise. An array of blocks cannot be optional.
 
 ## 9.5 Parameter paths
 
-A compiler instantiating a root block MUST derive deterministic hierarchical paths from sub-block and parameter names.
-
-Example:
+A compiler instantiating a root block MUST derive deterministic hierarchical paths from sub-block and parameter names:
 
 ```text
 layers.0.attention.q_proj.weight
 ```
 
-These paths form the canonical parameter-manifest names unless a binding manifest maps them to external tensor names.
+These are the canonical parameter-manifest names unless a binding manifest (§10.2) maps them to external tensor names.
 
 ## 9.6 Parameter manifest
 
-Semantic analysis of a fully instantiated root block can produce a parameter manifest containing at least:
-
-- canonical path;
-- kind (`param`, `buffer`, or `state`);
-- tensor shape expression after known substitutions;
-- dtype;
-- optional/required status; a parameter inside an optional `sub` is optional.
-
-This manifest is compiler data and contains no tensor bytes.
+Semantic analysis of a fully instantiated root block can produce a parameter manifest. It holds no tensor bytes and records at least each tensor's canonical path, kind (`param`, `buffer`, or `state`), shape expression after known substitutions, dtype, and optional or required status.

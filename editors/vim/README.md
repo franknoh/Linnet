@@ -1,25 +1,24 @@
 # Linnet for Vim and Neovim
 
-Filetype detection, syntax highlighting, indentation, and comment settings for
+Filetype detection, highlighting, indentation and comment settings for
 `.linnet` files.
 
-## Installing
+## Install
 
-Copy or link this directory into a package path, for example:
+Link this directory into a package path. For Neovim, use
+`~/.local/share/nvim/site/pack/linnet/start` instead.
 
 ```bash
 mkdir -p ~/.vim/pack/linnet/start
 ln -s "$PWD/editors/vim" ~/.vim/pack/linnet/start/linnet
 ```
 
-For Neovim use `~/.local/share/nvim/site/pack/linnet/start` instead.
-
-When the `linnet` executable is on `PATH`, `gq` formats through
-`linnet fmt -`; `:%!linnet fmt -` formats the whole buffer.
+With `linnet` on `PATH`, `gq` formats through `linnet fmt -`, and
+`:%!linnet fmt -` formats the whole buffer.
 
 ## Language server
 
-With Neovim's built-in client:
+In Neovim, start the built-in client:
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
@@ -34,6 +33,6 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
-Pass `"--std", "/path/to/stdlib"` after `"--stdio"` when the standard library
-is not next to the executable. Any LSP client for Vim works the same way; the
-server speaks JSON-RPC over stdio and needs no other configuration.
+If the standard library is not next to the executable, add
+`"--std", "/path/to/stdlib"` after `"--stdio"`. Other Vim LSP clients take
+the same command.

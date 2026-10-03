@@ -16,10 +16,9 @@ from linnet.torch import load
 model = load("src/model.linnet", generics={"H": 64, "Layers": 2}, weights="weights/")
 ```
 
-`linnet` itself runs the compiler (`linnet plan`), reads plans and
-SafeTensors checkpoints, and needs only NumPy. `linnet.torch`, `linnet.jax`,
-and `linnet.onnx` import their framework on first use. The compiler binary
-comes from `LINNET_BIN` or `PATH`.
+The core needs only NumPy, and each backend imports its framework on first
+use. The compiler binary comes from `LINNET_BIN` or `PATH`. Documentation:
+[linnet.franknoh.dev/docs/python](https://linnet.franknoh.dev/docs/python).
 
-Development: `uv sync --all-extras` installs every backend and the test
-dependencies; `uv run pytest`, `uv run pyright`, `uv run ruff check src tests`.
+Development: `uv sync --all-extras`, then `uv run pytest`, `uv run pyright`
+and `uv run ruff check src tests`.
