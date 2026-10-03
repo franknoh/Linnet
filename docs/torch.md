@@ -385,7 +385,10 @@ history = grpo(policy, engine, [Prompt(ids, answer) for ids, answer in data], re
    averaged over every completion token.
 
 `iterations` reuses each step's samples for that many optimizer steps; the
-ratio is then clipped to `1 - clip[0]`, `1 + clip[1]`. `beta` adds a KL
+ratio is then clipped to `1 - clip[0]`, `1 + clip[1]`. A group whose
+rewards are all equal has no advantage: each step reports their share as
+`uniform`, and `drop_uniform=True` leaves them out of the loss. `checkpoint`
+and `checkpoint_every` resume and save as `train`'s do. `beta` adds a KL
 penalty against `reference`, a frozen copy of the model. `grpo_loss` is the
 loss alone, for another loop.
 
