@@ -21,6 +21,7 @@ import struct
 import sys
 import tomllib
 import urllib.request
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -482,23 +483,50 @@ def cache_dir() -> Path:
     return base / "linnet" / "nest"
 
 
+# Seconds a registry request may wait for the server.
+TIMEOUT = 30.0
+
+
 def fetch(name: str, *, registry: str = REGISTRY, cache: str | Path | None = None) -> Path:
-    """Downloads a model's directory from the registry; returns the local path."""
+    """Downloads a model's directory from the registry; returns the local path.
+
+    Every file arrives before any is written, so a failed fetch leaves the
+    cached copy whole. When the registry cannot be reached, a cached copy is
+    used with a warning."""
     target = Path(cache) if cache is not None else cache_dir()
-    with urllib.request.urlopen(f"{registry}/index.json") as response:
-        document = json.loads(response.read().decode("utf-8"))
-    models = cast(list[dict[str, Any]], cast(dict[str, Any], document)["models"])
-    match = next((m for m in models if m["name"] == name), None)
+    directory = target / name
+    try:
+        document = json.loads(_get(f"{registry}/index.json").decode("utf-8"))
+        models = cast(list[dict[str, Any]], cast(dict[str, Any], document)["models"])
+        match = next((m for m in models if m["name"] == name), None)
+        files = (
+            {
+                relative: _get(f"{registry}/models/{name}/{relative}")
+                for relative in cast(list[str], match["files"])
+            }
+            if match is not None
+            else {}
+        )
+    except OSError as error:
+        if (directory / "nest.toml").exists():
+            warnings.warn(
+                f"the Nest registry is unreachable ({error}); using the cached `{name}`",
+                stacklevel=2,
+            )
+            return directory
+        raise NestError(f"cannot fetch `{name}` from the Nest registry: {error}") from error
     if match is None:
         raise NestError(f"Nest has no model `{name}`")
-    directory = target / name
-    directory.mkdir(parents=True, exist_ok=True)
-    for relative in cast(list[str], match["files"]):
+    for relative, content in files.items():
         destination = directory / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(f"{registry}/models/{name}/{relative}") as response:
-            destination.write_bytes(response.read())
+        destination.write_bytes(content)
     return directory
+
+
+def _get(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=TIMEOUT) as response:
+        return cast(bytes, response.read())
 
 
 def resolve(name_or_dir: str | Path, **fetch_options: Any) -> Card:

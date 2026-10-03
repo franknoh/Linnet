@@ -196,3 +196,25 @@ def test_hub_headers_come_from_the_files_the_card_names(monkeypatch: pytest.Monk
     parsed = nest.hub_safetensors_header("org/repo", "diffusion_pytorch_model.safetensors")
     assert parsed["decoder.conv_in.weight"]["shape"] == [512, 4, 3, 3]
     assert asked == ["bytes=0-7", f"bytes=8-{7 + len(header)}"]
+
+
+def test_fetch_falls_back_to_the_cached_copy(tmp_path: Path) -> None:
+    """A registry that cannot be reached leaves the cached card in use, with
+    a warning; with nothing cached, it is an error."""
+    registry = tmp_path / "registry"
+    (registry / "models/tiny").mkdir(parents=True)
+    (registry / "models/tiny/nest.toml").write_text("name = 'tiny'\n", encoding="utf-8")
+    index = {"models": [{"name": "tiny", "files": ["nest.toml"]}]}
+    (registry / "index.json").write_text(json.dumps(index), encoding="utf-8")
+    cache = tmp_path / "cache"
+
+    fetched = nest.fetch("tiny", registry=registry.as_uri(), cache=cache)
+    assert (fetched / "nest.toml").read_text(encoding="utf-8") == "name = 'tiny'\n"
+    with pytest.raises(nest.NestError, match="no model"):
+        nest.fetch("other", registry=registry.as_uri(), cache=cache)
+
+    gone = (tmp_path / "gone").as_uri()
+    with pytest.warns(UserWarning, match="unreachable"):
+        assert nest.fetch("tiny", registry=gone, cache=cache) == fetched
+    with pytest.raises(nest.NestError, match="cannot fetch"):
+        nest.fetch("tiny", registry=gone, cache=tmp_path / "empty")
