@@ -46,6 +46,7 @@ Build them from `std.nn.cache::write_slots`, `write_rows`, and
 | --- | --- |
 | `Engine(model, pack=4096)` | with `prefill_packed`, packs waiting prompts into passes of up to `pack` tokens; otherwise prompts go in passes of up to 8, each padded to its longest |
 | `Engine(model, mix=True)` | with `step_packed`, runs the decoding rows' step inside a prompt pass that fits the second compiled size (1024 tokens by default); `mix=False` keeps them apart |
+| `Engine(model, share=True)` | with packed passes, identical prompts admitted together pass once: the rest copy its cache rows and draw their own tokens; `share=False` passes each |
 | `engine.run(requests)` | `submit` for every request, then `step` until nothing is left |
 | `engine.submit(request)` | queues a request; returns its `Completion`, which fills in as it runs |
 | `engine.step()` | admits waiting requests into free rows, runs one decoding step, and returns the requests that finished, one step after they do |
