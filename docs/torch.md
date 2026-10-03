@@ -348,6 +348,7 @@ and MLP projection) trains on Alpaca as follows:
 | --- | --- | --- |
 | `linnet.train`, `compile="inductor"` | 4096 packed tokens | 260 ms per step (15.7K tokens/s), 36 GiB; held-out loss 1.91 to 1.37 in 40 steps |
 | `transformers.Trainer`, `compile=True` | 8 padded rows, 2 per step | 20 steps in 7 s, 22 GiB; loss 1.93 to 1.19 |
+| TRL `SFTTrainer` on four GPUs (DDP), `compile=True` | 8 padded rows per GPU, 2 per step | 30 steps in 17 s, 24 GiB per GPU; loss 2.05 to 1.31, token accuracy 0.57 to 0.66 |
 
 ### Reinforcement learning
 
@@ -376,7 +377,26 @@ history = grpo(policy, engine, [Prompt(ids, answer) for ids, answer in data], re
 `iterations` reuses each step's samples for that many optimizer steps; the
 ratio is then clipped to `1 - clip[0]`, `1 + clip[1]`. `beta` adds a KL
 penalty against `reference`, a frozen copy of the model. `grpo_loss` is the
-loss alone, for another loop. Training runs in one process.
+loss alone, for another loop.
+
+Under `torchrun`, each process samples its own prompts with its own engine
+(pass each its own `seed`), and the processes train one policy. The policy
+can be split by `fully_shard`: `load_weights` then gathers it a tensor at a
+time on every process. The loss is the mean over every process's tokens. A
+process with fewer packed batches runs empty ones, so every process makes
+the same collective calls. `linnet.train.reduce_gradients` and
+`clip_gradients` do the same for a loop of your own.
+
+The engine compiles a pass size the first time a step needs one, and the
+other processes wait for it meanwhile (about 100 s, a few times a run).
+`engine.warmup(prompt_lengths)` compiles them up front instead, but holds
+a captured CUDA graph's memory for every size it reaches.
+
+On four H100s, GRPO fine-tunes Llama 3.1 8B in full this way. The policy
+is split by `fully_shard` (AdamW), and each GPU runs its own engine over 16
+prompts × 8 completions per step. After compiling, a step takes 1.6 s to
+sample 512 completions and 1.5 s to train. Gathering the weights into
+every engine takes 109 ms, and the peak is 73.6 GiB per GPU.
 
 On one H100, GRPO with LoRA on Llama 3.1 8B (16 prompts, 8 completions
 each, up to 128 tokens) takes 1.1 s to sample and 0.6 s to train a step

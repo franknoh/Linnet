@@ -239,9 +239,9 @@ def train(
             loss.backward()
             total += loss.detach().double()
         if distributed:
-            _all_reduce_gradients(trained)
+            reduce_gradients(trained)
             dist.all_reduce(total)
-        norm = _clip(trained, clip) if clip is not None else None
+        norm = clip_gradients(trained, clip) if clip is not None else None
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         if schedule is not None:
@@ -266,10 +266,11 @@ def train(
     return history
 
 
-def _all_reduce_gradients(parameters: list[torch.Tensor]) -> None:
-    """Sums every gradient across processes: one collective per tensor, all
-    in flight at once, so no buffer the size of the model is made. A
-    parameter split by `fully_shard` has its part summed already."""
+def reduce_gradients(parameters: list[torch.Tensor]) -> None:
+    """Sums every gradient across the processes of `torch.distributed`: one
+    collective per tensor, all in flight at once, so no buffer the size of
+    the model is made. A parameter split by `fully_shard` has its part
+    summed already."""
     import torch.distributed as dist
 
     pending = [
@@ -285,9 +286,10 @@ def _split(tensor: torch.Tensor) -> bool:
     return callable(getattr(tensor, "to_local", None))
 
 
-def _clip(parameters: list[torch.Tensor], limit: float) -> float:
+def clip_gradients(parameters: list[torch.Tensor], limit: float) -> float:
     """Scales the gradients to a norm of `limit` at most; returns the norm
-    before. The parts of split parameters add up across processes."""
+    before. The parts of parameters split by `fully_shard` add up across
+    processes."""
     grads = [p.grad for p in parameters if p.grad is not None]
     if not any(_split(g) for g in grads):
         return float(torch.nn.utils.clip_grad_norm_(parameters, limit))
@@ -323,4 +325,14 @@ def _save(model: Any, directory: Path) -> None:
         model.save_weights(directory / "model.safetensors")
 
 
-__all__ = ["Batch", "Example", "History", "Step", "cosine_schedule", "pack", "train"]
+__all__ = [
+    "Batch",
+    "Example",
+    "History",
+    "Step",
+    "clip_gradients",
+    "cosine_schedule",
+    "pack",
+    "reduce_gradients",
+    "train",
+]

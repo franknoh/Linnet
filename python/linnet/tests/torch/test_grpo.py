@@ -2,12 +2,14 @@
 gradient, weights copied from a policy with adapters into the model that
 samples, and a policy that learns what its reward asks for."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
 
 from __future__ import annotations
 
 import itertools
+import os
 import random
+import socket
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -16,7 +18,7 @@ import torch
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
 from linnet.serve import Completion, Request
-from linnet.torch import LinnetModule, load
+from linnet.torch import LinnetModule, fully_shard, load
 from linnet.train.grpo import Prompt, group_advantages, grpo, grpo_loss
 
 REPO = Path(__file__).resolve().parents[4]
@@ -183,3 +185,57 @@ def test_grpo_reuses_samples_against_a_reference(weights: Path) -> None:
     assert history[1].kl is not None and history[1].kl > 0
     with pytest.raises(ValueError, match="reference"):
         grpo(policy, None, [], _threes, optimizer=torch.optim.SGD(trained), steps=1, beta=0.1)
+
+
+def _grpo_rank(rank: int, world: int, port: int, weights: str) -> None:
+    import torch.distributed as dist
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        policy = _model(Path(weights), compile=True, trainable=True)
+        fully_shard(policy)
+        sampler = _Sampler(_model(Path(weights)))
+        start = torch.stack([p.detach().double().sum() for p in sampler.model.parameters()])
+        trained = [p for p in policy.parameters() if p.requires_grad]
+        # The first process packs four batches a step, the second two.
+        history = grpo(
+            policy,
+            sampler,
+            _prompts(),
+            _threes,
+            optimizer=torch.optim.AdamW(trained, lr=3e-2),
+            steps=3,
+            group=4,
+            prompts_per_step=2 if rank == 0 else 1,
+            max_new_tokens=6,
+            tokens=16,
+            seed=rank,
+        )
+        assert len(history) == 3
+
+        def same_everywhere(value: torch.Tensor) -> torch.Tensor:
+            everyone = [torch.zeros_like(value) for _ in range(world)]
+            dist.all_gather(everyone, value)
+            assert all(torch.equal(everyone[0], other) for other in everyone[1:])
+            return value
+
+        same_everywhere(torch.tensor([[s.reward, s.loss, s.length] for s in history]))
+        # Each engine took the whole of every split weight, the same everywhere.
+        sampler.load_weights(policy)
+        assert sampler.model.get_parameter("root.embedding.weight").shape == (11, 8)
+        end = same_everywhere(
+            torch.stack([p.detach().double().sum() for p in sampler.model.parameters()])
+        )
+        assert not torch.equal(start, end)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_grpo_across_processes(weights: Path) -> None:
+    """Two processes sample on their own and train one sharded policy, each
+    packing a different number of batches."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    torch.multiprocessing.spawn(_grpo_rank, args=(2, port, str(weights)), nprocs=2)

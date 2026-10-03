@@ -35,7 +35,7 @@ from typing import Any
 import torch
 
 from ..serve import Request
-from . import Batch, Example, pack
+from . import Batch, Example, clip_gradients, pack, reduce_gradients
 
 
 @dataclass(frozen=True)
@@ -159,10 +159,21 @@ def grpo(
     step (`grpo_loss`, the ratio clipped to `1 - clip[0]`, `1 + clip[1]`),
     with `beta` times the KL estimate against `reference` (a frozen model
     with the same entry) when `beta` is set. `clip_grad` caps the gradient
-    norm; `schedule` steps after each optimizer step."""
+    norm; `schedule` steps after each optimizer step.
+
+    Under `torch.distributed`, each process samples its own `prompts` with
+    its own engine and the processes train together: the loss is the mean
+    over every process's learned tokens, the gradients are summed (or
+    reduced into the parts of a policy split by `fully_shard`), and the
+    step's numbers cover every process. A process with fewer batches runs
+    empty ones, so every process makes the same calls. Give each process its
+    own `seed`; all stop when any runs out of prompts."""
+    import torch.distributed as dist
+
     if beta and reference is None:
         raise ValueError("a KL penalty (`beta`) needs a `reference` model")
     device = next(policy.parameters()).device
+    distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     trained = [p for group_ in optimizer.param_groups for p in group_["params"]]
     draws = random.Random(seed)
     stop = frozenset(eos)
@@ -170,7 +181,12 @@ def grpo(
     history: list[GrpoStep] = []
     for step in range(1, steps + 1):
         chosen = [_prompt(p) for p in itertools.islice(source, prompts_per_step)]
-        if not chosen:
+        if distributed:
+            ready = torch.tensor([float(bool(chosen))], device=device)
+            dist.all_reduce(ready, op=dist.ReduceOp.MIN)
+            if not ready.item():
+                break
+        elif not chosen:
             break
 
         begin = time.perf_counter()
@@ -199,7 +215,17 @@ def grpo(
         advantages = group_advantages(rewards, group, scale=scale_rewards)
         examples = [Example.prompted(c.request.prompt, c.tokens) for c in completions]
         batches = list(pack(examples, tokens))
-        count = float(max(1, sum(batch.count for batch in batches)))
+        count = float(sum(batch.count for batch in batches))
+        if distributed:
+            # The count over every process, and as many batches as the
+            # process with the most: a sharded policy gathers in each call.
+            totals = torch.tensor([count], dtype=torch.float64, device=device)
+            dist.all_reduce(totals)
+            count = float(totals.item())
+            most = torch.tensor([len(batches)], device=device)
+            dist.all_reduce(most, op=dist.ReduceOp.MAX)
+            batches += [_empty(tokens)] * (int(most.item()) - len(batches))
+        count = max(1.0, count)
         prepared = [_Prepared(batch, advantages, count, device) for batch in batches]
         if iterations > 1 or reference is not None:
             with torch.no_grad():
@@ -232,22 +258,39 @@ def grpo(
                 clipped_total += float(share)
                 if kl is not None:
                     kl_total = (kl_total or 0.0) + float(kl)
-            norm = (
-                float(torch.nn.utils.clip_grad_norm_(trained, clip_grad))
-                if clip_grad is not None
-                else None
-            )
+            if distributed:
+                reduce_gradients(trained)
+                sums = torch.tensor(
+                    [loss_total, clipped_total, kl_total or 0.0], dtype=torch.float64, device=device
+                )
+                dist.all_reduce(sums)
+                loss_total, clipped_total = float(sums[0]), float(sums[1])
+                kl_total = float(sums[2]) if kl_total is not None else None
+            norm = clip_gradients(trained, clip_grad) if clip_grad is not None else None
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             if schedule is not None:
                 schedule.step()
 
-        mean = sum(rewards) / len(rewards)
+        # Over every process: the rewards' sum and sum of squares, the
+        # completions, and their tokens.
+        moments = [
+            sum(rewards),
+            sum(r * r for r in rewards),
+            float(len(rewards)),
+            float(sum(len(c.tokens) for c in completions)),
+        ]
+        if distributed:
+            summed = torch.tensor(moments, dtype=torch.float64, device=device)
+            dist.all_reduce(summed)
+            moments = [float(value) for value in summed]
+        total, squares, n, generated = moments
+        mean = total / n
         record = GrpoStep(
             step=step,
             reward=mean,
-            reward_std=math.sqrt(sum((r - mean) ** 2 for r in rewards) / len(rewards)),
-            length=sum(len(c.tokens) for c in completions) / len(completions),
+            reward_std=math.sqrt(max(0.0, squares / n - mean * mean)),
+            length=generated / n,
             loss=loss_total,
             clipped=clipped_total,
             kl=kl_total,
@@ -264,6 +307,12 @@ def grpo(
 
 def _prompt(value: Prompt | Sequence[int]) -> Prompt:
     return value if isinstance(value, Prompt) else Prompt(value)
+
+
+def _empty(size: int) -> Batch:
+    """A batch that learns nothing, run so every process makes the same calls."""
+    zeros = torch.zeros(size, dtype=torch.int32)
+    return Batch(zeros, zeros, zeros, zeros.long(), torch.zeros(size))
 
 
 class _Prepared:
