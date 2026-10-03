@@ -290,6 +290,15 @@ train(model, pack(examples_of_this_process, tokens=4096), optimizer=optimizer, s
 - `save_weights` gathers the parts. Every process calls it, and the first
   writes the file.
 
+On four H100s, Llama 3.1 8B fine-tunes in full this way. The run used f32
+parts, AdamW, and 4096 packed tokens per process per step; held-out Alpaca
+loss went from 1.91 to 1.35 in 30 steps.
+
+| `compile` | Step | Tokens/s, four GPUs | Peak per GPU |
+| --- | --- | --- | --- |
+| `"inductor"` | 549 ms | 29.8K | 47.5 GiB |
+| `True` | 729 ms | 22.5K | 54.0 GiB |
+
 PyTorch's own `fully_shard` cannot shard a Linnet model. It gathers a
 module's parameters in hooks around that module's `forward`, and generated
 code computes every block in one function without calling any of them.
