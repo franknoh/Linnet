@@ -376,7 +376,15 @@ history = grpo(policy, engine, [Prompt(ids, answer) for ids, answer in data], re
 `iterations` reuses each step's samples for that many optimizer steps; the
 ratio is then clipped to `1 - clip[0]`, `1 + clip[1]`. `beta` adds a KL
 penalty against `reference`, a frozen copy of the model. `grpo_loss` is the
-loss alone, for another loop. Training runs in one process.
+loss alone, for another loop.
+
+Under `torchrun`, each process samples its own prompts with its own engine
+(pass each its own `seed`), and the processes train one policy. The policy
+can be split by `fully_shard`: `load_weights` then gathers it a tensor at a
+time on every process. The loss is the mean over every process's tokens. A
+process with fewer packed batches runs empty ones, so every process makes
+the same collective calls. `linnet.train.reduce_gradients` and
+`clip_gradients` do the same for a loop of your own.
 
 On one H100, GRPO with LoRA on Llama 3.1 8B (16 prompts, 8 completions
 each, up to 128 tokens) takes 1.1 s to sample and 0.6 s to train a step

@@ -351,7 +351,9 @@ class LinnetModule(nn.Module):
         being trained into the copy a serving engine samples from. Every
         parameter and bound buffer goes by path, cast to this model's dtype.
         A weight `source` adapts (`add_lora`) arrives with its adapter's
-        product added in, so this model needs no adapters."""
+        product added in, so this model needs no adapters. A source split by
+        `fully_shard` is gathered a tensor at a time: every process calls
+        this."""
         adapted: set[str] = set()
         scale = 0.0
         lora = getattr(source, "lora", None)
@@ -364,7 +366,7 @@ class LinnetModule(nn.Module):
             for path, tensor in _all_tensors(self):
                 if path not in theirs:
                     raise PlanError(f"`{path}` is not among the source model's weights")
-                value = theirs[path]
+                value = _whole(theirs[path])
                 owner, leaf = owner_of(self, path)
                 their_owner, _ = owner_of(source, path)
                 absent = leaf in owner.absent_params
