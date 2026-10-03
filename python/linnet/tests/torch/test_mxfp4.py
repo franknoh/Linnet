@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file  # type: ignore[import-untyped]
@@ -238,3 +239,46 @@ def test_the_routed_experts_on_cuda(
     torch.testing.assert_close(got, combined, atol=2e-2 * float(combined.abs().max()), rtol=0)
     assert isinstance(model, CompiledLinnetModule)
     assert "_mxfp4_grouped(" in model.generated_source("combined")
+
+
+@pytest.mark.parametrize("rows", [3, 40])
+def test_jax_multiplies_the_chosen_experts(
+    model_files: tuple[Path, Path, torch.Tensor, torch.Tensor], rows: int
+) -> None:
+    """Generated JAX keeps one dequantized copy of the experts, made once in
+    `prepare` and shared by every entry, and multiplies the (row, choice)
+    pairs by it (`linnet.jax.moe`): a gather for a few pairs, a grouped
+    product over the pairs sorted by expert for many."""
+    pytest.importorskip("jax")
+    import jax
+    import jax.numpy as jnp
+
+    from linnet.jax import load_model
+
+    source, weights_file, blocks, scales = model_files
+    weight = _dequantized(blocks, scales)
+    model = load_model(source, generics=GENERICS, weights=weights_file, std_root=STDLIB)
+    x, each, experts, weights = _routed_inputs(rows, "cpu", torch.float32)
+    taken = weight[experts.long()]
+    shared = torch.einsum("ri,rkoi->rko", x, taken)
+    apart = torch.einsum("rki,rkoi->rko", each, taken)
+    expected = {
+        "each": apart,
+        "shared": shared,
+        "routed": shared,
+        "combined": (apart * weights[..., None]).sum(1),
+    }
+    arrays = [jnp.asarray(t.numpy()) for t in (x, each, experts, weights)]
+    got = {
+        "each": model.run_entry("each", [arrays[1], arrays[2]]),
+        "shared": model.run_entry("shared", [arrays[0][:, None], arrays[2]]),
+        "routed": model.run_entry("routed", [arrays[0], arrays[2]]),
+        "combined": model.run_entry("combined", [arrays[1], arrays[2], arrays[3]]),
+    }
+    # f32 products, in TF32 on a GPU under the fast numerics.
+    tolerance = 3e-3 if jax.default_backend() == "gpu" else 1e-5
+    for name, value in got.items():
+        want = expected[name].numpy()
+        error = float(np.abs(np.asarray(value) - want).max())
+        assert error <= tolerance * float(np.abs(want).max()), name
+    assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]

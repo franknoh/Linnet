@@ -63,45 +63,6 @@ the step, the dequantization runs as its own pass every call (44 tokens per
 second for 8B), so JAX dequantizes once when the model loads and then
 computes, and holds its weights, as in bf16.
 
-## MXFP4 experts
-
-gpt-oss publishes its experts in MXFP4, 4.25 bits a weight. The bodies of
-`mxfp4_experts` and `mxfp4_experts_shared` dequantize every expert, gather
-the chosen ones and multiply, accumulating in `f32`; since the
-dequantization reads nothing but weights, a backend that prepares
-weight-only work (`--prepare`) does it once at load and keeps the experts in
-16 bits. PyTorch on CUDA instead runs a Triton kernel (`linnet.torch.kernels`)
-for a decoding step's few rows: each chosen expert's bytes are read as they
-are, a quarter of a 16-bit weight's, and unpacked in registers eight at a
-time -- each 32-bit word of a block shifted and masked into four pairs of
-`f16`s, every E2M1 nibble's bits placed in one -- with the block's scale
-applied once per 32 weights. On an H100 it reads gpt-oss-20b's experts at
-about 2 TB/s for one to four rows, where unpacking each nibble on its own
-read 1.4.
-
-Many rows at once -- a prompt, a serving step -- take
-`mxfp4_linear_experts_shared` and `mxfp4_combine_experts`, whose bodies
-dequantize every expert and take `std.nn.moe`'s dense form (prepared once at
-load where a backend prepares). On a Hopper GPU in bf16, PyTorch instead
-sorts the (row, choice) pairs by expert and multiplies each expert by its
-pairs' inputs (`linnet.torch.moe`): with OpenAI's
-[`triton_kernels`](https://github.com/triton-lang/triton/tree/main/python/triton_kernels)
-installed, its MXFP4 product reads the four-bit weights in a layout swizzled
-for the GPU once; without it, the experts are dequantized to bf16 once and
-`torch._grouped_mm` multiplies them. `triton_kernels` is not on PyPI; install
-the one matching your Triton:
-
-```bash
-pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(python -c 'import triton; print(triton.__version__)')#subdirectory=python/triton_kernels"
-```
-
-With it and CUDA graphs, gpt-oss-20b on one H100 takes a 512-token prompt in
-14.1 ms rather than 25.0, decodes at 368 tokens per second, and serves 256
-requests at 5349 tokens per second (vLLM 17.8 ms, 299 and 4313). Without CUDA graphs
-each routed product also costs `triton_kernels`' Python on the host, about
-0.4 ms a call, which a captured step does not pay: the same prompt takes
-34.9 ms under `torch.compile` alone.
-
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
 rounding each group to the nearest level:
 
@@ -144,6 +105,54 @@ a perplexity of 9.55 and rounding to nearest 10.28. The hugging-quants GPTQ
 checkpoint (activation order) imports to 9.98, and the AWQ one to 9.98. Both
 decode on the tinygemm path in 10.3 GiB, at 192 and 214 tokens per second
 (the gather costs GPTQ's order), against 134 in bf16.
+
+## MXFP4 experts
+
+gpt-oss publishes its experts in MXFP4, 4.25 bits a weight. The bodies of
+`mxfp4_experts` and `mxfp4_experts_shared` dequantize every expert, gather
+the chosen ones and multiply, accumulating in `f32`; since the
+dequantization reads nothing but weights, a backend that prepares
+weight-only work (`--prepare`) does it once at load and keeps the experts in
+16 bits. PyTorch on CUDA instead runs a Triton kernel (`linnet.torch.kernels`)
+for a decoding step's few rows: each chosen expert's bytes are read as they
+are, a quarter of a 16-bit weight's, and unpacked in registers eight at a
+time -- each 32-bit word of a block shifted and masked into four pairs of
+`f16`s, every E2M1 nibble's bits placed in one -- with the block's scale
+applied once per 32 weights. On an H100 it reads gpt-oss-20b's experts at
+about 2 TB/s for one to four rows, where unpacking each nibble on its own
+read 1.4.
+
+Many rows at once -- a prompt, a serving step -- take
+`mxfp4_linear_experts_shared` and `mxfp4_combine_experts`, whose bodies
+dequantize every expert and take `std.nn.moe`'s dense form (prepared once at
+load where a backend prepares). On a Hopper GPU in bf16, PyTorch instead
+sorts the (row, choice) pairs by expert and multiplies each expert by its
+pairs' inputs (`linnet.torch.moe`): with OpenAI's
+[`triton_kernels`](https://github.com/triton-lang/triton/tree/main/python/triton_kernels)
+installed, its MXFP4 product reads the four-bit weights in a layout swizzled
+for the GPU once; without it, the experts are dequantized to bf16 once and
+`torch._grouped_mm` multiplies them. `triton_kernels` is not on PyPI; install
+the one matching your Triton:
+
+```bash
+pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(python -c 'import triton; print(triton.__version__)')#subdirectory=python/triton_kernels"
+```
+
+With it and CUDA graphs, gpt-oss-20b on one H100 takes a 512-token prompt in
+14.1 ms rather than 25.0, decodes at 368 tokens per second, and serves 256
+requests at 5349 tokens per second (vLLM 17.8 ms, 299 and 4313). Without CUDA graphs
+each routed product also costs `triton_kernels`' Python on the host, about
+0.4 ms a call, which a captured step does not pay: the same prompt takes
+34.9 ms under `torch.compile` alone.
+
+In JAX, generated code dequantizes the experts to bf16 once, when the model
+loads (`--prepare`), and `linnet.jax.moe` multiplies the pairs by that copy.
+A decoding step's few pairs read their experts' weights inside one reduction.
+A prompt's many go through a Pallas kernel on the GPU that multiplies each
+expert by the tiles of rows that chose it. XLA's own `ragged_dot` multiplies
+every row by every expert and masks the rest, as the bodies do, so it is
+what runs on the CPU. The kernel reads the bf16 copy, four times the bytes
+of MXFP4, so a prompt takes longer than PyTorch's.
 
 ## Checkpoints
 
