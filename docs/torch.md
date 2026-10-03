@@ -256,6 +256,12 @@ positions, then clips the gradient norm to `clip` (1.0) and steps the
 schedule. It saves the weights to `save_to`, or the adapters alone after
 `add_lora`.
 
+Under `torchrun`, each process trains a copy on its own batches: `train`
+sums the learned-position counts and the gradients across processes, so
+every copy takes the same step. Pass
+`torch.distributed.optim.ZeroRedundancyOptimizer` to split the optimizer
+state. Only the first process saves.
+
 ### Other trainers
 
 `CausalLM` gives a Linnet decoder the call a transformers-style trainer

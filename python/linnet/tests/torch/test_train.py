@@ -2,11 +2,13 @@
 masks, gradient accumulation following the mean over every batch of a
 step, and a training loop that lowers the loss and saves what it trained."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
 
 from __future__ import annotations
 
 import itertools
+import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -55,7 +57,7 @@ def test_pack_starts_a_batch_rather_than_split_a_sequence() -> None:
 
 
 @pytest.fixture
-def model(tmp_path: Path) -> LinnetModule:
+def weights(tmp_path: Path) -> Path:
     skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
     generator = torch.Generator().manual_seed(0)
     tensors = {
@@ -63,15 +65,26 @@ def model(tmp_path: Path) -> LinnetModule:
         for name, parameter in skeleton.named_parameters()
         if not name.endswith(".bias")
     }
-    save_file(tensors, str(tmp_path / "model.safetensors"))
+    directory = tmp_path / "weights"
+    directory.mkdir()
+    save_file(tensors, str(directory / "model.safetensors"))
+    return directory
+
+
+def _load(weights: Path) -> LinnetModule:
     return load(
         LLAMA,
         generics=GENERICS,
         std_root=STDLIB,
-        weights=tmp_path,
+        weights=weights,
         compile=True,
         trainable=True,
     )
+
+
+@pytest.fixture
+def model(weights: Path) -> LinnetModule:
+    return _load(weights)
 
 
 def _examples() -> list[Example]:
@@ -139,3 +152,46 @@ def test_adapters_alone_are_saved(model: LinnetModule, tmp_path: Path) -> None:
     )
     assert (tmp_path / "run" / "adapters.safetensors").exists()
     assert not (tmp_path / "run" / "model.safetensors").exists()
+
+
+def _data_parallel_rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
+    import torch.distributed as dist
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        model = _load(Path(weights))
+        mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
+        trained = [p for p in model.parameters() if p.requires_grad]
+        train(model, itertools.repeat(mine), optimizer=torch.optim.SGD(trained, lr=0.1), steps=3)
+        parameters = {n: p.detach().clone() for n, p in model.named_parameters()}
+        torch.save(parameters, Path(out) / f"rank{rank}.pt")
+    finally:
+        dist.destroy_process_group()
+
+
+def test_data_parallel_steps_match_one_process(weights: Path, tmp_path: Path) -> None:
+    """Two processes, each on its own batch, take the steps one process
+    takes accumulating both batches."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    torch.multiprocessing.spawn(
+        _data_parallel_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2
+    )
+    ranks = [torch.load(tmp_path / f"rank{rank}.pt") for rank in range(2)]
+
+    model = _load(weights)
+    examples = _examples()
+    both = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
+    trained = [p for p in model.parameters() if p.requires_grad]
+    train(
+        model,
+        itertools.cycle(both),
+        optimizer=torch.optim.SGD(trained, lr=0.1),
+        steps=3,
+        accumulate=2,
+    )
+    for name, parameter in model.named_parameters():
+        torch.testing.assert_close(ranks[0][name], ranks[1][name])
+        torch.testing.assert_close(ranks[0][name], parameter.detach(), atol=1e-5, rtol=1e-4)
