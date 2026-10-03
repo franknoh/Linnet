@@ -85,3 +85,12 @@ def test_padding_free_rows_keep_their_sequences_apart(model: LinnetModule) -> No
     loss = CausalLM(model)(input_ids=input_ids, labels=labels, position_ids=position_ids)["loss"]
     want = _reference(model, [input_ids[0, :5], input_ids[0, 5:]], [labels[0, :5], labels[0, 5:]])
     torch.testing.assert_close(loss, want, atol=1e-5, rtol=1e-5)
+
+
+def test_a_step_count_makes_the_loss_its_share_of_the_step(model: LinnetModule) -> None:
+    """With `num_items_in_batch` (transformers' count over a whole
+    accumulated step), the loss is the sum over it, not this batch's mean."""
+    input_ids = torch.tensor([[3, 1, 4, 1, 5, 9]])
+    mean = CausalLM(model)(input_ids=input_ids)["loss"]
+    share = CausalLM(model)(input_ids=input_ids, num_items_in_batch=torch.tensor(10))["loss"]
+    torch.testing.assert_close(share, mean * 5 / 10)
