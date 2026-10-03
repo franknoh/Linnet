@@ -652,18 +652,22 @@ def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, p
     options: dict[str, Any] = {"graphs": False, "pack": pack} if backend == "torch" else {}
     done, _ = Engine(model, buckets=[8, 16, 32], **options).run(requests)
     assert done[1].logprobs == [] and done[1].top_logprobs == []
+    # JAX and ONNX Runtime on a GPU multiply f32 in TF32: about 1e-3 from the
+    # CPU reference, relative to the log-probability.
+    tf32 = backend != "torch" and torch.cuda.is_available()
+    rtol, atol = (2e-3, 5e-3) if tf32 else (1e-4, 1e-4)
     for completion in (done[0], done[2]):
         wanted = completion.request.logprobs
         assert wanted is not None
         chosen, alternatives = _reference_logprobs(
             reference, completion.request, completion.tokens, 3
         )
-        np.testing.assert_allclose(completion.logprobs, chosen, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(completion.logprobs, chosen, rtol=rtol, atol=atol)
         assert [len(top) for top in completion.top_logprobs] == [wanted] * len(completion.tokens)
         for got, expected in zip(completion.top_logprobs, alternatives, strict=True):
             assert [t for t, _ in got] == [t for t, _ in expected[:wanted]]
             np.testing.assert_allclose(
-                [v for _, v in got], [v for _, v in expected[:wanted]], rtol=1e-4, atol=1e-4
+                [v for _, v in got], [v for _, v in expected[:wanted]], rtol=rtol, atol=atol
             )
     # Greedy: each token is the most likely one.
     assert [top[0][0] for top in done[0].top_logprobs] == done[0].tokens

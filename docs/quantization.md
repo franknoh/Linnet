@@ -95,9 +95,12 @@ the one matching your Triton:
 pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v$(python -c 'import triton; print(triton.__version__)')#subdirectory=python/triton_kernels"
 ```
 
-With it, gpt-oss-20b on one H100 takes a 512-token prompt in 20.5 ms rather
-than 25.0 and a 64-row serving step in 8.3 ms rather than 11.5, and serves
-256 requests at 4702 tokens per second (vLLM 4313).
+With it and CUDA graphs, gpt-oss-20b on one H100 takes a 512-token prompt in
+14.4 ms rather than 25.0, decodes at 367 tokens per second, and serves 256
+requests at 5349 tokens per second (vLLM 303 and 4313). Without CUDA graphs
+each routed product also costs `triton_kernels`' Python on the host, about
+0.4 ms a call, which a captured step does not pay: the same prompt takes
+34.9 ms under `torch.compile` alone.
 
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
 rounding each group to the nearest level:

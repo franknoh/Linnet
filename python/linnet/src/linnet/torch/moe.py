@@ -9,8 +9,9 @@ Otherwise the experts are dequantized to bf16 and `torch._grouped_mm`
 multiplies them. Either copy is made on the first call and kept for the
 weights it came from, until they are written again.
 
-`mxfp4_grouped` is a custom op, so a compiled step calls it as it is and a
-CUDA graph captures its kernels.
+`mxfp4_grouped` routes the pairs with plain tensor arithmetic, which a
+compiled step fuses, and multiplies them in the custom op
+`linnet::mxfp4_grouped`, which it calls as it is and a CUDA graph captures.
 """
 
 # PyTorch's custom-op registry and `triton_kernels` carry no complete types.
@@ -102,26 +103,16 @@ def dequantized(blocks: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     return entry[1]
 
 
-@torch.library.custom_op("linnet::mxfp4_grouped", mutates_args=())
-def mxfp4_grouped(
-    x: torch.Tensor,
-    blocks: torch.Tensor,
-    scales: torch.Tensor,
-    experts: torch.Tensor,
-    shared: bool,
-) -> torch.Tensor:
-    """`y[r, k, o] = sum_i x[row, i] * W[experts[r, k], o, i]`, `[R, K, Out]`,
-    with `row` the pair's row of `x` ([R, In]) when `shared` and the pair
-    itself otherwise (`x` [R, K, In]). The pairs are sorted by expert, each
-    expert multiplied by its pairs' inputs, and the products put back in
-    order. No host synchronization: a CUDA graph holds it."""
-    rows, chosen = experts.shape
-    count, out_features = blocks.shape[0], blocks.shape[1]
+def routes(experts: torch.Tensor, count: int, shared: bool) -> tuple[torch.Tensor, ...]:
+    """The (row, choice) pairs of `experts` ([R, K]) sorted by expert: the
+    pair at each sorted position (`order`), the row of the input it reads
+    (`sources`: the pair's row when `shared`, the pair itself otherwise), and
+    each expert's number of pairs (`counts`), all int32. Each pair is placed
+    by a running count per expert rather than a sort. Plain tensor arithmetic,
+    so a compiled step fuses it."""
+    chosen = experts.shape[1]
     flat = experts.reshape(-1)
     pairs = flat.numel()
-    # Each pair's place among the pairs sorted by expert, from a running
-    # count per expert rather than a sort: `order[i]` is the pair at sorted
-    # position `i`.
     # Experts by pairs, so the running count is a scan along the inner axis
     # (along the outer one, PyTorch's scan is many times slower).
     one_hot = torch.arange(count, device=flat.device)[:, None] == flat[None, :]
@@ -131,44 +122,80 @@ def mxfp4_grouped(
     place = (starts[flat] + rank).long()
     order = torch.empty(pairs, dtype=torch.long, device=flat.device)
     order.scatter_(0, place, torch.arange(pairs, device=flat.device))
-    inputs = x if shared else x.reshape(pairs, -1)
     sources = order // chosen if shared else order
+    return order.to(torch.int32), sources.to(torch.int32), counts
+
+
+@torch.library.custom_op("linnet::mxfp4_grouped", mutates_args=())
+def mxfp4_grouped_routed(
+    x: torch.Tensor,
+    blocks: torch.Tensor,
+    scales: torch.Tensor,
+    order: torch.Tensor,
+    sources: torch.Tensor,
+    counts: torch.Tensor,
+) -> torch.Tensor:
+    """Each sorted pair's input row `x[sources[i]]` times its expert's MXFP4
+    weight, written to row `order[i]` of the `[pairs, Out]` result, the
+    pairs sorted as `routes` gives them. No host synchronization: a CUDA
+    graph holds it."""
+    pairs = order.numel()
     if _triton_kernels():
         from triton_kernels.matmul import matmul
         from triton_kernels.tensor_details.ragged_tensor import make_ragged_tensor_metadata
 
         weight, precision = swizzled(blocks, scales)
-        # Row `i` of the product reads input `sources[i]` and is written to
-        # pair `order[i]`: the products come back in the pairs' order.
-        y = matmul(
-            inputs,
+        return matmul(
+            x,
             weight,
             None,
             a_ragged_metadata=make_ragged_tensor_metadata(counts, pairs),
-            gather_indx=sources.to(torch.int32),
-            scatter_indx=order.to(torch.int32),
+            gather_indx=sources,
+            scatter_indx=order,
             precision_config=precision,
         )
-        return y.reshape(rows, chosen, out_features)
     weight = dequantized(blocks, scales)
     grouped_mm: Any = getattr(torch, "_grouped_mm")  # noqa: B009 - private, checked by `available`
-    y = grouped_mm(
-        inputs[sources], weight.transpose(-2, -1), offs=counts.cumsum(0, dtype=torch.int32)
-    )
-    unsorted = torch.empty_like(y).index_copy_(0, order, y)
-    return unsorted.reshape(rows, chosen, out_features)
+    y = grouped_mm(x[sources], weight.transpose(-2, -1), offs=counts.cumsum(0, dtype=torch.int32))
+    return torch.empty_like(y).index_copy_(0, order.long(), y)
 
 
-@mxfp4_grouped.register_fake
+@mxfp4_grouped_routed.register_fake
 def _(
+    x: torch.Tensor,
+    blocks: torch.Tensor,
+    scales: torch.Tensor,
+    order: torch.Tensor,
+    sources: torch.Tensor,
+    counts: torch.Tensor,
+) -> torch.Tensor:
+    return x.new_empty(order.numel(), blocks.shape[1])
+
+
+def mxfp4_grouped(
     x: torch.Tensor,
     blocks: torch.Tensor,
     scales: torch.Tensor,
     experts: torch.Tensor,
     shared: bool,
 ) -> torch.Tensor:
+    """`y[r, k, o] = sum_i x[row, i] * W[experts[r, k], o, i]`, `[R, K, Out]`,
+    with `row` the pair's row of `x` ([R, In]) when `shared` and the pair
+    itself otherwise (`x` [R, K, In]): the pairs routed (`routes`, which a
+    compiled step fuses) and each expert multiplied by its pairs' inputs
+    (`linnet::mxfp4_grouped`, called as it is)."""
     rows, chosen = experts.shape
-    return x.new_empty(rows, chosen, blocks.shape[1])
+    order, sources, counts = routes(experts, blocks.shape[0], shared)
+    inputs = x if shared else x.reshape(rows * chosen, -1)
+    y = mxfp4_grouped_routed(inputs, blocks, scales, order, sources, counts)
+    return y.reshape(rows, chosen, blocks.shape[1])
 
 
-__all__ = ["available", "dequantized", "mxfp4_grouped", "swizzled"]
+__all__ = [
+    "available",
+    "dequantized",
+    "mxfp4_grouped",
+    "mxfp4_grouped_routed",
+    "routes",
+    "swizzled",
+]
