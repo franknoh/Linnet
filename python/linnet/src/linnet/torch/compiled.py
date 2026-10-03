@@ -144,7 +144,8 @@ class CompiledLinnetModule(LinnetModule):
         chosen = [patterns] if isinstance(patterns, str) else list(patterns)
         generator = torch.Generator().manual_seed(seed)
         adapted: list[str] = []
-        for path, weight in self.root.named_parameters(remove_duplicate=False):
+        # Listed first: registering adapters changes the blocks' parameters.
+        for path, weight in list(self.root.named_parameters(remove_duplicate=False)):
             owner, leaf = owner_of(self, path)
             if (
                 leaf != "weight"

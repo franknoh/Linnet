@@ -367,9 +367,12 @@ int run_graph_export(std::span<const std::string_view> args,
                     return usage_error("--lora-rank must be a positive integer");
                 }
             } else if (arg == "--lora-alpha") {
-                const auto [end, error] = std::from_chars(
-                    value.data(), value.data() + value.size(), export_options.lora_alpha);
-                if (error != std::errc{} || end != value.data() + value.size()) {
+                // `std::strtod`: not every standard library parses floats
+                // with `std::from_chars`.
+                const std::string text(value);
+                char* end = nullptr;
+                export_options.lora_alpha = std::strtod(text.c_str(), &end);
+                if (text.empty() || end != text.c_str() + text.size()) {
                     return usage_error("--lora-alpha must be a number");
                 }
             } else if (arg == "--absent-file") {
