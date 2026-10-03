@@ -229,6 +229,23 @@ A model trains without weight-only work done ahead or hand-captured CUDA
 graphs; a model that ran without gradients compiles its entries again once
 any parameter requires them.
 
+### Losses
+
+`std.nn.loss` holds the losses, over flattened tokens (`[N, V]` logits),
+computed in f32:
+
+| Op | Result |
+| --- | --- |
+| `cross_entropy(logits, targets, weights)` | `sum_n weights[n] * -log p(targets[n])`; pass `mask / count` for a mean over `count` tokens |
+| `token_log_probs(logits, targets)` | each row's log-probability of its target, `[N]` |
+| `log_softmax(logits)`, `entropy(logits)` | per row |
+| `linear_cross_entropy(hidden, weight, targets, weights)` | `cross_entropy` of the output head `hidden @ weight.T` |
+| `linear_token_log_probs(hidden, weight, targets)` | `token_log_probs` of the output head |
+
+The `linear_` forms never hold the `[N, V]` logits in PyTorch: they run a
+block of about 1 GiB of f32 logits at a time (2 GB in full for 4096 tokens
+of Llama 3's vocabulary), and accumulate the weight's gradient in f32.
+
 ## Functions
 
 An `entry` declared at module level, outside any block, is a function of

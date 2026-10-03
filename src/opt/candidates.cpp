@@ -95,6 +95,16 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.mxfp4_experts(shared)",
          equivalent,
          {"Triton on CUDA for a few rows; the chosen experts unpacked otherwise"}},
+        // An output head and its loss a block of tokens at a time, never
+        // holding the [N, V] logits; the sums run in another order.
+        {"std.nn.loss::linear_cross_entropy",
+         "linnet.linear_cross_entropy",
+         equivalent,
+         {"PyTorch: blocks of rows, the gradient computed with the loss"}},
+        {"std.nn.loss::linear_token_log_probs",
+         "linnet.linear_token_log_probs",
+         equivalent,
+         {"PyTorch: blocks of rows, multiplied again in backward"}},
         {"std.nn.parallel::all_reduce",
          "torch.distributed.all_reduce",
          Legality::Exact,

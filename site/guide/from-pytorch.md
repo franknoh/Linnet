@@ -110,6 +110,7 @@ are `while` over scalars or compile-time `static for`.
 | `nn.ModuleList` | `sub layers: [Layer<...>; N]` and `static for layer in layers` |
 | `x @ w.T`, `einsum` | `matmul`, or index notation `sum[k] x[i, k] * w[j, k]` |
 | `F.softmax`, `F.layer_norm`, ... | `std.nn.softmax::softmax`, `std.nn.norm::layer_norm`, ... |
+| `F.cross_entropy` | `std.nn.loss::cross_entropy`, a weighted sum; `linear_cross_entropy` with the output head |
 | `torch.export`, ONNX export | `linnet stablehlo`, `linnet onnx`, `linnet torch`, `linnet plan` |
 
 Next: the [Quickstart](/docs/getting-started), then the
