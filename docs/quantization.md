@@ -99,7 +99,7 @@ With it and CUDA graphs, gpt-oss-20b on one H100 takes a 512-token prompt in
 14.4 ms rather than 25.0, decodes at 367 tokens per second, and serves 256
 requests at 5349 tokens per second (vLLM 303 and 4313). Without CUDA graphs
 each routed product also costs `triton_kernels`' Python on the host, about
-0.3 ms a call, which a captured step does not pay: the same prompt takes
+0.4 ms a call, which a captured step does not pay: the same prompt takes
 34.9 ms under `torch.compile` alone.
 
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
