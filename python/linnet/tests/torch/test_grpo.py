@@ -239,3 +239,57 @@ def test_grpo_across_processes(weights: Path) -> None:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     torch.multiprocessing.spawn(_grpo_rank, args=(2, port, str(weights)), nprocs=2)
+
+
+def test_uniform_groups_are_counted_and_dropped(weights: Path) -> None:
+    """With one reward for everything, every group is uniform: reported, and
+    with `drop_uniform` nothing is learned."""
+    policy = _model(weights, compile=True, trainable=True)
+    before = {n: p.detach().clone() for n, p in policy.named_parameters()}
+    trained = [p for p in policy.parameters() if p.requires_grad]
+    history = grpo(
+        policy,
+        _Sampler(_model(weights)),
+        _prompts(),
+        lambda prompt, completion: 1.0,
+        optimizer=torch.optim.SGD(trained, lr=0.1),
+        steps=1,
+        group=4,
+        prompts_per_step=2,
+        max_new_tokens=6,
+        tokens=64,
+        drop_uniform=True,
+    )
+    assert history[0].uniform == 1.0 and history[0].loss == 0
+    for name, parameter in policy.named_parameters():
+        torch.testing.assert_close(parameter.detach(), before[name])
+
+
+def test_a_resumed_grpo_run_ends_where_an_unbroken_one_does(weights: Path, tmp_path: Path) -> None:
+    def run(steps: int, checkpoint: Path | None) -> tuple[LinnetModule, list[int]]:
+        policy = _model(weights, compile=True, trainable=True)
+        trained = [p for p in policy.parameters() if p.requires_grad]
+        history = grpo(
+            policy,
+            _Sampler(_model(weights)),
+            _prompts(),
+            _threes,
+            optimizer=torch.optim.AdamW(trained, lr=3e-2),
+            steps=steps,
+            group=4,
+            prompts_per_step=2,
+            max_new_tokens=6,
+            tokens=64,
+            checkpoint=checkpoint,
+            checkpoint_every=1 if checkpoint is not None else None,
+        )
+        return policy, [step.step for step in history]
+
+    unbroken, numbers = run(4, None)
+    assert numbers == [1, 2, 3, 4]
+    assert run(2, tmp_path / "run")[1] == [1, 2]
+    resumed, numbers = run(4, tmp_path / "run")
+    assert numbers == [3, 4]
+    theirs = dict(unbroken.named_parameters())
+    for name, parameter in resumed.named_parameters():
+        torch.testing.assert_close(parameter.detach(), theirs[name].detach())

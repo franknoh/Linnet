@@ -30,12 +30,21 @@ import random
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
 
 from ..serve import Request
-from . import Batch, Example, clip_gradients, pack, reduce_gradients
+from . import (
+    Batch,
+    Example,
+    clip_gradients,
+    load_checkpoint,
+    pack,
+    reduce_gradients,
+    save_checkpoint,
+)
 
 
 @dataclass(frozen=True)
@@ -54,7 +63,9 @@ Reward = Callable[[Prompt, list[int]], float]
 class GrpoStep:
     """What one step did: `reward` and `reward_std` over its completions,
     `length` their mean token count, `clipped` the share of learned tokens
-    whose ratio was clipped, `kl` the mean estimate against `reference`."""
+    whose ratio was clipped, `kl` the mean estimate against `reference`,
+    `uniform` the share of groups whose rewards were all equal (no
+    advantage, so nothing to learn)."""
 
     step: int
     reward: float
@@ -67,6 +78,7 @@ class GrpoStep:
     train_seconds: float
     learning_rate: float
     grad_norm: float | None
+    uniform: float = 0.0
 
 
 def group_advantages(rewards: Sequence[float], group: int, *, scale: bool = True) -> list[float]:
@@ -142,6 +154,9 @@ def grpo(
     schedule: Any = None,
     entry: str = "log_probs_packed",
     seed: int = 0,
+    drop_uniform: bool = False,
+    checkpoint: str | Path | None = None,
+    checkpoint_every: int | None = None,
     on_step: Callable[[GrpoStep], None] | None = None,
 ) -> list[GrpoStep]:
     """Trains `policy` with GRPO for `steps` steps or until `prompts` run out.
@@ -167,7 +182,14 @@ def grpo(
     reduced into the parts of a policy split by `fully_shard`), and the
     step's numbers cover every process. A process with fewer batches runs
     empty ones, so every process makes the same calls. Give each process its
-    own `seed`; all stop when any runs out of prompts."""
+    own `seed`; all stop when any runs out of prompts.
+
+    `drop_uniform` leaves out the groups whose rewards are all equal: they
+    have no advantage, and the loss is then the mean over the tokens that
+    have one. With `checkpoint`, a directory, training resumes from the
+    latest checkpoint there, skipping the prompts and seeds its steps took,
+    and writes one every `checkpoint_every` steps and at the end
+    (`linnet.train.save_checkpoint`)."""
     import torch.distributed as dist
 
     if beta and reference is None:
@@ -179,7 +201,14 @@ def grpo(
     stop = frozenset(eos)
     source = iter(prompts)
     history: list[GrpoStep] = []
-    for step in range(1, steps + 1):
+    start = 0
+    if checkpoint is not None:
+        start = load_checkpoint(checkpoint, policy, optimizer, schedule=schedule)
+        for _ in range(start):
+            for _ in itertools.islice(source, prompts_per_step):
+                for _ in range(group):
+                    draws.getrandbits(32)
+    for step in range(start + 1, steps + 1):
         chosen = [_prompt(p) for p in itertools.islice(source, prompts_per_step)]
         if distributed:
             ready = torch.tensor([float(bool(chosen))], device=device)
@@ -213,7 +242,13 @@ def grpo(
             for index, completion in enumerate(completions)
         ]
         advantages = group_advantages(rewards, group, scale=scale_rewards)
-        examples = [Example.prompted(c.request.prompt, c.tokens) for c in completions]
+        groups = [rewards[i : i + group] for i in range(0, len(rewards), group)]
+        uniform = [max(g) == min(g) for g in groups]
+        kept = [i for i in range(len(completions)) if not (drop_uniform and uniform[i // group])]
+        examples = [
+            Example.prompted(completions[i].request.prompt, completions[i].tokens) for i in kept
+        ]
+        advantages = [advantages[i] for i in kept]
         batches = list(pack(examples, tokens))
         count = float(sum(batch.count for batch in batches))
         if distributed:
@@ -279,12 +314,14 @@ def grpo(
             sum(r * r for r in rewards),
             float(len(rewards)),
             float(sum(len(c.tokens) for c in completions)),
+            float(sum(uniform)),
+            float(len(groups)),
         ]
         if distributed:
             summed = torch.tensor(moments, dtype=torch.float64, device=device)
             dist.all_reduce(summed)
             moments = [float(value) for value in summed]
-        total, squares, n, generated = moments
+        total, squares, n, generated, flat, n_groups = moments
         mean = total / n
         record = GrpoStep(
             step=step,
@@ -298,10 +335,20 @@ def grpo(
             train_seconds=time.perf_counter() - begin,
             learning_rate=float(optimizer.param_groups[0]["lr"]),
             grad_norm=norm,
+            uniform=flat / n_groups,
         )
         history.append(record)
         if on_step is not None:
             on_step(record)
+        if checkpoint is not None and checkpoint_every and step % checkpoint_every == 0:
+            save_checkpoint(checkpoint, policy, optimizer, step=step, schedule=schedule)
+    last = history[-1].step if history else 0
+    if (
+        checkpoint is not None
+        and history
+        and not (checkpoint_every and last % checkpoint_every == 0)
+    ):
+        save_checkpoint(checkpoint, policy, optimizer, step=last, schedule=schedule)
     return history
 
 
