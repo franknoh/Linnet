@@ -417,6 +417,33 @@ each, up to 128 tokens) takes 1.1 s to sample and 0.6 s to train a step
 after compiling; copying the weights into the engine, adapters merged,
 takes 104 ms. Peak memory for both models is 59 GiB.
 
+### Preferences
+
+```python
+from linnet.train.dpo import Pair, dpo
+
+pairs = [Pair(prompt, chosen, rejected) for prompt, chosen, rejected in data]
+history = dpo(model, pairs, optimizer=optimizer, steps=1000, pairs_per_step=32, beta=0.1)
+```
+
+`dpo` trains with direct preference optimization (DPO). A pair's two
+answers are packed into one batch, and `log_probs_packed` gives each
+answer's log-probability. The loss is
+`-log sigmoid(beta * ((chosen - ref_chosen) - (rejected - ref_rejected)))`,
+averaged over the step's pairs. `label_smoothing` takes that share of pairs
+to be labelled the wrong way round.
+
+- With `reference`, a frozen model with the same entry, the reference
+  log-probabilities are computed batch by batch.
+- Without one, `pairs` must be a sequence. The model's own
+  log-probabilities before training are then computed for every pair
+  first, so a LoRA run needs one model.
+
+Each step reports the loss, the share of pairs the model now ranks
+correctly (`accuracy`), and the mean reward `margin`. Under `torchrun` and
+with `fully_shard`, `checkpoint` and `checkpoint_every`, it works as `grpo`
+does.
+
 ### Low-rank adapters
 
 ```python

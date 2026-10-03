@@ -86,28 +86,48 @@ def pack(
     tokens: int,
     *,
     max_length: int | None = None,
+    together: int = 1,
 ) -> Iterator[Batch]:
     """Packs `examples` in order into batches of exactly `tokens` positions,
     a sequence never split across two. A sequence longer than `max_length`
     (`tokens` when omitted) is cut to it. Each batch's unused positions are
-    padding, so every batch has one shape and the model compiles once."""
+    padding, so every batch has one shape and the model compiles once.
+
+    `together` keeps each run of that many consecutive examples in one
+    batch (a preference pair's two answers, say), each cut to `tokens //
+    together` at most, and none left out. Otherwise an example of fewer than
+    two tokens, with nothing to predict, is left out."""
     limit = min(tokens, max_length) if max_length is not None else tokens
+    if together > 1:
+        limit = min(limit, tokens // together)
     pending: list[tuple[int, list[int], list[bool]]] = []
     used = 0
+    run: list[tuple[int, list[int], list[bool]]] = []
     for item, example in enumerate(examples):
         sequence = list(example.tokens)[:limit]
-        if len(sequence) < 2:
+        if together == 1 and len(sequence) < 2:
             continue
         learned = (
             list(example.learned)[: len(sequence)]
             if example.learned is not None
             else [False] + [True] * (len(sequence) - 1)
         )
-        if used + len(sequence) > tokens:
+        run.append((item, sequence, learned))
+        if len(run) < together:
+            continue
+        size = sum(len(sequence) for _, sequence, _ in run)
+        if used + size > tokens and pending:
             yield _batch(pending, tokens)
             pending, used = [], 0
-        pending.append((item, sequence, learned))
-        used += len(sequence)
+        pending += run
+        used += size
+        run = []
+    if run:
+        size = sum(len(sequence) for _, sequence, _ in run)
+        if used + size > tokens and pending:
+            yield _batch(pending, tokens)
+            pending, used = [], 0
+        pending += run
     if pending:
         yield _batch(pending, tokens)
 
@@ -119,6 +139,8 @@ def _batch(sequences: list[tuple[int, list[int], list[bool]]], size: int) -> Bat
     targets: list[int] = []
     mask: list[float] = []
     for index, (_, sequence, learned) in enumerate(sequences):
+        if not sequence:
+            continue  # kept in `items`, with no positions
         tokens += sequence
         positions += range(len(sequence))
         segments += [index] * len(sequence)
