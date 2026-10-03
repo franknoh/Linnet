@@ -97,6 +97,7 @@ class CausalLM(torch.nn.Module):
         self.generation_config = SimpleNamespace(
             eos_token_id=None, pad_token_id=None, bos_token_id=None
         )
+        self.model_tags: list[str] = []
 
     def forward(
         self,
@@ -158,6 +159,12 @@ class CausalLM(torch.nn.Module):
         if self.hidden not in self.model.entries:
             raise PlanError(f"the model has no `{self.hidden}` entry, which this needs")
         return self.model.run_entry(self.hidden, inputs[:3])
+
+    def add_model_tags(self, tags: str | list[str]) -> None:
+        """Trainers tag the model they train (TRL: `trl`, `sft`); the tags
+        are kept in `model_tags`."""
+        new = [tags] if isinstance(tags, str) else list(tags)
+        self.model_tags = sorted({*self.model_tags, *new})
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs: Any = None) -> None:
         """Trainers call this for `gradient_checkpointing=True` (TRL's

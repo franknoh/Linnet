@@ -131,6 +131,7 @@ def test_trl_sft_trainer(model: LinnetModule, tmp_path: Path, loss_type: str) ->
     )
     with pytest.warns(UserWarning, match="checkpointing"):
         trainer.train()
+    assert "trl" in trainer.model.model_tags
     logged = [entry for entry in trainer.state.log_history if "loss" in entry]
     assert len(logged) == 2
     assert all(0 <= entry["mean_token_accuracy"] <= 1 and entry["entropy"] > 0 for entry in logged)
