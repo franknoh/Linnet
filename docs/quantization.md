@@ -102,6 +102,15 @@ each routed product also costs `triton_kernels`' Python on the host, about
 0.4 ms a call, which a captured step does not pay: the same prompt takes
 34.9 ms under `torch.compile` alone.
 
+In JAX, generated code dequantizes the experts to bf16 once, when the model
+loads (`--prepare`), and `linnet.jax.moe` multiplies the pairs by that copy.
+A decoding step's few pairs read their experts' weights inside one reduction.
+A prompt's many go through a Pallas kernel on the GPU that multiplies each
+expert by the tiles of rows that chose it. XLA's own `ragged_dot` multiplies
+every row by every expert and masks the rest, as the bodies do, so it is
+what runs on the CPU. The kernel reads the bf16 copy, four times the bytes
+of MXFP4, so a prompt takes longer than PyTorch's.
+
 `linnet.quant.quantize_checkpoint` writes such a checkpoint from a float one,
 rounding each group to the nearest level:
 

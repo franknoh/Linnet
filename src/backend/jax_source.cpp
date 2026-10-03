@@ -72,6 +72,9 @@ std::string real_text(double value) {
     return text;
 }
 
+// What a module with routed experts imports (`native_call`).
+constexpr const char* experts_import = "import linnet.jax.moe as _moe\n\n";
+
 // The generated module: straight-line `jax.numpy` over static shapes.
 class JaxTarget : public GraphTarget {
 public:
@@ -492,6 +495,35 @@ public:
                                              v + ", scale=" + scalar(3) + mask + kernel + ")");
             return define(back("jnp.swapaxes(" + mixed + ", 1, 2)", 0));
         }
+        // MXFP4 experts: the chosen experts' products by `linnet.jax.moe`,
+        // over a 16-bit copy of the experts made by its own statement, which
+        // reads only weights: `prepare` makes it once and every entry shares
+        // it.
+        const bool grouped = implementation_base == "linnet.mxfp4_grouped(shared)" ||
+                             implementation_base == "linnet.mxfp4_grouped(combine)";
+        const bool chosen = implementation_base == "linnet.mxfp4_experts" ||
+                            implementation_base == "linnet.mxfp4_experts(shared)";
+        if ((grouped || chosen) && at.size() >= 4 && at[0] != nullptr && at[1] != nullptr &&
+            at[2] != nullptr && at[3] != nullptr) {
+            const bool combine = implementation_base == "linnet.mxfp4_grouped(combine)";
+            if (combine && (at.size() != 5 || at[4] == nullptr)) {
+                return std::nullopt;
+            }
+            uses_experts_ = true;
+            const std::string weight = define("_moe.mxfp4_weight(" + name(1) + ", " + name(2) +
+                                              ", " + jnp_dtype(dtype) + ")");
+            if (combine) {
+                return define("_moe.experts_combined(" + name(0) + ", " + weight + ", " + name(3) +
+                              ", " + name(4) + ")");
+            }
+            // `mxfp4_experts_shared` takes the row's input as [R, 1, In].
+            const std::string x = implementation_base == "linnet.mxfp4_experts(shared)"
+                                      ? name(0) + "[:, 0]"
+                                      : name(0);
+            const bool shared = implementation_base.ends_with("(shared)");
+            return define("_moe.experts(" + x + ", " + weight + ", " + name(3) + ", " +
+                          (shared ? "True" : "False") + ")");
+        }
         return std::nullopt;
     }
 
@@ -585,6 +617,9 @@ public:
             "    ):\n"
             "        return \"cudnn\"\n"
             "    return None\n\n";
+        if (uses_experts_) {
+            out += experts_import;
+        }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
         std::vector<std::string> next_states;
@@ -660,6 +695,7 @@ private:
 
     bool prepare_ = false;        // split weight-only work into `prepare`
     bool full_precision_ = false; // f32 products at full precision (`precise`)
+    bool uses_experts_ = false;   // the module imports `linnet.jax.moe`
 
     struct Loop {
         std::size_t id = 0;
