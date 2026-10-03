@@ -256,6 +256,16 @@ positions, then clips the gradient norm to `clip` (1.0) and steps the
 schedule. It saves the weights to `save_to`, or the adapters alone after
 `add_lora`.
 
+With `checkpoint="run/"`, `train` resumes from the latest checkpoint
+there, skipping the batches its steps took, and writes one every
+`checkpoint_every` steps and at the end, keeping the two latest. A
+checkpoint holds the parameters being trained, the optimizer's state, the
+step and the schedule; a LoRA run's holds only the adapters. Reload the
+model as the run loaded it, then pass the same `checkpoint`. Under
+`torchrun` every process writes its own part, the parts of a model split
+by `fully_shard` included. `save_checkpoint` and `load_checkpoint` do the
+same for a loop of your own.
+
 Under `torchrun`, each process trains a copy on its own batches: `train`
 sums the learned-position counts and the gradients across processes, so
 every copy takes the same step. Pass

@@ -33,6 +33,8 @@ from typing import Any, cast
 
 import torch
 
+from .checkpoints import load_checkpoint, save_checkpoint
+
 
 @dataclass(frozen=True)
 class Example:
@@ -188,6 +190,8 @@ def train(
     device: torch.device | str | None = None,
     save_every: int | None = None,
     save_to: str | Path | None = None,
+    checkpoint: str | Path | None = None,
+    checkpoint_every: int | None = None,
     on_step: Callable[[Step], None] | None = None,
 ) -> History:
     """Fits `model` on `batches` through its `entry` (`loss_packed`).
@@ -206,7 +210,13 @@ def train(
     step, the mean over every process's batches. Pass a
     `torch.distributed.optim.ZeroRedundancyOptimizer` to split the optimizer
     state across them. Only the first process saves; all stop when any runs
-    out of batches."""
+    out of batches.
+
+    With `checkpoint`, a directory, training resumes from the latest
+    checkpoint there (`load_checkpoint`), skipping the batches its steps
+    took, and `steps` counts from the start of the run. A checkpoint is
+    written every `checkpoint_every` steps and at the end
+    (`save_checkpoint`)."""
     import torch.distributed as dist
 
     if device is None:
@@ -217,7 +227,12 @@ def train(
     saves = not distributed or dist.get_rank() == 0 or bool(getattr(model, "fully_sharded", ()))
     history = History()
     iterator = iter(batches)
-    while steps is None or len(history.steps) < steps:
+    start = 0
+    if checkpoint is not None:
+        start = load_checkpoint(checkpoint, model, optimizer, schedule=schedule)
+        for _ in range(start * accumulate):
+            next(iterator, None)
+    while steps is None or start + len(history.steps) < steps:
         group = [batch for _, batch in zip(range(accumulate), iterator, strict=False)]
         local = float(sum(batch.count for batch in group))
         if distributed:
@@ -249,7 +264,7 @@ def train(
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         record = Step(
-            step=len(history.steps) + 1,
+            step=start + len(history.steps) + 1,
             loss=float(total.item()),
             tokens=sum(batch.tokens.numel() for batch in group),
             seconds=time.perf_counter() - begin,
@@ -261,8 +276,17 @@ def train(
             on_step(record)
         if saves and save_to is not None and save_every and record.step % save_every == 0:
             _save(model, Path(save_to))
+        if checkpoint is not None and checkpoint_every and record.step % checkpoint_every == 0:
+            save_checkpoint(checkpoint, model, optimizer, step=record.step, schedule=schedule)
     if saves and save_to is not None and history.steps:
         _save(model, Path(save_to))
+    last = history.steps[-1].step if history.steps else 0
+    if (
+        checkpoint is not None
+        and history.steps
+        and not (checkpoint_every and last % checkpoint_every == 0)
+    ):
+        save_checkpoint(checkpoint, model, optimizer, step=last, schedule=schedule)
     return history
 
 
@@ -332,7 +356,9 @@ __all__ = [
     "Step",
     "clip_gradients",
     "cosine_schedule",
+    "load_checkpoint",
     "pack",
     "reduce_gradients",
+    "save_checkpoint",
     "train",
 ]
