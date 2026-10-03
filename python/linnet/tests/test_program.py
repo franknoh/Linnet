@@ -37,7 +37,7 @@ def test_program_is_typed_and_prints_like_the_language(llama: Program) -> None:
     )
     assert {e.short_name for e in llama.entries()} >= {"forward", "decode", "generate"}
     with pytest.raises(LinnetError):
-        llama.entry()  # six entries: one must be named
+        llama.entry()  # several entries: one must be named
 
     text = str(llama)
     assert text.startswith("llama::Model<Vocab: Dim, H: Dim")

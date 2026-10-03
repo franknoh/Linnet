@@ -55,6 +55,26 @@ where
         return o_proj.forward(merge_heads<B, S, Heads, H / Heads, T>(mixed))
     }
 
+    // `forward` over several sequences packed into one row, for training:
+    // token `p` sits at `positions[p]` of sequence `segments[p]` and attends
+    // to its own sequence's tokens up to that position. Many short sequences
+    // go through in one call, with no padding and no cache.
+    pub fn packed<P: Dim>(
+        x: Tensor[1, P, H; T],
+        positions: Tensor[P; i32],
+        segments: Tensor[P; i32],
+    ) -> Tensor[1, P, H; T] {
+        let (cos_table, sin_table) = tables<MaxSeq, H / Heads, T>(THETA)
+        let cos_at[p, d] = cos_table[cast<i64>(positions[p]), d]
+        let sin_at[p, d] = sin_table[cast<i64>(positions[p]), d]
+        let q = rope(split_heads<1, P, Heads, H / Heads, T>(q_proj.forward(x)), cos_at, sin_at)
+        let k = rope(split_heads<1, P, KvHeads, H / Heads, T>(k_proj.forward(x)), cos_at, sin_at)
+        let v = split_heads<1, P, KvHeads, H / Heads, T>(v_proj.forward(x))
+        let own[i, j] = segments[i] == segments[j] && positions[j] <= positions[i]
+        let mixed = grouped_attention(q, k, v, rsqrt(cast<f32>(H / Heads)), some(own))
+        return o_proj.forward(merge_heads<1, P, Heads, H / Heads, T>(mixed))
+    }
+
     // One new position `pos`: its key and value are written into the caches
     // at that position (a masked write, no scatter), and the query attends
     // over every cached position up to and including it.
