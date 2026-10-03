@@ -169,6 +169,13 @@ rewards are all equal has no advantage: each step reports their share as
 a KL penalty against `reference`, a frozen copy of the model. `grpo_loss`
 is the loss alone, for another loop.
 
+The engine samples from the same weights as the policy but computes them
+differently: other kernels, CUDA graphs, bf16 throughout. `correction_cap=2`
+weighs each token's surrogate by the policy's probability of it over the
+engine's, at most 2 (truncated importance sampling), and each step reports
+their mean absolute log-probability difference as `mismatch`. It reads the
+engine's log-probabilities, so it takes temperature 1 and no top-k or top-p.
+
 Under `torchrun`, each process samples its own prompts with its own engine
 (pass each its own `seed`), and the processes train one policy. The policy
 can be split by `fully_shard`: `load_weights` then gathers it a tensor at a
