@@ -256,6 +256,25 @@ positions, then clips the gradient norm to `clip` (1.0) and steps the
 schedule. It saves the weights to `save_to`, or the adapters alone after
 `add_lora`.
 
+### Other trainers
+
+`CausalLM` gives a Linnet decoder the call a transformers-style trainer
+(`transformers.Trainer`, TRL) makes: `model(input_ids=..., attention_mask=...,
+labels=..., position_ids=...)` returns `{"loss": ...}`.
+
+```python
+from linnet.torch import CausalLM
+
+trainer = transformers.Trainer(model=CausalLM(model), args=args, train_dataset=data)
+```
+
+It removes the padding and packs the rows into the model's `loss_packed`
+entry, so neither the padding nor the whole logits cost anything. `labels`
+follow transformers: `-100` leaves a position out, and the shift happens
+inside. With `position_ids`, a 0 starts a new sequence within a row, as in
+TRL's padding-free batches. Packed lengths round up to a multiple of
+`bucket` (256), so few shapes compile.
+
 ### Low-rank adapters
 
 ```python

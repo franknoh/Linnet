@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from ..plan import Plan, PlanError, compile_plan
+from .causal_lm import CausalLM
 from .compiled import CompiledLinnetModule
 from .export import ExportError, ExportResult, export_linnet
 from .function import Function, load_function
@@ -20,6 +21,7 @@ from .placement import from_map as placement_from_map
 from .placement import plan as placement_plan
 
 __all__ = [
+    "CausalLM",
     "CompiledLinnetModule",
     "ExportError",
     "ExportResult",
