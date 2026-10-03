@@ -57,15 +57,15 @@ def fully_shard(
     block the root holds. Returns the units.
 
     Load the model on this process's device with `compile=True` or
-    `"inductor"`, without adapters or placement. Parameters of the root
-    block itself stay whole on every process, their gradients summed by
-    `linnet.train`."""
+    `"inductor"`, without placement. Add adapters (`add_lora`) before: they
+    stay whole on every process, and the weights they adapt, which do not
+    train, are split in their own dtype. Parameters of the root block itself
+    stay whole as well. `linnet.train` sums the gradients of whatever stays
+    whole."""
     from .compiled import CompiledLinnetModule
 
     if not isinstance(model, CompiledLinnetModule):
         raise PlanError("sharding needs generated code: load with compile=True or 'inductor'")
-    if model.lora is not None:
-        raise PlanError("a sharded model takes no adapters")
     if model.tensor_parallel is not None or (
         model.placement is not None and not model.placement.trivial
     ):
@@ -93,12 +93,14 @@ def fully_shard(
     with torch.no_grad():
         for path, parameter in list(model.root.named_parameters(remove_duplicate=False)):
             owner, leaf = owner_of(model, path)
-            if "." not in path or leaf in owner.absent_params:
+            if "." not in path or leaf in owner.absent_params or leaf in ("lora_a", "lora_b"):
                 continue
             split = replaced.get(id(parameter))
             if split is None:
+                # A weight that does not train needs no f32 copy to update.
+                kept = dtype if parameter.requires_grad else parameter.dtype
                 split = nn.Parameter(
-                    _split(parameter.detach(), mesh, dtype, model.interpreter.device),
+                    _split(parameter.detach(), mesh, kept, model.interpreter.device),
                     requires_grad=parameter.requires_grad,
                 )
                 replaced[id(parameter)] = split

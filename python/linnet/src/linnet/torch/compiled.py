@@ -142,7 +142,7 @@ class CompiledLinnetModule(LinnetModule):
         if self.lora is not None:
             raise PlanError("the model already has adapters; merge them first")
         if self.fully_sharded:
-            raise PlanError("a sharded model takes no adapters")
+            raise PlanError("add adapters before `fully_shard`")
         if rank <= 0:
             raise PlanError("the adapter rank must be positive")
         chosen = [patterns] if isinstance(patterns, str) else list(patterns)
@@ -184,6 +184,11 @@ class CompiledLinnetModule(LinnetModule):
         weights changed."""
         if self.lora is None:
             return []
+        if self.fully_sharded:
+            raise PlanError(
+                "a sharded model's weights are split across processes: save the adapters and "
+                "merge them into a model on one process"
+            )
         _, rank, alpha = self.lora
         with torch.no_grad():
             for path in self.lora_paths:

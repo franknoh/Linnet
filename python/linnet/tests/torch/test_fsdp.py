@@ -174,3 +174,58 @@ def test_sharded_training_matches_one_process(weights: Path, tmp_path: Path) -> 
     assert set(sharded) == {n for n in expected if not n.endswith(".bias")}
     for name, value in sharded.items():
         torch.testing.assert_close(value, expected[name], atol=1e-5, rtol=1e-4)
+
+
+ADAPTED = "layers.*.attention.*_proj.weight"
+
+
+def _lora_rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
+    import torch.distributed as dist
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        model = _load(Path(weights))
+        model.add_lora(ADAPTED, rank=2, alpha=4)
+        fully_shard(model)
+        # The adapted weights are split, in their own dtype; the adapters
+        # stay whole.
+        weight = model.get_parameter("root.layers.0.attention.q_proj.weight")
+        adapter = model.get_parameter("root.layers.0.attention.q_proj.lora_a")
+        assert hasattr(weight, "to_local") and not weight.requires_grad
+        assert not hasattr(adapter, "to_local") and adapter.requires_grad
+        with pytest.raises(Exception, match="before"):
+            model.add_lora(ADAPTED)
+        mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
+        trained = [p for p in model.parameters() if p.requires_grad]
+        train(model, itertools.repeat(mine), optimizer=torch.optim.SGD(trained, lr=0.1), steps=3)
+        model.save_weights(
+            Path(out) / "adapters.safetensors", names="linnet", include=["*.lora_a", "*.lora_b"]
+        )
+    finally:
+        dist.destroy_process_group()
+
+
+def test_adapters_on_a_sharded_model_match_one_process(weights: Path, tmp_path: Path) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    torch.multiprocessing.spawn(_lora_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)
+    sharded = load_file(str(tmp_path / "adapters.safetensors"))
+
+    model = _load(weights)
+    model.add_lora(ADAPTED, rank=2, alpha=4)
+    examples = _examples()
+    both = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
+    trained = [p for p in model.parameters() if p.requires_grad]
+    train(
+        model,
+        itertools.cycle(both),
+        optimizer=torch.optim.SGD(trained, lr=0.1),
+        steps=3,
+        accumulate=2,
+    )
+    expected = {n.removeprefix("root."): p.detach() for n, p in model.named_parameters()}
+    assert len(sharded) == 16
+    for name, value in sharded.items():
+        torch.testing.assert_close(value, expected[name], atol=1e-5, rtol=1e-4)
