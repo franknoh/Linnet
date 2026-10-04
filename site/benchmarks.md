@@ -75,6 +75,17 @@ Every model in the zoo is one `.linnet` source. The runs that failed:
 - transformers' `generate_batch` returns no tokens for gpt-oss, and KerasHub's
   batched gpt-oss fails in XLA's autotuner.
 
+## Training {#training}
+
+The same runs in Linnet and in TRL, step for step. On one GPU, Linnet's
+PyTorch step is 1.76 times TRL's for LoRA SFT, 2.4 times for DPO and 2.7
+times for GRPO. Fully fine-tuned on four GPUs, the three stacks are within 5%
+of each other, with JAX the fastest. Each pair of runs reaches the same
+held-out loss, accuracy or reward. [Training](/docs/training#compared-with-trl)
+lists the conditions that differ.
+
+<TrainingBench />
+
 ## Every measurement
 
 Hover a bar for its notes and how it compares with the stack it replaces.
@@ -139,8 +150,14 @@ decoding loop, which bring it to 3.5 ms.
   `forward` over `B=1, S=512` and one `decode` step at position 256. The
   variants are the [`linnet.torch.load`](/docs/torch) modes and
   `linnet.jax.load` under `jax.jit`.
-- **Data:** the charts and tables come from `bench/results/zoo.json` and
-  `bench/results/latest.json`; the prose quotes them. The zoo's
+- **Training:** Llama 3.1 8B Instruct on H100s, packed into 4096-token
+  rows. SFT uses Alpaca, DPO UltraFeedback pairs, and GRPO two-number
+  multiplications with an exact-answer reward. The reference is TRL with
+  PEFT, FSDP2 for the four-GPU run and vLLM colocated for GRPO. Every stack
+  uses the same hyperparameters and step count.
+- **Data:** the charts and tables come from `bench/results/zoo.json`,
+  `bench/results/latest.json` and `bench/results/training.json`; the prose
+  quotes them. The zoo's
   `bench/compare.json` pairs the rows, and its `bench/setup-pod.sh` and
   `bench/run-all.sh` reproduce them on NVIDIA's Triton Inference Server
   image. `python bench/zoo.py <zoo checkout>` refreshes this page's copy.

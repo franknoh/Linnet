@@ -1,0 +1,50 @@
+{
+  "date": "2026-10-04",
+  "device": "NVIDIA H100 80GB HBM3",
+  "model": "Llama 3.1 8B Instruct",
+  "note": "Same data, 4096-token packed rows, hyperparameters and step count for every stack. Step time is the median after the first two steps; tokens/s counts real tokens, not padding.",
+  "runs": [
+    {
+      "id": "sft-lora",
+      "title": "SFT, LoRA (rank 16), one GPU: Alpaca, 4 rows a step",
+      "quality": "held-out loss after 30 steps, one evaluator",
+      "rows": [
+        { "stack": "Linnet PyTorch", "family": "linnet", "step_seconds": 1.038, "tokens_per_second": 15569, "peak_gib": 36.4, "quality": "1.369" },
+        { "stack": "Linnet JAX", "family": "linnet", "step_seconds": 1.325, "tokens_per_second": 12196, "peak_gib": 38.0, "quality": "1.374" },
+        { "stack": "TRL + PEFT", "family": "reference", "step_seconds": 1.825, "tokens_per_second": 8876, "peak_gib": 42.8, "quality": "1.373" }
+      ]
+    },
+    {
+      "id": "sft-full",
+      "title": "SFT in full, four GPUs: fully sharded, f32 masters, AdamW",
+      "quality": "held-out loss after 30 steps",
+      "rows": [
+        { "stack": "Linnet PyTorch", "family": "linnet", "step_seconds": 0.549, "tokens_per_second": 29426, "peak_gib": 47.5, "quality": "1.342" },
+        { "stack": "Linnet JAX", "family": "linnet", "step_seconds": 0.538, "tokens_per_second": 30028, "peak_gib": 65.5, "quality": "1.345" },
+        { "stack": "Linnet JAX, remat", "family": "linnet", "step_seconds": 0.672, "tokens_per_second": 24044, "peak_gib": 42.7, "quality": "1.344" },
+        { "stack": "TRL, FSDP2", "family": "reference", "step_seconds": 0.567, "tokens_per_second": 28563, "peak_gib": 51.5, "quality": "last-5 training loss 1.26 (Linnet 1.24)" }
+      ]
+    },
+    {
+      "id": "dpo",
+      "title": "DPO, LoRA, one GPU: UltraFeedback, 32 pairs a step",
+      "quality": "accuracy over the last five steps",
+      "rows": [
+        { "stack": "Linnet PyTorch", "family": "linnet", "step_seconds": 1.912, "peak_gib": 35.6, "quality": "0.68" },
+        { "stack": "Linnet JAX", "family": "linnet", "step_seconds": 2.414, "peak_gib": 38.3, "quality": "0.65" },
+        { "stack": "TRL + PEFT", "family": "reference", "step_seconds": 4.630, "peak_gib": 47.9, "quality": "0.70", "note": "2 pairs at a time; 4 and 8 ran out of memory" }
+      ]
+    },
+    {
+      "id": "grpo",
+      "title": "GRPO, LoRA, one GPU: 16 prompts × 8 completions of up to 128 tokens",
+      "quality": "mean reward, first three steps to last three",
+      "memory": false,
+      "rows": [
+        { "stack": "Linnet PyTorch", "family": "linnet", "step_seconds": 1.178, "peak_gib": 58.6, "quality": "0.44 → 0.39" },
+        { "stack": "Linnet JAX", "family": "linnet", "step_seconds": 1.437, "peak_gib": 59.9, "quality": "0.44 → 0.40" },
+        { "stack": "TRL + vLLM", "family": "reference", "step_seconds": 3.138, "peak_gib": 51.5, "quality": "0.43 → 0.41", "note": "8 completions at a time; vLLM held 35% of the GPU outside this peak" }
+      ]
+    }
+  ]
+}

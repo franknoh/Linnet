@@ -93,6 +93,10 @@ For mixed precision, `load_source(..., generics={..., "T": "bf16"}, cast_dtype=T
 keeps f32 parameters and casts them to `bf16` on every call, so gradients
 come back in f32.
 
+`linnet.jax.train`, `linnet.jax.dpo` and `linnet.jax.grpo` train a model's
+packed entries for you, on one device or fully sharded over a mesh: see
+[Training](training.md#jax).
+
 ## Functions
 
 ```python

@@ -16,7 +16,16 @@ A first-class `scan` that collects per-iteration outputs, beyond `while` (§8.4)
 
 ## 15.4 Custom gradients and training
 
-Training already works by differentiating exported entries, with objectives written as module-level entries (§7.6). Possible additions: autodiff as a compiler transform, so StableHLO and ONNX exports can carry gradients; `@custom_vjp` or equivalent annotations; gradient-specific semantic ops; and optimizer-state structures. Training support must not require model-specific Python classes.
+Training works by differentiating exported entries in the target framework. Objectives are entries: module-level ones (§7.6), or a block's entries over packed sequences that return each position's loss or log-probability. `std.nn.loss` defines the losses as semantic ops (§7.3). A backend MAY compute `linear_cross_entropy` and `linear_token_log_probs` a block of rows at a time, with its own backward pass, so the `[N, Vocab]` logits are never whole. Low-rank adapters, gathering sharded parameters, and recomputing blocks in the backward pass are code-generation options and leave source semantics unchanged.
+
+Possible additions are:
+
+- autodiff as a compiler transform, so StableHLO and ONNX exports can carry gradients;
+- `@custom_vjp` or equivalent annotations;
+- gradient-specific semantic ops;
+- optimizer-state structures.
+
+Training support must not require model-specific Python classes.
 
 ## 15.5 Quantization
 
@@ -40,7 +49,7 @@ A low-level kernel DSL for Triton-like tile programs, targeting the same or a lo
 
 ## 15.10 Distributed execution
 
-Today a `Shards` generic sizes each process's weights, and `std.nn.parallel::all_reduce` and `all_gather` mark where partial results are summed or joined; the program with `Shards = 1` is the reference. Further collectives and placement or sharding annotations in the type system are future work.
+Today a `Shards` generic sizes each process's weights for tensor parallelism, and `std.nn.parallel::all_reduce` and `all_gather` mark where partial results are summed or joined; the program with `Shards = 1` is the reference. Fully sharded data parallelism needs nothing in source. A code generator splits a block's parameters across processes or devices by block path and gathers each where the block runs; the program computes what it computes unsplit. Further collectives and placement or sharding annotations in the type system are future work.
 
 ## 15.11 Importers
 
