@@ -1,6 +1,6 @@
-"""Trains the ViT example (`examples/02-vit`) from scratch, in about a minute
-on a CPU: which quadrant of a 32x32 image holds a bright square. The Linnet
-model is an ordinary `torch.nn.Module`, trained by a plain PyTorch loop."""
+"""Trains the ViT example (`examples/02-vit`) from scratch, in seconds on a
+CPU: which of four textures fills a 32x32 image. The Linnet model is an
+ordinary `torch.nn.Module`, trained by a plain PyTorch loop."""
 
 from __future__ import annotations
 
@@ -30,17 +30,26 @@ GENERICS = {
 
 
 def images(count: int, generator: torch.Generator) -> tuple[torch.Tensor, torch.Tensor]:
-    """Faint noise with an 8x8 bright square somewhere in quadrant `label`."""
+    """Faint noise under one of four textures, at a random period and phase:
+    horizontal stripes, vertical stripes, a checkerboard, or dots."""
     labels = torch.randint(0, 4, (count,), generator=generator)
+    y = torch.arange(32)[:, None].expand(32, 32)
+    x = torch.arange(32)[None, :].expand(32, 32)
     pixels = torch.rand(count, 1, 32, 32, generator=generator) * 0.3
-    rows = 16 * (labels // 2) + torch.randint(0, 9, (count,), generator=generator)
-    columns = 16 * (labels % 2) + torch.randint(0, 9, (count,), generator=generator)
     for i in range(count):
-        pixels[i, 0, rows[i] : rows[i] + 8, columns[i] : columns[i] + 8] = 1.0
+        period = int(torch.randint(4, 7, (1,), generator=generator))
+        phase = int(torch.randint(0, period, (1,), generator=generator))
+        textures = [
+            (y + phase) % period < period // 2,
+            (x + phase) % period < period // 2,
+            ((y + phase) // 3 + (x + phase) // 3) % 2 == 0,
+            ((y + phase) % period == 0) & ((x + phase) % period == 0),
+        ]
+        pixels[i, 0][textures[int(labels[i])]] = 1.0
     return pixels, labels
 
 
-def main(steps: int = 300, batch: int = 64, lr: float = 1e-3, device: str = "cpu") -> float:
+def main(steps: int = 200, batch: int = 64, lr: float = 1e-3, device: str = "cpu") -> float:
     # Without weights the parameters are zeros: a model trained from scratch
     # starts from an initialization of its own.
     model = load(
@@ -80,7 +89,7 @@ def main(steps: int = 300, batch: int = 64, lr: float = 1e-3, device: str = "cpu
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--steps", type=int, default=300)
+    parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

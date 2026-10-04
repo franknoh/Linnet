@@ -512,7 +512,7 @@ def test_llama_packed_training_matches_each_sequence(tmp_path: Path, compile: bo
 
 def test_the_training_example_learns() -> None:
     """`examples/05-train-vit` trains the ViT from scratch on a CPU: after 100
-    steps it tells the quadrants apart far better than chance (0.25)."""
+    steps it tells the four textures apart (chance is 0.25)."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -521,4 +521,4 @@ def test_the_training_example_learns() -> None:
     assert spec is not None and spec.loader is not None
     example = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(example)
-    assert example.main(steps=100) > 0.6
+    assert example.main(steps=100) > 0.9

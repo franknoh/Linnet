@@ -1,7 +1,8 @@
 # Training a model from scratch
 
-The ViT example (`02-vit`) trained from scratch on a task it learns in about
-a minute on a CPU: which quadrant of a 32x32 image holds a bright square.
+The ViT example (`02-vit`) trained from scratch on a task it learns in
+seconds on a CPU: which of four textures (horizontal stripes, vertical
+stripes, a checkerboard, or dots) fills a 32x32 image.
 
 ## Run
 
@@ -10,8 +11,8 @@ python examples/05-train-vit/train.py            # on a GPU when there is one
 python examples/05-train-vit/train.py --device cpu
 ```
 
-It prints the loss and the held-out accuracy every 50 steps, and reaches
-over 0.95 in 300 steps.
+It prints the loss and the held-out accuracy every 50 steps: about 0.95
+after 50 steps and 1.0 after 100, in two seconds on a CPU.
 
 ## What it shows
 
