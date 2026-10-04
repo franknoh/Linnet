@@ -25,12 +25,14 @@
 #include "linnet/version.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cstdio>
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #endif
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +45,7 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <process.h>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -126,6 +129,9 @@ void print_usage(std::FILE* out) {
         "                                       Show how each semantic operation would be\n"
         "                                       implemented and why\n"
         "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
+        "  serve <model> [options]              Serve a model over HTTP with OpenAI's API;\n"
+        "                                       runs `python -m linnet.serve`, whose\n"
+        "                                       --help lists the options\n"
         "  check [options] <path>...            Check syntax, types, and shapes of the\n"
         "                                       given files and everything they import\n"
         "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"
@@ -219,6 +225,65 @@ std::filesystem::path executable_path(const char* program) {
     }
 #endif
     return program;
+}
+
+// The Python that runs `linnet serve`: LINNET_PYTHON, else the interpreter
+// beside this executable (the environment the package installed it into),
+// else the one on PATH.
+std::string find_python(const char* program) {
+    if (const char* chosen = std::getenv("LINNET_PYTHON")) {
+        return chosen;
+    }
+    std::error_code error;
+    const std::filesystem::path directory =
+        std::filesystem::weakly_canonical(executable_path(program), error).parent_path();
+#ifdef _WIN32
+    const std::filesystem::path beside = directory / "python.exe";
+    const char* fallback = "python";
+#else
+    const std::filesystem::path beside = directory / "python3";
+    const char* fallback = "python3";
+#endif
+    return std::filesystem::exists(beside, error) ? beside.string() : fallback;
+}
+
+// `linnet serve ...` is `python -m linnet.serve ...`: serving needs the
+// Python package and a framework, which the compiler does not link.
+int run_python_module(const char* module,
+                      std::span<const std::string_view> args,
+                      const char* program) {
+    const std::string python = find_python(program);
+    std::vector<std::string> words = {python, "-m", module};
+    for (const std::string_view arg : args) {
+#ifdef _WIN32
+        // The spawned command line is the words joined with spaces.
+        const bool quote = arg.empty() || arg.find_first_of(" \t") != std::string_view::npos;
+        words.push_back(quote ? "\"" + std::string(arg) + "\"" : std::string(arg));
+#else
+        words.emplace_back(arg);
+#endif
+    }
+    std::vector<char*> pointers;
+    pointers.reserve(words.size() + 1);
+    for (std::string& word : words) {
+        pointers.push_back(word.data());
+    }
+    pointers.push_back(nullptr);
+    std::fflush(stdout);
+    std::fflush(stderr);
+#ifdef _WIN32
+    const intptr_t status = _spawnvp(_P_WAIT, python.c_str(), pointers.data());
+    if (status != -1) {
+        return static_cast<int>(status);
+    }
+#else
+    execvp(python.c_str(), pointers.data());
+#endif
+    std::fprintf(stderr,
+                 "linnet: cannot run %s: %s\n",
+                 python.c_str(),
+                 std::strerror(errno)); // NOLINT(concurrency-mt-unsafe)
+    return exit_failure;
 }
 
 // The standard library directory: an explicit option wins, then the
@@ -1170,6 +1235,9 @@ int main(int argc, char** argv) {
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);
+    }
+    if (command == "serve") {
+        return run_python_module("linnet.serve", rest, argv[0]);
     }
     if (command == "fmt") {
         return run_fmt(rest, options);

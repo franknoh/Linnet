@@ -1,7 +1,8 @@
 name: Release
 
-# A tag v* builds the compiler, the Python wheels and the VS Code extension on
-# every platform, tests them, and publishes them: a GitHub release, then PyPI.
+# A tag v* builds the compiler, the Python wheels and the VS Code extensions
+# on every platform, tests them, and publishes them: a GitHub release, then
+# PyPI, the VS Code Marketplace and Open VSX.
 # A pull request that changes how they are built runs the same builds and
 # tests, and publishes nothing.
 on:
@@ -21,6 +22,7 @@ on:
       - scripts/pack-compiler.py
       - src/cli/main.cpp
       - editors/vscode/package.json
+      - editors/vscode/.vscodeignore
   workflow_dispatch:
 
 permissions:
@@ -85,21 +87,54 @@ jobs:
           name: python-sdist
           path: dist/*.tar.gz
 
+  # One extension per platform carrying that platform's compiler, and one
+  # without for the rest, which uses `linnet` on PATH.
   vscode:
-    name: VS Code extension
-    needs: version
+    name: VS Code ${{ matrix.target }}
+    needs: build
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, compiler: linux-x86_64 }
+          - { target: linux-arm64, compiler: linux-aarch64 }
+          - { target: darwin-arm64, compiler: macos-arm64 }
+          - { target: win32-x64, compiler: windows-x86_64 }
+          - { target: universal, compiler: "" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci && npm run check && npx --yes @vscode/vsce package --out "linnet-$VERSION.vsix"
+      - if: matrix.compiler != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: compiler-${{ matrix.compiler }}
+          path: compiler
+      - if: matrix.compiler != ''
+        run: |
+          mkdir unpacked editors/vscode/server
+          archive=$(ls compiler/*)
+          case "$archive" in
+            *.zip) unzip -q "$archive" -d unpacked ;;
+            *) tar -xzf "$archive" -C unpacked ;;
+          esac
+          cp -R unpacked/*/. editors/vscode/server/
+          ls editors/vscode/server/bin
+      - run: npm ci && npm run check
+        working-directory: editors/vscode
+      - run: |
+          if [ "${{ matrix.target }}" = universal ]; then
+            npx --yes @vscode/vsce package --out "linnet-$VERSION.vsix"
+          else
+            npx --yes @vscode/vsce package --target "${{ matrix.target }}" --out "linnet-$VERSION-${{ matrix.target }}.vsix"
+          fi
         working-directory: editors/vscode
       - uses: actions/upload-artifact@v4
         with:
-          name: vscode
-          path: editors/vscode/linnet-${{ env.VERSION }}.vsix
+          name: vscode-${{ matrix.target }}
+          path: editors/vscode/linnet-*.vsix
 
   release:
     name: GitHub release
@@ -136,3 +171,37 @@ jobs:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # The extensions: the VS Code Marketplace and Open VSX (VSCodium, Cursor),
+  # each with a token in its environment.
+  vscode-marketplace:
+    name: VS Code Marketplace
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-24.04
+    environment: vscode-marketplace
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vscode-*
+          path: vsix
+          merge-multiple: true
+      - run: npx --yes @vscode/vsce publish --packagePath vsix/*.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+  open-vsx:
+    name: Open VSX
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-24.04
+    environment: open-vsx
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vscode-*
+          path: vsix
+          merge-multiple: true
+      - run: for vsix in vsix/*.vsix; do npx --yes ovsx publish "$vsix"; done
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}

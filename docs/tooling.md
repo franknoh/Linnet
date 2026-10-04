@@ -1,7 +1,7 @@
 # Command line
 
-`linnet` has one command per job. Every command reads source and writes
-text; none runs a model.
+`linnet` has one command per job. Every command but `serve` reads source
+and writes text, and runs no model.
 
 | Command | Job |
 | --- | --- |
@@ -14,6 +14,7 @@ text; none runs a model.
 | `explain` | which implementation each library operation gets |
 | `init` | create a package ([Modules and packages](modules-and-packages.md)) |
 | `lsp` | language server |
+| `serve` | serve a model over HTTP: `python -m linnet.serve` ([Serving](integrations.md#over-http)) |
 | `spec-test` | run the executable specification |
 
 Exit status is 0 on success, 1 for errors in the input, 2 for a bad command

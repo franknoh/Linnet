@@ -1,5 +1,8 @@
-"""`python -m linnet.serve MODEL`: a Nest decoder served over HTTP with
-OpenAI's API (see `linnet.serve.server`), its tokenizer from Transformers."""
+"""`linnet serve MODEL` (`python -m linnet.serve MODEL`): a decoder served
+over HTTP with OpenAI's API (see `linnet.serve.server`), its tokenizer from
+Transformers. MODEL is anything `linnet.nest.load` takes: a Nest name, a
+Hub repo (with a card, or a `transformers` checkpoint of a family Nest
+knows), or a model directory."""
 
 from __future__ import annotations
 
@@ -7,15 +10,18 @@ import argparse
 import contextlib
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m linnet.serve",
-        description="Serve a Nest decoder over HTTP with OpenAI's completions API.",
+        prog="linnet serve",
+        description="Serve a decoder over HTTP with OpenAI's completions and chat API.",
     )
-    parser.add_argument("model", help="a Nest model: a registry name or a card's directory")
+    parser.add_argument(
+        "model", help="a Nest name, a Hugging Face Hub repo (org/name), or a model directory"
+    )
     parser.add_argument("--backend", choices=("torch", "jax", "onnx"), default="torch")
     parser.add_argument("--device", help="the PyTorch device (default: cuda when there is one)")
     parser.add_argument("--batch", type=int, default=32, help="requests in flight (`Batch`)")
@@ -27,16 +33,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--tokenizer", help="a Hub id or directory (default: the card's weights repository)"
     )
-    parser.add_argument("--name", help="the model's name in the API (default: the card's)")
+    parser.add_argument(
+        "--name", help="the model's name in the API (default: the Hub repo, or the card's name)"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
         "--warmup",
         type=int,
         nargs="*",
-        default=[],
         metavar="LENGTH",
-        help="prompt lengths to compile before serving (others compile when first seen)",
+        help="prompt lengths to compile for before serving (default: one short prompt; "
+        "the passes longer prompts need compile when first seen)",
     )
     args = parser.parse_args(argv)
 
@@ -82,13 +90,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass  # no generation config
     eos = {int(i) for i in ids if i is not None}
 
+    # A Hub repo keeps its id as the model's name, as other servers name it.
+    hub = nest.HUB_REPO.match(args.model)
+    name = args.name or (hub["repo"] if hub and not Path(args.model).exists() else card.name)
     engine = Engine(model)
-    engine.warmup(args.warmup)
-    server = Server(
-        engine, tokenizer, name=args.name or card.name, eos=eos, host=args.host, port=args.port
-    )
+    # The smallest pass by default: a few seconds rather than a minute or more
+    # for every pass size.
+    engine.warmup(args.warmup if args.warmup else [64])
+    server = Server(engine, tokenizer, name=name, eos=eos, host=args.host, port=args.port)
     host, port = server.address
-    print(f"serving {args.name or card.name} at http://{host}:{port}/v1", flush=True)
+    print(f"serving {name} at http://{host}:{port}/v1", flush=True)
     with contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()
     return 0

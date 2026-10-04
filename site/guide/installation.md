@@ -18,6 +18,7 @@ Pick the extras for the frameworks you use:
 | `flax` | `linnet.jax.load_nnx` |
 | `onnx` | `linnet.onnx`; add `onnxruntime`, or `onnxruntime-gpu` for CUDA and TensorRT, to run models |
 | `nest` | `linnet.nest`: models from [Nest](https://nest.franknoh.dev) and the Hugging Face Hub |
+| `serve` | `linnet serve`: PyTorch, the Hub and a tokenizer, to serve a model with OpenAI's API |
 | `all` | all of them |
 
 Outside a uv project, `uv pip install "linnet-lang[torch]"` installs into
@@ -53,14 +54,22 @@ The editors run the language server, [`linnet lsp`](/docs/tooling#lsp).
 
 ### VS Code
 
+Install **Linnet** from the Visual Studio Marketplace, or from Open VSX in
+VSCodium and Cursor. The builds for Linux, macOS (Apple silicon) and Windows
+carry the compiler and need nothing else. The
+[releases page](https://github.com/franknoh/Linnet/releases) has the same
+`.vsix` files for `code --install-extension`.
+
+`linnet.path` picks another compiler (in a uv project,
+`.venv/bin/linnet`), and `linnet.stdRoot` passes `--std`. Run
+`Linnet: Restart Language Server` after changing the compiler. From a
+checkout:
+
 ```bash
-cd editors/vscode && npm install && npm run check      # from a checkout
+cd editors/vscode && npm install && npm run check
 npx @vscode/vsce package
 code --install-extension linnet-*.vsix
 ```
-
-Set `linnet.path` if `linnet` is not on `PATH` (in a uv project,
-`.venv/bin/linnet`), and `linnet.stdRoot` to pass `--std`. Run `Linnet: Restart Language Server` after rebuilding the compiler.
 
 ### Neovim and Vim
 
