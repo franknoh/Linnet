@@ -53,14 +53,22 @@ The editors run the language server, [`linnet lsp`](/docs/tooling#lsp).
 
 ### VS Code
 
+Install **Linnet** from the Visual Studio Marketplace, or from Open VSX in
+VSCodium and Cursor. The builds for Linux, macOS (Apple silicon) and Windows
+carry the compiler and need nothing else. The
+[releases page](https://github.com/franknoh/Linnet/releases) has the same
+`.vsix` files for `code --install-extension`.
+
+`linnet.path` picks another compiler (in a uv project,
+`.venv/bin/linnet`), and `linnet.stdRoot` passes `--std`. Run
+`Linnet: Restart Language Server` after changing the compiler. From a
+checkout:
+
 ```bash
-cd editors/vscode && npm install && npm run check      # from a checkout
+cd editors/vscode && npm install && npm run check
 npx @vscode/vsce package
 code --install-extension linnet-*.vsix
 ```
-
-Set `linnet.path` if `linnet` is not on `PATH` (in a uv project,
-`.venv/bin/linnet`), and `linnet.stdRoot` to pass `--std`. Run `Linnet: Restart Language Server` after rebuilding the compiler.
 
 ### Neovim and Vim
 
