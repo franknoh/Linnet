@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import shutil
 import struct
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pytest
+from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
-from linnet import nest
+from linnet import ir, nest
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
@@ -218,3 +222,113 @@ def test_fetch_falls_back_to_the_cached_copy(tmp_path: Path) -> None:
         assert nest.fetch("tiny", registry=gone, cache=cache) == fetched
     with pytest.raises(nest.NestError, match="cannot fetch"):
         nest.fetch("tiny", registry=gone, cache=tmp_path / "empty")
+
+
+def write_checkpoint(directory: Path, card: nest.Card) -> dict[str, tuple[int, ...]]:
+    """Every parameter of the card's model, under its checkpoint name."""
+    program = card.program(STDLIB)
+    bindings = ir.bind_generics(program.root.generics, card.generics)
+    mapping: dict[str, str] = json.loads((directory / "bindings.json").read_text("utf-8"))
+    arrays: dict[str, np.ndarray[Any, Any]] = {}
+    for entry in program.manifest:
+        if entry.kind != "param":
+            continue
+        shape = ir.evaluate_shape(entry.shape, bindings)
+        for path in nest.expand_paths(entry, bindings):
+            arrays[mapping.get(path, path)] = np.full(shape, 0.01, dtype=np.float32)
+    save_file(arrays, str(directory / "model.safetensors"))
+    return {name: array.shape for name, array in arrays.items()}
+
+
+def offline(*args: object, **kwargs: object) -> str:
+    raise AssertionError("the Hub was asked")
+
+
+def test_a_checkpoint_beside_the_card_needs_no_hub(
+    model_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory holding its checkpoint is checked and loaded from disk."""
+    card = nest.Card.read(model_dir)
+    assert nest.local_weights(card) is None
+    shapes = write_checkpoint(model_dir, card)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", offline)
+    monkeypatch.setattr("huggingface_hub.hf_hub_url", offline)
+    assert nest.download_weights(card) == model_dir / "model.safetensors"
+    assert nest.check(card, std_root=STDLIB, exports=False) == []
+
+    # Without a Hub repo, the files must be there.
+    (model_dir / "nest.toml").write_text(
+        CARD.replace('repo = "openai-community/gpt2"\n', ""), encoding="utf-8"
+    )
+    assert nest.check(nest.Card.read(model_dir), std_root=STDLIB, exports=False) == []
+    save_file(
+        {"wte.weight": np.zeros((3, 8), dtype=np.float32)}, str(model_dir / "model.safetensors")
+    )
+    problems = nest.check(nest.Card.read(model_dir), std_root=STDLIB, exports=False)
+    assert f"`wte.weight` has shape [3, 8], `wte` needs {list(shapes['wte.weight'])}" in problems
+    (model_dir / "model.safetensors").unlink()
+    with pytest.raises(nest.NestError, match="holds no checkpoint"):
+        nest.download_weights(nest.Card.read(model_dir))
+    assert "weights.repo is required unless weights.files are beside the card" in nest.check(
+        nest.Card.read(model_dir), std_root=STDLIB, exports=False
+    )
+
+
+def test_a_model_directory_loads_in_torch(model_dir: Path) -> None:
+    torch = pytest.importorskip("torch")
+    write_checkpoint(model_dir, nest.Card.read(model_dir))
+    model = nest.load(model_dir, std_root=STDLIB)
+    logits = model(torch.tensor([[1, 2, 3]], dtype=torch.int32))
+    assert tuple(logits.shape) == (1, 3, 11)
+
+
+def test_hub_repos_resolve_by_name(
+    model_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`org/name` is a Hub repo with the card at its root. Its checkpoint
+    comes along when the card names no other repo for it."""
+    snapshots = tmp_path / "snapshots"
+    asked: list[tuple[str, str | None, tuple[str, ...]]] = []
+
+    def hf_hub_download(repo: str, filename: str, revision: str | None = None) -> str:
+        target = snapshots / repo / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(model_dir / filename, target)
+        return str(target)
+
+    def snapshot_download(
+        repo: str, revision: str | None = None, allow_patterns: list[str] | None = None
+    ) -> str:
+        patterns = tuple(allow_patterns or ["*"])
+        asked.append((repo, revision, patterns))
+        for file in model_dir.rglob("*"):
+            relative = file.relative_to(model_dir).as_posix()
+            if file.is_file() and any(fnmatch.fnmatch(relative, p) for p in patterns):
+                target = snapshots / repo / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(file, target)
+        return str(snapshots / repo)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", hf_hub_download)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+    write_checkpoint(model_dir, nest.Card.read(model_dir))
+
+    # The card names its checkpoint's repo: the weights stay there.
+    card = nest.resolve("me/gpt2-tiny")
+    assert card.name == "gpt2-tiny" and card.source_path.is_file()
+    assert asked[-1][:2] == ("me/gpt2-tiny", None)
+    assert not any(fnmatch.fnmatch("model.safetensors", p) for p in asked[-1][2])
+    assert nest.local_weights(card) is None
+
+    # The checkpoint is beside the card: it comes with the snapshot.
+    (model_dir / "nest.toml").write_text(
+        CARD.replace('repo = "openai-community/gpt2"\n', ""), encoding="utf-8"
+    )
+    card = nest.resolve("hf://me/gpt2-tiny@v1")
+    assert asked[-1][:2] == ("me/gpt2-tiny", "v1")
+    assert nest.local_weights(card) == card.directory / "model.safetensors"
+
+
+def test_a_directory_without_a_card_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(nest.NestError, match=r"has no nest\.toml"):
+        nest.resolve(tmp_path)

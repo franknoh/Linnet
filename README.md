@@ -74,7 +74,8 @@ the entry points and limits of each target.
 SafeTensors checkpoints ([source](https://github.com/franknoh/nest)). Its CI
 compiles every card, checks the published checkpoint against each
 parameter's shape and dtype, and exports the model to StableHLO, ONNX,
-PyTorch and JAX. `linnet.nest.load` loads a card by name.
+PyTorch and JAX. `linnet.nest.load` loads a model by its Nest name, from any
+Hugging Face Hub repo with a card at its root, or from a directory.
 
 ## Documentation
 
