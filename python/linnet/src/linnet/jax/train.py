@@ -28,6 +28,7 @@ import fnmatch
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import jax
@@ -68,6 +69,9 @@ def train(
     trainable: bool | str | Sequence[str] = True,
     master: Any = jnp.float32,
     parameters: dict[str, Any] | None = None,
+    mesh: Any = None,
+    checkpoint: str | Path | None = None,
+    checkpoint_every: int | None = None,
     on_step: Callable[[Step], None] | None = None,
 ) -> tuple[dict[str, Any], History]:
     """Fits `model`'s parameters on `batches` (`linnet.packing.pack`) with
@@ -87,34 +91,93 @@ def train(
     every call, so gradients and optimizer state are in f32; the rest stay
     as loaded. Paths bound to one checkpoint tensor (a tied embedding and
     output head) are one parameter, their gradients summed. `parameters`
-    starts from given arrays instead of the loaded weights."""
+    starts from given arrays instead of the loaded weights.
+
+    With `mesh` (a `jax.sharding.Mesh`), training is data-parallel and fully
+    sharded over the mesh's first axis of `N` devices. Each step takes `N`
+    times `accumulate` batches and runs `N` side by side (a `vmap`, split
+    across the devices). Every parameter, its gradient and its optimizer
+    state are split along an axis `N` divides (copied when none does), and
+    XLA gathers a weight where it is used. Set the mesh before the model's
+    first call: the weights then load straight into their parts.
+
+    With `checkpoint`, a directory, training resumes from the latest
+    checkpoint there (`load_checkpoint`), skipping the batches its steps
+    took, and writes one every `checkpoint_every` steps and at the end
+    (`save_checkpoint`, one host)."""
+    from jax.sharding import NamedSharding, PartitionSpec
+
+    width = 1
+    split: Any = None
+    if mesh is not None:
+        axis = mesh.axis_names[0]
+        width = int(mesh.shape[axis])
+        split = NamedSharding(mesh, PartitionSpec(None, axis))
+        if parameters is None:
+            model.placement = placement(mesh)
+    per_step = accumulate * width
     iterator = iter(batches)
-    group = [batch for _, batch in zip(range(accumulate), iterator, strict=False)]
+
+    def take() -> list[Packed]:
+        return [batch for _, batch in zip(range(per_step), iterator, strict=False)]
+
+    group = take()
     if not group:
         return dict(parameters or {}), History()
     weights = (
         dict(parameters) if parameters is not None else model.parameters_for(*group[0].arrays(1.0))
     )
+    # On the devices, as `mesh` splits them; one array per tied tensor.
+    moved: dict[int, Any] = {}
+    placed: dict[str, Any] = {}
+    for path, array in weights.items():
+        if id(array) not in moved:
+            moved[id(array)] = _placed(array, path, mesh)
+        placed[path] = moved[id(array)]
+    weights = placed
     ties = _ties(weights)
     chosen = _chosen([path for path in weights if path not in ties], weights, trainable)
     dtypes = {path: weights[path].dtype for path in chosen}
-    # Copies: the step donates them, and the model's own arrays must stay.
-    trained = {
-        path: jnp.array(weights[path], dtype=master or weights[path].dtype, copy=True)
-        for path in chosen
-    }
+    # Copies in `master`, split as the weights are: the step donates them,
+    # and the model's own arrays must stay.
+    shardings = {path: weights[path].sharding for path in chosen}
+    trained = jax.jit(
+        lambda tree: {p: jnp.copy(v.astype(master or v.dtype)) for p, v in tree.items()},
+        out_shardings=shardings,
+    )({path: weights[path] for path in chosen})
     frozen = {path: weights[path] for path in weights if path not in chosen and path not in ties}
-    state = optimizer.init(trained)
+    if mesh is None:
+        state = jax.jit(optimizer.init)(trained)
+    else:
+        # Zeros depend on no input: their parts are said, as the weights'.
+        shapes = jax.eval_shape(optimizer.init, trained)
+        state = jax.jit(
+            optimizer.init, out_shardings=jax.tree.map(lambda s: _split_as(mesh, s.shape), shapes)
+        )(trained)
+    start = 0
+    if checkpoint is not None:
+        found = load_checkpoint(checkpoint, trained, state)
+        if found is not None:
+            start, trained, state = found
+            for _ in range(start * per_step - len(group)):
+                next(iterator, None)
+            group = take()
 
     def loss_of(trained: Any, frozen: Any, inputs: Any) -> Any:
         values = {**frozen, **{p: v.astype(dtypes[p]) for p, v in trained.items()}}
         values.update({path: values[tie] for path, tie in ties.items()})
         return model.apply(values, *inputs)
 
+    def micro(trained: Any, frozen: Any, inputs: Any) -> Any:
+        if mesh is None:
+            return loss_of(trained, frozen, inputs)
+        # `N` batches side by side, one per device.
+        return jnp.sum(jax.vmap(lambda *one: loss_of(trained, frozen, one))(*inputs))
+
     def update(trained: Any, state: Any, frozen: Any, stacked: Any) -> Any:
         def one(carry: Any, inputs: Any) -> Any:
             grads, total = carry
-            loss, more = jax.value_and_grad(loss_of)(trained, frozen, inputs)
+            loss, more = jax.value_and_grad(micro)(trained, frozen, inputs)
             return (jax.tree.map(jnp.add, grads, more), total + loss), None
 
         zeros = jax.tree.map(jnp.zeros_like, trained)
@@ -127,17 +190,38 @@ def train(
         trained = jax.tree.map(lambda p, u: p + u.astype(p.dtype), trained, updates)
         return trained, state, loss, norm
 
-    compiled = jax.jit(update, donate_argnums=(0, 1))
+    if mesh is None:
+        compiled = jax.jit(update, donate_argnums=(0, 1))
+    else:
+        # The parts stay where they are, step after step.
+        whole = NamedSharding(mesh, PartitionSpec())
+        compiled = jax.jit(
+            update,
+            donate_argnums=(0, 1),
+            out_shardings=(
+                jax.tree.map(lambda x: x.sharding, trained),
+                jax.tree.map(lambda x: x.sharding, state),
+                whole,
+                whole,
+            ),
+        )
     history = History()
-    while group and (steps is None or len(history.steps) < steps):
+    step = start
+    while len(group) == per_step and (steps is None or step < steps):
         count = max(1, sum(batch.count for batch in group))
         stacked = [
             np.stack(values) for values in zip(*(b.arrays(count) for b in group), strict=True)
         ]
+        if mesh is not None:
+            stacked = [
+                jax.device_put(value.reshape(accumulate, width, *value.shape[1:]), split)
+                for value in stacked
+            ]
         begin = time.perf_counter()
         trained, state, loss, norm = compiled(trained, state, frozen, stacked)
+        step += 1
         record = Step(
-            step=len(history.steps) + 1,
+            step=step,
             loss=float(loss),
             tokens=sum(batch.tokens.size for batch in group),
             seconds=time.perf_counter() - begin,
@@ -146,13 +230,170 @@ def train(
         history.steps.append(record)
         if on_step is not None:
             on_step(record)
-        group = [batch for _, batch in zip(range(accumulate), iterator, strict=False)]
-        # A last group short of `accumulate` would compile the step again.
-        if len(group) < accumulate:
-            break
+        if checkpoint is not None and checkpoint_every and step % checkpoint_every == 0:
+            save_checkpoint(checkpoint, step, trained, state)
+        group = take()
+    if (
+        checkpoint is not None
+        and history.steps
+        and not (checkpoint_every and step % checkpoint_every == 0)
+    ):
+        save_checkpoint(checkpoint, step, trained, state)
     final = {**frozen, **trained}
     final.update({path: final[tie] for path, tie in ties.items()})
     return final, history
+
+
+def placement(mesh: Any) -> Callable[[str, Any], Any]:
+    """How a weight goes onto `mesh` for fully sharded training: split along
+    its largest axis the mesh's first axis divides, or copied to every
+    device when none does."""
+
+    def place(path: str, value: Any) -> Any:
+        return jax.device_put(value, _split_as(mesh, tuple(np.shape(value))))
+
+    return place
+
+
+def _split_as(mesh: Any, shape: tuple[int, ...]) -> Any:
+    from jax.sharding import NamedSharding, PartitionSpec
+
+    axis = mesh.axis_names[0]
+    width = int(mesh.shape[axis])
+    spec: list[Any] = [None] * len(shape)
+    fits = [i for i, extent in enumerate(shape) if extent % width == 0 and extent >= width]
+    if fits:
+        spec[max(fits, key=lambda i: shape[i])] = axis
+    return NamedSharding(mesh, PartitionSpec(*spec))
+
+
+def _placed(array: Any, path: str, mesh: Any) -> Any:
+    """`array` on the devices: as it is when already where `mesh` wants it."""
+    if mesh is None:
+        return array if isinstance(array, jax.Array) else jnp.asarray(array)
+    wanted = _split_as(mesh, tuple(np.shape(array)))
+    if isinstance(array, jax.Array) and array.sharding == wanted:
+        return array
+    return jax.device_put(array, wanted)
+
+
+# ------------------------------------------------------------------ files
+
+PREFIX = "step-"
+_NAMES = {
+    "float32": "F32",
+    "float16": "F16",
+    "bfloat16": "BF16",
+    "float64": "F64",
+    "int64": "I64",
+    "int32": "I32",
+    "int16": "I16",
+    "int8": "I8",
+    "uint32": "U32",
+    "uint8": "U8",
+    "bool": "BOOL",
+}
+
+
+def _write(path: Path, arrays: dict[str, Any]) -> None:
+    from ..weights import write_safetensors
+
+    entries: list[tuple[str, str, tuple[int, ...], Any]] = []
+    for name, array in arrays.items():
+        host = np.ascontiguousarray(np.asarray(jax.device_get(array)))
+        entries.append((name, _NAMES[host.dtype.name], tuple(host.shape), host.tobytes()))
+    write_safetensors(path, entries)
+
+
+def _read(path: Path) -> dict[str, np.ndarray]:
+    import json
+    import struct
+
+    import ml_dtypes  # type: ignore[import-untyped]
+
+    dtypes = {name: dtype for dtype, name in _NAMES.items()}
+    data = path.read_bytes()
+    (length,) = struct.unpack("<Q", data[:8])
+    header = json.loads(data[8 : 8 + length])
+    out: dict[str, np.ndarray] = {}
+    for name, entry in header.items():
+        if name == "__metadata__":
+            continue
+        begin, end = entry["data_offsets"]
+        kind = dtypes[entry["dtype"]]
+        dtype = np.dtype(ml_dtypes.bfloat16) if kind == "bfloat16" else np.dtype(kind)
+        raw = data[8 + length + begin : 8 + length + end]
+        out[name] = np.frombuffer(raw, dtype=dtype).reshape(entry["shape"])
+    return out
+
+
+def save_weights(parameters: dict[str, Any], path: str | Path, *, dtype: Any = None) -> Path:
+    """Writes `parameters` (path -> array, as `train` returns them) to one
+    SafeTensors file under their Linnet paths, which `load_source` reads
+    back; `dtype` converts floating ones as they are written."""
+    arrays = {
+        name: array.astype(dtype)
+        if dtype is not None and jnp.issubdtype(array.dtype, jnp.floating)
+        else array
+        for name, array in parameters.items()
+    }
+    target = Path(path)
+    _write(target, arrays)
+    return target
+
+
+def save_checkpoint(
+    directory: str | Path, step: int, trained: dict[str, Any], state: Any, *, keep: int | None = 2
+) -> Path:
+    """Writes the parameters being trained and the optimizer state at
+    `step` to `directory/step-<step>` (from one host), then removes all but
+    the `keep` latest."""
+    import json
+    import shutil
+
+    root = Path(directory)
+    target = root / f"{PREFIX}{step:08d}"
+    target.mkdir(parents=True, exist_ok=True)
+    _write(target / "parameters.safetensors", trained)
+    leaves = jax.tree.leaves(state)
+    _write(target / "state.safetensors", {f"{i:06d}": leaf for i, leaf in enumerate(leaves)})
+    # Written last: a checkpoint without it did not finish.
+    (target / "progress.json").write_text(json.dumps({"step": step}), encoding="utf-8")
+    if keep is not None:
+        for old in _complete(root)[:-keep]:
+            shutil.rmtree(old, ignore_errors=True)
+    return target
+
+
+def load_checkpoint(
+    directory: str | Path, trained: dict[str, Any], state: Any
+) -> tuple[int, dict[str, Any], Any] | None:
+    """The latest complete checkpoint under `directory`: its step, and the
+    parameters and optimizer state shaped and placed as `trained` and
+    `state` are. None when there is none."""
+    import json
+
+    found = _complete(Path(directory))
+    if not found:
+        return None
+    latest = found[-1]
+    stored = _read(latest / "parameters.safetensors")
+    trained = {path: jax.device_put(stored[path], like.sharding) for path, like in trained.items()}
+    leaves, structure = jax.tree.flatten(state)
+    kept = _read(latest / "state.safetensors")
+    leaves = [jax.device_put(kept[f"{i:06d}"], like.sharding) for i, like in enumerate(leaves)]
+    step = int(json.loads((latest / "progress.json").read_text(encoding="utf-8"))["step"])
+    return step, trained, jax.tree.unflatten(structure, leaves)
+
+
+def _complete(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in root.iterdir()
+        if path.name.startswith(PREFIX) and (path / "progress.json").exists()
+    )
 
 
 def _ties(weights: dict[str, Any]) -> dict[str, str]:
@@ -185,4 +426,12 @@ def _global_norm(tree: Any) -> Any:
     return jnp.sqrt(sum(jnp.sum(jnp.square(leaf.astype(jnp.float32))) for leaf in leaves))
 
 
-__all__ = ["History", "Step", "train"]
+__all__ = [
+    "History",
+    "Step",
+    "load_checkpoint",
+    "placement",
+    "save_checkpoint",
+    "save_weights",
+    "train",
+]

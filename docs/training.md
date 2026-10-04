@@ -279,6 +279,20 @@ optimizer, and returns the parameters (path -> array) and the steps.
   the rest stay as loaded.
 - Paths bound to one checkpoint tensor (a tied embedding and output head)
   load as one array and train as one parameter.
+- `save_weights(params, path)` writes them under their Linnet paths, which
+  `load_source` reads back. `checkpoint` and `checkpoint_every` resume and
+  save as in PyTorch, from one host.
+
+With `mesh=Mesh(jax.devices(), ("data",))`, training is data-parallel and
+fully sharded (FSDP):
+
+- Each step takes one batch per device per accumulated step and runs them
+  side by side (a `vmap` split across the devices).
+- Every parameter, its gradient and its optimizer state are split along the
+  largest axis the device count divides; XLA gathers a weight where it is
+  used and reduces gradients into the parts.
+- Pass the mesh before the model's first call, and the weights load straight
+  into their parts.
 
 The output head's loss runs a block of rows at a time here too
 (`linnet.jax.loss`, a `custom_vjp`), so the `[P, Vocab]` logits are never

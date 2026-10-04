@@ -191,3 +191,94 @@ def test_tied_paths_train_as_one_and_frozen_ones_stay(weights: Path) -> None:
     np.testing.assert_array_equal(
         params["layers.0.mlp.gate.weight"], start["layers.0.mlp.gate.weight"]
     )
+
+
+def _four_batches() -> list[Packed]:
+    examples = _examples() * 2
+    return [next(pack(examples[i : i + 2], tokens=12)) for i in range(0, 8, 2)]
+
+
+def test_a_resumed_run_ends_where_an_unbroken_one_does(weights: Path, tmp_path: Path) -> None:
+    def run(steps: int, checkpoint: Path | None) -> tuple[dict[str, Any], list[int]]:
+        params, history = train(
+            _model(weights),
+            iter(_four_batches()),
+            optimizer=optax.adamw(3e-2),
+            steps=steps,
+            checkpoint=checkpoint,
+            checkpoint_every=1 if checkpoint is not None else None,
+        )
+        return params, [step.step for step in history.steps]
+
+    unbroken, numbers = run(4, None)
+    assert numbers == [1, 2, 3, 4]
+    assert run(2, tmp_path / "run")[1] == [1, 2]
+    resumed, numbers = run(4, tmp_path / "run")
+    assert numbers == [3, 4]
+    for path, value in unbroken.items():
+        np.testing.assert_allclose(resumed[path], value, rtol=1e-5, atol=1e-6)
+    assert sorted(p.name for p in (tmp_path / "run").iterdir()) == [
+        "step-00000003",
+        "step-00000004",
+    ]
+
+
+def test_saved_weights_load_back(weights: Path, tmp_path: Path) -> None:
+    from linnet.jax.train import save_weights
+
+    params, _ = train(
+        _model(weights), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=1, accumulate=2
+    )
+    save_weights(params, tmp_path / "trained.safetensors")
+    again = _model(tmp_path / "trained.safetensors").parameters_for(*_four_batches()[0].arrays(1.0))
+    for path, value in again.items():
+        np.testing.assert_array_equal(np.asarray(value), np.asarray(params[path]))
+
+
+MESH_SCRIPT = """
+import sys
+from pathlib import Path
+
+import jax
+import numpy as np
+import optax
+from jax.sharding import Mesh
+
+sys.path.insert(0, sys.argv[2])
+from test_train import _four_batches, _model  # noqa: E402
+
+from linnet.jax.train import train  # noqa: E402
+
+weights = Path(sys.argv[1])
+assert len(jax.devices()) == 2
+mesh = Mesh(np.array(jax.devices()), ("data",))
+split, _ = train(_model(weights), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2,
+                 clip=None, mesh=mesh)
+one, _ = train(_model(weights), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2,
+               clip=None, accumulate=2)
+gate = split["layers.0.mlp.gate.weight"]
+assert len(gate.sharding.device_set) == 2 and gate.sharding.spec[0] == "data", gate.sharding
+for path, value in one.items():
+    np.testing.assert_allclose(np.asarray(split[path]), np.asarray(value), rtol=1e-4, atol=1e-6)
+print("same")
+"""
+
+
+def test_sharded_training_over_a_mesh_matches_one_device(weights: Path, tmp_path: Path) -> None:
+    """Two host devices, each with its own batch and part of every weight,
+    take the steps one device takes accumulating both batches."""
+    import os
+    import subprocess
+    import sys
+
+    script = tmp_path / "mesh.py"
+    script.write_text(MESH_SCRIPT, encoding="utf-8")
+    environment = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=2"}
+    completed = subprocess.run(
+        [sys.executable, str(script), str(weights), str(Path(__file__).parent)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    assert completed.returncode == 0 and "same" in completed.stdout, completed.stderr[-3000:]

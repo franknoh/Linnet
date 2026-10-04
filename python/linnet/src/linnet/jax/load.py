@@ -18,7 +18,7 @@ import functools
 import json
 import re
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -90,6 +90,9 @@ class LinnetFunction:
         self._std_root = std_root
         self.root = root
         self.entry = entry
+        # How a weight goes to the devices when an entry first compiles:
+        # `placement(path, host_array)`, or onto the default device.
+        self.placement: Callable[[str, Any], Any] | None = None
         functions = cast(list[dict[str, Any]], plan["functions"])
         matching = [f for f in functions if f["name"].endswith(f"::{root}.{entry}")]
         if not matching:
@@ -229,7 +232,7 @@ class LinnetFunction:
             host = self._weights[path]
             array = uploaded.get(id(host))
             if array is None:
-                array = _device_array(host)
+                array = self.placement(path, host) if self.placement else _device_array(host)
                 if (
                     self.cast_dtype
                     and array.dtype != aval.dtype
