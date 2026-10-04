@@ -1,6 +1,7 @@
 // Copies the repository's documentation into the site so one source serves
-// both: `docs/*.md` become `/docs/*`, `spec/*.md` become `/spec/*`, and every
-// example becomes a page showing its sources. Generated directories are
+// both: `docs/*.md` become `/docs/*`, `spec/*.md` become `/spec/*`,
+// `LANGUAGE.md` becomes `/docs/language`, and every example becomes a page
+// showing its sources. Generated directories are
 // ignored by git; run before `vitepress dev` or `vitepress build`.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -34,6 +35,16 @@ writeFileSync(
   join(docs, "diagnostics.md"),
   readFileSync(join(repo, "docs/diagnostics/README.md"), "utf8"),
 );
+// LANGUAGE.md is a page, and as plain Markdown at /LANGUAGE.md for tools
+// that fetch it (/llms.txt points there).
+const language = readFileSync(join(repo, "LANGUAGE.md"), "utf8");
+writeFileSync(
+  join(docs, "language.md"),
+  language
+    .replaceAll("](spec/)", "](/spec/00-overview)")
+    .replaceAll("](docs/diagnostics/README.md)", "](/docs/diagnostics)"),
+);
+writeFileSync(join(site, "public", "LANGUAGE.md"), language);
 
 const spec = join(site, "spec");
 fresh(spec);
