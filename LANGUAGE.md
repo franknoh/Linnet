@@ -462,10 +462,13 @@ its signature.
   entry are its own generics.
 - **Decoding** keeps caches in `state` (sized by generics such as `Batch`
   and `MaxSeq`) with an entry taking one token and a position.
-- **Or import it.** `linnet.torch.export_linnet(module, (example,),
-  output="model.linnet")` traces with `torch.export` and writes checked
-  Linnet with the same parameter names, or names the operation it cannot
-  express.
+- **Or let it be converted.** `linnet.nest.load("org/name")` converts a
+  Hub checkpoint of the Llama, Mistral, Qwen2, Qwen3, Phi-3 and GPT-2
+  families from its `config.json`, and `python -m linnet.nest convert
+  org/name -o dir` writes the result to edit. For anything else,
+  `linnet.torch.export_linnet(module, (example,), output="model.linnet")`
+  traces with `torch.export` and writes checked Linnet with the same
+  parameter names, or names the operation it cannot express.
 
 [Nest](https://nest.franknoh.dev) has 24 checked models (Llama, Qwen, Phi,
 Mistral, gpt-oss, BERT, ViT, CLIP, Whisper, Stable Diffusion) to copy from.

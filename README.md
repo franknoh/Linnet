@@ -76,7 +76,9 @@ SafeTensors checkpoints ([source](https://github.com/franknoh/nest)). Its CI
 compiles every card, checks the published checkpoint against each
 parameter's shape and dtype, and exports the model to StableHLO, ONNX,
 PyTorch and JAX. `linnet.nest.load` loads a model by its Nest name, from any
-Hugging Face Hub repo with a card at its root, or from a directory.
+Hugging Face Hub repo with a card at its root, or from a directory. A
+`transformers` checkpoint of the Llama, Mistral, Qwen2, Qwen3, Phi-3 or
+GPT-2 families converts on the way: `nest.load("Qwen/Qwen2.5-7B-Instruct")`.
 
 ## Documentation
 
