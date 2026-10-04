@@ -70,3 +70,10 @@ python bench/zoo.py ../nest
 ```
 
 which keeps only the rows the page draws.
+
+## Training
+
+`results/training.json` holds the runs that
+[Training](../docs/training.md#compared-with-trl) compares with TRL: step
+time, tokens a second, peak memory and the quality each reached, copied from
+their logs. The page draws it under Training.

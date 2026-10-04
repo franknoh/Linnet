@@ -46,6 +46,7 @@ On one H100 in `bf16`:
 | BERT base, forward at batch 1 | 0.74 ms (CUDA graphs) | transformers 3.60 |
 | Llama 3.1 8B, many requests at once | 5600 tok/s | vLLM 5449 |
 | Llama 3.1 8B, LoRA fine-tuning step | 1.04 s | TRL 1.83 s |
+| Llama 3.1 8B, GRPO step | 1.18 s | TRL with vLLM 3.14 s |
 
 Every row, including where Linnet loses, is on the
 [benchmarks](https://linnet.franknoh.dev/benchmarks) page.
