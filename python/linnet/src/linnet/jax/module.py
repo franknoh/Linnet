@@ -125,8 +125,11 @@ class LinnetModel:
         import jax
         import jax.numpy as jnp
 
+        # Every function that may hold the old arrays: the one the model was
+        # made from too. One left holding them keeps a whole copy alive.
+        functions = list({id(f): f for f in (self._first, *self._functions.values())}.values())
         replaced: dict[str, Any] = {}
-        for function in self._functions.values():
+        for function in functions:
             for compiled in function._cache.values():  # pyright: ignore[reportPrivateUsage]
                 for i, path in enumerate(compiled.parameters):
                     if path not in parameters:
@@ -134,13 +137,23 @@ class LinnetModel:
                     if path not in replaced:
                         old = compiled.arrays[i]
                         new = jnp.asarray(parameters[path]).astype(compiled.dtypes[i])
-                        if isinstance(old, jax.Array):
+                        # Placed already (the policy's own arrays, on the
+                        # same device): taken as they are, not copied.
+                        if isinstance(old, jax.Array) and not new.sharding.is_equivalent_to(
+                            old.sharding, new.ndim
+                        ):
                             new = jax.device_put(new, old.sharding)
                         replaced[path] = new
                     compiled.arrays[i] = replaced[path]
         for path, value in parameters.items():
             if path in self.weights:
                 self.weights[path] = replaced.get(path, value)
+        for function in functions:
+            # `SourceFunction.parameters`: the weights it loaded, as arrays.
+            loaded = getattr(function, "parameters", None)
+            if isinstance(loaded, dict):
+                for path in loaded.keys() & replaced.keys():
+                    loaded[path] = replaced[path]
         self._prepared.clear()
         for function in self._functions.values():
             if not isinstance(function, SourceFunction):
