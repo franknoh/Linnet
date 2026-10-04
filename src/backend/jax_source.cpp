@@ -74,6 +74,8 @@ std::string real_text(double value) {
 
 // What a module with routed experts imports (`native_call`).
 constexpr const char* experts_import = "import linnet.jax.moe as _moe\n\n";
+// What a module with a blockwise output head and loss imports.
+constexpr const char* loss_import = "import linnet.jax.loss as _loss\n\n";
 
 // The generated module: straight-line `jax.numpy` over static shapes.
 class JaxTarget : public GraphTarget {
@@ -495,6 +497,23 @@ public:
                                              v + ", scale=" + scalar(3) + mask + kernel + ")");
             return define(back("jnp.swapaxes(" + mixed + ", 1, 2)", 0));
         }
+        // The output head and its loss a block of rows at a time
+        // (`linnet.jax.loss`), never the whole [N, V] logits.
+        const bool cross_entropy = implementation_base == "linnet.linear_cross_entropy";
+        const bool log_probs = implementation_base == "linnet.linear_token_log_probs";
+        if ((cross_entropy || log_probs) && at.size() == (cross_entropy ? 4U : 3U) &&
+            std::ranges::none_of(at,
+                                 [](const TensorInfo* operand) { return operand == nullptr; })) {
+            uses_loss_ = true;
+            std::string call =
+                std::string("_loss.") +
+                (cross_entropy ? "linear_cross_entropy(" : "linear_token_log_probs(") + name(0) +
+                ", " + name(1) + ", " + name(2);
+            if (cross_entropy) {
+                call += ", " + name(3);
+            }
+            return define(call + ")");
+        }
         // MXFP4 experts: the chosen experts' products by `linnet.jax.moe`,
         // over a 16-bit copy of the experts made by its own statement, which
         // reads only weights: `prepare` makes it once and every entry shares
@@ -617,6 +636,9 @@ public:
             "    ):\n"
             "        return \"cudnn\"\n"
             "    return None\n\n";
+        if (uses_loss_) {
+            out += loss_import;
+        }
         if (uses_experts_) {
             out += experts_import;
         }
@@ -696,6 +718,7 @@ private:
     bool prepare_ = false;        // split weight-only work into `prepare`
     bool full_precision_ = false; // f32 products at full precision (`precise`)
     bool uses_experts_ = false;   // the module imports `linnet.jax.moe`
+    bool uses_loss_ = false;      // the module imports `linnet.jax.loss`
 
     struct Loop {
         std::size_t id = 0;

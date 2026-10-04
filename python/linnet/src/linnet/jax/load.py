@@ -222,19 +222,27 @@ class LinnetFunction:
         first = len(exported.in_avals) - len(state_inputs) - len(paths)
         declared = exported.in_avals[first : first + len(paths)]
         arrays: list[Any] = []
+        # Paths bound to one checkpoint tensor (a tied embedding and output
+        # head) share one device array.
+        uploaded: dict[int, Any] = {}
         for path, aval in zip(paths, declared, strict=True):
-            array = _device_array(self._weights[path])
-            if (
-                self.cast_dtype
-                and array.dtype != aval.dtype
-                and jnp.issubdtype(array.dtype, jnp.floating)
-                and jnp.issubdtype(aval.dtype, jnp.floating)
-            ):
-                # The export declares each parameter's dtype; a floating array
-                # of another width is converted to it on the device, one at a
-                # time, so the uncast copy of only one parameter is ever there
-                # (all of them at once is a bf16 model's weights twice over).
-                array = array.astype(aval.dtype)
+            host = self._weights[path]
+            array = uploaded.get(id(host))
+            if array is None:
+                array = _device_array(host)
+                if (
+                    self.cast_dtype
+                    and array.dtype != aval.dtype
+                    and jnp.issubdtype(array.dtype, jnp.floating)
+                    and jnp.issubdtype(aval.dtype, jnp.floating)
+                ):
+                    # The export declares each parameter's dtype; a floating
+                    # array of another width is converted to it on the device,
+                    # one at a time, so the uncast copy of only one parameter
+                    # is ever there (all of them at once is a bf16 model's
+                    # weights twice over).
+                    array = array.astype(aval.dtype)
+                uploaded[id(host)] = array
             arrays.append(array)
         if self.share_weights:
             self._weights.update(zip(paths, arrays, strict=True))
@@ -259,6 +267,17 @@ class LinnetFunction:
             return ()
         first = arguments - len(state_inputs)
         return tuple(first + i for i, path in enumerate(state_inputs) if path in state_outputs)
+
+    def parameters_for(self, *inputs: Any) -> dict[str, Any]:
+        """The weights the entry takes for inputs of these shapes, compiling
+        it for them first: path -> device array, in the dtype the entry
+        computes in. Paths bound to one checkpoint tensor share one array."""
+        bindings = self._bindings_for(inputs)
+        key = tuple(sorted(bindings.items()))
+        if key not in self._cache:
+            self._cache[key] = self._compile(bindings)
+        compiled = self._cache[key]
+        return dict(zip(compiled.parameters, compiled.arrays, strict=True))
 
     def apply(self, parameters: Mapping[str, Any], *inputs: Any, state: Any = None) -> Any:
         """Runs the entry with `parameters` (path -> array) in place of the

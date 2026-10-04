@@ -41,6 +41,7 @@ dev = [
     "huggingface-hub>=1.32.0",
     "trl>=1.14",
     "accelerate>=1.10",
+    "optax>=0.2",
 ]
 
 [[tool.uv.index]]
