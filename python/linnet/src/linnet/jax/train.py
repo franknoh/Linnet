@@ -373,11 +373,21 @@ def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> A
         )
         return jax.lax.psum(mine, axis)
 
+    # Unchecked: the blockwise loss's scans start from zeros every device
+    # shares and carry values each device has its own of.
+    import inspect
+
+    unchecked = (
+        {"check_vma": False}
+        if "check_vma" in inspect.signature(shard_map).parameters
+        else {"check_rep": False}
+    )
     return shard_map(
         local,
         mesh=mesh,
         in_specs=(trained_specs, frozen_specs, PartitionSpec(axis)),
         out_specs=PartitionSpec(),
+        **unchecked,
     )
 
 
