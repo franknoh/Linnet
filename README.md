@@ -19,7 +19,8 @@ model = load("model.linnet", generics={"H": 512, "Heads": 8}, weights="model.saf
 ```
 
 Documentation: [linnet.franknoh.dev](https://linnet.franknoh.dev). Model
-registry: [Nest](https://nest.franknoh.dev).
+registry: [Nest](https://nest.franknoh.dev). Try it in five minutes:
+[the quickstart notebook](https://colab.research.google.com/github/franknoh/Linnet/blob/main/notebooks/quickstart.ipynb) on Colab.
 
 ## Why Linnet
 

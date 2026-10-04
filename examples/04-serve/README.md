@@ -32,7 +32,7 @@ how it was measured.
 ## An OpenAI-compatible server
 
 ```bash
-python -m linnet.serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
+linnet serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
 curl http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' \
      -d '{"model": "llama-3.1-8b-instruct", "messages": [{"role": "user", "content": "Hi"}]}'
 ```

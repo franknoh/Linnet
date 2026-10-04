@@ -82,10 +82,14 @@ function that runs once at load instead of on every call. A model loaded with
 ### Over HTTP
 
 ```bash
-python -m linnet.serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
+uv add "linnet-lang[serve]"
+linnet serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
+linnet serve Qwen/Qwen2.5-7B-Instruct          # a transformers checkpoint, converted
 ```
 
-This serves a Nest decoder with OpenAI's API: `GET /v1/models`,
+`linnet serve` runs `python -m linnet.serve` with the Python it was
+installed beside (`LINNET_PYTHON` picks another). It takes anything
+`linnet.nest.load` does and serves it with OpenAI's API: `GET /v1/models`,
 `POST /v1/completions` and `POST /v1/chat/completions` (server-sent events
 with `"stream": true`, and `stream_options.include_usage`), and
 `GET /health`. OpenAI's clients work against it as they are:

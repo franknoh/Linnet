@@ -513,5 +513,6 @@ fail only `linnet lint`. Every code is in
 | `linnet explain <file>` | which kernel each library operation gets |
 | `linnet torch\|jax\|onnx\|stablehlo --entry <name> --bind G=v ... <file>` | export one entry |
 | `linnet init <name>` | a new package |
+| `linnet serve <model>` | serve a model with OpenAI's API (the `serve` extra) |
 
 `--std <dir>` or `LINNET_STD` points at another standard library.
