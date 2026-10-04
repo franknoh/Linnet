@@ -349,8 +349,8 @@ Conditions that differ:
 - **TRL batch sizes.** TRL took DPO 2 pairs at a time and GRPO 8
   completions at a time; larger batches ran out of memory. vLLM held 35% of
   the GPU.
-- **JAX on four GPUs.** XLA crashes compiling the sharded step with cuDNN
-  attention, so that run is not measured yet.
+- **JAX on four GPUs.** Not measured yet. The sharded step compiles and
+  matches one GPU; two GPUs are too few for the full fine-tune.
 
 ## Losses
 
