@@ -216,6 +216,14 @@ def test_what_the_source_cannot_express_is_refused(hub: Hub, tmp_path: Path) -> 
         convert.convert("org/tiny", output=tmp_path / "out", std_root=STDLIB)
 
 
+def test_a_tied_head_the_checkpoint_stores_binds_its_own(hub: Hub, tmp_path: Path) -> None:
+    hub.config["tie_word_embeddings"] = True
+    hub.extra = {"lm_head.weight": [32, 16]}
+    directory = convert.convert("org/tiny", output=tmp_path / "out", std_root=STDLIB)
+    bindings = json.loads((directory / "bindings.json").read_text("utf-8"))
+    assert bindings["lm_head.weight"] == "lm_head.weight"
+
+
 def test_biases_beside_their_weights_bind(hub: Hub, tmp_path: Path) -> None:
     hub.config["attention_bias"] = True
     hub.extra = {
