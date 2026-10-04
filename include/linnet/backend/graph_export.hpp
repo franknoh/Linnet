@@ -153,6 +153,12 @@ public:
     // target that supports them gathers a parameter's parts into the whole.
     virtual bool supports_fully_shard() const { return false; }
     virtual std::string gather(const TensorInfo& value) { return value.name; }
+    // Recomputed blocks (see `GraphExportOptions::remat`): the code between
+    // `begin_remat` and `end_remat` is one call of a listed block, which the
+    // backward pass computes again instead of keeping its values.
+    virtual bool supports_remat() const { return false; }
+    virtual void begin_remat() {}
+    virtual void end_remat() {}
     virtual std::string slice(const TensorInfo& value,
                               const Dims& starts,
                               const Dims& limits,
@@ -302,6 +308,11 @@ struct GraphExportOptions {
     // when the block returns. One device per process, so not with placement
     // or offload.
     std::vector<std::string> fully_shard;
+    // Generated JAX only: blocks whose every call the backward pass computes
+    // again (`jax.checkpoint`) instead of keeping its values. What it keeps
+    // is what the call reads; a weight the call gathers is gathered again.
+    // Paths as for `fully_shard`.
+    std::vector<std::string> remat;
     // Generated Python only: split computation that reads nothing but
     // parameters (dequantizing MXFP4 experts, say) into a `prepare` function
     // the runtime calls once per loaded model rather than on every call.

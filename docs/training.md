@@ -290,13 +290,22 @@ optimizer, and returns the parameters (path -> array) and the steps.
 With `mesh=Mesh(jax.devices(), ("data",))`, training is data-parallel and
 fully sharded (FSDP):
 
-- Each step takes one batch per device per accumulated step and runs them
-  side by side (a `vmap` split across the devices).
+- Each step takes one batch per device per accumulated step. Every device
+  computes its own (`shard_map`).
 - Every parameter, its gradient and its optimizer state are split along the
-  largest axis the device count divides; XLA gathers a weight where it is
-  used and reduces gradients into the parts.
+  largest axis the device count divides.
+- Each block gathers its weights where it runs, in the dtype the model
+  computes in (`linnet jax --fully-shard`). Gradients are reduced into the
+  parts in f32.
+- The step compiles with GSPMD: Shardy crashes XLA on cuDNN attention
+  inside `shard_map`.
 - Pass the mesh before the model's first call, and the weights load straight
   into their parts.
+
+With `remat=True`, the backward pass computes each layer again instead of
+keeping its values (`linnet jax --remat`, a `jax.checkpoint` per layer).
+Over a mesh it also gathers the layer's weights again. A step then keeps
+each layer's inputs alone, for about a third more compute.
 
 The output head's loss runs a block of rows at a time here too
 (`linnet.jax.loss`, a `custom_vjp`), so the `[P, Vocab]` logits are never
@@ -304,7 +313,9 @@ held whole.
 
 `linnet.jax.dpo.dpo` and `linnet.jax.grpo.grpo` train the
 `log_probs_packed` entry as their PyTorch counterparts do, with the same
-options. They run in one process.
+options, in one process. `mesh` and `remat` work as for `train`: each
+device takes its own batches, and a step's last call is filled out with
+batches that learn nothing.
 
 - `dpo(model, pairs, optimizer=...)` takes `reference` as parameters (path
   -> array). Without them, it computes the model's own log-probabilities
@@ -312,7 +323,8 @@ options. They run in one process.
 - `grpo(policy, engine, prompts, reward, optimizer=...)` samples with an
   `Engine` over the JAX model (`linnet.jax.load_model`). The engine takes the
   policy's weights before each step, adapters merged in
-  (`LinnetModel.copy_weights`).
+  (`LinnetModel.copy_weights`). Over a mesh it takes them as they are split
+  and places them as its own model's are.
 
 ## Compared with TRL
 

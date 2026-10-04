@@ -30,8 +30,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..packing import Example, Packed, Pair, pack
-from .train import Learner, add
+from ..packing import Example, Packed, Pair, empty, pack
+from .train import Learner, add, prepare_blocks
 
 
 @dataclass
@@ -84,6 +84,8 @@ def dpo(
     clip: float | None = 1.0,
     trainable: bool | str | Sequence[str] | None = None,
     parameters: dict[str, Any] | None = None,
+    mesh: Any = None,
+    remat: bool = False,
     on_step: Callable[[DpoStep], None] | None = None,
 ) -> tuple[dict[str, Any], list[DpoStep]]:
     """Trains `model` (the `log_probs_packed` entry as generated JAX) on
@@ -94,17 +96,23 @@ def dpo(
     them the model's own log-probabilities before training are computed for
     every pair first. Answers are packed into batches of `tokens` positions,
     each pair in one batch. `clip` caps the gradient norm; `trainable` picks
-    what trains as `linnet.jax.train.train` does."""
+    what trains as `linnet.jax.train.train` does.
+
+    Over `mesh`, each device takes its own batches and the parameters are
+    fully sharded, as `linnet.jax.train.train` does; `remat` recomputes
+    each layer in the backward pass. Set both before the model's first
+    call."""
     rounds = [list(pairs[i : i + pairs_per_step]) for i in range(0, len(pairs), pairs_per_step)]
     if steps is not None:
         rounds = rounds[:steps]
     if not rounds:
         return dict(parameters or {}), []
     first = _batches(rounds[0], tokens)
+    prepare_blocks(model, mesh=mesh, remat=remat, parameters=parameters)
     weights = (
         parameters if parameters is not None else model.parameters_for(*first[0].arrays(1.0)[:4])
     )
-    learner = Learner(model, dict(weights), optimizer, trainable=trainable)
+    learner = Learner(model, dict(weights), optimizer, trainable=trainable, mesh=mesh)
 
     def answers(values: Any, inputs: Any) -> Any:
         tokens_, positions, segments, targets, mask = inputs
@@ -112,18 +120,8 @@ def dpo(
         sums = jax.ops.segment_sum(per_token * mask, segments, num_segments=tokens + 1)
         return sums
 
-    sums_of = jax.jit(answers)
-    if reference is None:
-        known = _reference(
-            lambda inputs: sums_of(learner.values(learner.trained), inputs),
-            rounds,
-            tokens,
-            pairs_per_step,
-        )
-    else:
-        known = _reference(
-            lambda inputs: sums_of(reference, inputs), rounds, tokens, pairs_per_step
-        )
+    sums_of = learner.forward(answers, reference)
+    known = _reference(sums_of, learner, rounds, tokens, pairs_per_step)
 
     def loss(
         values: Any, inputs: Any, chosen: Any, rejected: Any, valid: Any, refs: Any, total: Any
@@ -156,15 +154,16 @@ def dpo(
         total = float(len(chosen_pairs))
         grads: Any = None
         moments = np.zeros(5)
-        for batch in batches:
-            inputs = [*batch.arrays(1.0)[:4], batch.mask]
-            chosen, rejected, valid, which = _paired(batch, pairs_per_step)
-            refs = np.zeros((pairs_per_step, 2), np.float32)
-            for slot, k in enumerate(which):
-                refs[slot] = known[number * pairs_per_step + k]
-            (_, found), more = gradient(
-                learner.trained, learner.frozen, inputs, chosen, rejected, valid, refs, total
-            )
+        for chunk in _chunks(batches, learner.width, tokens):
+            rows: list[tuple[Any, ...]] = []
+            for batch in chunk:
+                inputs = [*batch.arrays(1.0)[:4], batch.mask]
+                chosen, rejected, valid, which = _paired(batch, pairs_per_step)
+                refs = np.zeros((pairs_per_step, 2), np.float32)
+                for slot, k in enumerate(which):
+                    refs[slot] = known[number * pairs_per_step + k]
+                rows.append((inputs, chosen, rejected, valid, refs, np.float32(total)))
+            (_, found), more = gradient(learner.trained, learner.frozen, *learner.stack(rows))
             grads = more if grads is None else add(grads, more)
             moments += np.asarray(found)
         norm = learner.step(grads, clip)
@@ -208,18 +207,33 @@ def _paired(batch: Packed, width: int) -> tuple[Any, Any, Any, list[int]]:
     return chosen, rejected, valid, which
 
 
+def _chunks(batches: list[Packed], width: int, tokens: int) -> list[list[Packed]]:
+    """`batches` `width` at a time, one per device, the last run out with
+    batches that learn nothing."""
+    out = [batches[i : i + width] for i in range(0, len(batches), width)]
+    if out and len(out[-1]) < width:
+        out[-1] = out[-1] + [empty(tokens) for _ in range(width - len(out[-1]))]
+    return out
+
+
 def _reference(
-    sums: Callable[[Any], Any], rounds: list[list[Pair]], tokens: int, width: int
+    sums: Callable[..., Any],
+    learner: Learner,
+    rounds: list[list[Pair]],
+    tokens: int,
+    width: int,
 ) -> list[tuple[float, float]]:
     """Every pair's answers' summed log-probabilities under the reference."""
     known: list[tuple[float, float]] = []
     for chosen_pairs in rounds:
         found: dict[int, tuple[float, float]] = {}
-        for batch in _batches(chosen_pairs, tokens):
-            values = np.asarray(sums([*batch.arrays(1.0)[:4], batch.mask]))
-            chosen, rejected, _, which = _paired(batch, width)
-            for slot, k in enumerate(which):
-                found[k] = (float(values[chosen[slot]]), float(values[rejected[slot]]))
+        for chunk in _chunks(_batches(chosen_pairs, tokens), learner.width, tokens):
+            rows = [([*batch.arrays(1.0)[:4], batch.mask],) for batch in chunk]
+            values = np.asarray(sums(*learner.stack(rows))).reshape(len(chunk), -1)
+            for batch, row in zip(chunk, values, strict=True):
+                chosen, rejected, _, which = _paired(batch, width)
+                for slot, k in enumerate(which):
+                    found[k] = (float(row[chosen[slot]]), float(row[rejected[slot]]))
         known += [found[k] for k in range(len(chosen_pairs))]
         known += [(0.0, 0.0)] * (width - len(chosen_pairs))
     return known

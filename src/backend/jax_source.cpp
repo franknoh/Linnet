@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <set>
@@ -76,6 +77,111 @@ std::string real_text(double value) {
 constexpr const char* experts_import = "import linnet.jax.moe as _moe\n\n";
 // What a module with a blockwise output head and loss imports.
 constexpr const char* loss_import = "import linnet.jax.loss as _loss\n\n";
+// What a module whose parameters are gathered from their parts imports.
+constexpr const char* gather_import = "from linnet.jax.fsdp import gather as _gather\n\n";
+
+bool identifier_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+// Every identifier `text` mentions.
+std::set<std::string> identifiers(std::string_view text) {
+    std::set<std::string> out;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (identifier_char(text[i]) && std::isdigit(static_cast<unsigned char>(text[i])) == 0 &&
+            (i == 0 || !identifier_char(text[i - 1]))) {
+            std::size_t end = i;
+            while (end < text.size() && identifier_char(text[end])) {
+                ++end;
+            }
+            out.emplace(text.substr(i, end - i));
+            i = end;
+        } else {
+            ++i;
+        }
+    }
+    return out;
+}
+
+// `body` with each region between `# remat N begin` and `# remat N end`
+// moved into a function the backward pass computes again: `jax.checkpoint`
+// keeps what the function reads and returns, and recomputes the rest. What
+// it returns is every value it defines that the code after it (or `tail`)
+// reads.
+std::string outline_remat(const std::string& body, const std::string& tail) {
+    std::vector<std::string> lines;
+    std::size_t start = 0;
+    while (start < body.size()) {
+        std::size_t end = body.find('\n', start);
+        end = end == std::string::npos ? body.size() : end;
+        lines.emplace_back(body.substr(start, end - start));
+        start = end + 1;
+    }
+    const auto marker = [](const std::string& line, std::string_view what) {
+        const std::size_t first = line.find_first_not_of(' ');
+        return first != std::string::npos && line.compare(first, 8, "# remat ") == 0 &&
+               line.ends_with(what);
+    };
+    std::string out;
+    std::size_t i = 0;
+    while (i < lines.size()) {
+        if (!marker(lines[i], " begin")) {
+            out += lines[i++] + "\n";
+            continue;
+        }
+        const std::string indent = lines[i].substr(0, lines[i].find_first_not_of(' '));
+        const std::string id = lines[i].substr(
+            indent.size() + 8, lines[i].size() - indent.size() - 8 - std::strlen(" begin"));
+        std::size_t close = i + 1;
+        while (close < lines.size() &&
+               !(marker(lines[close], " end") &&
+                 lines[close].find("# remat " + id + " end") != std::string::npos)) {
+            ++close;
+        }
+        std::vector<std::string> defined;
+        for (std::size_t k = i + 1; k < close; ++k) {
+            const std::string& line = lines[k];
+            if (!line.starts_with(indent) || line.size() <= indent.size() ||
+                line[indent.size()] == ' ') {
+                continue;
+            }
+            const std::size_t equals = line.find(" = ", indent.size());
+            const std::string name = equals == std::string::npos
+                                         ? std::string()
+                                         : line.substr(indent.size(), equals - indent.size());
+            if (!name.empty() && std::ranges::all_of(name, identifier_char)) {
+                defined.push_back(name);
+            }
+        }
+        std::string after = tail;
+        for (std::size_t k = close + 1; k < lines.size(); ++k) {
+            after += lines[k] + "\n";
+        }
+        const std::set<std::string> read_after = identifiers(after);
+        std::vector<std::string> outputs;
+        for (const std::string& name : defined) {
+            if (read_after.contains(name)) {
+                outputs.push_back(name);
+            }
+        }
+        if (!outputs.empty()) {
+            std::string returned;
+            for (std::size_t k = 0; k < outputs.size(); ++k) {
+                returned += (k == 0 ? "" : ", ") + outputs[k];
+            }
+            returned = "(" + returned + (outputs.size() == 1 ? ",)" : ")");
+            out += indent + "def _remat" + id + "():\n";
+            for (std::size_t k = i + 1; k < close; ++k) {
+                out += (lines[k].empty() ? "" : "    ") + lines[k] + "\n";
+            }
+            out += indent + "    return " + returned + "\n";
+            out += indent + returned + " = jax.checkpoint(_remat" + id + ")()\n";
+        }
+        i = close + 1;
+    }
+    return out;
+}
 
 // The generated module: straight-line `jax.numpy` over static shapes.
 class JaxTarget : public GraphTarget {
@@ -108,7 +214,10 @@ public:
 
     // The path of the weight argument `argument` names when a `--lora`
     // pattern matches it.
-    std::optional<std::string> lora_target(const std::string& argument) const {
+    std::optional<std::string> lora_target(const std::string& given) const {
+        // A sharded weight is used gathered: its argument is what was gathered.
+        const auto gathered = gathered_.find(given);
+        const std::string& argument = gathered == gathered_.end() ? given : gathered->second;
         if (lora_.empty() || argument.size() < 2 || argument[0] != 'p' ||
             !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
                 return std::isdigit(static_cast<unsigned char>(c)) != 0;
@@ -658,6 +767,36 @@ public:
         return finals;
     }
 
+    bool supports_fully_shard() const override { return true; }
+
+    // A weight's part (this device's, under `shard_map`) gathered whole in
+    // the dtype the entry computes in (`linnet.jax.fsdp.gather`); outside a
+    // mesh the weight is already whole and only cast.
+    std::string gather(const TensorInfo& value) override {
+        uses_gather_ = true;
+        const std::string name = define("_gather(" + value.name + ", " + dims_text(value.shape) +
+                                        ", " + jnp_dtype(value.dtype) + ")");
+        gathered_.emplace(name, value.name);
+        if (value.name.size() > 1 && value.name[0] == 'p') {
+            const std::size_t index = std::stoul(value.name.substr(1));
+            if (index < parameters_.size() &&
+                std::ranges::find(gathered_paths_, parameters_[index]) == gathered_paths_.end()) {
+                gathered_paths_.push_back(parameters_[index]);
+            }
+        }
+        return name;
+    }
+
+    bool supports_remat() const override { return true; }
+
+    void begin_remat() override {
+        body_ += indent_ + "# remat " + std::to_string(remats_) + " begin\n";
+    }
+
+    void end_remat() override {
+        body_ += indent_ + "# remat " + std::to_string(remats_++) + " end\n";
+    }
+
     std::string finish(const std::vector<TensorInfo>& results,
                        const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
@@ -698,7 +837,12 @@ public:
         if (uses_experts_) {
             out += experts_import;
         }
+        if (uses_gather_) {
+            out += gather_import;
+        }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
+        // The parameters the code gathers from their parts itself.
+        out += "GATHERED = " + string_list(gathered_paths_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
         std::vector<std::string> next_states;
         next_states.reserve(states.size());
@@ -725,6 +869,9 @@ public:
         prepared.body = prune_python_assignments(body_, tail);
         if (prepare_) {
             prepared = split_prepared(prepared.body, tail, parameters_, "");
+        }
+        if (remats_ > 0) {
+            prepared.body = outline_remat(prepared.body, tail);
         }
         if (!prepared.outputs.empty()) {
             out += "PREPARED = " + string_list(prepared.keys) + "\n";
@@ -777,8 +924,12 @@ private:
     std::int64_t lora_rank_ = 0;
     double lora_alpha_ = 0.0;
     std::map<std::string, std::pair<std::string, std::string>> adapters_; // weight -> a, b
-    bool uses_experts_ = false; // the module imports `linnet.jax.moe`
-    bool uses_loss_ = false;    // the module imports `linnet.jax.loss`
+    bool uses_experts_ = false;                   // the module imports `linnet.jax.moe`
+    bool uses_loss_ = false;                      // the module imports `linnet.jax.loss`
+    bool uses_gather_ = false;                    // the module imports `linnet.jax.fsdp`
+    std::vector<std::string> gathered_paths_;     // parameters gathered (`GATHERED`)
+    std::map<std::string, std::string> gathered_; // gathered value -> its argument
+    std::size_t remats_ = 0;                      // recomputed regions so far
 
     struct Loop {
         std::size_t id = 0;

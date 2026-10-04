@@ -40,6 +40,23 @@ class SourceFunction(LinnetFunction):
         # their first values are drawn from.
         self.lora: tuple[tuple[str, ...], int, float] | None = None
         self._lora_seed = 0
+        # Blocks whose weights the code gathers from their parts where they
+        # run, and blocks the backward pass computes again (`blocks`).
+        self.sharded: tuple[str, ...] = ()
+        self.remat: tuple[str, ...] = ()
+
+    def blocks(self, *, sharded: Sequence[str] = (), remat: Sequence[str] = ()) -> None:
+        """Compiles the entry again with each block in `sharded` gathering its
+        weights from their parts where it first uses them (under
+        `shard_map`: `linnet.jax.fsdp`), and each block in `remat` computed
+        again in the backward pass instead of kept (`jax.checkpoint`). Blocks
+        are paths: `layers.3`, `lm_head` (`linnet.jax.fsdp.units`)."""
+        sharded, remat = tuple(sharded), tuple(remat)
+        if (sharded, remat) == (self.sharded, self.remat):
+            return
+        self.sharded, self.remat = sharded, remat
+        self._cache.clear()
+        self.parameters = {}
 
     def add_lora(
         self, patterns: str | Sequence[str], *, rank: int = 16, alpha: float = 32.0, seed: int = 0

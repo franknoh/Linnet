@@ -72,12 +72,21 @@ public:
         const ir::Function& entry = find_entry(root);
         const Substitution root_subst = root ? root_bindings(*root) : Substitution{};
 
+        if (!options_.remat.empty()) {
+            if (!root) {
+                fail("recomputing calls a model's blocks; a function has none");
+            }
+            if (!target_.supports_remat()) {
+                fail("this target cannot recompute blocks; recomputing is for `jax`");
+            }
+        }
         if (!options_.fully_shard.empty()) {
             if (!root) {
                 fail("sharding splits a model's parameters; a function has none");
             }
             if (!target_.supports_fully_shard()) {
-                fail("this target cannot gather sharded parameters; sharding is for `torch`");
+                fail("this target cannot gather sharded parameters; sharding is for `torch` and "
+                     "`jax`");
             }
             if (!options_.placement.empty() || !options_.offload.empty()) {
                 fail("sharded blocks run on each process's one device: not with placement or "
@@ -1600,6 +1609,12 @@ private:
                 released_keys_.emplace_back();
             }
         }
+        const bool remat =
+            !arguments.empty() && arguments.front().kind == Val::Kind::Block &&
+            std::ranges::find(options_.remat, arguments.front().path) != options_.remat.end();
+        if (remat) {
+            target_.begin_remat();
+        }
         const std::vector<Val> results = run_region(callee.body, arguments);
         if (unit) {
             if (!releases_.back().empty()) {
@@ -1612,6 +1627,9 @@ private:
             }
             releases_.pop_back();
             released_keys_.pop_back();
+        }
+        if (remat) {
+            target_.end_remat();
         }
         if (entered) {
             slots_.pop_back();

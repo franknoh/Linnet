@@ -123,6 +123,11 @@ class LinnetFunction:
         arguments += ["--numerics", self.numerics, "--optionals", "present"]
         if target == "jax" and self.prepare_weights:
             arguments.append("--prepare")
+        if target == "jax":
+            for unit in getattr(self, "sharded", ()):
+                arguments += ["--fully-shard", unit]
+            for unit in getattr(self, "remat", ()):
+                arguments += ["--remat", unit]
         lora = getattr(self, "lora", None)
         if target == "jax" and lora is not None:
             patterns, rank, alpha = lora

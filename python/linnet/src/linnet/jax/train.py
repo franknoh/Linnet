@@ -71,6 +71,7 @@ def train(
     master: Any = jnp.float32,
     parameters: dict[str, Any] | None = None,
     mesh: Any = None,
+    remat: bool = False,
     checkpoint: str | Path | None = None,
     checkpoint_every: int | None = None,
     on_step: Callable[[Step], None] | None = None,
@@ -101,8 +102,13 @@ def train(
     times `accumulate` batches, one per device at a time (`shard_map`).
     Every parameter, its gradient and its optimizer state are split along
     an axis `N` divides (copied when none does); each device gathers a
-    weight whole where it uses it. Set the mesh before the model's first
-    call: the weights then load straight into their parts.
+    block's weights whole where the block runs (`linnet.jax.fsdp`). Set the
+    mesh before the model's first call: the weights then load straight into
+    their parts.
+
+    `remat` has the backward pass compute each layer (each element of the
+    root's lists) again instead of keeping its values, and, over a mesh,
+    gather its weights again: the step keeps a layer's inputs alone.
 
     With `checkpoint`, a directory, training resumes from the latest
     checkpoint there (`load_checkpoint`), skipping the batches its steps
@@ -116,8 +122,7 @@ def train(
         axis = mesh.axis_names[0]
         width = int(mesh.shape[axis])
         split = NamedSharding(mesh, PartitionSpec(None, axis))
-        if parameters is None:
-            model.placement = placement(mesh)
+    prepare_blocks(model, mesh=mesh, remat=remat, parameters=parameters)
     per_step = accumulate * width
     iterator = iter(batches)
 
@@ -151,7 +156,7 @@ def train(
 
     spread: Any = None
     if mesh is not None:
-        spread = _spread(mesh, trained, frozen, loss_of, learner.dtypes)
+        spread = _spread(mesh, trained, frozen, loss_of, learner.dtypes, learner.gathered)
 
     def update(trained: Any, state: Any, frozen: Any, stacked: Any) -> Any:
         def one(carry: Any, inputs: Any) -> Any:
@@ -247,6 +252,8 @@ class Learner:
     ) -> None:
         self.optimizer = optimizer
         self.mesh = mesh
+        self.width = 1 if mesh is None else int(mesh.shape[mesh.axis_names[0]])
+        self._model = model
         # On the devices, as `mesh` splits them; one array per tied tensor.
         moved: dict[int, Any] = {}
         placed: dict[str, Any] = {}
@@ -270,6 +277,7 @@ class Learner:
             for path, value in placed.items()
             if path not in chosen and path not in self.ties
         }
+        self.gathered = _gathered_by_code(model, placed, self.ties)
         if mesh is None:
             self.state = jax.jit(optimizer.init)(self.trained)
         else:
@@ -306,12 +314,100 @@ class Learner:
 
     def gradient(self, loss: Callable[..., Any]) -> Callable[..., Any]:
         """`loss(values, *args) -> (scalar, aux)` as a compiled function of
-        `(trained, frozen, *args)` returning `((scalar, aux), gradients)`."""
+        `(trained, frozen, *args)` returning `((scalar, aux), gradients)`.
+
+        Over a mesh, each of `args` is `width` devices' arguments stacked
+        (`stack`): every device computes the loss of its own, and the
+        scalars, aux values and gradients come back summed over them."""
 
         def of(trained: Any, frozen: Any, *args: Any) -> Any:
             return loss(self.values(trained, frozen), *args)
 
-        return jax.jit(jax.value_and_grad(of, has_aux=True))
+        if self.mesh is None:
+            return jax.jit(jax.value_and_grad(of, has_aux=True))
+        spread = _spread(
+            self.mesh,
+            self.trained,
+            self.frozen,
+            lambda trained, frozen, args: of(trained, frozen, *args),
+            self.dtypes,
+            self.gathered,
+        )
+        compiled = jax.jit(
+            jax.value_and_grad(
+                lambda trained, frozen, *args: spread(trained, frozen, args), has_aux=True
+            )
+        )
+        mesh = self.mesh
+
+        def call(*arguments: Any) -> Any:
+            with _partitioner(mesh):
+                return compiled(*arguments)
+
+        return call
+
+    def forward(self, function: Callable[..., Any], parameters: Any = None) -> Callable[..., Any]:
+        """`function(values, *args)` as a compiled function of `*args`, over
+        the trained parameters as they are when called, or over
+        `parameters` (path -> array, all of them, placed as `placement`
+        says). Over a mesh, `args` are stacked (`stack`) and so is the
+        result: each device's own."""
+        if self.mesh is None:
+            compiled = jax.jit(function)
+            if parameters is not None:
+                return lambda *args: compiled(parameters, *args)
+            return lambda *args: compiled(self.values(self.trained), *args)
+        mesh = self.mesh
+        if parameters is not None:
+            # Arguments, not closed over: XLA would hold them as constants.
+            given = {path: _placed(value, path, mesh) for path, value in parameters.items()}
+            spread = _spread(
+                mesh,
+                {},
+                given,
+                lambda _, frozen, args: function(frozen, *args),
+                {},
+                _gathered_by_code(self._model, given, {}),
+                reduce=False,
+            )
+            jitted = jax.jit(lambda values, *args: spread({}, values, args))
+
+            def call_given(*args: Any) -> Any:
+                with _partitioner(mesh):
+                    return jitted(given, *args)
+
+            return call_given
+        spread = _spread(
+            mesh,
+            self.trained,
+            self.frozen,
+            lambda trained, frozen, args: function(self.values(trained, frozen), *args),
+            self.dtypes,
+            self.gathered,
+            reduce=False,
+        )
+        own = jax.jit(lambda trained, frozen, *args: spread(trained, frozen, args))
+
+        def call(*args: Any) -> Any:
+            with _partitioner(mesh):
+                return own(self.trained, self.frozen, *args)
+
+        return call
+
+    def stack(self, rows: Sequence[Sequence[Any]]) -> tuple[Any, ...]:
+        """One call's arguments from `width` devices' own (`rows`, each a
+        sequence of arrays or lists of arrays): as they are on one device,
+        stacked along a new first axis and split over the mesh on more."""
+        if self.mesh is None:
+            (row,) = rows
+            return tuple(row)
+        from jax.sharding import NamedSharding, PartitionSpec
+
+        split = NamedSharding(self.mesh, PartitionSpec(self.mesh.axis_names[0]))
+        return jax.tree.map(
+            lambda *values: jax.device_put(np.stack([np.asarray(v) for v in values]), split),
+            *[tuple(row) for row in rows],
+        )
 
     def step(self, grads: dict[str, Any], clip: float | None) -> float:
         """Clips `grads` to that global norm at most and applies the
@@ -344,19 +440,29 @@ def add(total: Any, more: Any) -> Any:
 
 
 def _spread(
-    mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any], dtypes: dict[str, Any]
+    mesh: Any,
+    trained: Any,
+    frozen: Any,
+    function: Callable[..., Any],
+    dtypes: dict[str, Any],
+    gathered: set[str],
+    *,
+    reduce: bool = True,
 ) -> Any:
-    """`loss(trained, frozen, inputs)` summed over the mesh's devices, each
-    on its own batch (`inputs` `[N, ...]`, split by the first axis) with
-    every parameter whole: each part is gathered where the device computes
-    (FSDP), and its gradient is reduce-scattered back to the parts. Inside,
-    every device computes alone, with no partitioner to split activations
-    along the weights' axes.
+    """`function(trained, frozen, args)` on every device of the mesh, each on
+    its own arguments (`args`, stacked `[N, ...]`, split by the first axis),
+    with every parameter whole: summed over the devices (`reduce`), or each
+    device's result stacked. Inside, every device computes alone, with no
+    partitioner to split activations along the weights' axes.
 
-    A trained part is gathered in `dtypes[path]`, the dtype the model
-    computes in, and its gradient reduced in the part's own (the f32
-    master's): half the traffic and memory of gathering the master."""
+    A parameter in `gathered` reaches the model as this device's part: the
+    generated code gathers it where its block runs (`linnet.jax.fsdp`). Any
+    other is gathered here; a trained one in `dtypes[path]`, the dtype the
+    model computes in, with its gradient reduced in the part's own (the f32
+    master's)."""
     from jax.sharding import PartitionSpec
+
+    from . import fsdp
 
     try:
         from jax import shard_map
@@ -378,15 +484,22 @@ def _spread(
         dim = split_at(spec)
         if dim is None:
             return value.astype(dtype)
-        return _gather_as(axis, dim, dtype, value.dtype)(value)
+        return fsdp.gather_as(axis, dim, dtype)(value)
 
-    def local(trained: Any, frozen: Any, inputs: Any) -> Any:
-        mine = loss(
-            {p: whole_as(v, trained_specs[p], dtypes[p]) for p, v in trained.items()},
-            {p: whole(v, frozen_specs[p]) for p, v in frozen.items()},
-            [value[0] for value in inputs],
-        )
-        return jax.lax.psum(mine, axis)
+    def local(trained: Any, frozen: Any, args: Any) -> Any:
+        mine = jax.tree.map(lambda value: value[0], args)
+        with fsdp.gathering(axis):
+            out = function(
+                {
+                    p: v if p in gathered else whole_as(v, trained_specs[p], dtypes[p])
+                    for p, v in trained.items()
+                },
+                {p: v if p in gathered else whole(v, frozen_specs[p]) for p, v in frozen.items()},
+                mine,
+            )
+        if reduce:
+            return jax.tree.map(lambda value: jax.lax.psum(value, axis), out)
+        return jax.tree.map(lambda value: value[None], out)
 
     # Unchecked: the blockwise loss's scans start from zeros every device
     # shares and carry values each device has its own of.
@@ -402,27 +515,47 @@ def _spread(
         local,
         mesh=mesh,
         in_specs=(trained_specs, frozen_specs, PartitionSpec(axis)),
-        out_specs=PartitionSpec(),
+        out_specs=PartitionSpec() if reduce else PartitionSpec(axis),
         **unchecked,
     )
 
 
-def _gather_as(axis: str, dim: int, dtype: Any, own: Any) -> Callable[[Any], Any]:
-    """Inside `shard_map`: a part gathered whole along `dim` in `dtype`, and
-    its gradient reduce-scattered back in `own`."""
+def _gathered_by_code(model: Any, placed: dict[str, Any], ties: dict[str, str]) -> set[str]:
+    """The parameters the model's generated code gathers from their parts
+    itself (`SourceFunction.blocks`). A tied pair is gathered by the code
+    only when both sides are: passed whole, a weight is only cast."""
+    from . import fsdp
 
-    @jax.custom_vjp
-    def gather(part: Any) -> Any:
-        return jax.lax.all_gather(part.astype(dtype), axis, axis=dim, tiled=True)
+    sharded = getattr(model, "sharded", ())
+    chosen = {path for path in placed if fsdp.gathered_by_code(path, sharded)}
+    for path, tie in ties.items():
+        if (path in chosen) != (tie in chosen):
+            chosen.discard(path)
+            chosen.discard(tie)
+    return chosen
 
-    def forward(part: Any) -> Any:
-        return gather(part), None
 
-    def backward(_: Any, grad: Any) -> Any:
-        return (jax.lax.psum_scatter(grad.astype(own), axis, scatter_dimension=dim, tiled=True),)
+def prepare_blocks(
+    model: Any, *, mesh: Any = None, remat: bool = False, parameters: Any = None
+) -> None:
+    """Before the model's first call: over `mesh`, its weights load split
+    (`placement`) and its blocks gather them where they run; with `remat`,
+    the backward pass computes each layer again (`SourceFunction.blocks`)."""
+    from ..compiler import LinnetError
+    from . import fsdp
 
-    gather.defvjp(forward, backward)
-    return gather
+    if mesh is not None and parameters is None:
+        model.placement = placement(mesh)
+    if mesh is None and not remat:
+        return
+    blocks = getattr(model, "blocks", None)
+    if blocks is None:
+        if remat:
+            raise LinnetError("recomputing layers needs the entry as generated JAX (load_source)")
+        return
+    paths = list(parameters) if parameters is not None else list(model.weights)
+    every, listed = fsdp.units(paths)
+    blocks(sharded=every if mesh is not None else (), remat=listed if remat else ())
 
 
 def _partitioner(mesh: Any) -> Any:

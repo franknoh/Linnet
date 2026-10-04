@@ -221,3 +221,67 @@ def test_grpo_takes_the_engine_weights_each_step(weights: Path) -> None:
     assert not np.allclose(np.asarray(sampler.parameters[path]), np.asarray(start[path]))
     assert not np.allclose(np.asarray(sampler.parameters[path]), np.asarray(params[path]))
     assert jnp.asarray(params[path]).dtype == jnp.float32
+
+
+MESH_SCRIPT = """
+import sys
+from pathlib import Path
+
+import jax
+import numpy as np
+import optax
+from jax.sharding import Mesh
+
+sys.path.insert(0, sys.argv[2])
+from test_rl import _entry, _pairs, _prompts, _Sampler, _threes  # noqa: E402
+
+from linnet.jax.dpo import dpo  # noqa: E402
+from linnet.jax.grpo import grpo  # noqa: E402
+
+weights = Path(sys.argv[1])
+assert len(jax.devices()) == 2
+mesh = Mesh(np.array(jax.devices()), ("data",))
+
+
+def compare(split, one):
+    for path, value in one.items():
+        np.testing.assert_allclose(np.asarray(split[path]), np.asarray(value), rtol=1e-4, atol=1e-6)
+
+
+# DPO: two batches a step, one per device.
+options = dict(optimizer=optax.sgd(0.1), steps=2, pairs_per_step=4, beta=0.5, tokens=24, clip=None)
+split, _ = dpo(_entry(weights, "log_probs_packed"), _pairs(8), mesh=mesh, **options)
+one, _ = dpo(_entry(weights, "log_probs_packed"), _pairs(8), **options)
+compare(split, one)
+
+# GRPO: one batch a step, the other device's a batch that learns nothing;
+# the engine samples from the weights as they are split.
+options = dict(optimizer=optax.sgd(0.1), steps=2, group=4, prompts_per_step=2, max_new_tokens=6,
+               tokens=64, clip_grad=None)
+split, _ = grpo(_entry(weights, "log_probs_packed"), _Sampler(_entry(weights, "forward")),
+                _prompts(), _threes, mesh=mesh, remat=True, **options)
+one, _ = grpo(_entry(weights, "log_probs_packed"), _Sampler(_entry(weights, "forward")),
+              _prompts(), _threes, **options)
+compare(split, one)
+print("same")
+"""
+
+
+def test_dpo_and_grpo_over_a_mesh_match_one_device(weights: Path, tmp_path: Path) -> None:
+    """Two host devices, each with its own batches and part of every weight,
+    take the steps one device takes."""
+    import os
+    import subprocess
+    import sys
+
+    script = tmp_path / "mesh.py"
+    script.write_text(MESH_SCRIPT, encoding="utf-8")
+    environment = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=2"}
+    completed = subprocess.run(
+        [sys.executable, str(script), str(weights), str(Path(__file__).parent)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    assert completed.returncode == 0 and "same" in completed.stdout, completed.stderr[-3000:]

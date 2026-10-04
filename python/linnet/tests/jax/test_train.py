@@ -277,8 +277,35 @@ one, _ = train(bf16(), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2,
 for path, value in one.items():
     assert split[path].dtype == np.float32, (path, split[path].dtype)
     np.testing.assert_allclose(np.asarray(split[path]), np.asarray(value), rtol=1e-3, atol=1e-5)
+
+# Each layer recomputed in the backward pass, its weights gathered again:
+# the same steps.
+model = _model(weights)
+split, _ = train(model, iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2, clip=None,
+                 mesh=mesh, remat=True)
+assert model.remat == ("layers.0", "layers.1") and "layers.0" in model.sharded
+assert "jax.checkpoint(_remat" in model.generated_source()
+one, _ = train(_model(weights), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2,
+               clip=None, accumulate=2)
+for path, value in one.items():
+    np.testing.assert_allclose(np.asarray(split[path]), np.asarray(value), rtol=1e-4, atol=1e-6)
 print("same")
 """
+
+
+def test_recomputed_layers_take_the_same_steps(weights: Path) -> None:
+    """`remat` changes what the backward pass keeps, not what it computes."""
+    kept, _ = train(
+        _model(weights), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2, clip=None
+    )
+    model = _model(weights)
+    again, _ = train(
+        model, iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2, clip=None, remat=True
+    )
+    assert model.remat == ("layers.0", "layers.1") and model.sharded == ()
+    assert model.generated_source().count("jax.checkpoint(") == 2
+    for path, value in kept.items():
+        np.testing.assert_allclose(np.asarray(again[path]), np.asarray(value), rtol=1e-5, atol=1e-7)
 
 
 def test_sharded_training_over_a_mesh_matches_one_device(weights: Path, tmp_path: Path) -> None:
