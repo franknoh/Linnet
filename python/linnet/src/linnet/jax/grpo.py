@@ -33,9 +33,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..packing import Example, Packed, Prompt, Reward, group_advantages, pack
+from ..packing import Example, Packed, Prompt, Reward, empty, group_advantages, pack
 from ..serve import Request
-from .train import Learner, add, merge_lora
+from .train import Learner, add, merge_lora, prepare_blocks
 
 
 @dataclass
@@ -83,6 +83,8 @@ def grpo(
     correction_cap: float | None = None,
     trainable: bool | str | Sequence[str] | None = None,
     parameters: dict[str, Any] | None = None,
+    mesh: Any = None,
+    remat: bool = False,
     on_step: Callable[[GrpoStep], None] | None = None,
 ) -> tuple[dict[str, Any], list[GrpoStep]]:
     """Trains `policy` (the `log_probs_packed` entry as generated JAX) with
@@ -93,7 +95,13 @@ def grpo(
     with `load_weights(parameters)` and `run(requests)`), which takes the
     policy's weights before each step, adapters merged in. The options are
     `linnet.train.grpo.grpo`'s; `reference` is the frozen reference's
-    parameters for the KL penalty `beta`. One process."""
+    parameters for the KL penalty `beta`. One process.
+
+    Over `mesh`, the policy trains fully sharded, each device on its own
+    batches of the step's completions, as `linnet.jax.train.train` does;
+    `remat` recomputes each layer in the backward pass. The engine takes
+    the weights as they are split and places them as its model wants (a
+    model split for serving over the same devices, say)."""
     if beta and reference is None:
         raise ValueError("a KL penalty (`beta`) needs `reference` parameters")
     if correction_cap is not None and (temperature != 1.0 or top_k or top_p < 1.0):
@@ -105,14 +113,13 @@ def grpo(
     stop = frozenset(eos)
     source = iter(prompts)
     learner: Learner | None = None
+    prepare_blocks(policy, mesh=mesh, remat=remat, parameters=parameters)
     if parameters is not None:
-        learner = Learner(policy, dict(parameters), optimizer, trainable=trainable)
+        learner = Learner(policy, dict(parameters), optimizer, trainable=trainable, mesh=mesh)
     low, high = clip
 
     def log_probs(values: Any, inputs: Any) -> Any:
         return policy.apply(values, *inputs)
-
-    forward = jax.jit(log_probs)
 
     def loss(
         values: Any, inputs: Any, weights: Any, advantages: Any, old: Any, sampled: Any, theirs: Any
@@ -184,42 +191,52 @@ def grpo(
             if first is None:
                 continue
             weights = policy.parameters_for(*first.arrays(1.0)[:4])
-            learner = Learner(policy, dict(weights), optimizer, trainable=trainable)
+            learner = Learner(policy, dict(weights), optimizer, trainable=trainable, mesh=mesh)
         if gradient is None:
             gradient = learner.gradient(loss)
+        # A device's share of each call: its batch's inputs, weights,
+        # advantages and engine log-probabilities; batches that learn
+        # nothing fill the last call.
+        width = learner.width
+        padded = batches + [empty(tokens) for _ in range(-len(batches) % width)]
         prepared = [
             _prepared(
                 batch, [advantages[i] for i in kept], count, kept, completions, correction_cap
             )
-            for batch in batches
+            for batch in padded
         ]
-        olds = [None] * len(prepared)
+        calls = [prepared[i : i + width] for i in range(0, len(prepared), width)]
+
+        olds: list[list[Any] | None] = [None] * len(calls)
         if iterations > 1:
-            values = learner.values(learner.trained)
-            olds = [forward(values, item[0]) for item in prepared]
-        theirs = [
-            forward(reference, item[0]) if beta and reference is not None else None
-            for item in prepared
-        ]
+            own = learner.forward(log_probs)
+            olds = [_per_device(learner, own, call) for call in calls]
+        theirs: list[list[Any] | None] = [None] * len(calls)
+        if beta and reference is not None:
+            frozen = learner.forward(log_probs, reference)
+            theirs = [_per_device(learner, frozen, call) for call in calls]
         loss_total = norm = 0.0
         moments = np.zeros(3)
         for _ in range(iterations):
             loss_total = 0.0
             moments = np.zeros(3)
             grads: Any = None
-            for (inputs, weights_, advantage, sampled), old, other in zip(
-                prepared, olds, theirs, strict=True
-            ):
-                zero = np.zeros_like(weights_)
+            for call, old, other in zip(calls, olds, theirs, strict=True):
+                rows: list[tuple[Any, ...]] = []
+                for k, (inputs, weights_, advantage, sampled) in enumerate(call):
+                    zero = np.zeros_like(weights_)
+                    rows.append(
+                        (
+                            inputs,
+                            weights_,
+                            advantage,
+                            zero if old is None else old[k],
+                            zero if sampled is None else sampled,
+                            zero if other is None else other[k],
+                        )
+                    )
                 (value, found), more = gradient(
-                    learner.trained,
-                    learner.frozen,
-                    inputs,
-                    weights_,
-                    advantage,
-                    zero if old is None else old,
-                    zero if sampled is None else sampled,
-                    zero if other is None else other,
+                    learner.trained, learner.frozen, *learner.stack(rows)
                 )
                 grads = more if grads is None else add(grads, more)
                 loss_total += float(value)
@@ -246,6 +263,13 @@ def grpo(
         if on_step is not None:
             on_step(record)
     return (learner.parameters() if learner is not None else dict(parameters or {})), history
+
+
+def _per_device(learner: Learner, function: Callable[..., Any], call: list[Any]) -> list[Any]:
+    """`function` (a `Learner.forward`) of each device's batch inputs in
+    `call`, one row per device."""
+    out = np.asarray(function(*learner.stack([(item[0],) for item in call])))
+    return list(out.reshape(len(call), *out.shape[-1:]))
 
 
 def _prompt(value: Prompt | Sequence[int]) -> Prompt:

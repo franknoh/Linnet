@@ -99,10 +99,16 @@ void print_usage(std::FILE* out) {
         "                                       product unless --no-fuse; --lora adds a\n"
         "                                       rank-r adapter to every weight whose path\n"
         "                                       matches, scaled by alpha / r\n"
-        "  jax [same options as stablehlo] [--prepare]\n"
-        "        [--lora <pattern>]... [--lora-rank <r>] [--lora-alpha <a>] <file>\n"
-        "                                       Print an entry as JAX source; --lora\n"
-        "                                       as for torch\n"
+        "  jax [same options as stablehlo] [--prepare] [--fully-shard <block>]...\n"
+        "        [--remat <block>]... [--lora <pattern>]... [--lora-rank <r>]\n"
+        "        [--lora-alpha <a>] <file>\n"
+        "                                       Print an entry as JAX source;\n"
+        "                                       --fully-shard gathers a block's\n"
+        "                                       parameters from their parts where it\n"
+        "                                       runs, --remat has the backward pass\n"
+        "                                       compute a block's calls again instead\n"
+        "                                       of keeping their values; --lora as for\n"
+        "                                       torch\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent|fast] <file>\n"
@@ -345,6 +351,7 @@ int run_graph_export(std::span<const std::string_view> args,
         if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
             arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload" ||
             arg == "--fully-shard" || arg == "--absent" || arg == "--absent-file" ||
+            (format == "jax" && arg == "--remat") ||
             ((format == "torch" || format == "jax") &&
              (arg == "--lora" || arg == "--lora-rank" || arg == "--lora-alpha"))) {
             if (i + 1 == args.size()) {
@@ -391,7 +398,8 @@ int run_graph_export(std::span<const std::string_view> args,
                         export_options.absent.insert(line);
                     }
                 }
-            } else if (arg == "--place" || arg == "--offload" || arg == "--fully-shard") {
+            } else if (arg == "--place" || arg == "--offload" || arg == "--fully-shard" ||
+                       arg == "--remat") {
                 // A block path, with or without its trailing `.`: `layers.3`.
                 const std::size_t equals = value.find('=');
                 std::string prefix(arg == "--place" ? value.substr(0, equals) : value);
@@ -407,6 +415,10 @@ int run_graph_export(std::span<const std::string_view> args,
                 }
                 if (arg == "--fully-shard") {
                     export_options.fully_shard.push_back(prefix);
+                    continue;
+                }
+                if (arg == "--remat") {
+                    export_options.remat.push_back(prefix);
                     continue;
                 }
                 if (equals == std::string_view::npos) {

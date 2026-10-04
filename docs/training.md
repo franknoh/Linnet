@@ -90,6 +90,8 @@ Add adapters (`add_lora`) before `fully_shard`. They then stay whole on
 every process, with their gradients summed. The weights they adapt do not
 train, so they are split in their own dtype, with no f32 copy. A large
 model's LoRA run fits this way. Merge the saved adapters on one process.
+On four H100s, Llama 3.1 8B's LoRA run took 0.33 s a step in 26 GiB a GPU.
+Its held-out loss matched the one-GPU run's (1.369) over the same batches.
 
 PyTorch's own `fully_shard` cannot shard a Linnet model. It gathers a
 module's parameters in hooks around that module's `forward`, and generated
@@ -290,13 +292,22 @@ optimizer, and returns the parameters (path -> array) and the steps.
 With `mesh=Mesh(jax.devices(), ("data",))`, training is data-parallel and
 fully sharded (FSDP):
 
-- Each step takes one batch per device per accumulated step and runs them
-  side by side (a `vmap` split across the devices).
+- Each step takes one batch per device per accumulated step. Every device
+  computes its own (`shard_map`).
 - Every parameter, its gradient and its optimizer state are split along the
-  largest axis the device count divides; XLA gathers a weight where it is
-  used and reduces gradients into the parts.
+  largest axis the device count divides.
+- Each block gathers its weights where it runs, in the dtype the model
+  computes in (`linnet jax --fully-shard`). Gradients are reduced into the
+  parts in f32.
+- The step compiles with GSPMD: Shardy crashes XLA on cuDNN attention
+  inside `shard_map`.
 - Pass the mesh before the model's first call, and the weights load straight
   into their parts.
+
+With `remat=True`, the backward pass computes each layer again instead of
+keeping its values (`linnet jax --remat`, a `jax.checkpoint` per layer).
+Over a mesh it also gathers the layer's weights again. A step then keeps
+each layer's inputs alone, for about a third more compute.
 
 The output head's loss runs a block of rows at a time here too
 (`linnet.jax.loss`, a `custom_vjp`), so the `[P, Vocab]` logits are never
@@ -304,7 +315,9 @@ held whole.
 
 `linnet.jax.dpo.dpo` and `linnet.jax.grpo.grpo` train the
 `log_probs_packed` entry as their PyTorch counterparts do, with the same
-options. They run in one process.
+options, in one process. `mesh` and `remat` work as for `train`: each
+device takes its own batches, and a step's last call is filled out with
+batches that learn nothing.
 
 - `dpo(model, pairs, optimizer=...)` takes `reference` as parameters (path
   -> array). Without them, it computes the model's own log-probabilities
@@ -312,7 +325,16 @@ options. They run in one process.
 - `grpo(policy, engine, prompts, reward, optimizer=...)` samples with an
   `Engine` over the JAX model (`linnet.jax.load_model`). The engine takes the
   policy's weights before each step, adapters merged in
-  (`LinnetModel.copy_weights`).
+  (`LinnetModel.copy_weights`). Over a mesh it takes them as they are split
+  and places them as its own model's are.
+- Over a mesh, split the engine's model over the same devices
+  (`model.shard(mesh)`). An engine on one of them holds a whole model
+  beside its part of the policy, and every weight copy goes through the
+  host.
+- Leave XLA's default memory fraction when the engine and the policy share
+  devices. Their collectives need memory outside XLA's pool: with
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`, the 4-GPU run stopped in its first
+  collective.
 
 ## Compared with TRL
 
@@ -325,7 +347,7 @@ padding.
 | Run | Linnet PyTorch | Linnet JAX | TRL |
 | --- | --- | --- | --- |
 | SFT, LoRA: Alpaca, 4 rows a step | 1.04 s, 15.6K tokens/s, 36 GiB | 1.33 s, 12.2K tokens/s, 38 GiB | 1.83 s, 8.9K tokens/s, 43 GiB |
-| SFT in full, four GPUs | 0.55 s, 29.4K tokens/s, 48 GiB a GPU | not yet | 0.57 s, 28.6K tokens/s, 52 GiB a GPU (FSDP2) |
+| SFT in full, four GPUs | 0.55 s, 29.4K tokens/s, 48 GiB a GPU | 0.54 s, 30.0K tokens/s, 65 GiB a GPU (43 GiB with `remat`) | 0.57 s, 28.6K tokens/s, 52 GiB a GPU (FSDP2) |
 | DPO, LoRA: UltraFeedback, 32 pairs a step | 1.91 s, 36 GiB | 2.41 s, 38 GiB | 4.63 s, 48 GiB |
 | GRPO, LoRA: 16 prompts × 8, up to 128 tokens | 1.18 s, 59 GiB | 1.44 s, 60 GiB | 3.14 s, 52 GiB (vLLM) |
 
@@ -334,7 +356,8 @@ The three trained alike:
 - **SFT, LoRA:** held-out loss after 30 steps was 1.369 (PyTorch), 1.374
   (JAX) and 1.373 (TRL). One evaluator scored all three adapters.
 - **SFT in full:** training loss over the last five steps was 1.24 for
-  Linnet and 1.26 for TRL.
+  Linnet PyTorch and JAX alike, and 1.26 for TRL. Held-out loss after 30
+  steps was 1.342 (PyTorch) and 1.345 (JAX).
 - **DPO:** accuracy over the last five steps was 0.68, 0.65 and 0.70.
 - **GRPO:** mean reward went from 0.44 to 0.39, 0.44 to 0.40, and 0.43 to
   0.41, first three steps to last three. At this learning rate none learns
@@ -349,8 +372,9 @@ Conditions that differ:
 - **TRL batch sizes.** TRL took DPO 2 pairs at a time and GRPO 8
   completions at a time; larger batches ran out of memory. vLLM held 35% of
   the GPU.
-- **JAX on four GPUs.** Not measured yet. The sharded step compiles and
-  matches one GPU; two GPUs are too few for the full fine-tune.
+- **JAX on four GPUs.** Measured later on another host, with the step
+  compiled by GSPMD. `remat` (each layer recomputed) cut the peak from 65 to
+  43 GiB a GPU for a 0.67 s step, with the same losses.
 
 ## Losses
 

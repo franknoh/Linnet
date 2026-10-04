@@ -123,6 +123,11 @@ class LinnetFunction:
         arguments += ["--numerics", self.numerics, "--optionals", "present"]
         if target == "jax" and self.prepare_weights:
             arguments.append("--prepare")
+        if target == "jax":
+            for unit in getattr(self, "sharded", ()):
+                arguments += ["--fully-shard", unit]
+            for unit in getattr(self, "remat", ()):
+                arguments += ["--remat", unit]
         lora = getattr(self, "lora", None)
         if target == "jax" and lora is not None:
             patterns, rank, alpha = lora
@@ -316,14 +321,20 @@ class LinnetFunction:
             if self.cast_dtype:
                 # Mixed precision: master parameters (f32, say) cast to the
                 # dtype the export declares on every call, so `jax.grad`
-                # returns gradients in the masters' own dtype.
+                # returns gradients in the masters' own dtype. A weight the
+                # code gathers itself (`--fully-shard`) is cast there, after
+                # its gradient is reduced in the master's dtype.
+                gathered: set[str] = set(getattr(compiled.module, "GATHERED", None) or [])
                 arrays = [
                     array.astype(dtype)
-                    if array.dtype != dtype
+                    if path not in gathered
+                    and array.dtype != dtype
                     and jnp.issubdtype(array.dtype, jnp.floating)
                     and jnp.issubdtype(dtype, jnp.floating)
                     else array
-                    for array, dtype in zip(arrays, compiled.dtypes, strict=True)
+                    for path, array, dtype in zip(
+                        compiled.parameters, arrays, compiled.dtypes, strict=True
+                    )
                 ]
         given: Mapping[str, Any] = state or {}
         missing = [p for p in compiled.state_inputs if p not in given]
