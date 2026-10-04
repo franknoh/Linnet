@@ -99,8 +99,10 @@ void print_usage(std::FILE* out) {
         "                                       product unless --no-fuse; --lora adds a\n"
         "                                       rank-r adapter to every weight whose path\n"
         "                                       matches, scaled by alpha / r\n"
-        "  jax [same options as stablehlo] [--prepare] <file>\n"
-        "                                       Print an entry as JAX source\n"
+        "  jax [same options as stablehlo] [--prepare]\n"
+        "        [--lora <pattern>]... [--lora-rank <r>] [--lora-alpha <a>] <file>\n"
+        "                                       Print an entry as JAX source; --lora\n"
+        "                                       as for torch\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent|fast] <file>\n"
@@ -343,7 +345,7 @@ int run_graph_export(std::span<const std::string_view> args,
         if (arg == "--std" || arg == "--root" || arg == "--entry" || arg == "--bind" ||
             arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload" ||
             arg == "--fully-shard" || arg == "--absent" || arg == "--absent-file" ||
-            (format == "torch" &&
+            ((format == "torch" || format == "jax") &&
              (arg == "--lora" || arg == "--lora-rank" || arg == "--lora-alpha"))) {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");

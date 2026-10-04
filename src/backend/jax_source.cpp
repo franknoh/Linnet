@@ -80,8 +80,9 @@ constexpr const char* loss_import = "import linnet.jax.loss as _loss\n\n";
 // The generated module: straight-line `jax.numpy` over static shapes.
 class JaxTarget : public GraphTarget {
 public:
-    JaxTarget(bool prepare, bool full_precision)
-        : prepare_(prepare), full_precision_(full_precision) {}
+    explicit JaxTarget(const JaxSourceOptions& options)
+        : prepare_(options.prepare), full_precision_(options.full_precision), lora_(options.lora),
+          lora_rank_(options.lora_rank), lora_alpha_(options.lora_alpha) {}
 
     std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
         (void)shape;
@@ -101,7 +102,50 @@ public:
         const std::string argument = "p" + std::to_string(parameters_.size());
         parameters_.push_back(path);
         arguments_.push_back(argument);
+        parameters_end_ = arguments_.size();
         return argument;
+    }
+
+    // The path of the weight argument `argument` names when a `--lora`
+    // pattern matches it.
+    std::optional<std::string> lora_target(const std::string& argument) const {
+        if (lora_.empty() || argument.size() < 2 || argument[0] != 'p' ||
+            !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
+                return std::isdigit(static_cast<unsigned char>(c)) != 0;
+            })) {
+            return std::nullopt;
+        }
+        const std::size_t index = std::stoul(argument.substr(1));
+        if (index >= parameters_.size() || !parameters_[index].ends_with(".weight")) {
+            return std::nullopt;
+        }
+        const std::string& path = parameters_[index];
+        if (std::ranges::any_of(
+                lora_, [&](const std::string& pattern) { return glob_match(pattern, path); })) {
+            return path;
+        }
+        return std::nullopt;
+    }
+
+    // The adapter parameters of the weight at `path`: `lora_a` and `lora_b`
+    // of its block, made once, after the other parameters among `main`'s
+    // arguments (and after them in PARAMETERS).
+    std::pair<std::string, std::string> adapters(const std::string& path) {
+        if (const auto found = adapters_.find(path); found != adapters_.end()) {
+            return found->second;
+        }
+        const std::string block = path.substr(0, path.size() - std::string_view(".weight").size());
+        const auto add = [&](const std::string& adapter) {
+            const std::string argument = "p" + std::to_string(parameters_.size());
+            parameters_.push_back(block + "." + adapter);
+            arguments_.insert(arguments_.begin() + static_cast<std::ptrdiff_t>(parameters_end_),
+                              argument);
+            ++parameters_end_;
+            return argument;
+        };
+        const std::string a = add("lora_a");
+        const std::string b = add("lora_b");
+        return adapters_.emplace(path, std::make_pair(a, b)).first->second;
     }
 
     std::string state(const std::string& path, const Dims& shape, ScalarKind dtype) override {
@@ -435,8 +479,20 @@ public:
         }
         if (implementation_base == "torch.nn.functional.linear" && at.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr) {
-            const std::string product = define(name(0) + " @ " + name(1) + ".T");
-            return at[2] != nullptr ? define(product + " + " + name(2)) : product;
+            std::string product = define(name(0) + " @ " + name(1) + ".T");
+            if (at[2] != nullptr) {
+                product = define(product + " + " + name(2));
+            }
+            const auto path = lora_target(name(1));
+            if (!path || at[1]->shape.size() != 2) {
+                return product;
+            }
+            // A low-rank adapter beside the weight (LoRA): `x @ A.T @ B.T`,
+            // scaled by alpha / rank.
+            const auto [a, b] = adapters(*path);
+            const std::string low = define("(" + name(0) + " @ " + a + ".T) @ " + b + ".T");
+            return define(product + " + " + low + " * " +
+                          real_text(lora_alpha_ / static_cast<double>(lora_rank_)));
         }
         if (implementation_base == "torch.softmax" && at.size() == 1 && at[0] != nullptr) {
             return define(back("jax.nn.softmax(" + f32(0) + ", axis=-1)", 0));
@@ -715,10 +771,14 @@ private:
         return out;
     }
 
-    bool prepare_ = false;        // split weight-only work into `prepare`
-    bool full_precision_ = false; // f32 products at full precision (`precise`)
-    bool uses_experts_ = false;   // the module imports `linnet.jax.moe`
-    bool uses_loss_ = false;      // the module imports `linnet.jax.loss`
+    bool prepare_ = false;          // split weight-only work into `prepare`
+    bool full_precision_ = false;   // f32 products at full precision (`precise`)
+    std::vector<std::string> lora_; // weights given low-rank adapters (`--lora`)
+    std::int64_t lora_rank_ = 0;
+    double lora_alpha_ = 0.0;
+    std::map<std::string, std::pair<std::string, std::string>> adapters_; // weight -> a, b
+    bool uses_experts_ = false; // the module imports `linnet.jax.moe`
+    bool uses_loss_ = false;    // the module imports `linnet.jax.loss`
 
     struct Loop {
         std::size_t id = 0;
@@ -895,6 +955,7 @@ private:
     }
 
     std::vector<std::string> arguments_;
+    std::size_t parameters_end_ = 0; // `arguments_` past the last parameter
     std::vector<std::string> parameters_;
     std::vector<std::string> states_;
     std::map<std::string, std::string> literals_;
@@ -912,7 +973,12 @@ private:
 
 std::expected<std::string, std::string> export_jax_source(ir::Module& module,
                                                           const JaxSourceOptions& options) {
-    JaxTarget target(options.prepare, options.full_precision);
+    if (!options.lora.empty() && (options.prepare || options.lora_rank <= 0)) {
+        return std::unexpected(options.prepare
+                                   ? "adapters need the weights unprepared (no --prepare)"
+                                   : "adapters need a positive rank");
+    }
+    JaxTarget target(options);
     return export_graph(module, options, target);
 }
 

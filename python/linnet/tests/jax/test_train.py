@@ -282,3 +282,68 @@ def test_sharded_training_over_a_mesh_matches_one_device(weights: Path, tmp_path
         check=False,
     )
     assert completed.returncode == 0 and "same" in completed.stdout, completed.stderr[-3000:]
+
+
+ADAPTED = "layers.*.attention.*_proj.weight"
+
+
+def test_adapters_start_as_the_base_and_train_alone(weights: Path) -> None:
+    from linnet.jax.train import merge_lora
+
+    batch = next(pack(_examples(), tokens=24))
+    arrays = batch.arrays(batch.count)
+    base = _model(weights)
+    base_loss = float(base(*arrays))
+    model = _model(weights)
+    model.add_lora(ADAPTED, rank=2, alpha=4)
+    start = model.parameters_for(*arrays)
+    adapters = sorted(path for path in start if "lora" in path)
+    assert len(adapters) == 16
+    np.testing.assert_allclose(float(model.apply(start, *arrays)), base_loss, rtol=1e-6)
+
+    params, history = train(model, itertools.repeat(batch), optimizer=optax.adamw(5e-2), steps=10)
+    assert history.losses[-1] < history.losses[0]
+    for path in start:
+        if "lora" not in path:
+            np.testing.assert_array_equal(np.asarray(params[path]), np.asarray(start[path]))
+
+    # Merged into the weights, the plain model computes what the adapted one does.
+    merged = merge_lora(model, params)
+    assert not any("lora" in path for path in merged)
+    np.testing.assert_allclose(
+        float(base.apply(merged, *arrays)), float(model.apply(params, *arrays)), rtol=1e-5
+    )
+
+
+def test_adapters_match_pytorch(weights: Path) -> None:
+    from linnet.torch import load as load_torch
+    from linnet.train import Batch
+
+    batch = next(pack(_examples(), tokens=24))
+    arrays = batch.arrays(batch.count)
+    model = _model(weights)
+    model.add_lora(ADAPTED, rank=2, alpha=4)
+    params = dict(model.parameters_for(*arrays))
+    # A nonzero B, so both adapters get gradients.
+    for path in params:
+        if path.endswith("lora_b"):
+            params[path] = jnp.full(params[path].shape, 0.05, jnp.float32)
+    loss, grads = jax.value_and_grad(lambda p: model.apply(p, *arrays))(params)
+
+    theirs = load_torch(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    theirs.add_lora(ADAPTED, rank=2, alpha=4)
+    with torch.no_grad():
+        for name, parameter in theirs.named_parameters():
+            path = name.removeprefix("root.")
+            if "lora" in path:
+                parameter.copy_(torch.from_numpy(np.asarray(params[path])))
+    expected = theirs.run_entry("loss_packed", Batch.of(batch).inputs(batch.count))
+    expected.backward()
+    np.testing.assert_allclose(float(loss), float(expected), rtol=1e-5, atol=1e-6)
+    for name, parameter in theirs.named_parameters():
+        path = name.removeprefix("root.")
+        if "lora" in path:
+            assert parameter.grad is not None
+            np.testing.assert_allclose(
+                np.asarray(grads[path]), parameter.grad.numpy(), rtol=1e-4, atol=1e-6
+            )

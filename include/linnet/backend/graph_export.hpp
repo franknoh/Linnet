@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -270,6 +271,10 @@ public:
 private:
     std::map<std::string, std::int64_t> call_generics_;
 };
+
+// Whether `text` matches the glob `pattern`: `*` any run of characters,
+// `?` any one. LoRA patterns name the weights they adapt this way.
+bool glob_match(std::string_view pattern, std::string_view text);
 
 struct GraphExportOptions {
     std::string root;  // root block; empty selects the only block with entries

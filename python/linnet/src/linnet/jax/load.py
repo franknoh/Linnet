@@ -123,6 +123,12 @@ class LinnetFunction:
         arguments += ["--numerics", self.numerics, "--optionals", "present"]
         if target == "jax" and self.prepare_weights:
             arguments.append("--prepare")
+        lora = getattr(self, "lora", None)
+        if target == "jax" and lora is not None:
+            patterns, rank, alpha = lora
+            for pattern in patterns:
+                arguments += ["--lora", pattern]
+            arguments += ["--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]
         for name, value in bindings.items():
             arguments += ["--bind", f"{name}={value}"]
 
@@ -257,7 +263,14 @@ class LinnetFunction:
             )
         )
         return CompiledEntry(
-            paths, state_inputs, state_outputs, state_avals, exported, call, arrays
+            paths,
+            state_inputs,
+            state_outputs,
+            state_avals,
+            exported,
+            call,
+            arrays,
+            dtypes=[aval.dtype for aval in declared],
         )
 
     def _donated(
@@ -304,16 +317,13 @@ class LinnetFunction:
                 # Mixed precision: master parameters (f32, say) cast to the
                 # dtype the export declares on every call, so `jax.grad`
                 # returns gradients in the masters' own dtype.
-                avals = compiled.exported.in_avals
-                first = len(avals) - len(compiled.state_inputs) - len(compiled.parameters)
-                declared = avals[first : first + len(compiled.parameters)]
                 arrays = [
-                    array.astype(aval.dtype)
-                    if array.dtype != aval.dtype
+                    array.astype(dtype)
+                    if array.dtype != dtype
                     and jnp.issubdtype(array.dtype, jnp.floating)
-                    and jnp.issubdtype(aval.dtype, jnp.floating)
+                    and jnp.issubdtype(dtype, jnp.floating)
                     else array
-                    for array, aval in zip(arrays, declared, strict=True)
+                    for array, dtype in zip(arrays, compiled.dtypes, strict=True)
                 ]
         given: Mapping[str, Any] = state or {}
         missing = [p for p in compiled.state_inputs if p not in given]
@@ -395,6 +405,7 @@ class CompiledEntry:
     call: Any  # `exported.call` under `jax.jit`
     arrays: list[Any]  # the loaded weights as device arrays, in `parameters` order
     source_path: Path | None = None  # generated JAX source, when the entry runs as code
+    dtypes: list[Any] = dataclasses.field(default_factory=lambda: list[Any]())  # declared, each
 
 
 @functools.cache
