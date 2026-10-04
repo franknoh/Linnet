@@ -377,12 +377,13 @@ def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> A
     # shares and carry values each device has its own of.
     import inspect
 
-    unchecked = (
+    unchecked: dict[str, Any] = (
         {"check_vma": False}
         if "check_vma" in inspect.signature(shard_map).parameters
         else {"check_rep": False}
     )
-    return shard_map(
+    spread: Any = shard_map
+    return spread(
         local,
         mesh=mesh,
         in_specs=(trained_specs, frozen_specs, PartitionSpec(axis)),
