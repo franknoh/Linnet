@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from importlib import metadata
 from pathlib import Path
 
 
@@ -13,14 +14,36 @@ class LinnetError(Exception):
 
 
 def find_compiler() -> str:
-    """The `linnet` executable: LINNET_BIN, then PATH."""
+    """The `linnet` executable: LINNET_BIN, then the one this package's wheel
+    installed, then PATH."""
     candidate = os.environ.get("LINNET_BIN")
     if candidate and Path(candidate).exists():
         return candidate
+    installed = installed_compiler()
+    if installed is not None:
+        return str(installed)
     found = shutil.which("linnet")
     if found is None:
-        raise LinnetError("cannot find the `linnet` executable; set LINNET_BIN or add it to PATH")
+        raise LinnetError(
+            "cannot find the `linnet` executable; set LINNET_BIN or add it to PATH "
+            "(https://linnet.franknoh.dev/guide/installation)"
+        )
     return found
+
+
+def installed_compiler() -> Path | None:
+    """The executable a platform wheel of `linnet-lang` installs beside the
+    Python scripts, or None for a pure or source install."""
+    try:
+        files = metadata.distribution("linnet-lang").files or []
+    except metadata.PackageNotFoundError:
+        return None
+    for file in files:
+        if file.name in ("linnet", "linnet.exe") and file.parent.name in ("bin", "Scripts"):
+            path = Path(str(file.locate())).resolve()
+            if path.is_file():
+                return path
+    return None
 
 
 def run_compiler(*arguments: str, stdin: str | None = None) -> str:

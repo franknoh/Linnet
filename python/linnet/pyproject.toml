@@ -5,10 +5,31 @@ description = "Load, run, export, and draw Linnet models in PyTorch, JAX, and ON
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Suho Noh" }]
+keywords = ["tensor", "compiler", "pytorch", "jax", "onnx", "deep learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Compilers",
+]
 dependencies = [
     "numpy>=1.26",
     "safetensors>=0.4",
 ]
+
+[project.urls]
+Homepage = "https://linnet.franknoh.dev"
+Documentation = "https://linnet.franknoh.dev/docs/python"
+Repository = "https://github.com/franknoh/Linnet"
+Issues = "https://github.com/franknoh/Linnet/issues"
+Models = "https://nest.franknoh.dev"
 
 [project.optional-dependencies]
 torch = ["torch>=2.4"]
@@ -19,11 +40,46 @@ nest = ["huggingface-hub>=0.24"]
 all = ["torch>=2.4", "jax>=0.4.35", "flax>=0.12", "onnx>=1.16", "huggingface-hub>=0.24"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/linnet"]
+
+# LINNET_PREFIX puts a built compiler into the wheel (hatch_build.py).
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/linnet", "hatch_build.py", "README.md", "LICENSE"]
+
+# The wheel carries the compiler, not an extension module, so one build per
+# platform serves every Python version. Each platform builds and tests the
+# compiler first (scripts/build-release.sh) and installs it into
+# build/wheel-prefix at the repository's root.
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = "*-musllinux_*"
+archs = ["native"]
+environment = { LINNET_PREFIX = "../../build/wheel-prefix" }
+test-command = "python {project}/scripts/check-wheel.py {project}"
+
+[tool.cibuildwheel.linux]
+before-all = "pipx install cmake && pipx install ninja && bash scripts/build-release.sh build/wheel-prefix"
+
+[tool.cibuildwheel.macos]
+environment = { LINNET_PREFIX = "../../build/wheel-prefix", MACOSX_DEPLOYMENT_TARGET = "14.0" }
+before-all = "brew install ninja && bash scripts/build-release.sh build/wheel-prefix"
+
+[tool.cibuildwheel.windows]
+# The C++ runtime is linked in, since Windows does not always have it, and
+# the wheel has no DLLs for delvewheel to bundle.
+repair-wheel-command = ""
+before-all = [
+    "cmake --preset msvc -DLINNET_WARNINGS_AS_ERRORS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+    "cmake --build --preset msvc --config Release",
+    "ctest --preset msvc -C Release",
+    "cmake --install build/msvc --config Release --prefix build/wheel-prefix",
+]
 
 [dependency-groups]
 dev = [

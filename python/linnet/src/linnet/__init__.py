@@ -8,6 +8,8 @@ needs only NumPy.
 
 from __future__ import annotations
 
+from importlib import metadata
+
 from .compiler import LinnetError, find_compiler, run_compiler
 from .ir import Program, load_program
 from .plan import Env, Plan, PlanError, compile_plan
@@ -19,6 +21,11 @@ from .weights import (
     read_bindings,
     safetensors_files,
 )
+
+try:
+    __version__ = metadata.version("linnet-lang")
+except metadata.PackageNotFoundError:  # imported from a checkout without installing
+    __version__ = "0.0.0"
 
 __all__ = [
     "Env",

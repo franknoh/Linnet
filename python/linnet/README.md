@@ -17,7 +17,9 @@ model = load("src/model.linnet", generics={"H": 64, "Layers": 2}, weights="weigh
 ```
 
 The core needs only NumPy, and each backend imports its framework on first
-use. The compiler binary comes from `LINNET_BIN` or `PATH`. Documentation:
+use. The platform wheels carry the `linnet` compiler and its standard
+library; otherwise the compiler comes from `LINNET_BIN` or `PATH`.
+Documentation:
 [linnet.franknoh.dev/docs/python](https://linnet.franknoh.dev/docs/python).
 
 Development: `uv sync --all-extras`, then `uv run pytest`, `uv run pyright`

@@ -15,7 +15,8 @@ pip install ".[onnx]"      # linnet.onnx (add onnxruntime or onnxruntime-gpu to 
 
 It is not on PyPI yet; outside a checkout, install
 `"linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`.
-The compiler comes from `LINNET_BIN` or `PATH`. In a checkout,
+The compiler comes from `LINNET_BIN`, then the one a platform wheel installs
+beside the package, then `PATH`. In a checkout,
 `uv sync --all-extras` installs every backend and test dependency.
 
 ## Modules

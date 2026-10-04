@@ -43,8 +43,19 @@
 
 #ifdef _WIN32
 #include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
 #include <unistd.h>
+#endif
+#ifdef __APPLE__
+#include <cstdint>
+#include <mach-o/dyld.h>
 #endif
 
 namespace {
@@ -176,6 +187,40 @@ int report(const SourceManager& sources, DiagnosticSink& sink, const Options& op
 
 void collect_sources(const std::filesystem::path& root, std::vector<std::filesystem::path>& out);
 
+// The running executable's own path. argv[0] is only a name when the
+// executable was found on PATH, so it is the last resort.
+std::filesystem::path executable_path(const char* program) {
+#if defined(_WIN32)
+    std::wstring buffer(MAX_PATH, L'\0');
+    while (true) {
+        const DWORD length =
+            GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) {
+            break;
+        }
+        if (length < buffer.size()) {
+            buffer.resize(length);
+            return buffer;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buffer(size, '\0');
+    if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+        return std::filesystem::path(buffer.c_str());
+    }
+#elif defined(__linux__)
+    std::error_code error;
+    std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error) {
+        return self;
+    }
+#endif
+    return program;
+}
+
 // The standard library directory: an explicit option wins, then the
 // LINNET_STD environment variable, then locations relative to the executable
 // (an installed `share/linnet/stdlib`, or `stdlib` in a source checkout).
@@ -188,7 +233,7 @@ std::filesystem::path find_std_root(const std::string& option, const char* progr
         return from_environment;
     }
     std::filesystem::path directory =
-        std::filesystem::weakly_canonical(std::filesystem::path(program), error).parent_path();
+        std::filesystem::weakly_canonical(executable_path(program), error).parent_path();
     for (int depth = 0; depth < 4 && !directory.empty(); ++depth) {
         for (const char* candidate : {"share/linnet/stdlib", "stdlib"}) {
             if (std::filesystem::is_directory(directory / candidate, error)) {
