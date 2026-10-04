@@ -33,6 +33,39 @@ checkpoint already on disk.
 Loading a repo runs no code from it. The compiler checks the `.linnet`
 source and generates the backend's code itself.
 
+## transformers checkpoints
+
+A Hub repo with no card but a `transformers` checkpoint loads too, when its
+family has a card in Nest:
+
+```python
+model = nest.load("Qwen/Qwen2.5-7B-Instruct", backend="torch", device="cuda")
+```
+
+| `model_type` | Source from |
+| --- | --- |
+| `llama`, `mistral` | `tinyllama-1.1b-chat`, or `llama-3.1-8b-instruct` with `llama3` rope scaling |
+| `qwen2` | `qwen2.5-0.5b-instruct` |
+| `qwen3` | `qwen3-8b` |
+| `phi3` | `phi-3-mini-4k-instruct` |
+| `gpt2` | `gpt2` |
+
+The conversion copies that card's source with the checkpoint's constants
+(rope base, rope scaling, attention window), reads the generics from
+`config.json`, and binds every layer's tensors, biases included. It reads
+the checkpoint's SafeTensors headers and refuses rather than approximates:
+a setting the source does not compute (another rope scaling, a different
+`rms_norm_eps`), a parameter with no tensor of its shape, or a tensor no
+parameter reads. The weights stay on the Hub. `MaxSeq`, the cache length,
+is the config's up to 8192; `generics={"MaxSeq": ...}` raises it.
+
+```bash
+python -m linnet.nest convert Qwen/Qwen2.5-7B-Instruct -o qwen2.5-7b   # nest.convert in Python
+```
+
+writes the model directory to edit, check or `push`. Without `-o` it goes
+to the Nest cache, keyed by the repo's commit.
+
 | `backend=` | Loader |
 | --- | --- |
 | `"torch"` | `linnet.torch.load` |

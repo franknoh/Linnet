@@ -13,11 +13,13 @@ or as a Hub repo with the card at its root (`push` uploads one).
     python -m linnet.nest index models -o index.json
     python -m linnet.nest preview models/gpt2 -o models/gpt2/preview.svg
     python -m linnet.nest push my-model me/my-model
+    python -m linnet.nest convert Qwen/Qwen2.5-7B-Instruct -o qwen2.5-7b
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -559,7 +561,7 @@ def _get(url: str) -> bytes:
         return cast(bytes, response.read())
 
 
-def _huggingface_hub() -> Any:
+def huggingface_hub() -> Any:
     try:
         import huggingface_hub  # type: ignore[import-untyped]
     except ImportError:
@@ -575,11 +577,16 @@ def fetch_hub(repo: str, *, revision: str | None = None) -> Path:
 
     The card, README, source and bindings arrive first. The checkpoint comes
     with them when it is in the same repo (the card names no other one);
-    otherwise `load` downloads it from the repo the card names."""
-    hub = _huggingface_hub()
+    otherwise `load` downloads it from the repo the card names. A repo with
+    no card but a `transformers` checkpoint of a family Nest knows is
+    converted instead (`linnet.convert`)."""
+    hub = huggingface_hub()
+    missing = importlib.import_module("huggingface_hub.errors").EntryNotFoundError
     try:
         card_file = Path(hub.hf_hub_download(repo, "nest.toml", revision=revision))
-    except Exception as error:  # a missing repo or file, or no network
+    except missing:
+        return convert(repo, revision=revision)
+    except Exception as error:  # a missing repo, or no network
         raise NestError(f"cannot fetch `nest.toml` from the Hub repo `{repo}`: {error}") from error
     card = Card.read(card_file.parent)
     patterns = ["nest.toml", "README.md", "linnet.toml", "*.linnet"]
@@ -638,7 +645,7 @@ def download_weights(card: Card) -> Path:
             f"`{card.name}` names no Hub repo for its weights, and its directory "
             f"({card.directory}) holds no checkpoint"
         )
-    hub = _huggingface_hub()
+    hub = huggingface_hub()
     paths = [
         Path(hub.hf_hub_download(card.weights.repo, filename, revision=card.weights.revision))
         for filename in card.weights.files
@@ -646,12 +653,26 @@ def download_weights(card: Card) -> Path:
     return paths[0] if len(paths) == 1 else paths[0].parent
 
 
+def convert(
+    repo: str,
+    *,
+    revision: str | None = None,
+    output: str | Path | None = None,
+    std_root: str | Path | None = None,
+) -> Path:
+    """A model directory for a `transformers` checkpoint on the Hub, from
+    the source of its family's card; see `linnet.convert`."""
+    from .convert import convert as convert_checkpoint
+
+    return convert_checkpoint(repo, revision=revision, output=output, std_root=std_root)
+
+
 def push(directory: str | Path, repo: str, *, private: bool = False) -> str:
     """Uploads a model directory to a Hugging Face Hub repo, which `load` then
     takes by its name: the card, README, source and bindings, and any
     checkpoint beside them. Returns the repo's URL."""
     card = Card.read(directory)
-    api = _huggingface_hub().HfApi()
+    api = huggingface_hub().HfApi()
     api.create_repo(repo, exist_ok=True, private=private)
     api.upload_folder(
         repo_id=repo, folder_path=str(card.directory), commit_message=f"Upload {card.name}"
@@ -742,6 +763,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         "pull", help="fetch a model directory from the registry or a Hub repo"
     )
     pull_parser.add_argument("name")
+    convert_parser = commands.add_parser(
+        "convert", help="write a model directory for a transformers checkpoint on the Hub"
+    )
+    convert_parser.add_argument("repo")
+    convert_parser.add_argument("-o", "--output")
+    convert_parser.add_argument("--revision")
     push_parser = commands.add_parser("push", help="upload a model directory to a Hub repo")
     push_parser.add_argument("directory")
     push_parser.add_argument("repo")
@@ -770,6 +797,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 Card.read(args.directory), std_root=args.std, expand=args.expand, theme=args.theme
             )
             _write(args.output, text)
+            return 0
+        if args.command == "convert":
+            print(convert(args.repo, revision=args.revision, output=args.output, std_root=args.std))
             return 0
         if args.command == "push":
             print(push(args.directory, args.repo, private=args.private))
