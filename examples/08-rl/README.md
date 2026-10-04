@@ -6,7 +6,7 @@ reward, with answers sampled by `linnet.serve`, and DPO on preference pairs.
 ## Run
 
 ```bash
-python examples/08-rl/grpo.py     # learns to answer multiplications with the number alone
+python examples/08-rl/grpo.py     # learns to get two-number multiplications right
 python examples/08-rl/dpo.py      # UltraFeedback's chosen and rejected answers
 ```
 

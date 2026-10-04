@@ -1,8 +1,8 @@
 """Reinforcement learning (GRPO) for Llama 3.1 8B with LoRA, on one GPU: the
-model learns to answer two-number multiplications with the number alone. A
-`linnet.serve` Engine samples a group of answers to each prompt from a second
-copy of the model, which takes the policy's weights before every step; the
-policy learns from each answer's reward against its group's."""
+model learns to get two-number multiplications right. A `linnet.serve`
+Engine samples a group of answers to each prompt from a second copy of the
+model, which takes the policy's weights before every step; the policy
+learns from each answer's reward against its group's."""
 
 import argparse
 import itertools
@@ -44,12 +44,10 @@ def prompts():
 
 
 def reward(prompt: Prompt, completion: list[int]) -> float:
-    """1 for the number alone, 0.5 for the right number among other text."""
-    text = tokenizer.decode(completion, skip_special_tokens=True).strip()
-    if text == str(prompt.data):
-        return 1.0
+    """1 when the answer's last number is the product, 0 otherwise."""
+    text = tokenizer.decode(completion, skip_special_tokens=True)
     numbers = re.findall(r"\d[\d,]*", text)
-    return 0.5 if numbers and numbers[-1].replace(",", "") == str(prompt.data) else 0.0
+    return 1.0 if numbers and numbers[-1].replace(",", "") == str(prompt.data) else 0.0
 
 
 # The policy trains its adapters; the engine samples from a copy of the model
