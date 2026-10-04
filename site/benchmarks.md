@@ -145,7 +145,7 @@ decoding loop, which bring it to 3.5 ms.
 - **Memory:** peak GPU memory from the driver, or from JAX's allocator for
   JAX rows. The memory views leave out the offloaded rows and every row that
   starts vLLM, which reserves 85% of the GPU for its cache pool.
-- **Generated code:** `examples/05-llama` with random weights, small (about
+- **Generated code:** `examples/01-llama` with random weights, small (about
   60 M parameters) and medium (TinyLlama shape, about 1.1 B), timing
   `forward` over `B=1, S=512` and one `decode` step at position 256. The
   variants are the [`linnet.torch.load`](/docs/torch) modes and

@@ -18,8 +18,8 @@ from linnet.torch import load
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
-GPT2 = REPO / "examples/06-gpt2/gpt2.linnet"
-LLAMA = REPO / "examples/05-llama/src/lib.linnet"
+GPT2 = REPO / "tests/fixtures/gpt2/gpt2.linnet"
+LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 GPT2_GENERICS: dict[str, int | str] = {
     "Vocab": 11,
     "MaxPositions": 16,
@@ -576,7 +576,7 @@ def test_a_checkpoint_of_another_dtype_is_refused(tmp_path: Path) -> None:
 
 
 def test_unknown_structures_are_refused(tmp_path: Path) -> None:
-    source = REPO / "examples/04-tiny-transformer/src/lib.linnet"
+    source = REPO / "tests/fixtures/tiny-transformer/src/lib.linnet"
     generics: dict[str, int | str] = {
         "Vocab": 11,
         "H": 8,

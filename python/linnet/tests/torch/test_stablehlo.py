@@ -20,6 +20,7 @@ from linnet.torch import load
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
 EXAMPLES = REPO / "examples"
+FIXTURES = REPO / "tests" / "fixtures"
 
 jax = pytest.importorskip("jax")
 jax.config.update("jax_enable_x64", True)  # `i64` inputs (PRNG keys) stay 64-bit on device
@@ -97,7 +98,7 @@ def test_block_model_matches_torch(tmp_path: Path) -> None:
     generics: dict[str, int | str] = {"H": 8, "Inner": 16, "Layers": 2, "Vocab": 12, "T": "f32"}
     tokens = torch.randint(0, 12, (2, 3), dtype=torch.int32)
     _round_trip(
-        EXAMPLES / "03-block-and-weights/model.linnet",
+        FIXTURES / "block-and-weights/model.linnet",
         generics,
         {"B": 2, "S": 3},
         [tokens],
@@ -122,7 +123,7 @@ def test_tiny_transformer_matches_torch(tmp_path: Path) -> None:
     cos_table = torch.cat([angles.cos(), angles.cos()], dim=-1)
     sin_table = torch.cat([angles.sin(), angles.sin()], dim=-1)
     _round_trip(
-        EXAMPLES / "04-tiny-transformer/src/lib.linnet",
+        FIXTURES / "tiny-transformer/src/lib.linnet",
         generics,
         {"B": 2, "S": seq},
         [tokens, cos_table, sin_table],
@@ -144,7 +145,7 @@ def test_llama_next_token_matches_torch(tmp_path: Path) -> None:
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     reference = load(source, generics=generics, std_root=STDLIB)
     weights: dict[str, torch.Tensor] = {}
     for name, parameter in reference.named_parameters():
@@ -172,7 +173,7 @@ def test_unbound_generic_is_reported() -> None:
             str(STDLIB),
             "--bind",
             "H=8",
-            str(EXAMPLES / "03-block-and-weights/model.linnet"),
+            str(FIXTURES / "block-and-weights/model.linnet"),
         ],
         capture_output=True,
         text=True,
@@ -196,7 +197,7 @@ def test_llama_sample_draws_the_same_tokens_under_xla(tmp_path: Path) -> None:
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     reference = load(source, generics=generics, std_root=STDLIB)
     weights: dict[str, torch.Tensor] = {}
     for name, parameter in reference.named_parameters():

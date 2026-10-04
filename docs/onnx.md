@@ -66,9 +66,9 @@ exported.save("normalize_images.onnx")
 ## Linnet to ONNX
 
 ```bash
-linnet onnx --std stdlib --bind Vocab=11 --bind H=8 --bind Heads=2 --bind Inner=16 \
-            --bind Layers=2 --bind T=f32 --bind B=2 --bind S=5 \
-            examples/04-tiny-transformer/src/lib.linnet > model.onnx.txt
+linnet onnx --std stdlib --entry forward --bind Vocab=11 --bind H=8 --bind Heads=2 \
+            --bind KvHeads=1 --bind Inner=16 --bind Layers=2 --bind Batch=1 --bind MaxSeq=8 \
+            --bind T=f32 --bind B=2 --bind S=5 examples/01-llama/src/lib.linnet > model.onnx.txt
 ```
 
 `linnet onnx` prints ONNX text: `onnx.parser.parse_model` reads it and

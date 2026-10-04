@@ -7,7 +7,7 @@ page is typed in by hand.
 
 ## What runs
 
-The model is the repository's Llama-style decoder (`examples/05-llama`) with
+The model is the repository's Llama-style decoder (`examples/01-llama`) with
 random weights, at these widths:
 
 | Config | H | Heads / KV | Inner | Layers | Vocab | Parameters |

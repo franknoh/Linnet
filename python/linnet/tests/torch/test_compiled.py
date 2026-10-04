@@ -15,7 +15,7 @@ from linnet.torch import CompiledLinnetModule, load
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/05-llama/src/lib.linnet"
+LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 GENERICS: dict[str, int | str] = {
     "Vocab": 11,
     "H": 8,

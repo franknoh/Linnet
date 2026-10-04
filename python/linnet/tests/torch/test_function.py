@@ -1,4 +1,4 @@
-"""Functions: module-level entries (`examples/09-functions`) as PyTorch
+"""Functions: module-level entries as PyTorch
 functions. Interpreted and as generated source, they agree with PyTorch's own
 losses and with hand-written preprocessing and rewards, bind their generics
 from each call's inputs, and are differentiated by autograd -- into a Linnet
@@ -18,7 +18,7 @@ from linnet.torch import load, load_function
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
-EXAMPLE = REPO / "examples" / "09-functions" / "functions.linnet"
+EXAMPLE = REPO / "tests" / "fixtures" / "functions" / "functions.linnet"
 
 
 @pytest.fixture(autouse=True)

@@ -19,7 +19,7 @@ A model trains through any entry with `loss_packed`'s signature:
 `(tokens [P] i32, positions [P] i32, segments [P] i32, targets [P] i64,
 weights [P] f32) -> f32`, the weighted sum of each position's
 cross-entropy for its target. Each Nest decoder card and
-`examples/05-llama` have one.
+`examples/01-llama` have one.
 """
 
 from __future__ import annotations

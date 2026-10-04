@@ -36,7 +36,7 @@ The compiler comes from `LINNET_BIN` or `PATH`. In a checkout,
 ```python
 from linnet import load_program
 
-program = load_program("examples/05-llama/src/lib.linnet", std_root="stdlib")
+program = load_program("examples/01-llama/src/lib.linnet", std_root="stdlib")
 print(program)
 ```
 
@@ -86,7 +86,7 @@ in the caller's generics. `format_dim`, `format_shape`, `format_type` and
 ## Diagrams
 
 ```bash
-python -m linnet.diagram examples/05-llama/src/lib.linnet --std stdlib \
+python -m linnet.diagram examples/01-llama/src/lib.linnet --std stdlib \
     --entry forward --expand 1 -o forward.svg
 ```
 

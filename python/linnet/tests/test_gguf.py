@@ -16,7 +16,7 @@ from linnet.torch import load
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
-GPT2 = REPO / "examples/06-gpt2/gpt2.linnet"
+GPT2 = REPO / "tests/fixtures/gpt2/gpt2.linnet"
 GENERICS: dict[str, int | str] = {
     "Vocab": 11,
     "MaxPositions": 16,

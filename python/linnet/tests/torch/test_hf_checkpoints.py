@@ -64,7 +64,7 @@ def test_tinyllama_logits_match_transformers(tmp_path: Path) -> None:
 
     # The example is Llama 3 (rope base 500000); TinyLlama is Llama 2 (10000).
     package = tmp_path / "llama"
-    shutil.copytree(REPO / "examples/05-llama", package)
+    shutil.copytree(REPO / "examples/01-llama", package)
     rope = package / "src/rope.linnet"
     rope.write_text(rope.read_text().replace("500000.0", f"{config['rope_theta']:.1f}"))
 
@@ -155,7 +155,7 @@ def test_gpt2_logits_match_transformers(tmp_path: Path) -> None:
         "T": "f32",
     }
     model = load(
-        REPO / "examples/06-gpt2/gpt2.linnet",
+        REPO / "tests/fixtures/gpt2/gpt2.linnet",
         generics=generics,
         std_root=STDLIB,
         numerics="equivalent",

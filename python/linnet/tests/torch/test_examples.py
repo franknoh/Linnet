@@ -15,6 +15,7 @@ from linnet.torch import LinnetModule, load
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
 EXAMPLES = REPO / "examples"
+FIXTURES = REPO / "tests" / "fixtures"
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +80,7 @@ def test_llama_matches_reference(tmp_path: Path) -> None:
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     model, w = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     B, S, D = 2, 5, H // heads  # noqa: N806
     tokens = torch.randint(0, vocab, (B, S), dtype=torch.int32)
@@ -135,7 +136,7 @@ def test_gpt2_matches_reference(tmp_path: Path) -> None:
         "Layers": layers,
         "T": "f32",
     }
-    source = EXAMPLES / "06-gpt2/gpt2.linnet"
+    source = FIXTURES / "gpt2/gpt2.linnet"
     model, w = _with_random_weights(source, generics, tmp_path)
     B, S, D = 2, 5, H // heads  # noqa: N806
     tokens = torch.randint(0, vocab, (B, S), dtype=torch.int32)
@@ -179,7 +180,7 @@ def test_vit_matches_reference(tmp_path: Path) -> None:
         "Classes": classes,
         "T": "f32",
     }
-    source = EXAMPLES / "07-vit/vit.linnet"
+    source = EXAMPLES / "02-vit/vit.linnet"
     model, w = _with_random_weights(source, generics, tmp_path)
     B = 2  # noqa: N806
     image = torch.randn(B, channels, height, width)
@@ -233,7 +234,7 @@ def test_clip_matches_reference(tmp_path: Path) -> None:
         "Embed": embed,
         "T": "f32",
     }
-    source = EXAMPLES / "08-clip/src/lib.linnet"
+    source = EXAMPLES / "03-clip/src/lib.linnet"
     model, w = _with_random_weights(source, generics, tmp_path)
     B, C, S = 2, 3, 5  # noqa: N806
     image = torch.randn(B, channels, height, width)
@@ -307,7 +308,7 @@ def test_llama_decode_matches_full_prefix(tmp_path: Path) -> None:
         "MaxSeq": 6,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     assert model.state_paths() == [
         "layers[*].attention.cache_k",
@@ -340,7 +341,7 @@ def test_llama_generate_matches_stepwise_decoding(tmp_path: Path) -> None:
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
     generated = model.run_entry(
@@ -372,7 +373,7 @@ def test_llama_sample_is_deterministic_and_greedy_at_low_temperature(tmp_path: P
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
     start = torch.tensor(0, dtype=torch.int32)
@@ -406,7 +407,7 @@ def test_llama_generate_until_stops_at_eos(tmp_path: Path) -> None:
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     model, _ = _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     prompt = torch.randint(0, 11, (2, 1), dtype=torch.int32)
     start = torch.tensor(0, dtype=torch.int32)
@@ -449,7 +450,7 @@ def test_llama_packed_training_matches_each_sequence(tmp_path: Path, compile: bo
         "MaxSeq": 8,
         "T": "f32",
     }
-    source = EXAMPLES / "05-llama/src/lib.linnet"
+    source = EXAMPLES / "01-llama/src/lib.linnet"
     _with_random_weights(source, generics, tmp_path, skip_optional_biases=True)
     model = load(
         source,
@@ -507,3 +508,17 @@ def test_llama_packed_training_matches_each_sequence(tmp_path: Path, compile: bo
             ]
         )
     torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_the_training_example_learns() -> None:
+    """`examples/05-train-vit` trains the ViT from scratch on a CPU: after 100
+    steps it tells the four textures apart (chance is 0.25)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "train_vit", EXAMPLES / "05-train-vit" / "train.py"
+    )
+    assert spec is not None and spec.loader is not None
+    example = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(example)
+    assert example.main(steps=100) > 0.9

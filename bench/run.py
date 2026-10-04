@@ -35,7 +35,7 @@ import torch.nn.functional as F
 
 REPO = Path(__file__).resolve().parents[1]
 STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/05-llama/src/lib.linnet"
+LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 
 # Generated-source rows: `torch.compile` backend (None runs the source as is),
 # numerics tier, and the label. The fast tier runs softmax, normalization,
@@ -639,7 +639,7 @@ def main() -> None:
     if check.returncode != 0:
         raise SystemExit(check.stderr)
     timings.append(
-        {"name": "linnet check examples/05-llama", "seconds": time.perf_counter() - start}
+        {"name": "linnet check examples/01-llama", "seconds": time.perf_counter() - start}
     )
 
     runs: list[Run] = []
