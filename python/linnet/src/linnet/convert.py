@@ -296,8 +296,11 @@ def convert(
             _rewrite_constants(directory / relative, constants)
         bindings = _bindings(base, int(config.get("num_hidden_layers", config.get("n_layer", 0))))
         if family.embedding is not None:
+            # A tied head reads the embedding, unless the checkpoint stores
+            # the head anyway (Qwen3's small models do).
             tied = bool(config.get("tie_word_embeddings", False))
-            bindings["lm_head.weight"] = family.embedding if tied else "lm_head.weight"
+            own = _present("lm_head.weight", tensors) in tensors
+            bindings["lm_head.weight"] = family.embedding if tied and not own else "lm_head.weight"
         bindings = {path: _present(tensor, tensors) for path, tensor in bindings.items()}
         (directory / "bindings.json").write_text(json.dumps(bindings, indent=2) + "\n", "utf-8")
 
@@ -311,7 +314,7 @@ def convert(
         card = nest.Card.read(directory)
         program = card.program(std_root)
         values = ir.bind_generics(program.root.generics, card.generics)
-        bindings = _bind_optionals(program, values, bindings, tensors)
+        bindings = _complete_bindings(program, values, bindings, tensors)
         (directory / "bindings.json").write_text(json.dumps(bindings, indent=2) + "\n", "utf-8")
         unbound = _unbound(program, values, tensors, bindings)
         if unbound:
@@ -436,22 +439,28 @@ def _dtype(tensors: Mapping[str, tuple[tuple[int, ...], str]], tensor: str) -> s
     return dtype
 
 
-def _bind_optionals(
+def _complete_bindings(
     program: ir.Program,
     values: ir.Bindings,
     bindings: Mapping[str, str],
     tensors: Mapping[str, Any],
 ) -> dict[str, str]:
-    """Binds the optional parameters the base card leaves unbound when the
-    checkpoint has them beside a bound sibling: `q_proj.bias` next to the
-    tensor `q_proj.weight` binds, as Llama variants with `attention_bias`
-    have."""
+    """Binds what the base card leaves to its path: a parameter whose tensor
+    this checkpoint spells with a prefix (`transformer.ln_f.weight`), and an
+    optional one the checkpoint has beside a bound sibling (`q_proj.bias`
+    next to the tensor `q_proj.weight`, as Llama variants with
+    `attention_bias` have)."""
     out = dict(bindings)
     for entry in program.manifest:
-        if entry.kind != "param" or not entry.optional:
+        if entry.kind not in ("param", "buffer"):
             continue
         for path in nest.expand_paths(entry, values):
-            if path in out or "." not in path:
+            if path in out:
+                continue
+            if path not in tensors and _present(path, tensors) in tensors:
+                out[path] = _present(path, tensors)
+                continue
+            if entry.kind != "param" or not entry.optional or "." not in path:
                 continue
             stem, leaf = path.rsplit(".", 1)
             sibling = out.get(f"{stem}.weight")

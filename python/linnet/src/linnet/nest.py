@@ -583,11 +583,13 @@ def fetch_hub(repo: str, *, revision: str | None = None) -> Path:
     hub = huggingface_hub()
     missing = importlib.import_module("huggingface_hub.errors").EntryNotFoundError
     try:
-        card_file = Path(hub.hf_hub_download(repo, "nest.toml", revision=revision))
+        card_file: Path | None = Path(hub.hf_hub_download(repo, "nest.toml", revision=revision))
     except missing:
-        return convert(repo, revision=revision)
+        card_file = None
     except Exception as error:  # a missing repo, or no network
         raise NestError(f"cannot fetch `nest.toml` from the Hub repo `{repo}`: {error}") from error
+    if card_file is None:
+        return convert(repo, revision=revision)
     card = Card.read(card_file.parent)
     patterns = ["nest.toml", "README.md", "linnet.toml", "*.linnet"]
     if card.weights is not None:
