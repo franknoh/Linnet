@@ -199,7 +199,7 @@ tokens per GPU per step, after compiling.
 
 | Setup | Sample | Train | Weight copy | Peak per GPU |
 | --- | --- | --- | --- | --- |
-| LoRA, one GPU, 45-token prompts | 1.1 s | 0.6 s | 104 ms | 59 GiB |
+| LoRA, one GPU, 45-token prompts | 0.79 s | 0.26 s | 104 ms | 59 GiB |
 | LoRA, one GPU, 1267-token prompts | 5.7 s (7.2 s passing every prompt) | 12.5 s | | 59 GiB |
 | Full fine-tune, four GPUs, `fully_shard` | 1.6 s | 1.5 s | 109 ms | 74 GiB |
 
@@ -313,6 +313,44 @@ options. They run in one process.
   `Engine` over the JAX model (`linnet.jax.load_model`). The engine takes the
   policy's weights before each step, adapters merged in
   (`LinnetModel.copy_weights`).
+
+## Compared with TRL
+
+The same runs in Linnet (PyTorch and JAX) and in TRL with PEFT, on Llama
+3.1 8B Instruct. They share the data, 4096-token packed rows, the
+hyperparameters and the step count. Each ran on one H100 unless noted. Times
+are the median step after the first two. Tokens/s counts real tokens, not
+padding.
+
+| Run | Linnet PyTorch | Linnet JAX | TRL |
+| --- | --- | --- | --- |
+| SFT, LoRA: Alpaca, 4 rows a step | 1.04 s, 15.6K tokens/s, 36 GiB | 1.33 s, 12.2K tokens/s, 38 GiB | 1.83 s, 8.9K tokens/s, 43 GiB |
+| SFT in full, four GPUs | 0.55 s, 29.4K tokens/s, 48 GiB a GPU | not yet | 0.57 s, 28.6K tokens/s, 52 GiB a GPU (FSDP2) |
+| DPO, LoRA: UltraFeedback, 32 pairs a step | 1.91 s, 36 GiB | 2.41 s, 38 GiB | 4.63 s, 48 GiB |
+| GRPO, LoRA: 16 prompts × 8, up to 128 tokens | 1.18 s, 59 GiB | 1.44 s, 60 GiB | 3.14 s, 52 GiB (vLLM) |
+
+The three trained alike:
+
+- **SFT, LoRA:** held-out loss after 30 steps was 1.369 (PyTorch), 1.374
+  (JAX) and 1.373 (TRL). One evaluator scored all three adapters.
+- **SFT in full:** training loss over the last five steps was 1.24 for
+  Linnet and 1.26 for TRL.
+- **DPO:** accuracy over the last five steps was 0.68, 0.65 and 0.70.
+- **GRPO:** mean reward went from 0.44 to 0.39, 0.44 to 0.40, and 0.43 to
+  0.41, first three steps to last three. At this learning rate none learns
+  in 20 steps, and all three trace the same curve.
+- No run had a loss spike, and the gradient norms stayed in the same range.
+
+Conditions that differ:
+
+- **First step.** It compiles. Linnet PyTorch takes 35 s for SFT, 75 s for
+  DPO and 360 s for GRPO, which includes compiling the engine's passes.
+  JAX takes 23 to 55 s, and TRL 2 to 9 s.
+- **TRL batch sizes.** TRL took DPO 2 pairs at a time and GRPO 8
+  completions at a time; larger batches ran out of memory. vLLM held 35% of
+  the GPU.
+- **JAX on four GPUs.** XLA crashes compiling the sharded step with cuDNN
+  attention, so that run is not measured yet.
 
 ## Losses
 
