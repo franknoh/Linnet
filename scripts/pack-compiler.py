@@ -21,6 +21,8 @@ def main() -> None:
     with zipfile.ZipFile(wheel) as archive:
         for info in archive.infolist():
             parts = Path(info.filename).parts
+            if info.is_dir():
+                continue
             if len(parts) < 3 or not parts[0].endswith(".data"):
                 continue
             if parts[1] == "scripts":

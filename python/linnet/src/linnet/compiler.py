@@ -40,7 +40,7 @@ def installed_compiler() -> Path | None:
         return None
     for file in files:
         if file.name in ("linnet", "linnet.exe") and file.parent.name in ("bin", "Scripts"):
-            path = Path(str(file.locate()))
+            path = Path(str(file.locate())).resolve()
             if path.is_file():
                 return path
     return None
