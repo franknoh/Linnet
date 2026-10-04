@@ -42,9 +42,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--warmup",
         type=int,
         nargs="*",
-        default=[],
         metavar="LENGTH",
-        help="prompt lengths to compile before serving (others compile when first seen)",
+        help="prompt lengths to compile for before serving (default: one short prompt; "
+        "the passes longer prompts need compile when first seen)",
     )
     args = parser.parse_args(argv)
 
@@ -94,7 +94,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     hub = nest.HUB_REPO.match(args.model)
     name = args.name or (hub["repo"] if hub and not Path(args.model).exists() else card.name)
     engine = Engine(model)
-    engine.warmup(args.warmup)
+    # The smallest pass by default: a few seconds rather than a minute or more
+    # for every pass size.
+    engine.warmup(args.warmup if args.warmup else [64])
     server = Server(engine, tokenizer, name=name, eos=eos, host=args.host, port=args.port)
     host, port = server.address
     print(f"serving {name} at http://{host}:{port}/v1", flush=True)
