@@ -151,7 +151,7 @@ def train(
 
     spread: Any = None
     if mesh is not None:
-        spread = _spread(mesh, trained, frozen, loss_of)
+        spread = _spread(mesh, trained, frozen, loss_of, learner.dtypes)
 
     def update(trained: Any, state: Any, frozen: Any, stacked: Any) -> Any:
         def one(carry: Any, inputs: Any) -> Any:
@@ -343,13 +343,19 @@ def add(total: Any, more: Any) -> Any:
     return jax.tree.map(jnp.add, total, more)
 
 
-def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> Any:
+def _spread(
+    mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any], dtypes: dict[str, Any]
+) -> Any:
     """`loss(trained, frozen, inputs)` summed over the mesh's devices, each
     on its own batch (`inputs` `[N, ...]`, split by the first axis) with
     every parameter whole: each part is gathered where the device computes
     (FSDP), and its gradient is reduce-scattered back to the parts. Inside,
     every device computes alone, with no partitioner to split activations
-    along the weights' axes."""
+    along the weights' axes.
+
+    A trained part is gathered in `dtypes[path]`, the dtype the model
+    computes in, and its gradient reduced in the part's own (the f32
+    master's): half the traffic and memory of gathering the master."""
     from jax.sharding import PartitionSpec
 
     try:
@@ -361,15 +367,22 @@ def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> A
     trained_specs = {path: value.sharding.spec for path, value in trained.items()}
     frozen_specs = {path: value.sharding.spec for path, value in frozen.items()}
 
+    def split_at(spec: Any) -> int | None:
+        return next((dim for dim, name in enumerate(spec) if name == axis), None)
+
     def whole(value: Any, spec: Any) -> Any:
-        for dim, name in enumerate(spec):
-            if name == axis:
-                return jax.lax.all_gather(value, axis, axis=dim, tiled=True)
-        return value
+        dim = split_at(spec)
+        return value if dim is None else jax.lax.all_gather(value, axis, axis=dim, tiled=True)
+
+    def whole_as(value: Any, spec: Any, dtype: Any) -> Any:
+        dim = split_at(spec)
+        if dim is None:
+            return value.astype(dtype)
+        return _gather_as(axis, dim, dtype, value.dtype)(value)
 
     def local(trained: Any, frozen: Any, inputs: Any) -> Any:
         mine = loss(
-            {p: whole(v, trained_specs[p]) for p, v in trained.items()},
+            {p: whole_as(v, trained_specs[p], dtypes[p]) for p, v in trained.items()},
             {p: whole(v, frozen_specs[p]) for p, v in frozen.items()},
             [value[0] for value in inputs],
         )
@@ -392,6 +405,24 @@ def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> A
         out_specs=PartitionSpec(),
         **unchecked,
     )
+
+
+def _gather_as(axis: str, dim: int, dtype: Any, own: Any) -> Callable[[Any], Any]:
+    """Inside `shard_map`: a part gathered whole along `dim` in `dtype`, and
+    its gradient reduce-scattered back in `own`."""
+
+    @jax.custom_vjp
+    def gather(part: Any) -> Any:
+        return jax.lax.all_gather(part.astype(dtype), axis, axis=dim, tiled=True)
+
+    def forward(part: Any) -> Any:
+        return gather(part), None
+
+    def backward(_: Any, grad: Any) -> Any:
+        return (jax.lax.psum_scatter(grad.astype(own), axis, scatter_dimension=dim, tiled=True),)
+
+    gather.defvjp(forward, backward)
+    return gather
 
 
 def _partitioner(mesh: Any) -> Any:

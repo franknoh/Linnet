@@ -245,8 +245,9 @@ import optax
 from jax.sharding import Mesh
 
 sys.path.insert(0, sys.argv[2])
-from test_train import _four_batches, _model  # noqa: E402
+from test_train import GENERICS, LLAMA, STDLIB, _four_batches, _model  # noqa: E402
 
+from linnet.jax import load_source  # noqa: E402
 from linnet.jax.train import train  # noqa: E402
 
 weights = Path(sys.argv[1])
@@ -260,6 +261,22 @@ gate = split["layers.0.mlp.gate.weight"]
 assert len(gate.sharding.device_set) == 2 and gate.sharding.spec[0] == "data", gate.sharding
 for path, value in one.items():
     np.testing.assert_allclose(np.asarray(split[path]), np.asarray(value), rtol=1e-4, atol=1e-6)
+
+
+# Computing in bf16 from f32 masters: the parts are gathered in bf16, the
+# gradients reduced in f32, as one device casts and accumulates.
+def bf16():
+    return load_source(LLAMA, generics={**GENERICS, "T": "bf16"}, weights=weights,
+                       entry="loss_packed", std_root=STDLIB, cast_dtype=True)
+
+
+split, _ = train(bf16(), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2, clip=None,
+                 mesh=mesh)
+one, _ = train(bf16(), iter(_four_batches()), optimizer=optax.sgd(0.1), steps=2, clip=None,
+               accumulate=2)
+for path, value in one.items():
+    assert split[path].dtype == np.float32, (path, split[path].dtype)
+    np.testing.assert_allclose(np.asarray(split[path]), np.asarray(value), rtol=1e-3, atol=1e-5)
 print("same")
 """
 
