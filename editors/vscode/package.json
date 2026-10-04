@@ -5,6 +5,11 @@
     "version": "0.1.0",
     "publisher": "linnet",
     "license": "MIT",
+    "icon": "images/icon.png",
+    "homepage": "https://linnet.franknoh.dev",
+    "bugs": {
+        "url": "https://github.com/franknoh/Linnet/issues"
+    },
     "repository": {
         "type": "git",
         "url": "https://github.com/franknoh/Linnet"
@@ -14,6 +19,13 @@
     },
     "categories": [
         "Programming Languages"
+    ],
+    "keywords": [
+        "linnet",
+        "tensor",
+        "neural network",
+        "deep learning",
+        "language server"
     ],
     "scripts": {
         "prepare-grammar": "node scripts/copy-grammar.js",
@@ -56,8 +68,8 @@
             "properties": {
                 "linnet.path": {
                     "type": "string",
-                    "default": "linnet",
-                    "description": "Path to the linnet executable."
+                    "default": "",
+                    "description": "Path to the linnet executable. Empty: the one bundled with the extension, else `linnet` on PATH."
                 },
                 "linnet.stdRoot": {
                     "type": "string",
