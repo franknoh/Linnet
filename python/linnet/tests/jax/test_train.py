@@ -50,10 +50,11 @@ def test_blockwise_losses_match_dense(monkeypatch: pytest.MonkeyPatch) -> None:
     # Three rows a block: ten rows run as four, the last padded.
     monkeypatch.setattr(blockwise, "BLOCK_BYTES", 4 * 7 * 3)
     keys = jax.random.split(jax.random.PRNGKey(0), 4)
-    hidden = jax.random.normal(keys[0], (10, 4))
-    weight = jax.random.normal(keys[1], (7, 4))
-    targets = jax.random.randint(keys[2], (10,), 0, 7)
-    weights = jax.random.uniform(keys[3], (10,))
+    # f32 throughout: a generated module turns on 64-bit defaults process-wide.
+    hidden = jax.random.normal(keys[0], (10, 4), dtype=jnp.float32)
+    weight = jax.random.normal(keys[1], (7, 4), dtype=jnp.float32)
+    targets = jax.random.randint(keys[2], (10,), 0, 7, dtype=jnp.int32)
+    weights = jax.random.uniform(keys[3], (10,), dtype=jnp.float32)
 
     def dense(h: Any, w: Any, m: Any) -> Any:
         return -jnp.sum(m * _dense_log_probs(h, w, targets))
@@ -69,7 +70,7 @@ def test_blockwise_losses_match_dense(monkeypatch: pytest.MonkeyPatch) -> None:
         for a, b in zip(jax.tree.leaves(got), jax.tree.leaves(want), strict=True):
             np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)
 
-    cotangent = jax.random.normal(keys[3], (10,))
+    cotangent = jax.random.normal(keys[3], (10,), dtype=jnp.float32)
     out, back = jax.vjp(
         lambda h, w: blockwise.linear_token_log_probs(h, w, targets), hidden, weight
     )

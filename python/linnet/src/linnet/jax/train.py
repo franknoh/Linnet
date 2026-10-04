@@ -98,8 +98,9 @@ def train(
     ties = _ties(weights)
     chosen = _chosen([path for path in weights if path not in ties], weights, trainable)
     dtypes = {path: weights[path].dtype for path in chosen}
+    # Copies: the step donates them, and the model's own arrays must stay.
     trained = {
-        path: weights[path].astype(master) if master is not None else weights[path]
+        path: jnp.array(weights[path], dtype=master or weights[path].dtype, copy=True)
         for path in chosen
     }
     frozen = {path: weights[path] for path in weights if path not in chosen and path not in ties}
