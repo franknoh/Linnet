@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://linnet.franknoh.dev
+    about: Guides, the language, and every command and option.
+  - name: The whole language in one file
+    url: https://linnet.franknoh.dev/LANGUAGE.md
+    about: Syntax, checker rules, standard library and diagnostics.

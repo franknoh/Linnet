@@ -1,0 +1,16 @@
+name: Model
+description: A model or architecture Linnet should load or convert.
+labels: [model]
+body:
+  - type: input
+    id: repo
+    attributes:
+      label: Hugging Face repo
+      description: For example `Qwen/Qwen2.5-7B-Instruct`.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What happens now
+      description: The error `linnet.nest.load` or `python -m linnet.nest convert` gives, if any, and what you would use the model for.
