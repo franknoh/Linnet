@@ -6,18 +6,17 @@ program as typed objects, plus a backend per framework behind an extra.
 ## Install
 
 ```bash
-cd python/linnet
-pip install ".[torch]"     # linnet.torch
-pip install ".[jax]"       # linnet.jax
-pip install ".[flax]"      # linnet.jax.load_nnx
-pip install ".[onnx]"      # linnet.onnx (add onnxruntime or onnxruntime-gpu to run models)
+uv add "linnet-lang[torch]"     # linnet.torch
+uv add "linnet-lang[jax]"       # linnet.jax
+uv add "linnet-lang[flax]"      # linnet.jax.load_nnx
+uv add "linnet-lang[onnx]"      # linnet.onnx (add onnxruntime or onnxruntime-gpu to run models)
+uv add "linnet-lang[nest]"      # linnet.nest
 ```
 
-It is not on PyPI yet; outside a checkout, install
-`"linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`.
-The compiler comes from `LINNET_BIN`, then the one a platform wheel installs
-beside the package, then `PATH`. In a checkout,
-`uv sync --all-extras` installs every backend and test dependency.
+The wheels carry the `linnet` compiler. The package runs `LINNET_BIN` if it
+is set, then the wheel's compiler, then the one on `PATH`. In a checkout,
+`uv sync --all-extras` in `python/linnet` installs every backend and test
+dependency.
 
 ## Modules
 

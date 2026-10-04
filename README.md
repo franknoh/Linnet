@@ -7,6 +7,7 @@ Think SafeTensors for model structure: the architecture lives in a typed
 architecture without importing the model author's Python.
 
 ```bash
+uv add "linnet-lang[torch]"                  # the compiler, its standard library and linnet.torch
 linnet check model.linnet                    # shapes, dtypes, parameters; nothing runs
 linnet inspect --parameters model.linnet     # every tensor a checkpoint must supply
 ```

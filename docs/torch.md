@@ -6,8 +6,7 @@ a `torch.nn.Module` as Linnet source.
 ## Install
 
 ```bash
-cd python/linnet && uv sync --extra torch    # or: pip install ".[torch]"
-export LINNET_BIN=/path/to/build/release/linnet     # or put `linnet` on PATH
+uv add "linnet-lang[torch]"
 ```
 
 ## Load a model

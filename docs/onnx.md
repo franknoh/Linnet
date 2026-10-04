@@ -7,7 +7,7 @@ parameters intact.
 ## Install
 
 ```bash
-cd python/linnet && uv sync --extra onnx    # or: pip install ".[onnx]"
+uv add "linnet-lang[onnx]"
 ```
 
 ## Load a model
