@@ -146,8 +146,16 @@ def train(
     def micro(trained: Any, frozen: Any, inputs: Any) -> Any:
         if mesh is None:
             return loss_of(trained, frozen, inputs)
-        # `N` batches side by side, one per device.
-        return jnp.sum(jax.vmap(lambda *one: loss_of(trained, frozen, one))(*inputs))
+        # `N` batches side by side, one per device, each weight whole where
+        # it is used: XLA gathers the parts (and reduces gradients into
+        # them) rather than splitting activations along the weights' axes,
+        # which leaves a layer's queries, keys and values split unlike.
+        whole = NamedSharding(mesh, PartitionSpec())
+        values = jax.tree.map(
+            lambda value: jax.lax.with_sharding_constraint(value, whole),
+            learner.values(trained, frozen),
+        )
+        return jnp.sum(jax.vmap(lambda *one: model.apply(values, *one))(*inputs))
 
     def update(trained: Any, state: Any, frozen: Any, stacked: Any) -> Any:
         def one(carry: Any, inputs: Any) -> Any:
