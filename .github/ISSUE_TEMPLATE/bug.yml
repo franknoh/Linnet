@@ -1,0 +1,31 @@
+name: Bug
+description: Something does not work as the documentation says.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To reproduce
+      description: The smallest `.linnet` file, command or Python snippet that shows it, with its output.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`linnet --version`, and `python -c \"import linnet; print(linnet.__version__)\"` for the Python package."
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, Python version, and the framework and GPU if it matters (torch 2.x on an H100, say).

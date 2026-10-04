@@ -94,26 +94,9 @@ Hugging Face Hub repo with a card at its root, or from a directory.
 
 ## Contributing
 
-Building needs CMake 3.25, Ninja, and a C++23 compiler (GCC 13, Clang 19,
-MSVC 2022):
-
-```bash
-cmake --preset release && cmake --build --preset release && ctest --preset release
-```
-
-Presets: `debug`, `release`, `sanitize`, `tidy`, `fuzz` (Clang), `msvc`.
-`scripts/check.sh [preset...]` runs the format check, build and tests, and
-`scripts/check-format.sh --fix` reformats. Run the Python tests with
-`pytest` in `python/linnet`.
-
-- A language change updates its `spec/` chapter, `spec/grammar.ebnf` and a
-  `spec-tests/` case with the implementation.
-- Diagnostic codes are stable and never reused
-  (`include/linnet/diagnostic/codes.hpp`).
-- The compiler depends on no tensor framework and knows no model.
-  High-level operations live in `stdlib/`.
-- Every `.linnet` file in the repository is formatter-clean, and C++
-  warnings are errors in all presets.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers building, the checks CI runs and
+the conventions; [SECURITY.md](SECURITY.md) how to report a vulnerability.
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
