@@ -129,36 +129,8 @@ def train(
     weights = (
         dict(parameters) if parameters is not None else model.parameters_for(*group[0].arrays(1.0))
     )
-    # On the devices, as `mesh` splits them; one array per tied tensor.
-    moved: dict[int, Any] = {}
-    placed: dict[str, Any] = {}
-    for path, array in weights.items():
-        if id(array) not in moved:
-            moved[id(array)] = _placed(array, path, mesh)
-        placed[path] = moved[id(array)]
-    weights = placed
-    ties = _ties(weights)
-    if trainable is None:
-        adapted = getattr(model, "lora", None) is not None
-        trainable = ["*.lora_a", "*.lora_b"] if adapted else True
-    chosen = _chosen([path for path in weights if path not in ties], weights, trainable)
-    dtypes = {path: weights[path].dtype for path in chosen}
-    # Copies in `master`, split as the weights are: the step donates them,
-    # and the model's own arrays must stay.
-    shardings = {path: weights[path].sharding for path in chosen}
-    trained = jax.jit(
-        lambda tree: {p: jnp.copy(v.astype(master or v.dtype)) for p, v in tree.items()},
-        out_shardings=shardings,
-    )({path: weights[path] for path in chosen})
-    frozen = {path: weights[path] for path in weights if path not in chosen and path not in ties}
-    if mesh is None:
-        state = jax.jit(optimizer.init)(trained)
-    else:
-        # Zeros depend on no input: their parts are said, as the weights'.
-        shapes = jax.eval_shape(optimizer.init, trained)
-        state = jax.jit(
-            optimizer.init, out_shardings=jax.tree.map(lambda s: _split_as(mesh, s.shape), shapes)
-        )(trained)
+    learner = Learner(model, weights, optimizer, trainable=trainable, master=master, mesh=mesh)
+    trained, frozen, state = learner.trained, learner.frozen, learner.state
     start = 0
     if checkpoint is not None:
         found = load_checkpoint(checkpoint, trained, state)
@@ -169,9 +141,7 @@ def train(
             group = take()
 
     def loss_of(trained: Any, frozen: Any, inputs: Any) -> Any:
-        values = {**frozen, **{p: v.astype(dtypes[p]) for p, v in trained.items()}}
-        values.update({path: values[tie] for path, tie in ties.items()})
-        return model.apply(values, *inputs)
+        return model.apply(learner.values(trained, frozen), *inputs)
 
     def micro(trained: Any, frozen: Any, inputs: Any) -> Any:
         if mesh is None:
@@ -244,9 +214,128 @@ def train(
         and not (checkpoint_every and step % checkpoint_every == 0)
     ):
         save_checkpoint(checkpoint, step, trained, state)
-    final = {**frozen, **trained}
-    final.update({path: final[tie] for path, tie in ties.items()})
-    return final, history
+    learner.trained, learner.state = trained, state
+    return learner.parameters(), history
+
+
+class Learner:
+    """What a run trains and how: copies of the chosen parameters in
+    `master` (the step donates them, and the model's own arrays must stay),
+    the rest of the model's as loaded, and `optimizer`'s state over the
+    copies. Paths sharing one array (a tied embedding and output head) are
+    one parameter, their gradients summed. With `mesh`, everything is split
+    as `placement` says.
+
+    `trainable` picks floating-point parameters: all, or glob patterns; by
+    default the adapters alone on a model with them (`add_lora`), and
+    otherwise all."""
+
+    def __init__(
+        self,
+        model: Any,
+        weights: dict[str, Any],
+        optimizer: Any,
+        *,
+        trainable: bool | str | Sequence[str] | None = None,
+        master: Any = jnp.float32,
+        mesh: Any = None,
+    ) -> None:
+        self.optimizer = optimizer
+        self.mesh = mesh
+        # On the devices, as `mesh` splits them; one array per tied tensor.
+        moved: dict[int, Any] = {}
+        placed: dict[str, Any] = {}
+        for path, array in weights.items():
+            if id(array) not in moved:
+                moved[id(array)] = _placed(array, path, mesh)
+            placed[path] = moved[id(array)]
+        self.ties = _ties(placed)
+        if trainable is None:
+            adapted = getattr(model, "lora", None) is not None
+            trainable = ["*.lora_a", "*.lora_b"] if adapted else True
+        chosen = _chosen([path for path in placed if path not in self.ties], placed, trainable)
+        self.dtypes = {path: placed[path].dtype for path in chosen}
+        shardings = {path: placed[path].sharding for path in chosen}
+        self.trained: dict[str, Any] = jax.jit(
+            lambda tree: {p: jnp.copy(v.astype(master or v.dtype)) for p, v in tree.items()},
+            out_shardings=shardings,
+        )({path: placed[path] for path in chosen})
+        self.frozen = {
+            path: value
+            for path, value in placed.items()
+            if path not in chosen and path not in self.ties
+        }
+        if mesh is None:
+            self.state = jax.jit(optimizer.init)(self.trained)
+        else:
+            # Zeros depend on no input: their parts are said, as the weights'.
+            shapes = jax.eval_shape(optimizer.init, self.trained)
+            self.state = jax.jit(
+                optimizer.init,
+                out_shardings=jax.tree.map(lambda s: _split_as(mesh, s.shape), shapes),
+            )(self.trained)
+        self._apply: Any = None
+
+    def values(
+        self, trained: dict[str, Any], frozen: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Every parameter the model takes, the trained ones cast to the
+        dtype it computes in (traceable)."""
+        values = {
+            **(self.frozen if frozen is None else frozen),
+            **{path: value.astype(self.dtypes[path]) for path, value in trained.items()},
+        }
+        values.update({path: values[tie] for path, tie in self.ties.items()})
+        return values
+
+    def parameters(self, *, copy: bool = False) -> dict[str, Any]:
+        """The parameters now, path -> array: the trained ones in `master`.
+        The next `step` donates the trained arrays; `copy` hands out copies
+        of them that outlive it (for an engine to keep)."""
+        trained = self.trained
+        if copy:
+            trained = _copied(trained)
+        final = {**self.frozen, **trained}
+        final.update({path: final[tie] for path, tie in self.ties.items()})
+        return final
+
+    def gradient(self, loss: Callable[..., Any]) -> Callable[..., Any]:
+        """`loss(values, *args) -> (scalar, aux)` as a compiled function of
+        `(trained, frozen, *args)` returning `((scalar, aux), gradients)`."""
+
+        def of(trained: Any, frozen: Any, *args: Any) -> Any:
+            return loss(self.values(trained, frozen), *args)
+
+        return jax.jit(jax.value_and_grad(of, has_aux=True))
+
+    def step(self, grads: dict[str, Any], clip: float | None) -> float:
+        """Clips `grads` to that global norm at most and applies the
+        optimizer to the trained parameters; returns the norm before."""
+        if self._apply is None:
+
+            def apply(trained: Any, state: Any, grads: Any) -> Any:
+                norm = _global_norm(grads)
+                if clip is not None:
+                    scale = jnp.minimum(1.0, clip / (norm + 1e-6))
+                    grads = jax.tree.map(lambda g: g * scale.astype(g.dtype), grads)
+                updates, state = self.optimizer.update(grads, state, trained)
+                trained = jax.tree.map(lambda p, u: p + u.astype(p.dtype), trained, updates)
+                return trained, state, norm
+
+            self._apply = jax.jit(apply, donate_argnums=(0, 1))
+        self.trained, self.state, norm = self._apply(self.trained, self.state, grads)
+        return float(norm)
+
+
+@jax.jit
+def _copied(tree: Any) -> Any:
+    return jax.tree.map(jnp.copy, tree)
+
+
+@jax.jit
+def add(total: Any, more: Any) -> Any:
+    """Two gradient trees summed."""
+    return jax.tree.map(jnp.add, total, more)
 
 
 def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
@@ -458,7 +547,9 @@ def _global_norm(tree: Any) -> Any:
 
 __all__ = [
     "History",
+    "Learner",
     "Step",
+    "add",
     "load_checkpoint",
     "merge_lora",
     "placement",

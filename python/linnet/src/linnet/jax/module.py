@@ -115,6 +115,42 @@ class LinnetModel:
             return value
         return jax.device_put(value, wanted)
 
+    def copy_weights(self, parameters: Mapping[str, Any]) -> None:
+        """Replaces the weights with `parameters` (path -> array): a policy
+        being trained into the model a serving engine samples from, adapters
+        merged in first (`linnet.jax.train.merge_lora`). Each is cast to the
+        dtype its entries compute in and placed as the weight it replaces;
+        compiled entries stay, and weight-only values (`prepare`) are
+        computed again."""
+        import jax
+        import jax.numpy as jnp
+
+        replaced: dict[str, Any] = {}
+        for function in self._functions.values():
+            for compiled in function._cache.values():  # pyright: ignore[reportPrivateUsage]
+                for i, path in enumerate(compiled.parameters):
+                    if path not in parameters:
+                        continue
+                    if path not in replaced:
+                        old = compiled.arrays[i]
+                        new = jnp.asarray(parameters[path]).astype(compiled.dtypes[i])
+                        if isinstance(old, jax.Array):
+                            new = jax.device_put(new, old.sharding)
+                        replaced[path] = new
+                    compiled.arrays[i] = replaced[path]
+        for path, value in parameters.items():
+            if path in self.weights:
+                self.weights[path] = replaced.get(path, value)
+        self._prepared.clear()
+        for function in self._functions.values():
+            if not isinstance(function, SourceFunction):
+                continue
+            for compiled in function._cache.values():  # pyright: ignore[reportPrivateUsage]
+                if compiled.module is not None:
+                    compiled.prepared = function._prepared_values(  # pyright: ignore[reportPrivateUsage]
+                        compiled.module, compiled.arrays
+                    )
+
     def reset_state(self) -> None:
         self.state = {}
 

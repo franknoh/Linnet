@@ -33,6 +33,7 @@ from typing import Any
 import torch
 from torch.nn import functional
 
+from ..packing import Pair
 from . import (
     Batch,
     Example,
@@ -42,15 +43,6 @@ from . import (
     reduce_gradients,
     save_checkpoint,
 )
-
-
-@dataclass(frozen=True)
-class Pair:
-    """A prompt, the answer preferred, and the one not."""
-
-    prompt: Sequence[int]
-    chosen: Sequence[int]
-    rejected: Sequence[int]
 
 
 @dataclass
