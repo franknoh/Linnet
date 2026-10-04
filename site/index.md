@@ -155,5 +155,7 @@ data-dependent shapes, hidden mutation, tensor data in source.
 - [Coming from PyTorch](/guide/from-pytorch)
 - [Language tour](/docs/language-tour) and
   [specification](/spec/00-overview)
+- [The whole language](/docs/language) in one page, also as
+  [LANGUAGE.md](https://linnet.franknoh.dev/LANGUAGE.md) for coding agents
 - [Plan format](/docs/plan-format) for materializers
 - [Benchmarks](/benchmarks) and [compatibility](/compatibility)

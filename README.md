@@ -84,6 +84,8 @@ Hugging Face Hub repo with a card at its root, or from a directory.
   [quickstart](docs/getting-started.md)
 - [Coming from PyTorch](https://linnet.franknoh.dev/guide/from-pytorch)
 - [Language tour](docs/language-tour.md) and [specification](spec/)
+- [LANGUAGE.md](LANGUAGE.md): the whole language in one file, for people and
+  coding agents
 - [Command line](docs/tooling.md)
 - [PyTorch](docs/torch.md), [JAX](docs/jax.md), [ONNX](docs/onnx.md),
   [Nest](docs/nest.md), and [integrations](docs/integrations.md)

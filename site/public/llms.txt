@@ -1,0 +1,24 @@
+# Linnet
+
+> Linnet is checked source for neural network architectures. Shapes are types and every dimension is a compile-time expression, so the compiler proves each shape before anything runs. Weights stay in SafeTensors, bound by parameter path, and one `.linnet` file runs in PyTorch, JAX and ONNX Runtime.
+
+To write Linnet, read [LANGUAGE.md](https://linnet.franknoh.dev/LANGUAGE.md) first: the workflow, syntax, the rules the checker enforces, the standard library and the diagnostic codes, in one Markdown file. Install with `uv add "linnet-lang[torch]"`; check with `linnet check --json <paths>`.
+
+## Docs
+
+- [LANGUAGE.md](https://linnet.franknoh.dev/LANGUAGE.md): the whole language in one file
+- [Installation](https://linnet.franknoh.dev/guide/installation): the package, its extras and the platforms
+- [Quickstart](https://linnet.franknoh.dev/docs/getting-started): write, check and run a model
+- [Coming from PyTorch](https://linnet.franknoh.dev/guide/from-pytorch): the same block in both, and where things live
+- [Command line](https://linnet.franknoh.dev/docs/tooling): check, fmt, inspect, export
+- [Diagnostics](https://linnet.franknoh.dev/docs/diagnostics): every error and warning code
+- [Python package](https://linnet.franknoh.dev/docs/python): the `linnet` package and its modules
+- [PyTorch](https://linnet.franknoh.dev/docs/torch), [JAX](https://linnet.franknoh.dev/docs/jax), [ONNX](https://linnet.franknoh.dev/docs/onnx): loading, exporting and importing
+- [Training](https://linnet.franknoh.dev/docs/training): SFT, LoRA, FSDP, DPO and GRPO
+- [Nest](https://linnet.franknoh.dev/docs/nest): checked models by name, from the Hugging Face Hub, or from a directory
+
+## Optional
+
+- [Specification](https://linnet.franknoh.dev/spec/00-overview): the normative rules
+- [Examples](https://linnet.franknoh.dev/examples/): Llama, ViT, CLIP, serving and training
+- [Benchmarks](https://linnet.franknoh.dev/benchmarks)

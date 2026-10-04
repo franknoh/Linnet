@@ -77,6 +77,7 @@ SafeTensors named by parameter path; see [PyTorch](torch.md).
 
 ## Next
 
-- [Language tour](language-tour.md)
+- [Language tour](language-tour.md), or
+  [the whole language](https://linnet.franknoh.dev/docs/language) in one page
 - [Command line](tooling.md)
 - [Editor setup](https://linnet.franknoh.dev/guide/installation#editors)

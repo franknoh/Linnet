@@ -44,6 +44,7 @@ function guideSidebar() {
       text: "Language",
       items: [
         { text: "Language tour", link: "/docs/language-tour" },
+        { text: "The whole language", link: "/docs/language" },
         { text: "Modules and packages", link: "/docs/modules-and-packages" },
         { text: "Randomness", link: "/docs/random" },
         { text: "Quantization", link: "/docs/quantization" },
@@ -94,6 +95,8 @@ export default defineConfig({
   description:
     "A typed tensor language: models as checked, weight-free source that runs in PyTorch, JAX, XLA, and ONNX Runtime.",
   lang: "en-US",
+  // public/ holds files served as they are, LANGUAGE.md among them.
+  srcExclude: ["public/**"],
   cleanUrls: true,
   lastUpdated: true,
   appearance: "dark",
@@ -125,7 +128,7 @@ export default defineConfig({
   themeConfig: {
     logo: "/logo.svg",
     nav: [
-      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|modules-and-packages|random|quantization|python|torch|training|jax|onnx|nest|integrations))|^/compatibility" },
+      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|language|modules-and-packages|random|quantization|python|torch|training|jax|onnx|nest|integrations))|^/compatibility" },
       { text: "Reference", link: "/docs/tooling", activeMatch: "^/(spec|docs/(tooling|plan-format|diagnostics))" },
       { text: "Examples", link: "/examples/", activeMatch: "^/examples/" },
       { text: "Nest", link: "https://nest.franknoh.dev" },
