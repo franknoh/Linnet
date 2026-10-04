@@ -23,7 +23,7 @@ from linnet.torch import load
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
-EXAMPLES = REPO / "examples"
+FIXTURES = REPO / "tests" / "fixtures"
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +59,7 @@ def test_tiny_transformer_runs_under_onnxruntime(tmp_path: Path) -> None:
         "Layers": 2,
         "T": "f32",
     }
-    source = EXAMPLES / "04-tiny-transformer/src/lib.linnet"
+    source = FIXTURES / "tiny-transformer/src/lib.linnet"
     reference = load(source, generics=generics, std_root=STDLIB)
     weights: dict[str, torch.Tensor] = {}
     for name, parameter in reference.named_parameters():
@@ -129,7 +129,7 @@ def test_a_function_exports_on_its_own() -> None:
     takes the function's inputs alone, and computes what it says."""
     onnxruntime = pytest.importorskip("onnxruntime")
     exported = export_function(
-        EXAMPLES / "09-functions" / "functions.linnet",
+        FIXTURES / "functions" / "functions.linnet",
         "token_log_probs",
         generics={"B": 2, "S": 3, "V": 5, "T": "f32"},
         std_root=STDLIB,

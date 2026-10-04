@@ -134,7 +134,7 @@ def test_fast_numerics_skips_f32_accumulation() -> None:
         "MaxSeq": 6,
         "T": "bf16",
     }
-    llama = REPO / "examples/05-llama/src/lib.linnet"
+    llama = REPO / "examples/01-llama/src/lib.linnet"
     shapes = {"embedding.weight": (11, 8), "norm.weight": (8,), "lm_head.weight": (11, 8)}
     for name, shape in (
         ("q_proj", (8, 8)),

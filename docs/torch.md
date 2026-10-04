@@ -16,7 +16,7 @@ export LINNET_BIN=/path/to/build/release/linnet     # or put `linnet` on PATH
 from linnet.torch import load
 
 model = load(
-    "examples/05-llama/src/lib.linnet",
+    "examples/01-llama/src/lib.linnet",
     generics={"Vocab": 32000, "H": 512, "Heads": 8, "KvHeads": 4, "Inner": 1376,
               "Layers": 2, "Batch": 1, "MaxSeq": 128, "T": "bf16"},
     std_root="stdlib",
@@ -244,7 +244,7 @@ low-rank adapters, and the losses.
 ## Functions
 
 An `entry` declared at module level, outside any block, is a function of
-its inputs alone, such as a loss (`examples/09-functions`).
+its inputs alone, such as a loss.
 `load_function` returns one as a PyTorch function.
 
 ```python

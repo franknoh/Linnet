@@ -6,12 +6,12 @@ one encoder, with three entries over one parameter set.
 ## Commands
 
 ```bash
-linnet lint --std stdlib examples/08-clip
-linnet inspect --parameters --std stdlib examples/08-clip/src/lib.linnet
+linnet lint --std stdlib examples/03-clip
+linnet inspect --parameters --std stdlib examples/03-clip/src/lib.linnet
 linnet stablehlo --std stdlib --entry similarity --bind Height=32 --bind Width=32 --bind Channels=3 \
                  --bind Patch=8 --bind Vocab=100 --bind Context=16 --bind D=64 --bind Heads=4 \
                  --bind Inner=128 --bind Layers=2 --bind Embed=32 --bind T=f32 \
-                 --bind B=1 --bind C=3 --bind S=8 examples/08-clip/src/lib.linnet
+                 --bind B=1 --bind C=3 --bind S=8 examples/03-clip/src/lib.linnet
 ```
 
 ## Key ideas

@@ -1,23 +1,25 @@
 # Llama
 
-A Llama-style decoder with grouped-query attention, rotary positions,
-SwiGLU, a KV cache, and six entries from a full forward pass to generation
-loops. Its dtype generic `T` defaults to `bf16`. The benchmarks measure this
-model.
+A Llama-style decoder in three files: grouped-query attention, rotary
+positions, SwiGLU, a KV cache, and entries from a full forward pass to
+generation loops and packed training. Its dtype generic `T` defaults to
+`bf16`. The [Nest](https://nest.franknoh.dev) card `llama-3.1-8b-instruct`
+is this structure with the serving entries [04-serve](https://linnet.franknoh.dev/examples/04-serve) runs, and
+the training examples train it.
 
 ## Commands
 
 ```bash
-linnet lint --std stdlib examples/05-llama
-linnet inspect --parameters --std stdlib examples/05-llama/src/lib.linnet
+linnet lint --std stdlib examples/01-llama
+linnet inspect --parameters --std stdlib examples/01-llama/src/lib.linnet
 linnet stablehlo --std stdlib --entry decode --bind Vocab=32000 --bind H=512 --bind Heads=8 \
                  --bind KvHeads=8 --bind Inner=1376 --bind Layers=8 --bind Batch=1 \
-                 --bind MaxSeq=512 --bind T=bf16 examples/05-llama/src/lib.linnet
+                 --bind MaxSeq=512 --bind T=bf16 examples/01-llama/src/lib.linnet
 ```
 
 ```python
 from linnet.torch import load
-model = load("examples/05-llama/src/lib.linnet", generics={...}, weights="weights/",
+model = load("examples/01-llama/src/lib.linnet", generics={...}, weights="weights/",
              numerics="equivalent", compile="inductor")
 tokens = model.run_entry("generate", [prompt, torch.tensor(0, dtype=torch.int32)],
                          generics={"Steps": 32})
@@ -83,3 +85,27 @@ and `segments` which sequence it belongs to, and a token attends only
 within its own. The output head and its loss run through
 `std.nn.loss::linear_cross_entropy`, which PyTorch computes a block of
 tokens at a time.
+
+### Every layer is library source
+
+The layers come from the standard library: `grouped_attention`, `rope` and
+`linear_cross_entropy` are `op`s, and `RmsNorm`, `SwiGlu` and `Embedding`
+are blocks, all in ordinary Linnet under `stdlib/`. Each op has a body that
+defines its result. A backend may run an op as a native kernel instead, and
+`linnet explain` shows each choice and why:
+
+```text
+$ linnet explain --std stdlib --numerics fast examples/01-llama/src/lib.linnet
+std.nn.loss::linear_cross_entropy
+  called from llama::Model.loss_packed at examples/01-llama/src/lib.linnet:102:16
+  implementations:
+      canonical decomposition (exact)
+    * linnet.linear_cross_entropy (numerically equivalent)
+        requires PyTorch: blocks of rows, the gradient computed with the loss
+  selected: linnet.linear_cross_entropy
+  reason: strongest implementation allowed by the numerics policy
+```
+
+A new layer, whether another attention, norm or loss, is a new `op` in a
+library and needs no compiler change. Every backend runs its body from the
+start; a native kernel for it is an optimization added later.

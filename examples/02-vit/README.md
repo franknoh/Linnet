@@ -7,10 +7,10 @@ expressions, and pooling chosen at compile time.
 ## Commands
 
 ```bash
-linnet check --std stdlib examples/07-vit/vit.linnet
+linnet check --std stdlib examples/02-vit/vit.linnet
 linnet stablehlo --std stdlib --bind Height=32 --bind Width=32 --bind Channels=3 --bind Patch=8 \
                  --bind D=64 --bind Heads=4 --bind Inner=128 --bind Layers=2 --bind Classes=10 \
-                 --bind T=f32 --bind B=1 examples/07-vit/vit.linnet
+                 --bind T=f32 --bind B=1 examples/02-vit/vit.linnet
 ```
 
 ## Key ideas

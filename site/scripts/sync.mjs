@@ -65,7 +65,7 @@ function sources(dir) {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) {
       out.push(...sources(path));
-    } else if (name.endsWith(".linnet") || name === "linnet.toml") {
+    } else if (name.endsWith(".linnet") || name === "linnet.toml" || name.endsWith(".py")) {
       out.push(path);
     }
   }
@@ -99,7 +99,7 @@ for (const name of entries) {
   }
   for (const file of sources(dir)) {
     const rel = relative(dir, file);
-    const lang = file.endsWith(".toml") ? "toml" : "linnet";
+    const lang = file.endsWith(".toml") ? "toml" : file.endsWith(".py") ? "python" : "linnet";
     page += `## \`${rel}\`\n\n\`\`\`${lang}\n${readFileSync(file, "utf8")}\`\`\`\n\n`;
   }
   page += `[Browse on GitHub](https://github.com/franknoh/Linnet/tree/main/examples/${name})\n`;

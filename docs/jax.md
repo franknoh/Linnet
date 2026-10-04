@@ -111,7 +111,7 @@ grads = jax.grad(loss)(f.parameters)
 ```
 
 `load_function` runs a module-level `entry`, a function of its inputs
-alone such as a loss (`examples/09-functions`), under `jax.jit`. Generics bind from the inputs' shapes and dtypes, also under
+alone such as a loss, under `jax.jit`. Generics bind from the inputs' shapes and dtypes, also under
 `jax.grad`, `jax.jit` and `jax.vmap`. Name any the inputs leave open:
 `positions(offset, N=8)`. It turns on `jax_enable_x64`, so `int64` inputs
 made before the first call stay 64-bit.

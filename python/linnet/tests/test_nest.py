@@ -54,7 +54,7 @@ bindings = "bindings.json"
 def model_dir(tmp_path: Path) -> Path:
     directory = tmp_path / "gpt2-tiny"
     directory.mkdir()
-    shutil.copy(REPO / "examples/06-gpt2/gpt2.linnet", directory / "gpt2.linnet")
+    shutil.copy(REPO / "tests/fixtures/gpt2/gpt2.linnet", directory / "gpt2.linnet")
     (directory / "nest.toml").write_text(CARD, encoding="utf-8")
     (directory / "bindings.json").write_text(json.dumps({"wte": "wte.weight"}), encoding="utf-8")
     (directory / "README.md").write_text(

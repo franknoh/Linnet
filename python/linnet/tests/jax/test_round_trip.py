@@ -19,7 +19,7 @@ from linnet.jax import ExportError, export_linnet, find_compiler, import_stableh
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
-EXAMPLES = REPO / "examples"
+FIXTURES = REPO / "tests" / "fixtures"
 
 
 def _compiler_ok(*args: str) -> None:
@@ -182,7 +182,7 @@ def test_activation_recovery(tmp_path: Path) -> None:
 def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:
     """The hand-written transformer example, materialized through JAX, agrees
     with the same model's `jnp` reference for its weights."""
-    source = EXAMPLES / "04-tiny-transformer/src/lib.linnet"
+    source = FIXTURES / "tiny-transformer/src/lib.linnet"
     generics: dict[str, int | str] = {
         "Vocab": 11,
         "H": 8,

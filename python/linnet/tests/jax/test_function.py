@@ -1,4 +1,4 @@
-"""Functions: module-level entries (`examples/09-functions`) as JAX
+"""Functions: module-level entries as JAX
 functions. They agree with references written in `jax.numpy`, bind their
 generics from each call's inputs, and compose with `jax.grad`, `jax.jit`,
 and `jax.vmap`."""
@@ -19,7 +19,7 @@ from linnet.jax import LinnetError, load_function
 
 from .test_round_trip import REPO, STDLIB
 
-EXAMPLE = REPO / "examples" / "09-functions" / "functions.linnet"
+EXAMPLE = REPO / "tests" / "fixtures" / "functions" / "functions.linnet"
 
 
 def _cross_entropy(logits: Any, labels: Any) -> Any:

@@ -1,26 +1,23 @@
 # Examples
 
-Worked examples, from one linear layer up to Llama, GPT-2, ViT and CLIP.
-Each directory's README walks through its source and the commands to run it.
+What Linnet is for, one example each. [Nest](https://nest.franknoh.dev) has
+24 checked models from MiniLM to gpt-oss 20B; these show the language and
+what runs on it.
 
 | Example | What it shows |
 | --- | --- |
-| `01-linear` | A generic `op` in index notation and the block that owns its weights. |
-| `02-attention` | Softmax and attention written as comprehensions with shape packs. |
-| `03-block-and-weights` | A block hierarchy, sub arrays, `static for`, and the parameter manifest. |
-| `04-tiny-transformer` | A package built only from the standard library, with rotary tables as inputs. |
-| `05-llama` | A Llama-style decoder package: grouped-query attention, a KV cache in `state`, and six entries from a forward pass to generation loops. |
-| `06-gpt2` | GPT-2: learned positions, a fused QKV projection split by slicing, and an output head tied to the token embedding. |
-| `07-vit` | A Vision Transformer: patches cut by reshapes the checker proves, and pooling chosen by a compile-time `enum` constant. |
-| `08-clip` | A CLIP-style dual encoder: two towers share one encoder module, and three entries share one parameter set. |
-| `09-functions` | A loss, preprocessing and rewards as module-level entries, and a block entry that calls the loss. |
+| `01-llama` | The language on a real decoder: grouped-query attention whose `where` clause states what its reshapes rely on, a KV cache in `state`, generation loops in the graph, and every layer as library source. |
+| `02-vit` | A vision model: patches cut by reshapes the checker proves, shapes sized by expressions, and pooling chosen by a compile-time `enum`. |
+| `03-clip` | A package of four modules: a dual encoder whose two towers share one encoder, with three entries over one parameter set. |
+| `04-serve` | Llama 3.1 8B served with continuous batching and CUDA graphs, faster than vLLM, and an OpenAI-compatible server. |
+| `05-train-vit` | A model trained from scratch in a plain PyTorch loop: a Linnet model is a `torch.nn.Module`. |
+| `06-lora` | Llama 3.1 8B fine-tuned with LoRA on one GPU, 1.8 times TRL's speed in less memory. |
+| `07-fsdp` | Llama 3.1 8B fine-tuned in full across four GPUs, in PyTorch and in JAX from the same card. |
+| `08-rl` | GRPO with the serving engine sampling, and DPO, on Llama 3.1 8B: 2.4 to 2.7 times TRL's speed. |
 
-Every example checks with `linnet lint --std stdlib examples/<name>` and
-formats cleanly. Those with an entry (03 to 09) also materialize in PyTorch
-and JAX and export to StableHLO.
-The tests under `python/linnet/tests/torch` compare the model examples
-against hand-written PyTorch references.
-
-Weights bind by parameter path (`linnet inspect --parameters`). The models
-have no implicit initialization, so the tests fill them with random tensors
-through SafeTensors.
+The `.linnet` examples check with `linnet lint --std stdlib examples/<name>`,
+and the tests under `python/linnet/tests/torch` compare them with
+hand-written PyTorch. Weights bind by parameter path
+(`linnet inspect --parameters`); the tests fill them with random tensors
+through SafeTensors. The examples from `04-serve` on run Nest's Llama 3.1
+8B card on H100s, and their READMEs give the numbers measured there.

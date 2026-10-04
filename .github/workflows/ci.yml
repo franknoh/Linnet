@@ -37,8 +37,8 @@ jobs:
       - run: ctest --preset ${{ matrix.preset }}
       - name: Repository sources are formatter-clean
         run: |
-          build/${{ matrix.preset }}/linnet fmt --check examples spec-tests/valid spec-tests/fixtures stdlib
-          build/${{ matrix.preset }}/linnet lint --std stdlib examples stdlib
+          build/${{ matrix.preset }}/linnet fmt --check examples tests/fixtures spec-tests/valid spec-tests/fixtures stdlib
+          build/${{ matrix.preset }}/linnet lint --std stdlib examples tests/fixtures stdlib
 
   lint:
     name: Format and static analysis
@@ -76,7 +76,7 @@ jobs:
       - run: cmake --build --preset fuzz
       - run: |
           mkdir corpus
-          cp spec-tests/valid/*.linnet spec-tests/invalid/*.linnet examples/*/*.linnet corpus/
+          cp spec-tests/valid/*.linnet spec-tests/invalid/*.linnet examples/*/*.linnet tests/fixtures/*/*.linnet corpus/
           build/fuzz/fuzz/fuzz_frontend -max_total_time=120 -max_len=2048 -timeout=10 \
             -dict=fuzz/linnet.dict corpus
 

@@ -10,7 +10,7 @@ from linnet import LinnetError, Program, diagram, ir, load_program
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/05-llama/src/lib.linnet"
+LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 
 
 @pytest.fixture(scope="module")
