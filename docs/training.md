@@ -2,7 +2,7 @@
 
 `linnet.train` trains a Linnet decoder in PyTorch: supervised fine-tuning,
 reinforcement learning (GRPO) and preferences (DPO), on one GPU or split
-across many. `linnet.torch.CausalLM` hands the same model to
+across many. `linnet.jax.train` trains it in [JAX](#jax). `linnet.torch.CausalLM` hands the same model to
 `transformers.Trainer` and TRL instead. Each trains through the model's
 packed entries (`loss_packed`, `log_probs_packed`, `hidden_packed`), which
 every Nest decoder card has. Loading a model to train is in
@@ -251,6 +251,38 @@ block's `lora_a` and `lora_b` parameters. `B` starts at zero, so the model
 starts unchanged. Adapters need generated code. To load saved adapters, call
 `add_lora` with the same patterns and rank, then
 `bind_weights(model, path, strict=False)`.
+
+## JAX
+
+```python
+import optax
+from linnet.jax.train import train
+from linnet.packing import Example, pack
+
+model = nest.load(card, backend="jax_source", entry="loss_packed",
+                  generics={"Batch": 1, "MaxSeq": 4096, "T": "bf16"}, cast_dtype=True)
+params, history = train(model, pack(examples, tokens=4096), optimizer=optax.adamw(1e-5),
+                        steps=1000, accumulate=8)
+```
+
+`linnet.jax.train` trains the `loss_packed` entry as generated JAX
+(`load_source`, or `nest.load(..., backend="jax_source")`) with an optax
+optimizer, and returns the parameters (path -> array) and the steps.
+
+- `linnet.packing` packs examples as numpy arrays, with no PyTorch:
+  `linnet.train.pack` is the same packing as tensors.
+- One compiled step runs `accumulate` batches as a `lax.scan`, sums their
+  gradients weighed by the step's count of learned positions, clips them to
+  `clip` (1.0), and applies the optimizer.
+- `trainable` picks the parameters that train (all, or glob patterns). They
+  are kept in f32 and cast to the dtype the model computes in on each call;
+  the rest stay as loaded.
+- Paths bound to one checkpoint tensor (a tied embedding and output head)
+  load as one array and train as one parameter.
+
+The output head's loss runs a block of rows at a time here too
+(`linnet.jax.loss`, a `custom_vjp`), so the `[P, Vocab]` logits are never
+held whole.
 
 ## Losses
 
