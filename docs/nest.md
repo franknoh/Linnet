@@ -16,10 +16,22 @@ model = nest.load("tinyllama-1.1b-chat", backend="torch", numerics="fast", compi
 logits = model(tokens)
 ```
 
-`load` downloads the model and its checkpoint, binds the weights, and returns
-the backend's object. Other keyword arguments go to the loader; `generics=`
-overrides the card's values. A local model directory works in place of a
-name.
+`load` takes a model from three places:
+
+| `name_or_dir` | Where |
+| --- | --- |
+| `"tinyllama-1.1b-chat"` | a Nest name, fetched from the registry |
+| `"org/name"`, `"hf://org/name@revision"` | a Hugging Face Hub repo with `nest.toml` at its root |
+| `"path/to/model"` | a model directory on disk |
+
+It reads the card, binds the weights and returns the backend's object. The
+weights are the checkpoint beside the card when the directory or repo holds
+it, or else the Hub checkpoint the card names. Other keyword arguments go to
+the loader; `generics=` overrides the card's values, and `weights=` uses a
+checkpoint already on disk.
+
+Loading a repo runs no code from it. The compiler checks the `.linnet`
+source and generates the backend's code itself.
 
 | `backend=` | Loader |
 | --- | --- |
@@ -33,16 +45,31 @@ name.
 ## Model directory
 
 ```text
-models/<name>/
-  nest.toml        the card
-  README.md        what it is, how to load it, provenance
-  bindings.json    Linnet parameter path -> checkpoint tensor name
-  src/ or *.linnet the architecture
-  preview.svg      the main entry, drawn by `linnet.diagram`
+<name>/
+  nest.toml          the card
+  README.md          what it is, how to load it, provenance
+  bindings.json      Linnet parameter path -> checkpoint tensor name
+  src/ or *.linnet   the architecture
+  *.safetensors      the checkpoint, when it is not on the Hub
+  preview.svg        the main entry, drawn by `linnet.diagram`
 ```
 
-The card names the source, root block, generics, and Hub checkpoint. Its
-full schema is in the registry's README.
+The card names the source, root block, generics and checkpoint. In
+`[weights]`, `repo` names the Hub repo that holds `files`; leave it out to
+keep the files beside the card. Its full schema is in the registry's README.
+
+## Share a model
+
+A model directory is a Hub repo as it is. Check it, then upload it:
+
+```bash
+python -m linnet.nest check my-model
+python -m linnet.nest push my-model me/my-model      # nest.push in Python
+```
+
+Anyone can then load it with `nest.load("me/my-model")`.
+`python -m linnet.nest pull <name>` downloads a model directory from the
+registry or the Hub and prints where it is.
 
 ## Checks
 
@@ -57,9 +84,9 @@ Registry pull requests must pass `check`:
 - the README and the card's required fields;
 - the source compiles with the card's generics;
 - every required parameter has a checkpoint tensor of the same shape and
-  dtype, read from the SafeTensors headers on the Hub;
+  dtype, read from the SafeTensors headers on the Hub or beside the card;
 - the main entry exports to StableHLO, ONNX, PyTorch source, and JAX source.
 
 `index` writes the registry document that `load` and the site read. In
 Python: `nest.check`, `nest.index`, `nest.preview`, `nest.describe`,
-`nest.Card.read`.
+`nest.push`, `nest.resolve`, `nest.Card.read`.

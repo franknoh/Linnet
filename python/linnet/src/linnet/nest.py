@@ -2,14 +2,17 @@
 
 A model in Nest is a directory with a `nest.toml` card, a README, the
 model's Linnet source, and (usually) a `bindings.json` naming the tensors of
-a SafeTensors checkpoint on the Hugging Face Hub. `check` validates all of
-that against the compiler and the Hub's tensor metadata without downloading
-weights; `index` builds the registry document a site or `load` reads;
-`load` fetches the weights and materializes the model in a backend.
+a SafeTensors checkpoint on the Hugging Face Hub, or beside the card. `check`
+validates all of that against the compiler and the checkpoint's tensor
+metadata without downloading weights; `index` builds the registry document a
+site or `load` reads; `load` fetches the weights and materializes the model
+in a backend. The same directory works anywhere: in the registry, on disk,
+or as a Hub repo with the card at its root (`push` uploads one).
 
     python -m linnet.nest check models/tinyllama-1.1b-chat
     python -m linnet.nest index models -o index.json
     python -m linnet.nest preview models/gpt2 -o models/gpt2/preview.svg
+    python -m linnet.nest push my-model me/my-model
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 import tomllib
@@ -33,6 +37,9 @@ from .compiler import LinnetError, run_compiler, std_arguments
 from .weights import read_bindings
 
 REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
+# A Hugging Face Hub repo: `org/name`, or `hf://org/name`, with an optional
+# `@revision`.
+HUB_REPO = re.compile(r"^(?:hf://)?(?P<repo>[\w.-]+/[\w.-]+)(?:@(?P<revision>[\w./-]+))?$")
 EXPORTS = ("stablehlo", "onnx", "torch", "jax")
 SAFETENSORS_DTYPES = {
     "BOOL": "bool",
@@ -65,7 +72,8 @@ class Links:
 
 @dataclass(frozen=True, slots=True)
 class Weights:
-    """A SafeTensors checkpoint on the Hub: `files` of `repo` at `revision`."""
+    """A SafeTensors checkpoint: `files` of the Hub's `repo` at `revision`, or
+    beside the card when `repo` is empty."""
 
     repo: str
     files: tuple[str, ...]
@@ -215,11 +223,17 @@ def check(
     if card.links.huggingface is None:
         problems.append("links.huggingface is required (the checkpoint's home)")
     if card.weights is None:
-        problems.append("[weights] is required: a SafeTensors checkpoint on the Hub")
-    elif not card.weights.files or not card.weights.repo:
-        problems.append("weights.repo and weights.files are required")
+        problems.append(
+            "[weights] is required: a SafeTensors checkpoint on the Hub or beside the card"
+        )
+    elif not card.weights.files:
+        problems.append("weights.files is required")
     elif not all(f.endswith(".safetensors") for f in card.weights.files):
         problems.append("every weights file must be .safetensors")
+    elif not card.weights.repo and not all(
+        (card.directory / f).is_file() for f in card.weights.files
+    ):
+        problems.append("weights.repo is required unless weights.files are beside the card")
     if not card.source_path.exists():
         problems.append(f"source `{card.source}` does not exist")
         return problems
@@ -240,7 +254,10 @@ def check(
         problems.append(str(error))
         return problems
 
-    if card.weights is not None and card.weights.repo and hub:
+    reachable = card.weights is not None and (
+        bool(card.weights.repo) or local_weights(card) is not None
+    )
+    if card.weights is not None and card.weights.files and hub and reachable:
         problems += _check_weights(card, program, bindings)
     if exports:
         problems += _check_exports(card, program, entry, std_root)
@@ -282,20 +299,33 @@ def hub_safetensors_header(repo: str, filename: str, revision: str | None = None
     return cast(dict[str, Any], json.loads(body.content.decode("utf-8")))
 
 
+def local_safetensors_header(path: Path) -> dict[str, Any]:
+    """The SafeTensors header of a file on disk."""
+    with path.open("rb") as file:
+        (size,) = struct.unpack("<Q", file.read(8))
+        return cast(dict[str, Any], json.loads(file.read(size).decode("utf-8")))
+
+
 def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> list[str]:
     assert card.weights is not None
-    try:
-        import huggingface_hub  # type: ignore[import-untyped]  # noqa: F401
-    except ImportError:
-        return ["huggingface-hub is not installed (pip install 'linnet-lang[nest]')"]
-    tensors: dict[str, tuple[tuple[int, ...], str]] = {}
-    for filename in card.weights.files:
+    weights = card.weights
+    beside = all((card.directory / f).is_file() for f in weights.files)
+    if not beside:
         try:
-            header = hub_safetensors_header(
-                card.weights.repo, filename, revision=card.weights.revision
+            import huggingface_hub  # type: ignore[import-untyped]  # noqa: F401
+        except ImportError:
+            return ["huggingface-hub is not installed (pip install 'linnet-lang[nest]')"]
+    tensors: dict[str, tuple[tuple[int, ...], str]] = {}
+    for filename in weights.files:
+        try:
+            header = (
+                local_safetensors_header(card.directory / filename)
+                if beside
+                else hub_safetensors_header(weights.repo, filename, revision=weights.revision)
             )
-        except Exception as error:  # any Hub failure is one problem
-            return [f"cannot read the headers of {card.weights.repo}/{filename}: {error}"]
+        except Exception as error:  # any read failure is one problem
+            where = card.directory if beside else weights.repo
+            return [f"cannot read the headers of {where}/{filename}: {error}"]
         for name, info in header.items():
             if name == "__metadata__":
                 continue
@@ -529,29 +559,104 @@ def _get(url: str) -> bytes:
         return cast(bytes, response.read())
 
 
-def resolve(name_or_dir: str | Path, **fetch_options: Any) -> Card:
-    """A local model directory, or a registry name fetched into the cache."""
-    path = Path(name_or_dir)
-    if (path / "nest.toml").exists():
-        return Card.read(path)
-    return Card.read(fetch(str(name_or_dir), **fetch_options))
-
-
-def download_weights(card: Card) -> Path:
-    """Fetches the card's checkpoint files from the Hub; returns their directory."""
-    if card.weights is None:
-        raise NestError(f"`{card.name}` names no weights")
+def _huggingface_hub() -> Any:
     try:
-        from huggingface_hub import hf_hub_download  # type: ignore[import-untyped]
+        import huggingface_hub  # type: ignore[import-untyped]
     except ImportError:
         raise NestError(
             "huggingface-hub is not installed (pip install 'linnet-lang[nest]')"
         ) from None
+    return huggingface_hub
+
+
+def fetch_hub(repo: str, *, revision: str | None = None) -> Path:
+    """Downloads a model directory from a Hugging Face Hub repo with a
+    `nest.toml` at its root; returns the local snapshot.
+
+    The card, README, source and bindings arrive first. The checkpoint comes
+    with them when it is in the same repo (the card names no other one);
+    otherwise `load` downloads it from the repo the card names."""
+    hub = _huggingface_hub()
+    try:
+        card_file = Path(hub.hf_hub_download(repo, "nest.toml", revision=revision))
+    except Exception as error:  # a missing repo or file, or no network
+        raise NestError(f"cannot fetch `nest.toml` from the Hub repo `{repo}`: {error}") from error
+    card = Card.read(card_file.parent)
+    patterns = ["nest.toml", "README.md", "linnet.toml", "*.linnet"]
+    if card.weights is not None:
+        if card.weights.bindings is not None:
+            patterns.append(card.weights.bindings)
+        if not card.weights.repo:
+            patterns += list(card.weights.files) or ["*.safetensors"]
+    return Path(hub.snapshot_download(repo, revision=revision, allow_patterns=patterns))
+
+
+def resolve(name_or_dir: str | Path, **fetch_options: Any) -> Card:
+    """A model directory on disk; a Hugging Face Hub repo with a card at its
+    root (`org/name`, or `hf://org/name@revision`); or a Nest name, fetched
+    from the registry into the cache."""
+    path = Path(name_or_dir)
+    if (path / "nest.toml").exists():
+        return Card.read(path)
+    if path.is_dir():
+        raise NestError(f"{path} has no nest.toml")
+    hub = HUB_REPO.match(str(name_or_dir))
+    if hub is not None:
+        return Card.read(fetch_hub(hub["repo"], revision=hub["revision"]))
+    return Card.read(fetch(str(name_or_dir), **fetch_options))
+
+
+def local_weights(card: Card) -> Path | None:
+    """The card's checkpoint when it is beside the card: the files the card
+    names, or, when it names none and no Hub repo, every SafeTensors file in
+    the directory. None when the checkpoint is on the Hub."""
+    if card.weights is None:
+        return None
+    if card.weights.files:
+        paths = [card.directory / f for f in card.weights.files]
+        if not all(p.is_file() for p in paths):
+            return None
+    elif not card.weights.repo:
+        paths = sorted(card.directory.glob("*.safetensors"))
+        if not paths:
+            return None
+    else:
+        return None
+    return paths[0] if len(paths) == 1 else paths[0].parent
+
+
+def download_weights(card: Card) -> Path:
+    """The card's checkpoint: the files beside the card, or else downloaded
+    from the Hub. Returns the file, or the directory of several."""
+    if card.weights is None:
+        raise NestError(f"`{card.name}` names no weights")
+    local = local_weights(card)
+    if local is not None:
+        return local
+    if not card.weights.repo:
+        raise NestError(
+            f"`{card.name}` names no Hub repo for its weights, and its directory "
+            f"({card.directory}) holds no checkpoint"
+        )
+    hub = _huggingface_hub()
     paths = [
-        Path(hf_hub_download(card.weights.repo, filename, revision=card.weights.revision))
+        Path(hub.hf_hub_download(card.weights.repo, filename, revision=card.weights.revision))
         for filename in card.weights.files
     ]
     return paths[0] if len(paths) == 1 else paths[0].parent
+
+
+def push(directory: str | Path, repo: str, *, private: bool = False) -> str:
+    """Uploads a model directory to a Hugging Face Hub repo, which `load` then
+    takes by its name: the card, README, source and bindings, and any
+    checkpoint beside them. Returns the repo's URL."""
+    card = Card.read(directory)
+    api = _huggingface_hub().HfApi()
+    api.create_repo(repo, exist_ok=True, private=private)
+    api.upload_folder(
+        repo_id=repo, folder_path=str(card.directory), commit_message=f"Upload {card.name}"
+    )
+    return f"https://huggingface.co/{repo}"
 
 
 def load(
@@ -563,12 +668,15 @@ def load(
     weights: str | Path | None = None,
     **options: Any,
 ) -> Any:
-    """Materializes a Nest model in a backend with its published weights.
+    """Materializes a model in a backend with its weights.
 
-    `generics` overrides the card's values (a different `Batch`, say);
-    `weights` uses a checkpoint already on disk instead of downloading the
-    card's; `options` go to the backend's loader (`numerics`, `compile`,
-    `device`, `trainable`, ...). `"jax_model"` is every entry over one copy of
+    `name_or_dir` is a Nest name, a Hugging Face Hub repo with a card at its
+    root (`org/name`, `hf://org/name@revision`), or a model directory on
+    disk. The weights are the ones beside the card, or else the card's Hub
+    checkpoint. `generics` overrides the card's values (a different `Batch`,
+    say); `weights` uses a checkpoint already on disk instead; `options` go
+    to the backend's loader (`numerics`, `compile`, `device`, `trainable`,
+    ...). `"jax_model"` is every entry over one copy of
     the weights with the state kept on the device (`linnet.jax.load_model`),
     which decoding and serving need; `"onnx_model"` is the same on ONNX
     Runtime (`linnet.onnx.load_model`).
@@ -630,8 +738,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     preview_parser.add_argument("-o", "--output")
     preview_parser.add_argument("--expand", type=int, default=1)
     preview_parser.add_argument("--theme", choices=["light", "dark"], default="light")
-    pull_parser = commands.add_parser("pull", help="fetch a model directory from the registry")
+    pull_parser = commands.add_parser(
+        "pull", help="fetch a model directory from the registry or a Hub repo"
+    )
     pull_parser.add_argument("name")
+    push_parser = commands.add_parser("push", help="upload a model directory to a Hub repo")
+    push_parser.add_argument("directory")
+    push_parser.add_argument("repo")
+    push_parser.add_argument("--private", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         if args.command == "check":
@@ -657,7 +771,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             _write(args.output, text)
             return 0
-        print(fetch(args.name))
+        if args.command == "push":
+            print(push(args.directory, args.repo, private=args.private))
+            return 0
+        print(resolve(args.name).directory)
         return 0
     except LinnetError as error:
         print(str(error), file=sys.stderr)
