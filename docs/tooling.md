@@ -147,6 +147,22 @@ error.
 | `torch` | a Python module: `main(*inputs, *parameters, *states, *constants)` with `PARAMETERS`, `STATES`, `NEXT_STATES`, `RESULTS`, and `constants(device)`, the input-independent tensors computed once per shape |
 | `jax` | the same module in `jax.numpy`, differentiable with `jax.grad` |
 
+### Generated Python
+
+`torch` and `jax` take further options, which the runtimes set when they
+load a model. A block is named by its path: `layers.3`, `lm_head`.
+
+| Option | Formats | Meaning |
+| --- | --- | --- |
+| `--prepare` | `torch`, `jax` | weight-only work moves into a `prepare` function, run once per loaded model |
+| `--no-fuse` | `torch` | with `--prepare`, sibling linear layers stay separate products |
+| `--place <block>=<slot>` | `torch` | the block runs on a device slot; a value crosses slots once |
+| `--offload <block>` | `torch` | the block's parameters stay on the host and move to its slot when it runs |
+| `--fully-shard <block>` | `torch`, `jax` | each process or device holds part of the block's parameters, gathered whole where the block runs (FSDP) |
+| `--remat <block>` | `jax` | the backward pass computes each call of the block again instead of keeping its values (`jax.checkpoint`) |
+| `--lora <pattern>` | `torch`, `jax` | a low-rank adapter beside every weight whose path matches the glob; takes `--lora-rank <r>` and scales by `--lora-alpha <a>` / r |
+| `--absent <path>`, `--absent-file <file>` | all | optional parameters the weights lack, with `--optionals present` |
+
 ### Numerics policy
 
 | Policy | Uses | Agrees with the canonical body |

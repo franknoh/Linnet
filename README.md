@@ -45,6 +45,7 @@ On one H100 in `bf16`:
 | Llama 3.1 8B, decode one request | 167 tok/s (XLA), 161 (CUDA graphs) | vLLM 152, transformers compiled 110 |
 | BERT base, forward at batch 1 | 0.74 ms (CUDA graphs) | transformers 3.60 |
 | Llama 3.1 8B, many requests at once | 5600 tok/s | vLLM 5449 |
+| Llama 3.1 8B, LoRA fine-tuning step | 1.04 s | TRL 1.83 s |
 
 Every row, including where Linnet loses, is on the
 [benchmarks](https://linnet.franknoh.dev/benchmarks) page.
@@ -57,6 +58,9 @@ Every row, including where Linnet loses, is on the
   checkpoint for vLLM, and GGUF for llama.cpp and Ollama.
 - Serve with `linnet.serve`: continuous batching and an OpenAI-compatible
   HTTP server.
+- Train in PyTorch or JAX: supervised fine-tuning, DPO and GRPO, with LoRA
+  or fully sharded across GPUs. Or hand the model to transformers' `Trainer`
+  and TRL.
 - Import from PyTorch, JAX, StableHLO and ONNX.
 - Run in ComfyUI with [linnet-comfyui](https://github.com/franknoh/linnet-comfyui).
 
@@ -80,6 +84,7 @@ PyTorch and JAX. `linnet.nest.load` loads a card by name.
 - [Command line](docs/tooling.md)
 - [PyTorch](docs/torch.md), [JAX](docs/jax.md), [ONNX](docs/onnx.md),
   [Nest](docs/nest.md), and [integrations](docs/integrations.md)
+- [Training](docs/training.md)
 - [Benchmarks](https://linnet.franknoh.dev/benchmarks)
 
 ## Contributing

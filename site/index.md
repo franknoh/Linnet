@@ -69,6 +69,8 @@ Each backend runs the checked program on its own kernels. On one H100, in
 | Llama 3.1 8B, 256 requests served | 5600 tok/s (CUDA graphs) | vLLM 5449 |
 | gpt-oss 20B, decode one request | 368 tok/s (CUDA graphs) | vLLM 299, transformers 45 |
 | gpt-oss 20B, 256 requests served | 6031 tok/s (CUDA graphs) | vLLM 4313 |
+| Llama 3.1 8B, LoRA fine-tuning step | 1.04 s (PyTorch) | TRL 1.83 s |
+| Llama 3.1 8B, GRPO step | 1.18 s (PyTorch) | TRL with vLLM 3.14 s |
 
 Linnet loses on MiniLM and ResNet-50 under ONNX Runtime, and by 4%
 splitting Qwen3 8B across two GPUs. The
@@ -82,6 +84,9 @@ splitting Qwen3 8B across two GPUs. The
   checkpoint for vLLM, and GGUF for llama.cpp and Ollama.
 - Serve with `linnet.serve`: continuous batching and an OpenAI-compatible
   HTTP server.
+- [Train](/docs/training) in PyTorch or JAX: supervised fine-tuning, DPO and
+  GRPO, with LoRA or fully sharded across GPUs. Or hand the model to
+  transformers' `Trainer` and TRL.
 - Import from PyTorch, JAX, StableHLO and ONNX.
 - Run in ComfyUI with [linnet-comfyui](https://github.com/franknoh/linnet-comfyui).
 

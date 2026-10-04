@@ -5,6 +5,7 @@ import ArchDiagram from "./ArchDiagram.vue";
 import BenchChart from "./BenchChart.vue";
 import BenchTable from "./BenchTable.vue";
 import HeroFiles from "./HeroFiles.vue";
+import TrainingBench from "./TrainingBench.vue";
 import ZooBench from "./ZooBench.vue";
 import ZooClaims from "./ZooClaims.vue";
 import "./custom.css";
@@ -19,6 +20,7 @@ export default {
   enhanceApp({ app }) {
     app.component("BenchChart", BenchChart);
     app.component("BenchTable", BenchTable);
+    app.component("TrainingBench", TrainingBench);
     app.component("ZooBench", ZooBench);
     app.component("ZooClaims", ZooClaims);
   },

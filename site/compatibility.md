@@ -48,7 +48,7 @@ KV-cache decoding. `LINNET_HF_TESTS=1` runs
 | Tuple results | yes | yes | one output per element |
 | `state` members | buffers, `reset_state()` | threaded in and out | threaded in and out |
 | `std.random` | yes | yes | yes (right shifts are logical) |
-| Training | `trainable=True` | `load_source` with `jax.grad` | no |
+| Training | [`linnet.train`](/docs/training): SFT, DPO, GRPO, LoRA, FSDP; transformers' `Trainer` and TRL | [`linnet.jax.train`](/docs/training#jax): SFT, DPO, GRPO, LoRA, FSDP over a mesh, `remat`; `load_source` with `jax.grad` | no |
 | dtypes | f16, bf16, f32, f64, i8 to i64, u8, bool | as the backend supports | as opset 20 supports |
 
 ## Not yet
