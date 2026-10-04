@@ -146,16 +146,11 @@ def train(
     def micro(trained: Any, frozen: Any, inputs: Any) -> Any:
         if mesh is None:
             return loss_of(trained, frozen, inputs)
-        # `N` batches side by side, one per device, each weight whole where
-        # it is used: XLA gathers the parts (and reduces gradients into
-        # them) rather than splitting activations along the weights' axes,
-        # which leaves a layer's queries, keys and values split unlike.
-        whole = NamedSharding(mesh, PartitionSpec())
-        values = jax.tree.map(
-            lambda value: jax.lax.with_sharding_constraint(value, whole),
-            learner.values(trained, frozen),
-        )
-        return jnp.sum(jax.vmap(lambda *one: model.apply(values, *one))(*inputs))
+        return spread(trained, frozen, inputs)
+
+    spread: Any = None
+    if mesh is not None:
+        spread = _spread(mesh, trained, frozen, loss_of)
 
     def update(trained: Any, state: Any, frozen: Any, stacked: Any) -> Any:
         def one(carry: Any, inputs: Any) -> Any:
@@ -344,6 +339,46 @@ def _copied(tree: Any) -> Any:
 def add(total: Any, more: Any) -> Any:
     """Two gradient trees summed."""
     return jax.tree.map(jnp.add, total, more)
+
+
+def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> Any:
+    """`loss(trained, frozen, inputs)` summed over the mesh's devices, each
+    on its own batch (`inputs` `[N, ...]`, split by the first axis) with
+    every parameter whole: each part is gathered where the device computes
+    (FSDP), and its gradient is reduce-scattered back to the parts. Inside,
+    every device computes alone, with no partitioner to split activations
+    along the weights' axes."""
+    from jax.sharding import PartitionSpec
+
+    try:
+        from jax import shard_map
+    except ImportError:  # JAX before 0.6
+        from jax.experimental.shard_map import shard_map  # type: ignore[no-redef]
+
+    axis = mesh.axis_names[0]
+    trained_specs = {path: value.sharding.spec for path, value in trained.items()}
+    frozen_specs = {path: value.sharding.spec for path, value in frozen.items()}
+
+    def whole(value: Any, spec: Any) -> Any:
+        for dim, name in enumerate(spec):
+            if name == axis:
+                return jax.lax.all_gather(value, axis, axis=dim, tiled=True)
+        return value
+
+    def local(trained: Any, frozen: Any, inputs: Any) -> Any:
+        mine = loss(
+            {p: whole(v, trained_specs[p]) for p, v in trained.items()},
+            {p: whole(v, frozen_specs[p]) for p, v in frozen.items()},
+            [value[0] for value in inputs],
+        )
+        return jax.lax.psum(mine, axis)
+
+    return shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(trained_specs, frozen_specs, PartitionSpec(axis)),
+        out_specs=PartitionSpec(),
+    )
 
 
 def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
