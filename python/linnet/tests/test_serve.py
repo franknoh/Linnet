@@ -436,6 +436,7 @@ def test_jax_load_weights_serves_the_new_weights(model_files: tuple[Path, Path])
     compiled passes then decode with them."""
     pytest.importorskip("jax")
     from linnet.jax import load_model
+    from linnet.jax.source import SourceFunction
 
     source, weights = model_files
     model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
@@ -452,6 +453,15 @@ def test_jax_load_weights_serves_the_new_weights(model_files: tuple[Path, Path])
     done, _ = engine.run(requests)
     for completion in done:
         assert completion.tokens == _greedy(trained, completion.request)
+    # Nothing holds the weights before: every function's loaded arrays are
+    # the new ones. Arrays already in place are taken, not copied.
+    for function in model._functions.values():  # pyright: ignore[reportPrivateUsage]
+        assert isinstance(function, SourceFunction)
+        loaded = function.parameters
+        assert loaded and all(loaded[path] is model.weights[path] for path in loaded)
+    placed = {path: value * 2 for path, value in model.weights.items()}
+    engine.load_weights(placed)
+    assert all(model.weights[path] is placed[path] for path in placed)
 
 
 def test_onnx(model_files: tuple[Path, Path]) -> None:
