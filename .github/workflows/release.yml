@@ -1,60 +1,113 @@
 name: Release
 
+# A tag v* builds the compiler, the Python wheels and the VS Code extension on
+# every platform, tests them, and publishes them: a GitHub release, then PyPI.
+# A pull request that changes how they are built runs the same builds and
+# tests, and publishes nothing.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - CMakeLists.txt
+      - CMakePresets.json
+      - python/linnet/pyproject.toml
+      - python/linnet/hatch_build.py
+      - python/linnet/src/linnet/compiler.py
+      - scripts/build-release.sh
+      - scripts/check-version.py
+      - scripts/check-wheel.py
+      - scripts/pack-compiler.py
+      - src/cli/main.cpp
+      - editors/vscode/package.json
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
 
 jobs:
+  version:
+    name: Versions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check-version.py ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
   build:
     name: ${{ matrix.name }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x86_64, os: ubuntu-24.04, preset: release }
-          - { name: macos-arm64, os: macos-15, preset: release }
-          - { name: windows-x86_64, os: windows-2022, preset: msvc }
+          - { name: linux-x86_64, os: ubuntu-24.04 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm }
+          - { name: macos-arm64, os: macos-15 }
+          - { name: windows-x86_64, os: windows-2022 }
     steps:
       - uses: actions/checkout@v4
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-      - if: runner.os == 'macOS'
-        run: brew install ninja
-      - run: cmake --preset ${{ matrix.preset }}
-      - run: cmake --build --preset ${{ matrix.preset }} --config Release
-      - run: ctest --preset ${{ matrix.preset }} -C Release
-      - run: cmake --install build/${{ matrix.preset }} --config Release --prefix dist/linnet-${{ github.ref_name }}-${{ matrix.name }}
-      - if: runner.os != 'Windows'
-        run: tar -C dist -czf linnet-${{ github.ref_name }}-${{ matrix.name }}.tar.gz linnet-${{ github.ref_name }}-${{ matrix.name }}
-      - if: runner.os == 'Windows'
-        run: Compress-Archive -Path dist/linnet-${{ github.ref_name }}-${{ matrix.name }} -DestinationPath linnet-${{ github.ref_name }}-${{ matrix.name }}.zip
+      # Builds and tests the compiler, then the wheel that carries it, and
+      # tests the wheel (python/linnet/pyproject.toml has the settings). The
+      # archive is packed from the wheel.
+      - uses: pypa/cibuildwheel@v4.2.1
+        with:
+          package-dir: python/linnet
+          output-dir: wheelhouse
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/pack-compiler.py wheelhouse/*.whl "linnet-$VERSION-${{ matrix.name }}"
+        shell: bash
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: linnet-${{ github.ref_name }}-${{ matrix.name }}.*
+          name: compiler-${{ matrix.name }}
+          path: linnet-${{ env.VERSION }}-${{ matrix.name }}.*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ matrix.name }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: Python source
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv build --sdist --out-dir dist python/linnet
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: dist/*.tar.gz
 
   vscode:
     name: VS Code extension
+    needs: version
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci && npm run check && npx --yes @vscode/vsce package --out linnet-${{ github.ref_name }}.vsix
+      - run: npm ci && npm run check && npx --yes @vscode/vsce package --out "linnet-$VERSION.vsix"
         working-directory: editors/vscode
       - uses: actions/upload-artifact@v4
         with:
           name: vscode
-          path: editors/vscode/linnet-${{ github.ref_name }}.vsix
+          path: editors/vscode/linnet-${{ env.VERSION }}.vsix
 
-  publish:
-    needs: [build, vscode]
+  release:
+    name: GitHub release
+    if: github.ref_type == 'tag'
+    needs: [build, sdist, vscode]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -64,3 +117,22 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+  pypi:
+    name: PyPI
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-24.04
+    # Trusted publishing: PyPI accepts this workflow in this environment.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/linnet-lang/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
