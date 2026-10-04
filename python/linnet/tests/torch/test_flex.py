@@ -29,7 +29,9 @@ def test_fresh_copy_is_a_contiguous_copy_with_the_gradient_passed_through() -> N
 
 def test_fresh_copy_traces() -> None:
     base = torch.randn(3, 8, 4)
-    traced = torch.compile(
-        lambda t: fresh_copy(_sliced(t)) * 2, backend="aot_eager", fullgraph=True
-    )
+
+    def doubled(t: torch.Tensor) -> torch.Tensor:
+        return fresh_copy(_sliced(t)) * 2
+
+    traced = torch.compile(doubled, backend="aot_eager", fullgraph=True)
     torch.testing.assert_close(traced(base), _sliced(base) * 2)
