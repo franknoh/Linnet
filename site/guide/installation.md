@@ -18,6 +18,7 @@ Pick the extras for the frameworks you use:
 | `flax` | `linnet.jax.load_nnx` |
 | `onnx` | `linnet.onnx`; add `onnxruntime`, or `onnxruntime-gpu` for CUDA and TensorRT, to run models |
 | `nest` | `linnet.nest`: models from [Nest](https://nest.franknoh.dev) and the Hugging Face Hub |
+| `serve` | `linnet serve`: PyTorch, the Hub and a tokenizer, to serve a model with OpenAI's API |
 | `all` | all of them |
 
 Outside a uv project, `uv pip install "linnet-lang[torch]"` installs into

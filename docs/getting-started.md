@@ -1,6 +1,8 @@
 # Quickstart
 
-Write a small model, check it, and run it in PyTorch.
+Write a small model, check it, and run it in PyTorch. To try it without
+installing anything, open [the quickstart notebook](https://colab.research.google.com/github/franknoh/Linnet/blob/main/notebooks/quickstart.ipynb) on Colab: it
+also runs and serves a Hugging Face model.
 
 ## 1. Install
 
