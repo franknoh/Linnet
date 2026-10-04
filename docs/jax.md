@@ -6,7 +6,7 @@ as Linnet source.
 ## Install
 
 ```bash
-cd python/linnet && uv sync --extra flax    # or: pip install ".[flax]"
+uv add "linnet-lang[flax]"
 ```
 
 ## Loaders
