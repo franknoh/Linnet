@@ -1,8 +1,9 @@
 """The same full fine-tuning in JAX, from the same card: one process over
 every local GPU as a mesh. Each device takes its own packed row and holds
-part of every weight; each layer gathers its weights where it runs, and
-`--remat` has the backward pass gather and compute each layer again instead
-of keeping it."""
+part of every weight; each layer gathers its weights where it runs, and the
+backward pass gathers and computes each layer again instead of keeping it
+(`--no-remat` keeps it: faster, in 65 GiB a GPU rather than 39, beyond XLA's
+default memory fraction, so set XLA_PYTHON_CLIENT_MEM_FRACTION=0.95)."""
 
 import argparse
 import statistics
@@ -22,7 +23,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--card", default="llama-3.1-8b-instruct")
 parser.add_argument("--steps", type=int, default=30)
 parser.add_argument("--lr", type=float, default=1e-5)
-parser.add_argument("--remat", action="store_true", help="recompute each layer in backward")
+parser.add_argument(
+    "--no-remat", dest="remat", action="store_false", help="keep each layer for backward"
+)
 args = parser.parse_args()
 TOKENS = 4096  # positions in a packed row
 

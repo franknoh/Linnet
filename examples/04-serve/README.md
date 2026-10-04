@@ -15,7 +15,8 @@ python examples/04-serve/throughput.py --backend jax    # XLA
 
 `throughput.py` gives the engine the benchmarks' load: 256 requests of 128
 to 512 prompt tokens, at most 64 in flight, each generating 128 tokens. It
-prints the generated tokens per second.
+prints the generated tokens per second: on one H100, about 5600 with
+PyTorch and 4700 with JAX.
 
 On one H100 in `bf16`:
 
