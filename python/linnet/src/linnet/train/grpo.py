@@ -35,6 +35,7 @@ from typing import Any
 
 import torch
 
+from ..packing import Prompt, Reward, group_advantages
 from ..serve import Request
 from . import (
     Batch,
@@ -45,18 +46,6 @@ from . import (
     reduce_gradients,
     save_checkpoint,
 )
-
-
-@dataclass(frozen=True)
-class Prompt:
-    """A prompt's tokens, and what `reward` needs to score its completions
-    (the answer, say)."""
-
-    tokens: Sequence[int]
-    data: Any = None
-
-
-Reward = Callable[[Prompt, list[int]], float]
 
 
 @dataclass
@@ -82,22 +71,6 @@ class GrpoStep:
     grad_norm: float | None
     uniform: float = 0.0
     mismatch: float | None = None
-
-
-def group_advantages(rewards: Sequence[float], group: int, *, scale: bool = True) -> list[float]:
-    """Each reward less its group's mean (`group` consecutive rewards), over
-    the group's standard deviation when `scale`."""
-    advantages: list[float] = []
-    for start in range(0, len(rewards), group):
-        chunk = rewards[start : start + group]
-        mean = sum(chunk) / len(chunk)
-        spread = (
-            math.sqrt(sum((r - mean) ** 2 for r in chunk) / (len(chunk) - 1))
-            if len(chunk) > 1
-            else 0.0
-        )
-        advantages += [(r - mean) / (spread + 1e-4) if scale else r - mean for r in chunk]
-    return advantages
 
 
 def grpo_loss(

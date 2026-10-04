@@ -94,11 +94,13 @@ class SourceFunction(LinnetFunction):
             compiled.state_outputs,
         )
         jitted = jax.jit(module.main, donate_argnums=donated)
-        prepared = self._prepared_values(module, compiled.arrays)
+        compiled.module = module
+        compiled.prepared = self._prepared_values(module, compiled.arrays)
 
         def call(*arguments: Any) -> Any:
-            # A lone result is returned bare, as the StableHLO path does.
-            outputs = jitted(*arguments, *prepared)
+            # A lone result is returned bare, as the StableHLO path does. The
+            # prepared values are read here: new weights replace them.
+            outputs = jitted(*arguments, *compiled.prepared)
             return outputs[0] if len(outputs) == 1 else outputs
 
         compiled.call = call

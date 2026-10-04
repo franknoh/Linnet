@@ -431,6 +431,29 @@ def test_jax(model_files: tuple[Path, Path]) -> None:
     assert len(shared) == len(first.weights)
 
 
+def test_jax_load_weights_serves_the_new_weights(model_files: tuple[Path, Path]) -> None:
+    """New weights copied into a JAX model an engine already ran: its
+    compiled passes then decode with them."""
+    pytest.importorskip("jax")
+    from linnet.jax import load_model
+
+    source, weights = model_files
+    model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    engine = Engine(model, buckets=[8, 16, 32])
+    requests = _requests()
+    engine.run(requests)
+    trained = load(source, generics=GENERICS, std_root=STDLIB, weights=weights)
+    with torch.no_grad():
+        for parameter in trained.parameters():
+            parameter.mul_(1.5).add_(0.1)
+    engine.load_weights(
+        {n.removeprefix("root."): p.detach().numpy() for n, p in trained.named_parameters()}
+    )
+    done, _ = engine.run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(trained, completion.request)
+
+
 def test_onnx(model_files: tuple[Path, Path]) -> None:
     """ONNX Runtime serves the same tokens, over one copy of each weight
     bound to every entry's session, with the caches kept between calls."""

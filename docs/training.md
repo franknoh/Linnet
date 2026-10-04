@@ -302,6 +302,18 @@ The output head's loss runs a block of rows at a time here too
 (`linnet.jax.loss`, a `custom_vjp`), so the `[P, Vocab]` logits are never
 held whole.
 
+`linnet.jax.dpo.dpo` and `linnet.jax.grpo.grpo` train the
+`log_probs_packed` entry as their PyTorch counterparts do, with the same
+options. They run in one process.
+
+- `dpo(model, pairs, optimizer=...)` takes `reference` as parameters (path
+  -> array). Without them, it computes the model's own log-probabilities
+  first.
+- `grpo(policy, engine, prompts, reward, optimizer=...)` samples with an
+  `Engine` over the JAX model (`linnet.jax.load_model`). The engine takes the
+  policy's weights before each step, adapters merged in
+  (`LinnetModel.copy_weights`).
+
 ## Losses
 
 `std.nn.loss` holds the losses, over flattened tokens (`[N, V]` logits),

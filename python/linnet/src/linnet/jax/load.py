@@ -406,6 +406,8 @@ class CompiledEntry:
     arrays: list[Any]  # the loaded weights as device arrays, in `parameters` order
     source_path: Path | None = None  # generated JAX source, when the entry runs as code
     dtypes: list[Any] = dataclasses.field(default_factory=lambda: list[Any]())  # declared, each
+    module: Any = None  # the generated module, when the entry runs as code
+    prepared: list[Any] = dataclasses.field(default_factory=lambda: list[Any]())  # `prepare`'s
 
 
 @functools.cache
