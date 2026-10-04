@@ -145,7 +145,8 @@ def grpo(
             break
         begin = time.perf_counter()
         if learner is not None:
-            engine.load_weights(merge_lora(policy, learner.parameters()))
+            # Copies: the engine keeps them past the next step's donation.
+            engine.load_weights(merge_lora(policy, learner.parameters(copy=True)))
         requests = [
             Request(
                 prompt=list(prompt.tokens),

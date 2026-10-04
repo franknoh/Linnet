@@ -288,9 +288,14 @@ class Learner:
         values.update({path: values[tie] for path, tie in self.ties.items()})
         return values
 
-    def parameters(self) -> dict[str, Any]:
-        """The parameters now, path -> array: the trained ones in `master`."""
-        final = {**self.frozen, **self.trained}
+    def parameters(self, *, copy: bool = False) -> dict[str, Any]:
+        """The parameters now, path -> array: the trained ones in `master`.
+        The next `step` donates the trained arrays; `copy` hands out copies
+        of them that outlive it (for an engine to keep)."""
+        trained = self.trained
+        if copy:
+            trained = _copied(trained)
+        final = {**self.frozen, **trained}
         final.update({path: final[tie] for path, tie in self.ties.items()})
         return final
 
@@ -320,6 +325,11 @@ class Learner:
             self._apply = jax.jit(apply, donate_argnums=(0, 1))
         self.trained, self.state, norm = self._apply(self.trained, self.state, grads)
         return float(norm)
+
+
+@jax.jit
+def _copied(tree: Any) -> Any:
+    return jax.tree.map(jnp.copy, tree)
 
 
 @jax.jit
