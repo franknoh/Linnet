@@ -24,6 +24,7 @@ weighted sum of each position's cross-entropy for its target.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -97,11 +98,11 @@ def train(
 
     With `mesh` (a `jax.sharding.Mesh`), training is data-parallel and fully
     sharded over the mesh's first axis of `N` devices. Each step takes `N`
-    times `accumulate` batches and runs `N` side by side (a `vmap`, split
-    across the devices). Every parameter, its gradient and its optimizer
-    state are split along an axis `N` divides (copied when none does), and
-    XLA gathers a weight where it is used. Set the mesh before the model's
-    first call: the weights then load straight into their parts.
+    times `accumulate` batches, one per device at a time (`shard_map`).
+    Every parameter, its gradient and its optimizer state are split along
+    an axis `N` divides (copied when none does); each device gathers a
+    weight whole where it uses it. Set the mesh before the model's first
+    call: the weights then load straight into their parts.
 
     With `checkpoint`, a directory, training resumes from the latest
     checkpoint there (`load_checkpoint`), skipping the batches its steps
@@ -196,7 +197,8 @@ def train(
                 for value in stacked
             ]
         begin = time.perf_counter()
-        trained, state, loss, norm = compiled(trained, state, frozen, stacked)
+        with _partitioner(mesh):
+            trained, state, loss, norm = compiled(trained, state, frozen, stacked)
         step += 1
         record = Step(
             step=step,
@@ -390,6 +392,18 @@ def _spread(mesh: Any, trained: Any, frozen: Any, loss: Callable[..., Any]) -> A
         out_specs=PartitionSpec(),
         **unchecked,
     )
+
+
+def _partitioner(mesh: Any) -> Any:
+    """Where the step is compiled over `mesh`: with GSPMD. Shardy, JAX's
+    default, crashes XLA compiling cuDNN attention inside `shard_map`
+    (JAX 0.11, H100)."""
+    if mesh is None:
+        return contextlib.nullcontext()
+    from jax._src import config as jax_config
+
+    shardy = getattr(jax_config, "use_shardy_partitioner", None)
+    return contextlib.nullcontext() if shardy is None else shardy(False)
 
 
 def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
