@@ -20,6 +20,7 @@ on:
       - scripts/check-version.py
       - scripts/check-wheel.py
       - scripts/pack-compiler.py
+      - scripts/release-notes.py
       - src/cli/main.cpp
       - editors/vscode/package.json
       - editors/vscode/.vscodeignore
@@ -38,6 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check-version.py ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      # A release needs its section of CHANGELOG.md.
+      - if: github.ref_type == 'tag'
+        run: python3 scripts/release-notes.py "$GITHUB_REF_NAME"
 
   build:
     name: ${{ matrix.name }}
@@ -144,13 +148,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/release-notes.py "$GITHUB_REF_NAME" > notes.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      # The changelog's section, then GitHub's list of the pull requests.
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          body_path: notes.md
           generate_release_notes: true
 
   pypi:
