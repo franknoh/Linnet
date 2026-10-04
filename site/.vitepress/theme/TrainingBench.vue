@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // Training step times from bench/results/training.json: one chart per run,
-// one bar per stack (lower is better, the fastest in the accent), and a
-// table of what each run measured besides.
+// one bar per stack (lower is better, the fastest in the accent), its
+// fastest Linnet step against its fastest reference step, and a table of
+// what each run measured besides.
 import results from "../../../bench/results/training.json";
+import { times } from "./compare";
 
 interface Row {
   stack: string;
@@ -16,6 +18,7 @@ interface Row {
 
 interface Run {
   id: string;
+  gpus: number;
   title: string;
   quality: string;
   memory?: boolean;
@@ -24,29 +27,21 @@ interface Run {
 
 const data = results as { date: string; device: string; model: string; note: string; runs: Run[] };
 
-const WIDTH = 680;
-const LABEL = 170;
-const BAR = 20;
-const GAP = 7;
-const TOP = 6;
-
 const charts = data.runs.map((run) => {
   const max = Math.max(...run.rows.map((r) => r.step_seconds));
   const best = Math.min(...run.rows.map((r) => r.step_seconds));
-  const plot = WIDTH - LABEL - 64;
-  const scale = (value: number) => (plot * value) / max;
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => max * f);
+  const step = (family: Row["family"]) =>
+    Math.min(...run.rows.filter((r) => r.family === family).map((r) => r.step_seconds));
+  const speedup = step("reference") / step("linnet");
   return {
     run,
-    height: TOP + run.rows.length * (BAR + GAP) + 22,
-    axisY: TOP + run.rows.length * (BAR + GAP) + 2,
-    bars: run.rows.map((row, i) => ({
+    speedup: times(speedup),
+    faster: speedup >= 1,
+    bars: run.rows.map((row) => ({
       row,
       best: row.step_seconds === best,
-      y: TOP + i * (BAR + GAP),
-      width: Math.max(2, scale(row.step_seconds)),
+      share: (100 * row.step_seconds) / max,
     })),
-    ticks: ticks.map((t) => ({ x: LABEL + scale(t), text: t >= 1 ? t.toFixed(1) : t.toFixed(2) })),
   };
 });
 
@@ -70,22 +65,31 @@ function thousands(value?: number): string {
     </div>
     <div v-for="chart in charts" :key="chart.run.id" class="training-run">
       <figure class="bench-chart">
-        <figcaption>{{ chart.run.title }}</figcaption>
-        <svg :viewBox="`0 0 ${WIDTH} ${chart.height}`" role="img" :aria-label="chart.run.title">
-          <g v-for="tick in chart.ticks" :key="tick.text" class="bench-tick">
-            <line :x1="tick.x" :x2="tick.x" :y1="TOP - 2" :y2="chart.axisY" />
-            <text :x="tick.x" :y="chart.axisY + 14" text-anchor="middle">{{ tick.text }}</text>
-          </g>
-          <g
+        <figcaption>
+          <span>{{ chart.run.title }}</span>
+          <span class="training-headline">
+            <strong>{{ chart.speedup }}</strong>
+            <span>{{ chart.faster ? "faster" : "slower" }} than TRL</span>
+          </span>
+        </figcaption>
+        <div
+          class="training-bars"
+          role="img"
+          :aria-label="chart.bars.map((b) => `${b.row.stack} ${b.row.step_seconds.toFixed(2)} s`).join(', ')"
+        >
+          <div
             v-for="bar in chart.bars"
             :key="bar.row.stack"
             :class="['bench-bar', `bench-bar-${bar.row.family}`, { 'bench-bar-best': bar.best }]"
+            :title="`${bar.row.stack}: ${bar.row.step_seconds.toFixed(2)} s a step`"
           >
-            <text class="bench-label" :x="LABEL - 8" :y="bar.y + BAR / 2 + 4" text-anchor="end">{{ bar.row.stack }}</text>
-            <rect :x="LABEL" :y="bar.y" :width="bar.width" :height="BAR" rx="2" />
-            <text class="bench-value" :x="LABEL + bar.width + 6" :y="bar.y + BAR / 2 + 4">{{ bar.row.step_seconds.toFixed(2) }} s</text>
-          </g>
-        </svg>
+            <span class="bench-label">{{ bar.row.stack }}</span>
+            <span class="bench-track">
+              <i class="bench-mark" :style="{ width: `${bar.share}%` }"></i>
+              <span class="bench-value">{{ bar.row.step_seconds.toFixed(2) }} s</span>
+            </span>
+          </div>
+        </div>
       </figure>
       <table class="training-table">
         <thead>
@@ -165,47 +169,85 @@ function thousands(value?: number): string {
   background: var(--vp-c-bg-alt);
 }
 .bench-chart figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--vp-c-text-2);
   margin-bottom: 0.4rem;
 }
-.bench-chart svg {
-  width: 100%;
-  height: auto;
-  display: block;
-  font-family: var(--vp-font-family-base);
+.training-headline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.1;
+  white-space: nowrap;
 }
-.bench-tick line {
-  stroke: var(--vp-c-divider);
-  stroke-width: 1;
+.training-headline strong {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+  font-variant-numeric: tabular-nums;
 }
-.bench-tick text {
-  font-size: 10px;
-  fill: var(--vp-c-text-3);
-  font-family: var(--vp-font-family-mono);
+.training-headline span {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--vp-c-text-3);
+}
+.training-bars {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, max-content) 1fr;
+  gap: 0.3rem 0.6rem;
+  padding: 0.2rem 0 0.3rem;
+}
+.bench-bar {
+  display: contents;
 }
 .bench-label {
-  font-size: 12px;
-  fill: var(--vp-c-text-1);
+  font-size: 0.78rem;
+  line-height: 1.25;
+  text-align: right;
+  align-self: center;
+  color: var(--vp-c-text-1);
+}
+.bench-track {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding-right: 3.6rem;
+}
+.bench-mark {
+  flex: none;
+  height: 16px;
+  min-width: 2px;
+  border-radius: 0 4px 4px 0;
 }
 .bench-value {
-  font-size: 11px;
-  fill: var(--vp-c-text-2);
+  flex: none;
+  margin-right: -3.6rem;
+  font-size: 0.75rem;
+  color: var(--vp-c-text-2);
   font-family: var(--vp-font-family-mono);
+  white-space: nowrap;
 }
-.bench-bar-linnet rect {
-  fill: var(--bench-linnet);
+.bench-bar-linnet .bench-mark {
+  background: var(--bench-linnet);
 }
-.bench-bar-reference rect {
-  fill: var(--bench-reference);
+.bench-bar-reference .bench-mark {
+  background: var(--bench-reference);
 }
-.bench-bar-best rect {
-  fill: var(--bench-best);
+.bench-bar-best .bench-mark {
+  background: var(--bench-best);
 }
 .training-table {
   font-size: 0.82rem;
   margin: 0.5rem 0 0;
+}
+.training-table td:not(:first-child):not(:last-child) {
+  white-space: nowrap;
 }
 .training-note {
   color: var(--vp-c-text-3);

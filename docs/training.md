@@ -342,7 +342,8 @@ The same runs in Linnet (PyTorch and JAX) and in TRL with PEFT, on Llama
 3.1 8B Instruct. They share the data, 4096-token packed rows, the
 hyperparameters and the step count. Each ran on one H100 unless noted. Times
 are the median step after the first two. Tokens/s counts real tokens, not
-padding.
+padding. The [benchmarks](https://linnet.franknoh.dev/benchmarks#training)
+chart them.
 
 | Run | Linnet PyTorch | Linnet JAX | TRL |
 | --- | --- | --- | --- |

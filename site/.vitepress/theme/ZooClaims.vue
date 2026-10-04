@@ -2,8 +2,10 @@
 // What the zoo's measurements let Linnet claim (bench/results/zoo.json, its
 // `compare` from the zoo's bench/compare.json). `part` picks the piece: the
 // headline numbers, Linnet against the stack it replaces model by model
-// (`ids` names the matchups, a tab each), or where each runtime ran.
+// (`ids` names the matchups, a tab each), or where each runtime ran. The
+// training tile reads bench/results/training.json.
 import { computed, ref } from "vue";
+import training from "../../../bench/results/training.json";
 import zoo from "../../../bench/results/zoo.json";
 import {
   type Compare,
@@ -74,6 +76,15 @@ function results(id: string): { model: Model; result: MatchupResult }[] {
     return result ? [{ model, result }] : [];
   });
 }
+// Each training run's fastest Linnet step against its fastest reference step.
+function trainingSpeedups(): { gpus: number; speedup: number }[] {
+  const runs = (training as { runs: { gpus: number; rows: { family: string; step_seconds: number }[] }[] }).runs;
+  return runs.map((run) => {
+    const step = (family: string) =>
+      Math.min(...run.rows.filter((r) => r.family === family).map((r) => r.step_seconds));
+    return { gpus: run.gpus, speedup: step("reference") / step("linnet") };
+  });
+}
 function sameFirst(pairs: PairResult[]): { same: number; compared: number } {
   const both = pairs.filter((p) => (p.them as Row).first_token != null && (p.us as Row).first_token != null);
   return { same: both.filter((p) => (p.them as Row).first_token === (p.us as Row).first_token).length, compared: both.length };
@@ -123,6 +134,20 @@ const tiles = computed(() => {
       value: times(median(s)),
       label: "median serving throughput against vLLM, 256 requests with 64 in flight",
       detail: `ahead on ${s.filter((x) => x > 1).length} of ${sv.length} models`,
+    });
+  }
+  const trained = trainingSpeedups();
+  const one = trained.filter((r) => r.gpus === 1).map((r) => r.speedup);
+  const many = trained.filter((r) => r.gpus > 1);
+  if (one.length) {
+    out.push({
+      href: "#training",
+      value: times(median(one)),
+      label: "median training step speed against TRL on one GPU: LoRA SFT, DPO, and GRPO",
+      detail: [
+        `${times(Math.min(...one))} to ${times(Math.max(...one))}`,
+        ...many.map((r) => `${times(r.speedup)} fully sharded on ${r.gpus} GPUs`),
+      ].join("; "),
     });
   }
   const linnet = models.flatMap((m) => m.rows.filter((r) => r.kind === "linnet"));

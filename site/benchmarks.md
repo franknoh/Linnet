@@ -1,9 +1,10 @@
 # Benchmarks
 
 Linnet compiles one checked source to each framework's own fast path.
-Measured on one H100 in `bf16`: 24 real checkpoints from the
+Measured in `bf16` on H100s: 24 real checkpoints from the
 [model zoo](https://nest.franknoh.dev) against the stacks people already run
-them with, and a synthetic Llama that isolates the generated code.
+them with, Llama 3.1 8B fine-tuned against TRL, and a synthetic Llama that
+isolates the generated code.
 
 <ZooClaims part="tiles" />
 
@@ -51,6 +52,17 @@ bound by kernel launches that one CUDA graph per step removes. From 4 B up it
 is 2-4%, and on gpt-oss 40%. Behind Triton Inference Server, `linnet.serve`
 outpaces Triton's own vLLM backend on every decoder.
 
+## Training faster than TRL {#training}
+
+The same runs in Linnet and in TRL, step for step. On one GPU, Linnet's
+PyTorch step is 1.76 times TRL's for LoRA SFT, 2.4 times for DPO and 2.7
+times for GRPO. Fully fine-tuned on four GPUs, the three stacks are within 5%
+of each other, with JAX the fastest. Each pair of runs reaches the same
+held-out loss, accuracy or reward. [Training](/docs/training#compared-with-trl)
+lists the conditions that differ.
+
+<TrainingBench />
+
 ## Two GPUs and offloading {#behind}
 
 <ZooClaims part="matchups" ids="tp" />
@@ -74,17 +86,6 @@ Every model in the zoo is one `.linnet` source. The runs that failed:
   serving row runs out of memory.
 - transformers' `generate_batch` returns no tokens for gpt-oss, and KerasHub's
   batched gpt-oss fails in XLA's autotuner.
-
-## Training {#training}
-
-The same runs in Linnet and in TRL, step for step. On one GPU, Linnet's
-PyTorch step is 1.76 times TRL's for LoRA SFT, 2.4 times for DPO and 2.7
-times for GRPO. Fully fine-tuned on four GPUs, the three stacks are within 5%
-of each other, with JAX the fastest. Each pair of runs reaches the same
-held-out loss, accuracy or reward. [Training](/docs/training#compared-with-trl)
-lists the conditions that differ.
-
-<TrainingBench />
 
 ## Every measurement
 

@@ -6,6 +6,7 @@
   "runs": [
     {
       "id": "sft-lora",
+      "gpus": 1,
       "title": "SFT, LoRA (rank 16), one GPU: Alpaca, 4 rows a step",
       "quality": "held-out loss after 30 steps, one evaluator",
       "rows": [
@@ -16,6 +17,7 @@
     },
     {
       "id": "sft-full",
+      "gpus": 4,
       "title": "SFT in full, four GPUs: fully sharded, f32 masters, AdamW",
       "quality": "held-out loss after 30 steps",
       "rows": [
@@ -27,6 +29,7 @@
     },
     {
       "id": "dpo",
+      "gpus": 1,
       "title": "DPO, LoRA, one GPU: UltraFeedback, 32 pairs a step",
       "quality": "accuracy over the last five steps",
       "rows": [
@@ -37,6 +40,7 @@
     },
     {
       "id": "grpo",
+      "gpus": 1,
       "title": "GRPO, LoRA, one GPU: 16 prompts × 8 completions of up to 128 tokens",
       "quality": "mean reward, first three steps to last three",
       "memory": false,
