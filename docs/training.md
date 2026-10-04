@@ -279,6 +279,10 @@ optimizer, and returns the parameters (path -> array) and the steps.
   the rest stay as loaded.
 - Paths bound to one checkpoint tensor (a tied embedding and output head)
   load as one array and train as one parameter.
+- `model.add_lora(patterns, rank=16, alpha=32)` gives the matching linear
+  weights low-rank adapters, as in PyTorch: the generated JAX computes
+  `x @ A.T @ B.T` beside each product, and only the adapters train by
+  default. `merge_lora(model, params)` adds them into the weights.
 - `save_weights(params, path)` writes them under their Linnet paths, which
   `load_source` reads back. `checkpoint` and `checkpoint_every` resume and
   save as in PyTorch, from one host.

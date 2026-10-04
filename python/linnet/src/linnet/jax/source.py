@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,30 @@ class SourceFunction(LinnetFunction):
         super().__init__(*args, **kwargs)
         self.parameters: dict[str, Any] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-jax-"))
+        # Low-rank adapters (`add_lora`): patterns, rank, alpha; and the seed
+        # their first values are drawn from.
+        self.lora: tuple[tuple[str, ...], int, float] | None = None
+        self._lora_seed = 0
+
+    def add_lora(
+        self, patterns: str | Sequence[str], *, rank: int = 16, alpha: float = 32.0, seed: int = 0
+    ) -> None:
+        """Gives every linear weight whose path matches a glob pattern
+        (`"layers.*.attention.*_proj.weight"`) a low-rank adapter (LoRA): the
+        layer computes `x @ W.T + (x @ A.T) @ B.T * alpha / rank`, with `A`
+        ([rank, in], random) and `B` ([out, rank], zero) the parameters
+        `<block>.lora_a` and `<block>.lora_b`. Entries compile again with
+        them; `parameters_for` then returns them with the weights, and
+        `apply` takes them."""
+        if self.lora is not None:
+            raise LinnetError("the model already has adapters")
+        if rank <= 0:
+            raise LinnetError("the adapter rank must be positive")
+        chosen = (patterns,) if isinstance(patterns, str) else tuple(patterns)
+        self.lora = (chosen, rank, float(alpha))
+        self._lora_seed = seed
+        self._cache.clear()
+        self.parameters = {}
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
         # The StableHLO export supplies the argument order and state avals;
@@ -50,17 +74,24 @@ class SourceFunction(LinnetFunction):
         module: Any = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        if (
-            list(module.PARAMETERS) != compiled.parameters
-            or list(module.STATES) != compiled.state_inputs
-        ):
+        # Adapters come after the parameters both exports share.
+        shared = list(module.PARAMETERS)[: len(compiled.parameters)]
+        if shared != compiled.parameters or list(module.STATES) != compiled.state_inputs:
             raise LinnetError(
                 "internal: the JAX source and StableHLO exports disagree on arguments"
             )
-        # The StableHLO export's state layout is the source's, so the same
-        # positions are donated.
+        adapters = list(module.PARAMETERS)[len(compiled.parameters) :]
+        if adapters:
+            values, dtypes = self._adapters(adapters, compiled)
+            compiled.parameters = list(module.PARAMETERS)
+            compiled.arrays = [*compiled.arrays, *values]
+            compiled.dtypes = [*compiled.dtypes, *dtypes]
+        # The StableHLO export's state layout is the source's, past the
+        # adapters, so the same states are donated.
         donated = self._donated(
-            len(compiled.exported.in_avals), compiled.state_inputs, compiled.state_outputs
+            len(compiled.exported.in_avals) + len(adapters),
+            compiled.state_inputs,
+            compiled.state_outputs,
         )
         jitted = jax.jit(module.main, donate_argnums=donated)
         prepared = self._prepared_values(module, compiled.arrays)
@@ -75,6 +106,33 @@ class SourceFunction(LinnetFunction):
         for name, array in zip(compiled.parameters, compiled.arrays, strict=True):
             self.parameters.setdefault(name, array)
         return compiled
+
+    def _adapters(self, paths: list[str], compiled: CompiledEntry) -> tuple[list[Any], list[Any]]:
+        """First values of the adapters at `paths`: `lora_a` uniform in
+        +-1/sqrt(in), `lora_b` zero, in their weight's dtype."""
+        import numpy as np
+
+        assert self.lora is not None
+        rank = self.lora[1]
+        weights = dict(zip(compiled.parameters, compiled.arrays, strict=True))
+        draws = np.random.default_rng(self._lora_seed)
+        values: list[Any] = []
+        dtypes: list[Any] = []
+        for path in paths:
+            block, adapter = path.rsplit(".", 1)
+            weight = weights[block + ".weight"]
+            out_features, in_features = weight.shape
+            if adapter == "lora_a":
+                bound = 1.0 / np.sqrt(in_features)
+                host = draws.uniform(-bound, bound, (rank, in_features)).astype(np.float32)
+            else:
+                host = np.zeros((out_features, rank), dtype=np.float32)
+            value = jax.numpy.asarray(host, dtype=weight.dtype)
+            if self.placement is not None:
+                value = self.placement(path, value)
+            values.append(value)
+            dtypes.append(weight.dtype)
+        return values, dtypes
 
     def _prepared_values(self, module: Any, arrays: list[Any]) -> list[Any]:
         """The entry's weight-only values (`prepare`), computed once and kept

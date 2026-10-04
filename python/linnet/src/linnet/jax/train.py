@@ -66,7 +66,7 @@ def train(
     steps: int | None = None,
     accumulate: int = 1,
     clip: float | None = 1.0,
-    trainable: bool | str | Sequence[str] = True,
+    trainable: bool | str | Sequence[str] | None = None,
     master: Any = jnp.float32,
     parameters: dict[str, Any] | None = None,
     mesh: Any = None,
@@ -86,7 +86,9 @@ def train(
     run out.
 
     `trainable` picks the floating-point parameters that train: all, or
-    those whose path matches a glob pattern (`"layers.*.mlp.*"`). They are
+    those whose path matches a glob pattern (`"layers.*.mlp.*"`); by
+    default the adapters alone when the model has them (`add_lora`), and
+    otherwise all. They are
     kept in `master` (f32) and cast to the dtype the model computes in on
     every call, so gradients and optimizer state are in f32; the rest stay
     as loaded. Paths bound to one checkpoint tensor (a tied embedding and
@@ -136,6 +138,9 @@ def train(
         placed[path] = moved[id(array)]
     weights = placed
     ties = _ties(weights)
+    if trainable is None:
+        adapted = getattr(model, "lora", None) is not None
+        trainable = ["*.lora_a", "*.lora_b"] if adapted else True
     chosen = _chosen([path for path in weights if path not in ties], weights, trainable)
     dtypes = {path: weights[path].dtype for path in chosen}
     # Copies in `master`, split as the weights are: the step donates them,
@@ -242,6 +247,31 @@ def train(
     final = {**frozen, **trained}
     final.update({path: final[tie] for path, tie in ties.items()})
     return final, history
+
+
+def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
+    """`parameters` with each adapter's product added into its weight,
+    `W + B @ A * alpha / rank` in f32, and the adapters left out: plain
+    weights for the model loaded again without adapters, or for serving."""
+    if getattr(model, "lora", None) is None:
+        return dict(parameters)
+    _, rank, alpha = model.lora
+    merged = {
+        path: value
+        for path, value in parameters.items()
+        if not path.endswith((".lora_a", ".lora_b"))
+    }
+    for path, down in parameters.items():
+        if not path.endswith(".lora_a"):
+            continue
+        block = path.removesuffix(".lora_a")
+        weight = merged[block + ".weight"]
+        up = parameters[block + ".lora_b"]
+        product = up.astype(jnp.float32) @ down.astype(jnp.float32)
+        merged[block + ".weight"] = (weight.astype(jnp.float32) + product * (alpha / rank)).astype(
+            weight.dtype
+        )
+    return merged
 
 
 def placement(mesh: Any) -> Callable[[str, Any], Any]:
@@ -430,6 +460,7 @@ __all__ = [
     "History",
     "Step",
     "load_checkpoint",
+    "merge_lora",
     "placement",
     "save_checkpoint",
     "save_weights",
