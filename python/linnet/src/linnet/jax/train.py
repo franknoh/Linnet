@@ -293,10 +293,15 @@ class Learner:
         self, trained: dict[str, Any], frozen: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Every parameter the model takes, the trained ones cast to the
-        dtype it computes in (traceable)."""
+        dtype it computes in (traceable). One the model's code gathers from
+        its parts stays in the master's dtype: the code casts it, and its
+        gradient is reduced in the master's dtype first."""
         values = {
             **(self.frozen if frozen is None else frozen),
-            **{path: value.astype(self.dtypes[path]) for path, value in trained.items()},
+            **{
+                path: value if path in self.gathered else value.astype(self.dtypes[path])
+                for path, value in trained.items()
+            },
         }
         values.update({path: values[tie] for path, tie in self.ties.items()})
         return values

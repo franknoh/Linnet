@@ -166,17 +166,18 @@ std::string outline_remat(const std::string& body, const std::string& tail) {
             }
         }
         if (!outputs.empty()) {
-            std::string returned;
+            std::string returned = "(";
             for (std::size_t k = 0; k < outputs.size(); ++k) {
-                returned += (k == 0 ? "" : ", ") + outputs[k];
+                returned.append(k == 0 ? "" : ", ").append(outputs[k]);
             }
-            returned = "(" + returned + (outputs.size() == 1 ? ",)" : ")");
-            out += indent + "def _remat" + id + "():\n";
+            returned.append(outputs.size() == 1 ? ",)" : ")");
+            out.append(indent).append("def _remat").append(id).append("():\n");
             for (std::size_t k = i + 1; k < close; ++k) {
-                out += (lines[k].empty() ? "" : "    ") + lines[k] + "\n";
+                out.append(lines[k].empty() ? "" : "    ").append(lines[k]).append("\n");
             }
-            out += indent + "    return " + returned + "\n";
-            out += indent + returned + " = jax.checkpoint(_remat" + id + ")()\n";
+            out.append(indent).append("    return ").append(returned).append("\n");
+            out.append(indent).append(returned).append(" = jax.checkpoint(_remat");
+            out.append(id).append(")()\n");
         }
         i = close + 1;
     }
