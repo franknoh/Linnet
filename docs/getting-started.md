@@ -1,9 +1,19 @@
 # Quickstart
 
-Write a small model, check it, and run it in PyTorch. You need a built
-compiler: see [Installation](https://linnet.franknoh.dev/guide/installation).
+Write a small model, check it, and run it in PyTorch.
 
-## 1. Create a package
+## 1. Install
+
+```bash
+uv venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+uv pip install "linnet-lang[torch]"
+```
+
+This installs the `linnet` compiler too. Other options are in
+[Installation](https://linnet.franknoh.dev/guide/installation).
+
+## 2. Create a package
 
 ```bash
 linnet init hello-model
@@ -32,7 +42,7 @@ A `block` owns parameters and sub-blocks, and an `entry` is what a backend
 calls. The compiler checks every shape in terms of `In`, `Hidden`, `Out` and
 `B`.
 
-## 2. Check it
+## 3. Check it
 
 ```bash
 linnet check .
@@ -52,12 +62,7 @@ These are the tensors a checkpoint must provide; `?` marks an optional one.
 Change the result type to `Tensor[B, In; T]` and `linnet check .` reports
 the mismatch.
 
-## 3. Run it in PyTorch
-
-```bash
-cd python/linnet && uv sync --extra torch
-export LINNET_BIN=/path/to/Linnet/build/release/linnet
-```
+## 4. Run it in PyTorch
 
 ```python
 import torch

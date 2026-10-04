@@ -4,10 +4,11 @@ The Python side of Linnet: one package, `linnet`, with a backend per
 framework behind an extra.
 
 ```bash
-pip install "linnet-lang[torch]"      # linnet.torch
-pip install "linnet-lang[jax]"        # linnet.jax
-pip install "linnet-lang[flax]"       # linnet.jax.load_nnx
-pip install "linnet-lang[onnx]"       # linnet.onnx
+uv add "linnet-lang[torch]"      # linnet.torch
+uv add "linnet-lang[jax]"        # linnet.jax
+uv add "linnet-lang[flax]"       # linnet.jax.load_nnx
+uv add "linnet-lang[onnx]"       # linnet.onnx
+uv add "linnet-lang[nest]"       # linnet.nest
 ```
 
 ```python

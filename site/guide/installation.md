@@ -1,13 +1,37 @@
 # Installation
 
-Build the `linnet` compiler, then add editor support and the Python adapters
-as needed.
+One package, `linnet-lang`, holds the `linnet` compiler, its standard
+library and the Python package `linnet`. Install it with
+[uv](https://docs.astral.sh/uv/):
 
-## Compiler
+```bash
+uv add "linnet-lang[torch]"
+uv run linnet --version
+```
 
-No version is on the [releases page](https://github.com/franknoh/Linnet/releases)
-yet, so build from source. You need CMake 3.25 or newer, Ninja, and a C++23
-compiler (GCC 13, Clang 19 or MSVC 2022).
+Pick the extras for the frameworks you use:
+
+| Extra | Adds |
+| --- | --- |
+| `torch` | `linnet.torch`: load, train and export in PyTorch, and `linnet.serve` |
+| `jax` | `linnet.jax`: load, train and export in JAX |
+| `flax` | `linnet.jax.load_nnx` |
+| `onnx` | `linnet.onnx`; add `onnxruntime`, or `onnxruntime-gpu` for CUDA and TensorRT, to run models |
+| `nest` | `linnet.nest`: models from [Nest](https://nest.franknoh.dev) and the Hugging Face Hub |
+| `all` | all of them |
+
+Outside a uv project, `uv pip install "linnet-lang[torch]"` installs into
+the active environment, and `uv run --with "linnet-lang[torch]" python
+script.py` runs one script. `pip install` works the same way.
+
+The wheels for Linux (x86_64, aarch64), macOS (arm64, 14 or newer) and
+Windows (x64) carry the compiler. On another platform, build the compiler
+from source and point `LINNET_BIN` at it.
+
+## From source
+
+You need CMake 3.25 or newer, Ninja, and a C++23 compiler (GCC 13, Clang 19
+or MSVC 2022).
 
 ```bash
 git clone https://github.com/franknoh/Linnet.git
@@ -18,7 +42,10 @@ ctest --preset release          # optional
 ```
 
 The executable is `build/release/linnet` and finds `stdlib/` in the
-checkout. Elsewhere, pass `--std <dir>` or set `LINNET_STD`.
+checkout. Elsewhere, pass `--std <dir>` or set `LINNET_STD`. To use it from
+the Python package, set `LINNET_BIN=build/release/linnet`. In
+`python/linnet`, `uv sync --all-extras` installs the package with every
+backend and test dependency.
 
 ## Editors
 
@@ -32,8 +59,8 @@ npx @vscode/vsce package
 code --install-extension linnet-*.vsix
 ```
 
-Set `linnet.path` if `linnet` is not on `PATH`, and `linnet.stdRoot` to pass
-`--std`. Run `Linnet: Restart Language Server` after rebuilding the compiler.
+Set `linnet.path` if `linnet` is not on `PATH` (in a uv project,
+`.venv/bin/linnet`), and `linnet.stdRoot` to pass `--std`. Run `Linnet: Restart Language Server` after rebuilding the compiler.
 
 ### Neovim and Vim
 
@@ -62,29 +89,6 @@ vim.api.nvim_create_autocmd("FileType", {
 Run `linnet lsp --stdio` from any Language Server Protocol client. For
 highlighting, use the TextMate grammar
 `editors/textmate/linnet.tmLanguage.json`.
-
-## Python adapters
-
-The adapters are one package, `linnet-lang`, imported as `linnet`. It is not
-on PyPI yet; install it from a checkout with [uv](https://docs.astral.sh/uv/):
-
-```bash
-export LINNET_BIN=/path/to/linnet      # or put `linnet` on PATH
-
-cd python/linnet && uv sync --extra torch    # linnet.torch: load, bind_weights, export_linnet
-cd python/linnet && uv sync --extra jax      # linnet.jax: load, load_source, export_linnet, import_stablehlo
-cd python/linnet && uv sync --extra flax     # linnet.jax.load_nnx
-cd python/linnet && uv sync --extra onnx     # linnet.onnx: export_model, load_model, import_onnx
-```
-
-Or with pip:
-
-```bash
-pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
-```
-
-`linnet.onnx.load_model` also needs `onnxruntime`, or `onnxruntime-gpu` for
-CUDA and TensorRT.
 
 Next: the [Quickstart](/docs/getting-started), or
 [Coming from PyTorch](/guide/from-pytorch) if you already have models.
