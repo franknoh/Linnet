@@ -25,7 +25,7 @@ On four H100s, 30 steps of one 4096-token row per GPU:
 | | Step | Tokens/s | Peak a GPU | Held-out loss |
 | --- | --- | --- | --- | --- |
 | Linnet, PyTorch | 0.55 s | 29.4K | 48 GiB | 1.91 to 1.342 |
-| Linnet, JAX, `--no-remat` | 0.54 s | 30.0K | 65 GiB | 1.91 to 1.345 |
+| Linnet, JAX, `--no-remat` | 0.53 s | 30.9K | 62 GiB | 1.91 to 1.345 |
 | Linnet, JAX | 0.66 s | 24.6K | 39 GiB | 1.91 to 1.344 |
 | TRL, FSDP2 | 0.57 s | 28.6K | 52 GiB | |
 
@@ -42,7 +42,7 @@ On four H100s, 30 steps of one 4096-token row per GPU:
   gradients into the parts in f32.
 - **Memory for compute.** `remat=True` wraps each layer in `jax.checkpoint`:
   the backward pass gathers and computes the layer again, and a step keeps
-  each layer's input alone. Peak memory falls from 65 to 39 GiB a GPU for a
+  each layer's input alone. Peak memory falls from 62 to 39 GiB a GPU for a
   quarter more time a step.
 - **Checkpoints.** `train(..., checkpoint=dir, checkpoint_every=100)`
   resumes from the latest one, in either framework; `save_weights` gathers

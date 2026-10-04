@@ -2,7 +2,7 @@
 every local GPU as a mesh. Each device takes its own packed row and holds
 part of every weight; each layer gathers its weights where it runs, and the
 backward pass gathers and computes each layer again instead of keeping it
-(`--no-remat` keeps it: faster, in 65 GiB a GPU rather than 39, beyond XLA's
+(`--no-remat` keeps it: faster, in 62 GiB a GPU rather than 39, beyond XLA's
 default memory fraction, so set XLA_PYTHON_CLIENT_MEM_FRACTION=0.95)."""
 
 import argparse

@@ -19,6 +19,11 @@ On one H100, against TRL on the same settings:
 
 ## GRPO
 
+The reward is 1 when an answer's last number is the product and 0
+otherwise. Over 40 steps, the share of right answers goes from 0.84 over
+the first ten steps to 0.99 over the last ten. The model learns to work
+each product out: its answers grow from about 11 tokens to 55.
+
 Each step, `linnet.train.grpo`:
 
 1. copies the policy's weights, adapters merged, into the engine's model
