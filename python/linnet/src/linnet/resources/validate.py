@@ -33,7 +33,7 @@ from typing import Any
 from .. import ir
 from ..compiler import LinnetError
 from . import expr as ex
-from .analysis import MemoryModel, load_source
+from .analysis import MemoryModel, Source, load_source
 from .cli import add_arguments, config_from_args
 from .graph import Category
 from .result import MemoryAnalysisResult, format_bytes
@@ -224,6 +224,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         source = load_source(args.model, numerics=args.numerics, root=args.root, std_root=args.std)
+        if args.weights is None:
+            # Zero weights load without bindings: no tied tensors, no
+            # optional parameters. Predict that module, not the card's.
+            source = Source(source.program, source.name, source.generics)
         policy = args.checkpoint[0] if args.checkpoint else CheckpointPolicy()
         model = MemoryModel(source, config_from_args(args, policy))
         prediction, comparisons = measure(model, args.weights)

@@ -493,7 +493,15 @@ class _Tracer:
                 if source.dtype == env.dtype(rtype.dtype):
                     return [operands[0]]
             numel = ex.product(env.shape(rtype.shape))
-            step = self.emit(kind, kind, operands, ex.ZERO if kind == "cast" else numel)
+            # Times or over a scalar is linear in the tensor: `scale`, so
+            # that autograd's rules can tell it from `x * x`.
+            scalar = [not isinstance(o, TensorValue) for o in operands]
+            linear = (kind == "mul" and scalar.count(True) == 1) or (
+                kind == "div" and scalar == [False, True]
+            )
+            step = self.emit(
+                "scale" if linear else kind, kind, operands, ex.ZERO if kind == "cast" else numel
+            )
             out = self.tensor_result(result, env, step)
             self.finish(step, [out])
             return [TensorValue(out)]

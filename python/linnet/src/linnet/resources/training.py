@@ -86,7 +86,7 @@ class TrainingConfig:
 
 # Operations whose backward needs nothing but the incoming gradient.
 _KEEPS_NOTHING = frozenset(
-    {"add", "sub", "neg", "cast", "reshape", "permute", "broadcast", "slice", "concat"}
+    {"add", "sub", "neg", "cast", "scale", "reshape", "permute", "broadcast", "slice", "concat"}
 )
 # Operations whose backward needs their result.
 _KEEPS_OUTPUT = frozenset({"exp", "sqrt", "rsqrt", "tanh"})
@@ -249,7 +249,7 @@ def timeline(
     for step in steps:
         if not differentiable[step.index]:
             continue
-        kept = _saved(step, graph, env, backend, unknown)
+        kept = _saved(step, graph, env, backend, unknown, grad)
         for id in kept.objects:
             owner = objects[id].storage
             if not objects[owner].persistent:
@@ -322,20 +322,20 @@ def timeline(
 
     # ---- workspaces, in the forward pass, the recomputation and backward
     for step in steps:
-        work = backend.workspace(step, graph, env)
-        if work.nbytes is None:
+        grads = differentiable[step.index]
+        forward = backend.workspace(step, graph, env, "forward" if grads else "inference")
+        if forward.nbytes is None:
             if step.implementation:
                 unknown.append(f"workspace of `{step.implementation}`")
             continue
-        if not work.nbytes:
-            continue
-        times = [step.index]
+        times = [(step.index, forward)]
         if step.index in region_of:
-            times.append(t_redo[step.index])
-        if differentiable[step.index]:
-            times.append(t_back[step.index])
-        for t in times:
-            intervals.append(Interval(t, t, work.nbytes, Category.WORKSPACE, work.confidence))
+            times.append((t_redo[step.index], forward))
+        if grads:
+            times.append((t_back[step.index], backend.workspace(step, graph, env, "backward")))
+        for t, work in times:
+            if work.nbytes:
+                intervals.append(Interval(t, t, work.nbytes, Category.WORKSPACE, work.confidence))
 
     # ---- gradients of activations, and of parameters
     for obj in objects:
@@ -380,7 +380,10 @@ def _saved(
     env: Mapping[str, int],
     backend: BackendResourceModel,
     unknown: list[str],
+    grad: Mapping[int, bool],
 ) -> _Kept:
+    """What autograd keeps from a step: a product keeps each operand only
+    for the other operands' gradients, as PyTorch's autograd does."""
     if step.implementation is not None:
         kept = backend.saved(step, graph, env, True)
         if kept is not None:
@@ -389,13 +392,21 @@ def _saved(
             f"what `{step.implementation}` keeps for backward (all inputs and outputs assumed)"
         )
         return _Kept((*step.inputs, *step.outputs), Estimate(0, Confidence.ESTIMATED))
+    inputs = step.inputs
     if step.kind in _KEEPS_NOTHING:
         return _Kept(())
     if step.kind in _KEEPS_OUTPUT:
         return _Kept(step.outputs)
     if step.kind == "reduce":
-        return _Kept((*step.inputs, *step.outputs))
-    return _Kept(step.inputs)
+        return _Kept((*inputs, *step.outputs))
+    if step.kind in ("mul", "comprehension") and len(inputs) > 1:
+        return _Kept(tuple(i for i in inputs if any(grad.get(j, False) for j in inputs if j != i)))
+    if step.kind == "div" and len(inputs) == 2:
+        numerator, denominator = inputs
+        return _Kept((numerator, denominator) if grad.get(denominator, False) else (denominator,))
+    if step.kind == "select" and inputs:
+        return _Kept(inputs[:1])
+    return _Kept(inputs)
 
 
 @dataclass(frozen=True, slots=True)

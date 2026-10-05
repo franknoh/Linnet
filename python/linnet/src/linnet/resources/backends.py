@@ -16,13 +16,17 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from . import expr as ex
 from .graph import Category, Confidence, MemoryObject, Step, TensorGraph
 from .storage import storage
 
 MIB = 1 << 20
+
+# When a step runs: in inference, in a training forward pass (gradients
+# wanted), or in its backward.
+Phase = Literal["inference", "forward", "backward"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +66,9 @@ class BackendResourceModel(Protocol):
 
     name: str
 
-    def workspace(self, step: Step, graph: TensorGraph, env: Mapping[str, int]) -> Estimate:
+    def workspace(
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], phase: Phase = "inference"
+    ) -> Estimate:
         """Transient bytes a step takes while it runs, beyond its outputs."""
         ...
 
@@ -106,7 +112,9 @@ class GenericBackend:
 
     name = "generic"
 
-    def workspace(self, step: Step, graph: TensorGraph, env: Mapping[str, int]) -> Estimate:
+    def workspace(
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], phase: Phase = "inference"
+    ) -> Estimate:
         if step.implementation is None:
             return ZERO
         return Estimate(None, Confidence.UNKNOWN, f"`{step.implementation}`")
@@ -167,7 +175,9 @@ class CudaTorchBackend:
 
     # ---- workspace
 
-    def workspace(self, step: Step, graph: TensorGraph, env: Mapping[str, int]) -> Estimate:
+    def workspace(
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], phase: Phase = "inference"
+    ) -> Estimate:
         if step.implementation is None:
             return ZERO
         implementation = _base(step.implementation)
@@ -175,24 +185,16 @@ class CudaTorchBackend:
         if implementation.startswith("torch.nn.functional.scaled_dot_product_attention"):
             query = objects[0]
             rows = _numel(query, env) // ex.evaluate(query.shape[-1], env)
+            bias = _mask_bias(objects, env)
             return Estimate(
-                rows * 4,
+                rows * 4 + bias,
                 Confidence.ESTIMATED,
-                "a fused kernel's f32 log-sum-exp; PyTorch's math fallback, which it picks "
-                "when no fused kernel fits, materializes the scores instead",
+                "a fused kernel's f32 log-sum-exp and the mask as an additive bias; PyTorch's "
+                "math fallback, which it picks when no fused kernel fits, materializes the "
+                "scores instead",
             )
         if implementation in ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs"):
-            hidden, weight = objects[0], objects[1]
-            vocab = ex.evaluate(weight.shape[0], env)
-            rows = min(
-                _numel(hidden, env) // ex.evaluate(hidden.shape[-1], env),
-                max(1, LOSS_BLOCK_BYTES // (4 * vocab)),
-            )
-            return Estimate(
-                rows * vocab * (4 + _element(hidden)),
-                Confidence.MODELED,
-                "one block of logits, in the input dtype and in f32",
-            )
+            return _loss_workspace(implementation, objects, env, phase)
         if implementation in _NO_WORKSPACE:
             return ZERO
         return Estimate(None, Confidence.UNKNOWN, f"`{implementation}`")
@@ -209,11 +211,15 @@ class CudaTorchBackend:
         if implementation in ("torch.nn.functional.linear", "torch.matmul"):
             return Saved(inputs[:2])
         if implementation.startswith("torch.nn.functional.scaled_dot_product_attention"):
-            query = graph.objects[inputs[0]]
-            rows = _numel(query, env) // ex.evaluate(query.shape[-1], env)
+            objects = [graph.objects[i] for i in inputs]
+            rows = _numel(objects[0], env) // ex.evaluate(objects[0].shape[-1], env)
             return Saved(
                 (*inputs[:3], *outputs),
-                Estimate(rows * 4, Confidence.ESTIMATED, "log-sum-exp"),
+                Estimate(
+                    rows * 4 + _mask_bias(objects, env),
+                    Confidence.ESTIMATED,
+                    "log-sum-exp, and the mask as an additive bias",
+                ),
             )
         if implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):
             source = graph.objects[inputs[0]]
@@ -289,6 +295,62 @@ class CudaTorchBackend:
     def alignment(self) -> int:
         # The caching allocator rounds each block up to 512 bytes.
         return 512
+
+
+def _mask_bias(objects: list[MemoryObject], env: Mapping[str, int]) -> int:
+    """A boolean mask (the fourth input) as the additive bias the fused
+    kernels take: its elements in the query's dtype, not broadcast."""
+    if len(objects) < 4 or objects[3].dtype != "bool":
+        return 0
+    return _numel(objects[3], env) * _element(objects[0])
+
+
+def _loss_workspace(
+    implementation: str, objects: list[MemoryObject], env: Mapping[str, int], phase: Phase
+) -> Estimate:
+    """`linnet.torch.loss`, a block of rows at a time. Python keeps the last
+    block's tensors until their names are reassigned, so two blocks overlap:
+    with gradients, the last block's f32 probabilities and input-dtype
+    gradient stay while the next block's f32 logits and `logsumexp`'s f32
+    temporary exist; and each block's weight-gradient product is made in the
+    input dtype and in f32 before it is added."""
+    hidden, weight = objects[0], objects[1]
+    vocab = ex.evaluate(weight.shape[0], env)
+    width = ex.evaluate(weight.shape[1], env)
+    rows = _numel(hidden, env) // ex.evaluate(hidden.shape[-1], env)
+    block = min(rows, max(1, LOSS_BLOCK_BYTES // (4 * vocab)))
+    second = min(block, rows - block)  # the next block, when there is one
+    e = _element(hidden)
+    update = vocab * width * (e + 4)
+    if implementation == "linnet.linear_cross_entropy":
+        if phase == "backward":
+            return Estimate(0, Confidence.MODELED, "the gradients were computed with the loss")
+        if phase == "forward":
+            sizes = [
+                block * vocab * (e + 4),
+                block * vocab * 8,
+                block * vocab * (4 + e) + update,
+                block * vocab * (4 + e) + second * vocab * 8,
+            ]
+            return Estimate(max(sizes), Confidence.MODELED, "blocks of logits and their gradient")
+    elif phase == "backward":
+        sizes = [
+            block * vocab * (4 + e) + second * vocab * (4 + e),
+            block * vocab * (4 + e) + update,
+        ]
+        return Estimate(
+            max(sizes) + vocab * width * 4 + rows * width * e,
+            Confidence.MODELED,
+            "blocks of logits again, and the f32 weight gradient",
+        )
+    sizes = [
+        block * vocab * (e + 4),
+        block * vocab * 8,
+        block * vocab * 4 + second * vocab * (e + 4),
+    ]
+    return Estimate(
+        max(sizes), Confidence.MODELED, "blocks of logits, in the input dtype and in f32"
+    )
 
 
 _NO_WORKSPACE = frozenset(

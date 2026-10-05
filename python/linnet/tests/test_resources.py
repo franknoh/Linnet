@@ -105,6 +105,27 @@ pub block Model<H: Dim, Layers: Dim, T: Float = f32> {
 """
 
 
+SQUARES = """\
+module squares
+
+pub block Model<N: Dim, T: Float = f32> {
+    param scale: Tensor[N; T]
+
+    pub entry halved<B: Dim>(x: Tensor[B, N; T]) -> f32 {
+        let a = x * scale
+        let b = a * 0.5
+        return sum<f32>[i, j] cast<f32>(b[i, j])
+    }
+
+    pub entry squared<B: Dim>(x: Tensor[B, N; T]) -> f32 {
+        let a = x * scale
+        let b = a * a
+        return sum<f32>[i, j] cast<f32>(b[i, j])
+    }
+}
+"""
+
+
 def source(tmp_path: Path, text: str, name: str = "model") -> Source:
     path = tmp_path / f"{name}.linnet"
     path.write_text(text, encoding="utf-8")
@@ -328,6 +349,20 @@ def test_only_trainable_parameters_get_gradients(tmp_path: Path) -> None:
     model = training(tmp_path, trainable=("head.*",))
     result = model.analyze()
     assert result.total(Category.OPTIMIZER) == 2 * 32 * 32 * 4
+
+
+def test_autograd_keeps_a_square_but_not_a_scaled_tensor(tmp_path: Path) -> None:
+    built = source(tmp_path, SQUARES)
+    peaks = {
+        entry: MemoryModel(
+            built, config(entry=entry, batch=64, bindings={"N": 8}, training=TrainingConfig())
+        )
+        .analyze()
+        .graph_peak
+        for entry in ("halved", "squared")
+    }
+    # `a * a` keeps `a` for its backward; `a * 0.5` does not.
+    assert peaks["squared"] > peaks["halved"]
 
 
 # ---- fitting

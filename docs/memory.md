@@ -159,7 +159,36 @@ backend), `kvcache`, `training`, `analysis` and `planner`.
 python -m linnet.resources.validate llama-3.1-8b-instruct --batch 4 --seq-len 2048
 ```
 
-runs the configuration on a CUDA device and compares the graph peak with
+runs the configuration on a CUDA device and compares the prediction with
 PyTorch's allocator peak, and the expected peak with the device memory in
 use. The errors are reported as they are; nothing is tuned to make one
 benchmark match.
+
+On an H100 with PyTorch 2.14 (generated source, `compile=True`, fast
+numerics), the graph and workspaces against the allocator peak:
+
+| Model | Configuration | Predicted | Measured | Error |
+| --- | --- | ---: | ---: | ---: |
+| TinyLlama 1.1B | batch 1, 2,048 tokens | 2.25 GiB | 2.26 GiB | -0.2% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens | 3.46 GiB | 3.47 GiB | -0.1% |
+| TinyLlama 1.1B | decode, batch 32, cache 4,096 | 4.83 GiB | 4.87 GiB | -0.8% |
+| Llama 3.1 8B | batch 1, 8,192 tokens | 18.01 GiB | 18.02 GiB | -0.0% |
+| Llama 3.1 8B | decode, batch 16, cache 8,192 | 31.00 GiB | 31.03 GiB | -0.1% |
+| Qwen2.5 0.5B | batch 4, 4,096 tokens | 6.06 GiB | 6.07 GiB | -0.2% |
+| GPT-2 | batch 8, 1,024 tokens | 2.61 GiB | 2.62 GiB | -0.1% |
+| Qwen2.5 0.5B | training, 2,048 tokens, SGD | 6.75 GiB | 6.80 GiB | -0.7% |
+| Qwen2.5 0.5B | training, 4,096 tokens, SGD | 11.14 GiB | 11.01 GiB | +1.2% |
+| Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 20.92 GiB | 20.61 GiB | +1.5% |
+| TinyLlama 1.1B | training, 4,096 tokens, SGD | 11.24 GiB | 10.92 GiB | +2.9% |
+| TinyLlama 1.1B | training, 4,096 tokens, AdamW | 15.34 GiB | 15.02 GiB | +2.1% |
+| TinyLlama 1.1B | training, 8,192 tokens, SGD | 21.28 GiB | 20.62 GiB | +3.2% |
+
+Training is a whole step (forward, backward and a fused optimizer step)
+on packed sequences. The process adds more than the graph:
+
+- **CUDA context:** 690 to 770 MiB measured outside the allocator; the
+  analysis estimates 512 MiB. Pass the size you see with `--context-bytes`.
+- **Allocator reserve:** what the caching allocator holds beyond its peak.
+  It measured from 0.14 to 7.9 GiB and depends on the order of
+  allocations, so the analysis lists it as unknown. Leave room for it with
+  `--reserve` or `--reserve-percent` when fitting.
