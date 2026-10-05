@@ -15,6 +15,7 @@ and writes text, and runs no model.
 | `init` | create a package ([Modules and packages](modules-and-packages.md)) |
 | `lsp` | language server |
 | `serve` | serve a model over HTTP: `python -m linnet.serve` ([Serving](integrations.md#over-http)) |
+| `memory`, `fit` | the memory a configuration needs, and the largest that fits a device ([Memory planning](memory.md)) |
 | `spec-test` | run the executable specification |
 
 Exit status is 0 on success, 1 for errors in the input, 2 for a bad command

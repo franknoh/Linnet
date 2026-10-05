@@ -132,6 +132,10 @@ void print_usage(std::FILE* out) {
         "  serve <model> [options]              Serve a model over HTTP with OpenAI's API;\n"
         "                                       runs `python -m linnet.serve`, whose\n"
         "                                       --help lists the options\n"
+        "  memory <model> [options]             The memory a configuration needs, before\n"
+        "                                       running it (`python -m linnet.resources`)\n"
+        "  fit <model> [options]                The largest batch, context or cache that\n"
+        "                                       fits a device's memory\n"
         "  check [options] <path>...            Check syntax, types, and shapes of the\n"
         "                                       given files and everything they import\n"
         "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"
@@ -247,8 +251,9 @@ std::string find_python(const char* program) {
     return std::filesystem::exists(beside, error) ? beside.string() : fallback;
 }
 
-// `linnet serve ...` is `python -m linnet.serve ...`: serving needs the
-// Python package and a framework, which the compiler does not link.
+// `linnet serve ...` is `python -m linnet.serve ...`, and `linnet memory`
+// and `linnet fit` are `python -m linnet.resources ...`: they need the
+// Python package (and serving a framework), which the compiler does not link.
 int run_python_module(const char* module,
                       std::span<const std::string_view> args,
                       const char* program) {
@@ -1238,6 +1243,11 @@ int main(int argc, char** argv) {
     }
     if (command == "serve") {
         return run_python_module("linnet.serve", rest, argv[0]);
+    }
+    if (command == "memory" || command == "fit") {
+        std::vector<std::string_view> forwarded{command};
+        forwarded.insert(forwarded.end(), rest.begin(), rest.end());
+        return run_python_module("linnet.resources", forwarded, argv[0]);
     }
     if (command == "fmt") {
         return run_fmt(rest, options);

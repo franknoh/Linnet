@@ -84,6 +84,8 @@ splitting Qwen3 8B across two GPUs. The
   checkpoint for vLLM, and GGUF for llama.cpp and Ollama.
 - Serve with `linnet.serve`: continuous batching and an OpenAI-compatible
   HTTP server.
+- [Plan memory](/docs/memory) before running: `linnet memory` and
+  `linnet fit`.
 - [Train](/docs/training) in PyTorch or JAX: supervised fine-tuning, DPO and
   GRPO, with LoRA or fully sharded across GPUs. Or hand the model to
   transformers' `Trainer` and TRL.
