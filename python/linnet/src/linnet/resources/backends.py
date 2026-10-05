@@ -1,0 +1,332 @@
+"""Backend resource models: what a lowered operation allocates beyond the
+tensors the graph shows, and what the runtime holds besides.
+
+The graph knows a native call's inputs and outputs; only the backend knows
+the workspace a kernel takes, the tensors its autograd keeps, and the
+memory the process holds before any model loads. A model answers those
+questions with a confidence (`linnet.resources.graph.Confidence`): a
+number it can derive from the implementation is `backend-modeled`, a
+typical value for something the runtime decides is `estimated`, and an
+implementation it does not know is `unknown`, which is reported as such
+and never counted as zero.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Protocol
+
+from . import expr as ex
+from .graph import Category, Confidence, MemoryObject, Step, TensorGraph
+from .storage import storage
+
+MIB = 1 << 20
+
+
+@dataclass(frozen=True, slots=True)
+class Estimate:
+    """Bytes with how they were obtained; `nbytes` is None when unknown."""
+
+    nbytes: int | None
+    confidence: Confidence
+    note: str = ""
+
+
+ZERO = Estimate(0, Confidence.MODELED)
+
+
+@dataclass(frozen=True, slots=True)
+class Saved:
+    """What autograd keeps from a step for its backward: some of the step's
+    own inputs and outputs (object ids), and extra tensors the kernel makes
+    for itself (a softmax's log-sum-exp)."""
+
+    objects: tuple[int, ...]
+    extra: Estimate = ZERO
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeItem:
+    """Memory the backend holds whatever the model: a library handle's
+    workspace, the CUDA context."""
+
+    name: str
+    category: Category
+    estimate: Estimate
+
+
+class BackendResourceModel(Protocol):
+    """What a backend allocates for lowered operations."""
+
+    name: str
+
+    def workspace(self, step: Step, graph: TensorGraph, env: Mapping[str, int]) -> Estimate:
+        """Transient bytes a step takes while it runs, beyond its outputs."""
+        ...
+
+    def saved(
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], training: bool
+    ) -> Saved | None:
+        """What autograd keeps from a native step for backward, or None to
+        apply the generic rule."""
+        ...
+
+    def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
+        """Memory held regardless of the model."""
+        ...
+
+    def alignment(self) -> int:
+        """The allocation granularity of transient storage."""
+        ...
+
+
+def _numel(obj: MemoryObject, env: Mapping[str, int]) -> int:
+    return ex.evaluate(ex.product(obj.shape), env)
+
+
+def _bytes(obj: MemoryObject, env: Mapping[str, int]) -> int:
+    return ex.evaluate(obj.nbytes, env) if obj.owns_storage else _numel(obj, env) * _element(obj)
+
+
+def _element(obj: MemoryObject) -> int:
+    return storage(obj.dtype).element_bytes
+
+
+def _base(implementation: str) -> str:
+    """`torch.softmax(input dtype)` is `torch.softmax` computed in the input
+    dtype: the same storage."""
+    return implementation.removesuffix("(input dtype)")
+
+
+class GenericBackend:
+    """A backend nothing is known about: every native operation's workspace
+    is unknown, and so is the runtime's own memory."""
+
+    name = "generic"
+
+    def workspace(self, step: Step, graph: TensorGraph, env: Mapping[str, int]) -> Estimate:
+        if step.implementation is None:
+            return ZERO
+        return Estimate(None, Confidence.UNKNOWN, f"`{step.implementation}`")
+
+    def saved(
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], training: bool
+    ) -> Saved | None:
+        return None
+
+    def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
+        return (
+            RuntimeItem(
+                "Runtime overhead",
+                Category.RUNTIME,
+                Estimate(None, Confidence.UNKNOWN, "no runtime model for this backend"),
+            ),
+        )
+
+    def alignment(self) -> int:
+        return 1
+
+
+# The f32 logits of one block of rows in `linnet.torch.loss`.
+LOSS_BLOCK_BYTES = 1 << 30
+
+
+def _cublas_workspace() -> Estimate:
+    """PyTorch's cuBLAS workspace per handle: CUBLAS_WORKSPACE_CONFIG when
+    set (`:SIZE_KIB:COUNT` pairs), else its default."""
+    config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if config:
+        total = 0
+        parts = [p for p in config.split(":") if p]
+        for size, count in zip(parts[::2], parts[1::2], strict=False):
+            total += int(size) * 1024 * int(count)
+        return Estimate(total, Confidence.MODELED, "CUBLAS_WORKSPACE_CONFIG")
+    return Estimate(
+        32 * MIB,
+        Confidence.ESTIMATED,
+        "PyTorch's default on Hopper; about 8 MiB on earlier GPUs",
+    )
+
+
+class CudaTorchBackend:
+    """The generated PyTorch code on a CUDA device.
+
+    Workspaces and saved tensors come from what each native implementation
+    is known to allocate: PyTorch's kernels, and `linnet.torch`'s own (the
+    chunked loss). The CUDA context is a typical value; the caching
+    allocator's fragmentation and any compilation's autotuning are unknown.
+    `context_bytes` overrides the context estimate."""
+
+    name = "cuda"
+
+    def __init__(self, context_bytes: int | None = None, compiled: bool = False) -> None:
+        self.context_bytes = context_bytes
+        self.compiled = compiled
+
+    # ---- workspace
+
+    def workspace(self, step: Step, graph: TensorGraph, env: Mapping[str, int]) -> Estimate:
+        if step.implementation is None:
+            return ZERO
+        implementation = _base(step.implementation)
+        objects = [graph.objects[i] for i in step.inputs]
+        if implementation.startswith("torch.nn.functional.scaled_dot_product_attention"):
+            query = objects[0]
+            rows = _numel(query, env) // ex.evaluate(query.shape[-1], env)
+            return Estimate(
+                rows * 4,
+                Confidence.ESTIMATED,
+                "a fused kernel's f32 log-sum-exp; PyTorch's math fallback, which it picks "
+                "when no fused kernel fits, materializes the scores instead",
+            )
+        if implementation in ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs"):
+            hidden, weight = objects[0], objects[1]
+            vocab = ex.evaluate(weight.shape[0], env)
+            rows = min(
+                _numel(hidden, env) // ex.evaluate(hidden.shape[-1], env),
+                max(1, LOSS_BLOCK_BYTES // (4 * vocab)),
+            )
+            return Estimate(
+                rows * vocab * (4 + _element(hidden)),
+                Confidence.MODELED,
+                "one block of logits, in the input dtype and in f32",
+            )
+        if implementation in _NO_WORKSPACE:
+            return ZERO
+        return Estimate(None, Confidence.UNKNOWN, f"`{implementation}`")
+
+    # ---- autograd
+
+    def saved(
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], training: bool
+    ) -> Saved | None:
+        if step.implementation is None:
+            return None
+        implementation = _base(step.implementation)
+        inputs, outputs = step.inputs, step.outputs
+        if implementation in ("torch.nn.functional.linear", "torch.matmul"):
+            return Saved(inputs[:2])
+        if implementation.startswith("torch.nn.functional.scaled_dot_product_attention"):
+            query = graph.objects[inputs[0]]
+            rows = _numel(query, env) // ex.evaluate(query.shape[-1], env)
+            return Saved(
+                (*inputs[:3], *outputs),
+                Estimate(rows * 4, Confidence.ESTIMATED, "log-sum-exp"),
+            )
+        if implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):
+            source = graph.objects[inputs[0]]
+            rows = _numel(source, env) // ex.evaluate(source.shape[-1], env)
+            return Saved(inputs[:2], Estimate(rows * 4, Confidence.MODELED, "f32 reciprocal std"))
+        if implementation in ("torch.softmax", "torch.sigmoid", "torch.relu", "torch.tanh"):
+            return Saved(outputs)
+        if implementation in (
+            "torch.nn.functional.silu",
+            "torch.nn.functional.gelu",
+            "torch.nn.functional.gelu(tanh)",
+        ):
+            return Saved(inputs[:1])
+        if implementation in ("torch.nn.functional.embedding", "torch.index_select"):
+            return Saved(inputs[:1])
+        if implementation == "torch.Tensor.mean":
+            return Saved(())
+        if implementation == "linnet.linear_cross_entropy":
+            hidden, weight = graph.objects[inputs[0]], graph.objects[inputs[1]]
+            gradients = _bytes(hidden, env) + _numel(weight, env) * 4
+            return Saved(
+                (), Estimate(gradients, Confidence.MODELED, "gradients computed with the loss")
+            )
+        if implementation == "linnet.linear_token_log_probs":
+            hidden = graph.objects[inputs[0]]
+            rows = _numel(hidden, env) // ex.evaluate(hidden.shape[-1], env)
+            return Saved(inputs[:3], Estimate(rows * 4, Confidence.MODELED, "log-sum-exp"))
+        if implementation in (
+            "torch.tril",
+            "torch.Tensor.index_copy",
+            "torch.Tensor.index_put",
+            "torch.Tensor.index_put(tokens)",
+        ):
+            return Saved(())
+        return None
+
+    # ---- the process
+
+    def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
+        context = (
+            Estimate(self.context_bytes, Confidence.MODELED, "given")
+            if self.context_bytes is not None
+            else Estimate(
+                512 * MIB,
+                Confidence.ESTIMATED,
+                "typical for PyTorch on a recent driver; varies with the GPU, driver and "
+                "lazy loading",
+            )
+        )
+        items = [
+            RuntimeItem("CUDA context", Category.RUNTIME, context),
+            RuntimeItem("cuBLAS workspace", Category.WORKSPACE, _cublas_workspace()),
+            RuntimeItem(
+                "Allocator fragmentation",
+                Category.RUNTIME,
+                Estimate(
+                    None,
+                    Confidence.UNKNOWN,
+                    "the caching allocator's unused reserve depends on the allocation order",
+                ),
+            ),
+        ]
+        if self.compiled:
+            items.append(
+                RuntimeItem(
+                    "Compilation",
+                    Category.RUNTIME,
+                    Estimate(None, Confidence.UNKNOWN, "torch.compile autotuning and caches"),
+                )
+            )
+        return tuple(items)
+
+    def alignment(self) -> int:
+        # The caching allocator rounds each block up to 512 bytes.
+        return 512
+
+
+_NO_WORKSPACE = frozenset(
+    {
+        "torch.nn.functional.linear",
+        "torch.matmul",
+        "torch.nn.functional.embedding",
+        "torch.index_select",
+        "torch.nn.functional.batch_norm",
+        "torch.Tensor.mean",
+        "torch.nn.functional.gelu(tanh)",
+        "torch.Tensor.index_put",
+        "torch.Tensor.index_put(tokens)",
+        "torch.rms_norm",
+        "torch.nn.functional.layer_norm",
+        "torch.softmax",
+        "torch.sigmoid",
+        "torch.relu",
+        "torch.tanh",
+        "torch.nn.functional.silu",
+        "torch.nn.functional.gelu",
+        "torch.tril",
+        "torch.Tensor.index_copy",
+        # One device: a collective returns its operand.
+        "torch.distributed.all_reduce",
+        "torch.distributed.all_gather",
+    }
+)
+
+
+def backend_model(name: str, **options: object) -> BackendResourceModel:
+    """The resource model of a backend by name: `cuda` or `generic`."""
+    if name == "cuda":
+        context = options.get("context_bytes")
+        return CudaTorchBackend(
+            context_bytes=int(context) if isinstance(context, int) else None,
+            compiled=bool(options.get("compiled", False)),
+        )
+    if name == "generic":
+        return GenericBackend()
+    raise ValueError(f"no resource model for backend `{name}` (cuda, generic)")

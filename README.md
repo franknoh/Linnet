@@ -61,6 +61,9 @@ Every row, including where Linnet loses, is on the
   checkpoint for vLLM, and GGUF for llama.cpp and Ollama.
 - Serve with `linnet.serve`: continuous batching and an OpenAI-compatible
   HTTP server.
+- Plan memory before running: `linnet memory` breaks down what a
+  configuration needs, exact where the program decides it, and `linnet fit`
+  finds the largest batch or context that fits a device.
 - Train in PyTorch or JAX: supervised fine-tuning, DPO and GRPO, with LoRA
   or fully sharded across GPUs. Or hand the model to transformers' `Trainer`
   and TRL.

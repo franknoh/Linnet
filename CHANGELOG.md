@@ -31,6 +31,11 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
 - A language server (`linnet lsp`), a VS Code extension, and Vim and
   Neovim support.
 - `linnet serve`, which serves a model with OpenAI's API.
+- `linnet memory` and `linnet fit`: static memory analysis of inference and
+  training (weights, KV caches, activation liveness, gradients, optimizer
+  states, checkpointing, sharding), each number marked exact,
+  backend-modeled, estimated or unknown; and the largest batch, context or
+  cache that fits a device.
 
 ### Python package (`linnet-lang`)
 

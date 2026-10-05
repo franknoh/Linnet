@@ -514,5 +514,6 @@ fail only `linnet lint`. Every code is in
 | `linnet torch\|jax\|onnx\|stablehlo --entry <name> --bind G=v ... <file>` | export one entry |
 | `linnet init <name>` | a new package |
 | `linnet serve <model>` | serve a model with OpenAI's API (the `serve` extra) |
+| `linnet memory <model>`, `linnet fit <model>` | the memory a configuration needs, before running it; the largest batch or context that fits |
 
 `--std <dir>` or `LINNET_STD` points at another standard library.

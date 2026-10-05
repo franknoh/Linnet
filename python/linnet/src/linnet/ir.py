@@ -601,6 +601,16 @@ def parse_substitution(data: Any) -> Substitution:
     return _Reader().substitution(data)
 
 
+def parse_dim(data: Any) -> Dim:
+    """Reads a dimension as an attribute spells it (a slice bound, say)."""
+    return _Reader().dim(data)
+
+
+def parse_shape(data: Sequence[Any]) -> Shape:
+    """Reads a shape as an attribute spells it (an index domain, say)."""
+    return _Reader().shape(data)
+
+
 def call_substitution(op: Op) -> Substitution:
     """The substitution a `call` applies to its callee's types."""
     return parse_substitution(op.attrs.get("substitution"))
