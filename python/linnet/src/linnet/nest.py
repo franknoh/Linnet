@@ -23,8 +23,10 @@ import importlib
 import json
 import os
 import re
+import shutil
 import struct
 import sys
+import tempfile
 import tomllib
 import urllib.request
 import warnings
@@ -669,16 +671,70 @@ def convert(
     return convert_checkpoint(repo, revision=revision, output=output, std_root=std_root)
 
 
+# The Hub's names for the licenses cards name, where they differ.
+HUB_LICENSES = {"creativeml open rail++-m": "openrail++"}
+# Card tags the Hub reads as a pipeline, which picks the model's widget.
+HUB_PIPELINES = (
+    "text-generation",
+    "fill-mask",
+    "sentence-similarity",
+    "feature-extraction",
+    "image-classification",
+    "zero-shot-image-classification",
+    "automatic-speech-recognition",
+    "text-to-image",
+    "mask-generation",
+)
+
+
+def hub_readme(card: Card, repo: str) -> str:
+    """The card's README as a Hugging Face model card: the metadata the Hub
+    lists and filters by (library, license, pipeline, tags), and how to load
+    the model, before the README itself. The checkpoint's repo is linked, not
+    named `base_model`, which the Hub would list as a fine-tune of it."""
+    lines = ["---", "library_name: linnet"]
+    if card.license:
+        lines.append(f"license: {HUB_LICENSES.get(card.license.lower(), card.license.lower())}")
+    pipeline = next((p for p in HUB_PIPELINES if p in card.tags), None)
+    if pipeline is not None:
+        lines.append(f"pipeline_tag: {pipeline}")
+    tags = ["linnet", "nest", *([card.family] if card.family else []), *card.tags]
+    lines += ["tags:", *(f"- {t}" for t in dict.fromkeys(tags))]
+    lines.append("---")
+    readme = card.directory / "README.md"
+    body = readme.read_text(encoding="utf-8") if readme.exists() else f"# {card.title}\n"
+    title, _, rest = body.partition("\n")
+    weights = ""
+    if card.weights is not None and card.weights.repo and card.weights.repo != repo:
+        weights = (
+            f" The weights download from [{card.weights.repo}]"
+            f"(https://huggingface.co/{card.weights.repo}); the architecture is this repo's"
+            " Linnet source, checked against them."
+        )
+    usage = (
+        "\n\n```python\nfrom linnet import nest\n\n"
+        f'model = nest.load("{repo}", backend="torch")\n```\n\n'
+        '[Linnet](https://linnet.franknoh.dev) loads it (`uv add "linnet-lang[nest,torch]"`)'
+        f" without running code from this repo.{weights}\n"
+    )
+    return "\n".join(lines) + "\n\n" + title + usage + rest
+
+
 def push(directory: str | Path, repo: str, *, private: bool = False) -> str:
     """Uploads a model directory to a Hugging Face Hub repo, which `load` then
-    takes by its name: the card, README, source and bindings, and any
-    checkpoint beside them. Returns the repo's URL."""
+    takes by its name: the card, source and bindings, any checkpoint beside
+    them, and the README as a model card (`hub_readme`). Returns the repo's
+    URL."""
     card = Card.read(directory)
     api = huggingface_hub().HfApi()
     api.create_repo(repo, exist_ok=True, private=private)
-    api.upload_folder(
-        repo_id=repo, folder_path=str(card.directory), commit_message=f"Upload {card.name}"
-    )
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / card.directory.name
+        shutil.copytree(card.directory, staged)
+        (staged / "README.md").write_text(hub_readme(card, repo), encoding="utf-8")
+        api.upload_folder(
+            repo_id=repo, folder_path=str(staged), commit_message=f"Upload {card.name}"
+        )
     return f"https://huggingface.co/{repo}"
 
 
