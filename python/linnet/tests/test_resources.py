@@ -274,11 +274,11 @@ def test_the_cuda_model_says_how_sure_it_is(tmp_path: Path) -> None:
 # ---- training
 
 
-def training(tmp_path: Path, **kwargs: object) -> MemoryModel:
+def training(tmp_path: Path, batch: int = 4, **kwargs: object) -> MemoryModel:
     train = TrainingConfig(**kwargs)  # type: ignore[arg-type]
     return MemoryModel(
         source(tmp_path, MLP),
-        config(batch=4, bindings={"H": 32, "Layers": 3}, training=train),
+        config(batch=batch, bindings={"H": 32, "Layers": 3}, training=train),
     )
 
 
@@ -315,9 +315,11 @@ def test_master_weights_and_gradient_dtypes(tmp_path: Path) -> None:
 
 
 def test_checkpointing_keeps_less_and_recomputes(tmp_path: Path) -> None:
-    plain = training(tmp_path).analyze()
-    blocks = training(tmp_path, checkpoint=CheckpointPolicy("blocks")).analyze()
+    # A large batch, so that activations rather than weights set the peak.
+    plain = training(tmp_path, batch=1024).analyze()
+    blocks = training(tmp_path, batch=1024, checkpoint=CheckpointPolicy("blocks")).analyze()
     assert blocks.total(Category.ACTIVATION) < plain.total(Category.ACTIVATION)
+    assert blocks.graph_peak < plain.graph_peak
     assert plain.recompute is None
     assert blocks.recompute is not None and 0 < blocks.recompute < 1 / 3
 

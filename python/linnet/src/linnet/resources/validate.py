@@ -42,17 +42,21 @@ from .training import CheckpointPolicy
 
 @dataclass(frozen=True, slots=True)
 class Comparison:
+    """A prediction and a measurement; `predicted` is None for what the
+    analysis lists as unknown, which is measured to show its size."""
+
     name: str
-    predicted: int
+    predicted: int | None
     measured: int
 
     @property
-    def error(self) -> int:
-        return self.predicted - self.measured
+    def error(self) -> int | None:
+        return None if self.predicted is None else self.predicted - self.measured
 
     @property
-    def relative(self) -> float:
-        return self.error / self.measured if self.measured else 0.0
+    def relative(self) -> float | None:
+        error = self.error
+        return None if error is None or not self.measured else error / self.measured
 
 
 def root_values(model: MemoryModel, env: Mapping[str, int]) -> dict[str, int | str]:
@@ -183,14 +187,19 @@ def measure(
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.synchronize()
     allocated = int(torch.cuda.max_memory_allocated())
+    reserved = int(torch.cuda.max_memory_reserved())
     free, total = torch.cuda.mem_get_info()
     used = int(total - free)
+    outside = used - int(torch.cuda.memory_reserved())
     runtime = sum(c.nbytes or 0 for c in prediction.components if c.category == Category.RUNTIME)
+    context = sum(c.nbytes or 0 for c in prediction.components if c.name == "CUDA context")
     comparisons = [
         Comparison("graph-visible vs allocator peak", prediction.graph_peak, allocated),
         Comparison(
             "graph + workspaces vs allocator peak", prediction.expected_peak - runtime, allocated
         ),
+        Comparison("allocator reserve beyond its peak", None, reserved - allocated),
+        Comparison("CUDA context vs outside the allocator", context, outside),
         Comparison("whole process vs device in use", prediction.expected_peak, used),
     ]
     return prediction, comparisons
@@ -242,9 +251,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
     for c in comparisons:
+        relative = "" if c.relative is None else f"  error {c.relative * 100:+.1f}%"
         print(
             f"{c.name:<40} predicted {format_bytes(c.predicted):>12}  measured "
-            f"{format_bytes(c.measured):>12}  error {c.relative * 100:+.1f}%"
+            f"{format_bytes(c.measured):>12}{relative}"
         )
     return 0
 
