@@ -332,3 +332,42 @@ def test_hub_repos_resolve_by_name(
 def test_a_directory_without_a_card_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(nest.NestError, match=r"has no nest\.toml"):
         nest.resolve(tmp_path)
+
+
+def test_a_pushed_readme_is_a_hub_model_card(
+    model_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = nest.Card.read(model_dir)
+    readme = nest.hub_readme(card, "linnet-lang/gpt2-tiny")
+    front, body = readme.removeprefix("---\n").split("---\n", 1)
+    assert front.splitlines() == [
+        "library_name: linnet",
+        "license: mit",
+        "tags:",
+        "- linnet",
+        "- nest",
+        "- gpt2",
+        "- test",
+    ]
+    assert body.startswith("\n# GPT-2, tiny\n\n```python\n")
+    assert 'nest.load("linnet-lang/gpt2-tiny", backend="torch")' in body
+    assert "[openai-community/gpt2](https://huggingface.co/openai-community/gpt2)" in body
+    assert body.rstrip().endswith("A toy card.")
+
+    uploaded: dict[str, str] = {}
+
+    class HfApi:
+        def create_repo(self, repo: str, exist_ok: bool, private: bool) -> None:
+            assert (repo, exist_ok, private) == ("linnet-lang/gpt2-tiny", True, False)
+
+        def upload_folder(self, repo_id: str, folder_path: str, commit_message: str) -> None:
+            for file in Path(folder_path).rglob("*"):
+                if file.is_file():
+                    uploaded[file.relative_to(folder_path).as_posix()] = file.read_text("utf-8")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", HfApi)
+    url = nest.push(model_dir, "linnet-lang/gpt2-tiny")
+    assert url == "https://huggingface.co/linnet-lang/gpt2-tiny"
+    assert set(uploaded) == {"README.md", "bindings.json", "gpt2.linnet", "nest.toml"}
+    assert uploaded["README.md"] == readme
+    assert (model_dir / "README.md").read_text("utf-8").startswith("# GPT-2, tiny")

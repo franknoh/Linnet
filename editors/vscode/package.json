@@ -3,7 +3,7 @@
     "displayName": "Linnet",
     "description": "Language support for the Linnet tensor language",
     "version": "0.1.0",
-    "publisher": "linnet",
+    "publisher": "linnet-lang",
     "license": "MIT",
     "icon": "images/icon.png",
     "homepage": "https://linnet.franknoh.dev",

@@ -210,6 +210,10 @@ jobs:
           pattern: vscode-*
           path: vsix
           merge-multiple: true
+      # The namespace is the publisher; creating it again fails harmlessly.
+      - run: npx --yes ovsx create-namespace linnet-lang || true
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
       - run: for vsix in vsix/*.vsix; do npx --yes ovsx publish "$vsix"; done
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}

@@ -100,7 +100,9 @@ python -m linnet.nest check my-model
 python -m linnet.nest push my-model me/my-model      # nest.push in Python
 ```
 
-Anyone can then load it with `nest.load("me/my-model")`.
+Anyone can then load it with `nest.load("me/my-model")`. The uploaded
+README is a Hub model card: `library_name: linnet`, the license, a pipeline
+and tags from the card, and how to load the model, before your README.
 `python -m linnet.nest pull <name>` downloads a model directory from the
 registry or the Hub and prints where it is.
 
