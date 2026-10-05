@@ -26,11 +26,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-import numpy as np
-
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate
-from .graph import Category, Confidence, Step, TensorGraph, weakest
+from .graph import Category, Confidence, Step, TensorGraph, sweep, weakest
 from .storage import is_float, storage
 
 
@@ -135,17 +133,17 @@ class TrainingTimeline:
     def peak(self) -> tuple[int, int, dict[Category, int]]:
         """The step of the timeline with the most memory, its bytes, and
         their categories (persistent memory included)."""
-        delta = np.zeros(self.length + 1, dtype=np.int64)
+        delta = [0] * (self.length + 1)
         for item in self.intervals:
             delta[item.start] += item.nbytes
             delta[item.end + 1] -= item.nbytes
-        live = np.cumsum(delta[: self.length])
-        at = int(np.argmax(live)) if self.length else 0
+        live = sweep(delta[: self.length])
+        at = max(range(self.length), key=live.__getitem__)
         parts: dict[Category, int] = dict(self.persistent)
         for item in self.intervals:
             if item.start <= at <= item.end:
                 parts[item.category] = parts.get(item.category, 0) + item.nbytes
-        return at, int(live[at]) + sum(self.persistent.values()), parts
+        return at, live[at] + sum(self.persistent.values()), parts
 
 
 def _trainable(path: str | None, patterns: Sequence[str]) -> bool:

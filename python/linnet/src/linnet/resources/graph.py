@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import accumulate
 
 import numpy as np
 
@@ -173,6 +174,11 @@ def lifetimes(graph: TensorGraph) -> dict[int, Lifetime]:
     return {id: Lifetime(first[id], last[id]) for id in first}
 
 
+def sweep(delta: list[int]) -> list[int]:
+    """Running sums of allocations and frees: the bytes live at each step."""
+    return list(accumulate(delta))
+
+
 @dataclass(frozen=True, slots=True)
 class Peak:
     """The most transient memory live at once, and where."""
@@ -200,16 +206,16 @@ def peak(
     spans = lifetimes(graph) if spans is None else spans
     count = max(len(graph.steps), 1)
     nbytes = sizes(graph, env)
-    delta = np.zeros(count + 1, dtype=np.int64)
+    delta = [0] * (count + 1)
     for id, span in spans.items():
         delta[span.first] += nbytes[id]
         delta[span.last + 1] -= nbytes[id]
-    live = np.cumsum(delta[:count])
+    live = sweep(delta[:count])
     if extra:
         for step, size in extra.items():
             live[step] += size
-    at = int(np.argmax(live)) if count else 0
-    total = int(live[at]) if count else 0
+    at = max(range(count), key=live.__getitem__)
+    total = live[at]
     owners = tuple(sorted(id for id, s in spans.items() if s.first <= at <= s.last))
     return Peak(total, at, owners)
 
@@ -270,7 +276,9 @@ def plan_buffers(
                 break
             at = max(at, start + length)
         offset[i] = at
-    planned = int(np.max(offset + size)) if len(order) else 0
+    planned = max(
+        (int(o) + int(n) for o, n in zip(offset.tolist(), size.tolist(), strict=True)), default=0
+    )
     return BufferPlan(
         naive=int(size.sum()),
         planned=planned,
