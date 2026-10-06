@@ -53,8 +53,9 @@ class DeviceSpec:
     them.
 
     - `flops`: matrix products' FLOP/s by compute dtype; `products`: the
-      same by the weight's size (`(n, FLOP/s)` for 8192 rows times an `n`
-      by `n` weight).
+      same by the weight's shape (`(n, k, FLOP/s)` for 8192 rows times an
+      `n` by `k` weight); `skinny`: the bytes per second a product of a few
+      rows (a decoding step's) reads its weight at.
     - `bandwidth`: a large copy's bytes read plus written per second;
       `elementwise` and `broadcast`: the same for an operation on two
       same-shape tensors and for one with a broadcast operand.
@@ -63,8 +64,11 @@ class DeviceSpec:
       computes, `masked` all of them, and `_backward` rates the same count
       over the backward pass's time. `decode`: the bytes of cache one query
       per row reads per second under a mask, as the generated code runs it.
-    - `dispatch`: the host's seconds per eager call; `kernel`: a small
-      kernel's device seconds, issued eagerly.
+    - `dispatch`: the host's seconds per eager call, over a decoder layer's
+      mix; `host`: the same by kind of call (`view`, `elementwise`,
+      `product`, ...) and per autograd node (`backward`,
+      `product_backward`); `kernel`: a small kernel's device seconds,
+      issued eagerly, and `strided_kernel` one reading a strided view.
     - `link`: an all-reduce's bus bandwidth; `latency`: a small one's
       seconds; `reduce`: one token's as the generated code calls it with the
       next call reading it, host included.
@@ -81,32 +85,57 @@ class DeviceSpec:
     decode: float = 0.0
     elementwise: float = 0.0
     broadcast: float = 0.0
-    products: Mapping[str, tuple[tuple[float, float], ...]] = field(
-        default_factory=dict[str, tuple[tuple[float, float], ...]]
+    products: Mapping[str, tuple[tuple[float, float, float], ...]] = field(
+        default_factory=dict[str, tuple[tuple[float, float, float], ...]]
     )
+    skinny: float = 0.0
+    host: Mapping[str, float] = field(default_factory=dict[str, float])
     dispatch: float = 0.0
     kernel: float = 0.0
+    strided_kernel: float = 0.0
     reduce: float = 0.0
     source: str = "data sheet"
 
     def peak(self, dtype: str) -> float:
         return self.flops.get(dtype, self.flops["f32"])
 
-    def product(self, dtype: str, size: int) -> float:
-        """A matrix product's FLOP/s whose weight's size is `size`: between
-        the measured sizes on a log scale, the peak past them."""
+    def product(self, dtype: str, outputs: int, width: int) -> float:
+        """A matrix product's FLOP/s by a weight of `outputs` rows of
+        `width`: between the measured shapes on a log scale, the nearest
+        edge past them, and in proportion below them."""
         peak = self.peak(dtype)
         measured = self.products.get("bf16" if dtype == "f16" else dtype, ())
         if not measured:
             return peak
-        points = [*sorted(measured), (2 * max(n for n, _ in measured), peak)]
-        if size <= points[0][0]:
-            return points[0][1] * size / points[0][0]
-        for (low, slow), (high, fast) in itertools.pairwise(points):
-            if size <= high:
-                share = math.log(size / low) / math.log(high / low)
-                return slow + share * (fast - slow)
-        return peak
+        table = {(n, k): rate for n, k, rate in measured}
+
+        def axis(values: list[float], x: float) -> tuple[float, float, float, float]:
+            """The grid points around `x`, its share of the way between
+            them, and the scale below the grid."""
+            if x <= values[0]:
+                return values[0], values[0], 0.0, x / values[0]
+            for low, high in itertools.pairwise(values):
+                if x <= high:
+                    return low, high, math.log(x / low) / math.log(high / low), 1.0
+            return values[-1], values[-1], 0.0, 1.0
+
+        n0, n1, tn, sn = axis(sorted({n for n, _, _ in measured}), outputs)
+        k0, k1, tk, sk = axis(sorted({k for _, k, _ in measured}), width)
+
+        def at(n: float, k: float) -> float:
+            return table.get((n, k), peak)
+
+        rate = (
+            (1 - tn) * (1 - tk) * at(n0, k0)
+            + tn * (1 - tk) * at(n1, k0)
+            + (1 - tn) * tk * at(n0, k1)
+            + tn * tk * at(n1, k1)
+        )
+        return min(rate * sn * sk, peak)
+
+    def host_of(self, *kinds: str) -> float:
+        """The host's seconds for eager calls of these kinds."""
+        return sum(self.host.get(kind, self.dispatch) for kind in kinds)
 
     def attention_rate(self, kind: str, width: int, dtype: str = "bf16") -> float:
         """Fused attention's rate in `dtype` at the measured head width
@@ -138,11 +167,14 @@ class DeviceSpec:
             elementwise=float(data.get("elementwise", 0.0)),
             broadcast=float(data.get("broadcast", 0.0)),
             products={
-                dtype: tuple((float(n), float(r)) for n, r in points)
+                dtype: tuple((float(n), float(k), float(r)) for n, k, r in points)
                 for dtype, points in data.get("products", {}).items()
             },
+            skinny=float(data.get("skinny", 0.0)),
+            host={k: float(v) for k, v in data.get("host", {}).items()},
             dispatch=float(data.get("dispatch", 0.0)),
             kernel=float(data.get("kernel", 0.0)),
+            strided_kernel=float(data.get("strided_kernel", 0.0)),
             reduce=float(data.get("reduce") or 0.0) or _H100.reduce,
             source=str(data.get("source", "measured")),
         )
@@ -154,51 +186,82 @@ class DeviceSpec:
 _H100 = DeviceSpec(
     "h100-80gb",
     85017493504,
-    {"bf16": 804.8e12, "f16": 804.8e12, "f32": 50.85e12},
-    3.015e12,
-    302.5e9,
-    18.4e-6,
+    {"bf16": 749.3e12, "f16": 749.3e12, "f32": 41.17e12},
+    3.037e12,
+    286.1e9,
+    17.4e-6,
     attention={
-        "causal/64": 377.7e12,
-        "causal_backward/64": 129.6e12,
-        "masked/64": 237.3e12,
-        "masked_backward/64": 85.2e12,
-        "causal/128": 550.2e12,
-        "causal_backward/128": 169.5e12,
-        "masked/128": 320.6e12,
-        "masked_backward/128": 114.7e12,
-        "causal/64/f32": 25.6e12,
-        "causal_backward/64/f32": 10.75e12,
-        "masked/64/f32": 27.8e12,
-        "masked_backward/64/f32": 12.9e12,
-        "causal/128/f32": 38.9e12,
-        "causal_backward/128/f32": 12.1e12,
-        "masked/128/f32": 39.0e12,
-        "masked_backward/128/f32": 13.8e12,
+        "causal/64": 305.18e12,
+        "causal_backward/64": 107.18e12,
+        "masked/64": 193.85e12,
+        "masked_backward/64": 76.31e12,
+        "causal/128": 449.64e12,
+        "causal_backward/128": 142.55e12,
+        "masked/128": 272.78e12,
+        "masked_backward/128": 101.91e12,
+        "causal/64/f32": 22.60e12,
+        "causal_backward/64/f32": 9.33e12,
+        "masked/64/f32": 24.63e12,
+        "masked_backward/64/f32": 11.25e12,
+        "causal/128/f32": 33.38e12,
+        "causal_backward/128/f32": 10.54e12,
+        "masked/128/f32": 33.73e12,
+        "masked_backward/128/f32": 12.09e12,
     },
-    decode=1.947e12,
-    elementwise=3.008e12,
-    broadcast=1.562e12,
+    decode=1.946e12,
+    elementwise=3.033e12,
+    broadcast=1.415e12,
     products={
         "bf16": (
-            (128, 26.1e12),
-            (256, 103.6e12),
-            (512, 361.2e12),
-            (1024, 552.1e12),
-            (2048, 700.5e12),
-            (4096, 784.3e12),
+            (256, 256, 112.4e12),
+            (256, 1024, 392.0e12),
+            (256, 4096, 528.8e12),
+            (1024, 256, 302.9e12),
+            (1024, 1024, 543.7e12),
+            (1024, 4096, 723.5e12),
+            (4096, 256, 414.0e12),
+            (4096, 1024, 650.7e12),
+            (4096, 4096, 762.0e12),
+            (16384, 256, 481.3e12),
+            (16384, 1024, 664.1e12),
+            (16384, 4096, 729.4e12),
         ),
         "f32": (
-            (256, 30.6e12),
-            (512, 45.3e12),
-            (1024, 49.4e12),
-            (2048, 50.8e12),
-            (4096, 50.6e12),
+            (256, 256, 27.2e12),
+            (256, 1024, 38.5e12),
+            (256, 4096, 40.8e12),
+            (1024, 256, 35.7e12),
+            (1024, 1024, 40.1e12),
+            (1024, 4096, 40.5e12),
+            (4096, 256, 30.3e12),
+            (4096, 1024, 39.9e12),
+            (4096, 4096, 40.8e12),
+            (16384, 256, 36.9e12),
+            (16384, 1024, 40.3e12),
+            (16384, 4096, 41.2e12),
         ),
     },
-    dispatch=6.32e-6,
-    kernel=2.11e-6,
-    reduce=19.8e-6,
+    skinny=2.725e12,
+    host={
+        "view": 1.21e-6,
+        "elementwise": 6.26e-6,
+        "product": 14.46e-6,
+        "batched": 28.44e-6,
+        "attention": 20.02e-6,
+        "normalization": 10.10e-6,
+        "write": 11.07e-6,
+        "gather": 9.33e-6,
+        "join": 7.87e-6,
+        "cast": 7.17e-6,
+        "reduction": 6.50e-6,
+        "mask": 14.71e-6,
+        "backward": 9.39e-6,
+        "product_backward": 45.19e-6,
+    },
+    dispatch=5.95e-6,
+    kernel=2.07e-6,
+    strided_kernel=3.25e-6,
+    reduce=20.6e-6,
     source="measured: H100 SXM, PyTorch 2.14.1+cu130",
 )
 
@@ -230,12 +293,15 @@ def _from_sheet(
         broadcast=_H100.broadcast * memory_ratio,
         products={
             dtype: tuple(
-                (n, r * (compute if dtype == "bf16" else f32 / 66.9e12)) for n, r in points
+                (n, k, r * (compute if dtype == "bf16" else f32 / 66.9e12)) for n, k, r in points
             )
             for dtype, points in _H100.products.items()
         },
+        skinny=_H100.skinny * memory_ratio,
+        host=_H100.host,
         dispatch=_H100.dispatch,
         kernel=_H100.kernel,
+        strided_kernel=_H100.strided_kernel,
         reduce=_H100.reduce,
         source="data sheet, at the H100's measured share of its own",
     )
@@ -253,14 +319,23 @@ DEVICES: dict[str, DeviceSpec] = {
 }
 
 
-def device(name: str) -> DeviceSpec:
-    """A device by its name in `DEVICES`, or a calibrated profile's path."""
+def device(name: str, devices: int = 1, *, refresh: bool = False) -> DeviceSpec:
+    """A device by its name in `DEVICES`, a calibrated profile's path, or
+    `local`: the GPU this process uses, measured once on this machine and
+    kept (`linnet.resources.calibrate.profile`, with the collectives
+    between `devices` of them; `refresh` measures again)."""
+    if name == "local":
+        from .calibrate import profile
+
+        return profile(devices, refresh=refresh)
     if name in DEVICES:
         return DEVICES[name]
     if Path(name).is_file():
         return DeviceSpec.load(name)
     known = ", ".join(sorted(DEVICES))
-    raise ValueError(f"unknown device `{name}`: one of {known}, or a calibrated profile's path")
+    raise ValueError(
+        f"unknown device `{name}`: one of {known}, `local`, or a calibrated profile's path"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,25 +384,25 @@ _LOSSES = ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs")
 # softmax, its scaling and its cast back.
 _LOSS_BYTES = 16
 _LOSS_GRAD_BYTES = 46
+_LOSS_BLOCK_BYTES = 1 << 30  # f32 logits per block, as `linnet.torch.loss`
 
 
 @dataclass(slots=True)
 class _Op:
-    """Device work the host issues in `calls` calls (and `host` seconds
-    more): `seconds` on the device, and which of compute, memory or
-    communication sets it."""
+    """Device work and the host time it takes to issue: `seconds` on the
+    device, which of compute, memory or communication sets it, and `host`
+    seconds of eager calls."""
 
-    calls: int
+    host: float
     seconds: float
     by: Literal["compute", "memory", "communication"]
-    host: float = 0.0
 
 
 @dataclass(slots=True)
 class _Clock:
     """The host issuing calls and the device running them, in order."""
 
-    dispatch: float
+    eager: bool
     host: float = 0.0
     device: float = 0.0
     spent: dict[str, float] = field(
@@ -335,7 +410,8 @@ class _Clock:
     )
 
     def run(self, op: _Op) -> None:
-        self.host += op.calls * self.dispatch + op.host
+        if self.eager:
+            self.host += op.host
         self.device = max(self.device, self.host) + op.seconds
         self.spent[op.by] += op.seconds
 
@@ -374,6 +450,21 @@ def _hoisted(graph: TensorGraph) -> set[int]:
     return hoisted
 
 
+def _strided(graph: TensorGraph, seeds: set[int]) -> set[int]:
+    """Values whose elements do not lie in order: `seeds`, a permute, a
+    slice, a broadcast, and views of those."""
+    found = set(seeds)
+    for step in graph.steps:
+        for out in step.outputs:
+            if graph.objects[out].owns_storage:
+                continue
+            if step.kind in ("permute", "slice", "broadcast") or any(
+                i in found for i in step.inputs
+            ):
+                found.add(out)
+    return found
+
+
 def _fused(graph: TensorGraph) -> dict[int, list[int]]:
     """Products the generated inference code runs as one: those reading the
     same input, each by a weight of its own, whose weights `prepare` joins
@@ -394,28 +485,45 @@ def _costs(
     device: DeviceSpec,
     processes: int,
     training: bool,
+    fuse: bool = True,
 ) -> tuple[list[_Op], list[_Op]]:
     """The device work of each call the generated code makes for a step,
-    forward, and in training backward."""
+    and the host's time to issue it: forward, and in training backward."""
     forward: list[_Op] = []
     backward: list[_Op] = []
     hoisted = _hoisted(graph)
-    # Split models keep their weights apart (`--no-fuse`).
-    fused = {} if training or processes > 1 else _fused(graph)
+    # Split models and pipeline stages keep their weights apart.
+    fused = _fused(graph) if fuse and not training and processes == 1 else {}
     joined = {i for members in fused.values() for i in members[1:]}
 
     stream = device.elementwise or device.bandwidth
     spread = device.broadcast or stream
+    host = device.host_of
+    node = host("backward")
+    # A joined product's parts are slices of its result.
+    strided = _strided(
+        graph, {graph.steps[i].outputs[0] for members in fused.values() for i in members}
+    )
 
-    def memory(nbytes: float, calls: int = 1, rate: float = stream) -> _Op:
-        return _Op(calls, max(nbytes / rate, calls * device.kernel), "memory")
+    def memory(nbytes: float, kernels: int = 1, rate: float = stream) -> float:
+        # The unvectorized kernel's floor is its own.
+        floor = device.strided_kernel if rate == spread and device.strided_kernel else device.kernel
+        return max(nbytes / rate, kernels * floor)
 
-    def bounded(flops: float, rate: float, nbytes: float, calls: int = 1) -> _Op:
-        compute, moved = flops / rate, nbytes / device.bandwidth
-        floor = calls * device.kernel
+    def bounded(
+        flops: float,
+        rate: float,
+        nbytes: float,
+        issued: float,
+        kernels: int = 1,
+        read_rate: float = 0.0,
+    ) -> _Op:
+        compute = flops / rate
+        moved = nbytes / (read_rate or device.bandwidth)
+        floor = kernels * device.kernel
         if compute >= moved:
-            return _Op(calls, max(compute, floor), "compute")
-        return _Op(calls, max(moved, floor), "memory")
+            return _Op(issued, max(compute, floor), "compute")
+        return _Op(issued, max(moved, floor), "memory")
 
     for step in graph.steps:
         if step.index in hoisted or step.index in joined:
@@ -437,15 +545,30 @@ def _costs(
                 )
                 written = sum(_bytes(graph, o, env) for s in steps for o in s.outputs)
             weight = _dims(graph, step.inputs[1], env)
-            outputs = sum(_dims(graph, graph.steps[i].inputs[1], env)[-2] for i in members)
-            width = weight[-1] if weight else 1
-            size = math.isqrt(max(outputs * width, 1)) if len(weight) >= 2 else 1
+            source = _dims(graph, step.inputs[0], env)
+            batched = implementation == "torch.matmul" and len(weight) > 2
+            if implementation == "torch.matmul":
+                outputs, width = (weight[-1], weight[-2]) if len(weight) >= 2 else (1, 1)
+            else:
+                outputs = sum(_dims(graph, graph.steps[i].inputs[1], env)[-2] for i in members)
+                width = weight[-1] if weight else 1
+            rows = math.prod(source[:-1]) if source else 1
             dtype = graph.objects[step.inputs[0]].dtype
             # A joined product is one call, then a slice for each part.
-            calls = 1 + len(members) if len(members) > 1 else 1
-            op = bounded(flops, device.product(dtype, size), read + written, calls)
+            issued = host("batched" if batched else "product")
+            if len(members) > 1:
+                issued += host(*["view"] * len(members))
+            # A few rows (a decoding step's) read the weight at its own rate.
+            skinny = device.skinny if rows <= 64 else 0.0
+            op = bounded(
+                flops,
+                device.product(dtype, outputs, width),
+                read + written,
+                issued,
+                read_rate=skinny,
+            )
             forward.append(op)
-            backward.append(_Op(2, 2 * op.seconds, op.by))
+            backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by))
         elif implementation == "torch.nn.functional.scaled_dot_product_attention":
             inputs = step.inputs
             query = _dims(graph, inputs[0], env)
@@ -454,11 +577,21 @@ def _costs(
             cache = sum(_bytes(graph, i, env) for i in inputs[1:3])
             if masked and not causal and query[-2] == 1:
                 # One query under a mask: two products around an f32
-                # softmax, twelve calls.
+                # softmax, as the generated code writes it.
+                calls = host(
+                    *["view"] * 4,
+                    "batched",
+                    "batched",
+                    "cast",
+                    "cast",
+                    "elementwise",
+                    "elementwise",
+                    "mask",
+                    "reduction",
+                )
                 seconds = cache / (device.decode or device.bandwidth)
-                op = _Op(12, max(seconds, 8 * device.kernel), "memory")
-                forward.append(op)
-                backward.append(_Op(op.calls, 2 * op.seconds, "memory"))
+                forward.append(_Op(calls, max(seconds, 8 * device.kernel), "memory"))
+                backward.append(_Op(8 * node, 2 * seconds, "memory"))
                 continue
             kind = "masked" if masked and not causal else "causal"
             work = flops / 2 if causal else flops
@@ -470,12 +603,18 @@ def _costs(
             compute = work / rate
             forward.append(
                 _Op(
-                    1,
+                    host("attention"),
                     max(compute, moved, device.kernel),
                     "compute" if compute >= moved else "memory",
                 )
             )
-            backward.append(_Op(1, max(work / backward_rate, 2 * moved, device.kernel), "compute"))
+            backward.append(
+                _Op(
+                    node + host("attention"),
+                    max(work / backward_rate, 2 * moved, device.kernel),
+                    "compute",
+                )
+            )
         elif implementation in _COLLECTIVES:
             if processes <= 1:
                 continue  # the generated helper returns its argument
@@ -484,53 +623,79 @@ def _costs(
             share = (processes - 1) / processes
             carried = (2 if reduce else 1) * share
             seconds = device.latency + carried * size / device.link
-            if reduce and device.reduce:
-                # The generated code's sum costs the host more than a call:
-                # `reduce` is measured with the call that reads it.
-                host = max(device.reduce - 2 * device.dispatch, 0.0)
-                op = _Op(1, seconds, "communication", host)
-            else:
-                op = _Op(1, seconds, "communication")
-            forward.append(op)
-            backward.append(op)
+            # The generated code's sum costs the host more than a call:
+            # `reduce` is measured with the call that reads it.
+            issued = (
+                max(device.reduce - host("elementwise"), 0.0)
+                if reduce and device.reduce
+                else host()
+            )
+            forward.append(_Op(issued, seconds, "communication"))
+            backward.append(_Op(issued + node, seconds, "communication"))
         elif implementation in _LOSSES:
             hidden, weight = _dims(graph, step.inputs[0], env), _dims(graph, step.inputs[1], env)
-            logits = math.prod(hidden[:-1]) * weight[0]
-            rate = device.product(
-                graph.objects[step.inputs[0]].dtype, math.isqrt(weight[0] * weight[1])
-            )
+            rows = math.prod(hidden[:-1])
+            logits = rows * weight[0]
+            rate = device.product(graph.objects[step.inputs[0]].dtype, weight[0], weight[1])
             gradients = implementation == "linnet.linear_cross_entropy" and training
-            products = 3 * flops if gradients else flops
-            per_logit = _LOSS_GRAD_BYTES if gradients else _LOSS_BYTES
-            forward.append(bounded(products, rate, logits * per_logit + read))
-            if training and not gradients:
-                # Log-probabilities keep their log-sum-exp and recompute the
-                # logits for the gradients.
-                backward.append(bounded(3 * flops, rate, logits * _LOSS_GRAD_BYTES + read))
-            elif training:
-                backward.append(memory(2 * read))
+            # A block of rows at a time: its products, then passes over its
+            # f32 logits, one kernel after another; with gradients the
+            # weight's gradient is summed in f32 every block as well.
+            blocks = -(-rows // max(1, _LOSS_BLOCK_BYTES // (4 * weight[0])))
+            calls = (3 if gradients else 1) * host("product") + (11 if gradients else 5) * host(
+                "elementwise"
+            )
+            summed = blocks * weight[0] * weight[1] * 20
+            with_grads = _Op(
+                blocks * calls,
+                3 * flops / rate + (logits * _LOSS_GRAD_BYTES + summed) / stream,
+                "compute",
+            )
+            if gradients:
+                forward.append(with_grads)
+                backward.append(_Op(node + 2 * host("elementwise"), memory(2 * read), "memory"))
+            else:
+                forward.append(
+                    _Op(blocks * calls, flops / rate + logits * _LOSS_BYTES / stream, "compute")
+                )
+                if training:
+                    # Log-probabilities keep their log-sum-exp and recompute
+                    # the logits for the gradients.
+                    backward.append(with_grads)
         elif implementation == "torch.nn.functional.embedding":
-            forward.append(memory(2 * written))
+            forward.append(_Op(host("gather"), memory(2 * written), "memory"))
             # A dense gradient the table's size, rows added into it.
-            backward.append(memory(_bytes(graph, step.inputs[1], env) + 3 * written, 2))
+            table = _bytes(graph, step.inputs[1], env)
+            backward.append(
+                _Op(node + 2 * host("elementwise"), memory(table + 3 * written, 2), "memory")
+            )
         elif implementation in _WRITES:
-            forward.append(memory(2 * _bytes(graph, step.inputs[1], env)))
+            update = _bytes(graph, step.inputs[1], env)
+            # The generated write's index arguments are calls of their own:
+            # a position as a long, and per row an `arange` and a slice.
+            calls = {
+                "torch.Tensor.index_copy": ("write", "view", "cast"),
+                "torch.Tensor.index_put": ("write", "elementwise", "cast", "view"),
+            }.get(full, ("write", "cast", "cast", "view", "view"))
+            forward.append(_Op(host(*calls), memory(2 * update), "memory"))
         elif implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):
             # The fast normalizations are two calls: the normalization, then
             # times the (broadcast) weight.
-            normalized = memory(2 * written)
-            scaled = memory(2 * written, rate=spread)
-            op = _Op(2, normalized.seconds + scaled.seconds, "memory")
-            forward.append(op)
-            backward.append(_Op(op.calls, 2 * op.seconds, "memory"))
+            seconds = memory(2 * written) + memory(2 * written, rate=spread)
+            forward.append(_Op(host("normalization", "elementwise"), seconds, "memory"))
+            backward.append(_Op(2 * node, 2 * seconds, "memory"))
         elif owned:
+            # An operand broadcast, or a strided view (a permute, a slice of
+            # a joined product), takes PyTorch's unvectorized kernel.
             largest = max(_numel(graph, o, env) for o in owned)
-            broadcast = any(0 < _numel(graph, i, env) < largest for i in step.inputs)
-            op = memory(read + written, rate=spread if broadcast else stream)
-            forward.append(op)
-            backward.append(_Op(op.calls, 2 * op.seconds, "memory"))
+            slow = any(0 < _numel(graph, i, env) < largest or i in strided for i in step.inputs)
+            seconds = memory(read + written, rate=spread if slow else stream)
+            kind = {"cast": "cast", "concat": "join"}.get(step.kind, "elementwise")
+            forward.append(_Op(host(kind), seconds, "memory"))
+            backward.append(_Op(node, 2 * seconds, "memory"))
         else:
-            forward.append(_Op(1, 0.0, "memory"))  # a view
+            forward.append(_Op(host("view"), 0.0, "memory"))  # a view
+            backward.append(_Op(node, 0.0, "memory"))
     return forward, backward
 
 
@@ -553,22 +718,28 @@ def _part(
     received: int = 0,
     recomputed: float = 0.0,
     optimizer_states: int = 2,
+    staged: bool = False,
 ) -> _Part:
-    """One device's share of one (micro-)step. `recomputed` is the share of
-    the forward pass checkpointing runs again."""
-    forward, backward = _costs(graph, env, device, processes, training)
-    clock = _Clock(0.0 if compiled else device.dispatch)
+    """One device's share of one (micro-)step. `received` is what crosses
+    into it from the stage before, which in training sends a gradient as
+    large back; `recomputed` is the share of the forward pass checkpointing
+    runs again."""
+    forward, backward = _costs(graph, env, device, processes, training, fuse=not staged)
+    clock = _Clock(not compiled)
+    transfer = _Op(device.host_of(), device.latency + received / device.link, "communication")
     if received:
-        clock.run(_Op(1, device.latency + received / device.link, "communication"))
+        clock.run(transfer)
     for op in forward:
         clock.run(op)
     optimizer = 0.0
     if training:
         if recomputed:
             for op in forward:
-                clock.run(_Op(op.calls, op.seconds * recomputed, op.by))
+                clock.run(_Op(op.host * recomputed, op.seconds * recomputed, op.by))
         for op in reversed(backward):
             clock.run(op)
+        if received:
+            clock.run(transfer)
         weights = sum(
             ex.evaluate(o.nbytes, env)
             for o in graph.objects
@@ -610,6 +781,7 @@ def step_time(
             received=received,
             recomputed=recomputed,
             optimizer_states=optimizer_states,
+            staged=len(parts) > 1,
         )
         for graph, env, received, recomputed in parts
     ]

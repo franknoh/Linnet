@@ -37,7 +37,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   number marked exact, backend-modeled, estimated or unknown; the largest
   batch, context or cache that fits a device; and the layout over several
   devices with the highest throughput, predicted operation by operation
-  from rates `python -m linnet.resources.calibrate` measures.
+  from rates measured on the device (`--device local` measures the GPU it
+  runs on, once).
 
 ### Python package (`linnet-lang`)
 

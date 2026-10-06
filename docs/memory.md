@@ -131,7 +131,10 @@ listed above it for a pipeline.
   cache by the same factor. DTensor's redistributions are not followed, so
   the activations are an estimate.
 - Each process adds NCCL's communicator (842 MiB) and the one-shot
-  all-reduce's buffers; a pipeline adds its send and receive channels.
+  all-reduce's buffers. A pipeline stage adds its point-to-point channels:
+  the first stage's to send, the last's to receive, both ways in training.
+  DTensor adds the channels its all-to-all redistributions open, when it
+  splits a weight.
   These are H100 measurements: `torchrun --nproc-per-node 2 -m
   linnet.resources.probe` measures them on your machine.
 
@@ -206,64 +209,73 @@ the analysis refuses, says why. `--batch` or `--seq-len` fixes the size.
 
 Each operation of the step is costed at rates measured on the device:
 
-- matrix products at the rate measured for their size and dtype, or reading
-  their operands, whichever is longer;
+- matrix products at the rate measured for their weight's shape and dtype,
+  or reading their operands (a few rows read the weight at their own rate);
 - fused attention at its kernel's rate: causal, under a mask, by head width
   and dtype; one query under a mask as the generated code runs it;
 - other kernels at the bandwidth an elementwise kernel reaches, about half
-  of it when an operand is broadcast;
+  of it when an operand is broadcast or a strided view (a permute, a slice
+  of a joined product), with a floor per small kernel;
+- the chunked loss block by block, its products and its passes over f32
+  logits one after another;
 - collectives over the link, with the generated code's host time.
 
-The generated code runs eagerly, so the host issues every call (6.3 µs each
-on the H100 host measured). The device starts each kernel once it is issued
-and the previous one is done: a step of small kernels waits on the host.
-The calls are the generated code's: rotary tables made once per shape,
-inference projections of one input joined into one product, a causal mask
-run as `is_causal`. Training adds the backward pass and one optimizer pass.
-A pipeline adds its bubble.
+The generated code runs eagerly, so the host issues every call. Each kind
+of call (a view, an elementwise kernel, a product, autograd's node) has its
+own measured cost, scaled to what a small decoder's generated step takes on
+the host. The device starts each kernel once it is issued and the previous
+one is done: a step of small kernels waits on the host. The calls are the
+generated code's: rotary tables made once per shape, inference projections
+of one input joined into one product (not in split models or pipeline
+stages), a causal mask run as `is_causal`, a cache write's index arguments.
+Training adds the backward pass and one optimizer pass. A pipeline adds its
+bubble and the transfers between stages.
 
-`--device` is `h100-80gb` (measured), or `h200`, `a100-80gb`, `a100-40gb`,
-`l4` (the H100's measurements scaled by the data sheets). Measure your own:
+`--device` is `h100-80gb` (measured), `h200`, `a100-80gb`, `a100-40gb`,
+`l4` (the H100's measurements scaled by the data sheets), or `local`: the
+GPU this machine has, measured once (about two minutes) and kept in
+`~/.cache/linnet/devices`. `--recalibrate` measures it again; with
+`--devices 2` or more, the collectives between this machine's GPUs are
+measured too.
 
 ```bash
+linnet fit model --maximize throughput --device local --devices 2
 python -m linnet.resources.calibrate --name my-h100 --output my-h100.json
-torchrun --nproc-per-node 2 -m linnet.resources.calibrate --name my-h100 --output my-h100.json
-linnet fit model --maximize throughput --device my-h100.json --devices 2
+linnet fit model --maximize throughput --device my-h100.json
 ```
 
-On H100s, one step of the generated source (eager, fast numerics, zero
-weights), the median of six. The previous model, a data-sheet roofline, is
-in the last column:
+Two H100s of the same kind measured up to 10% apart in device rates and
+20% in host time. Calibrate on the machine that will run.
 
-| Model | Configuration | Predicted | Measured | Error | Roofline |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Llama 3.1 8B | decode, batch 1, cache 8,192 | 11.2 ms | 11.5 ms | -3.1% | -55.7% |
-| Llama 3.1 8B | decode, batch 16, cache 8,192 | 15.4 ms | 18.1 ms | -14.9% | -45.1% |
-| Llama 3.1 8B | decode, batch 32, cache 4,096 | 15.4 ms | 18.2 ms | -15.5% | -45.6% |
-| Llama 3.1 8B | batch 1, 8,192 tokens | 221 ms | 214 ms | +3.4% | -24.9% |
-| TinyLlama 1.1B | batch 8, 2,048 tokens | 73.9 ms | 79.0 ms | -6.5% | -48.7% |
-| TinyLlama 1.1B | decode, batch 1, cache 2,048 | 7.44 ms | 7.89 ms | -5.6% | -91.5% |
-| Qwen2.5 0.5B | batch 4, 4,096 tokens | 43.6 ms | 50.9 ms | -14.4% | -56.1% |
-| GPT-2 (f32) | batch 8, 1,024 tokens | 37.8 ms | 52.4 ms | -27.8% | -33.0% |
-| BERT base (f32) | batch 8, 512 tokens | 18.4 ms | 20.2 ms | -8.8% | -42.3% |
-| TinyLlama 1.1B | training, 8,192 tokens, AdamW | 307 ms | 297 ms | +3.2% | -68.7% |
-| Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 167 ms | 189 ms | -11.3% | -76.3% |
-| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 139 ms | 143 ms | -2.7% | -35.0% |
-| TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 102 ms | 126 ms | -18.9% | -66.6% |
-| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 11.8 ms | 16.3 ms | -27.3% | -79.3% |
-| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 11.9 ms | 18.8 ms | -36.4% | -69.2% |
+On an H100 pair, one step of the generated source (eager, fast numerics,
+zero weights), the median of six; rates calibrated on the same pair:
+
+| Model | Configuration | Predicted | Measured | Error |
+| --- | --- | ---: | ---: | ---: |
+| Llama 3.1 8B | decode, batch 1, cache 8,192 | 11.7 ms | 11.2 ms | +4.6% |
+| Llama 3.1 8B | decode, batch 16, cache 8,192 | 16.4 ms | 18.1 ms | -9.5% |
+| Llama 3.1 8B | decode, batch 32, cache 4,096 | 16.4 ms | 18.1 ms | -9.7% |
+| Llama 3.1 8B | batch 1, 8,192 tokens | 257 ms | 249 ms | +3.1% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens | 88.4 ms | 92.8 ms | -4.8% |
+| TinyLlama 1.1B | decode, batch 1, cache 2,048 | 7.80 ms | 7.47 ms | +4.5% |
+| Qwen2.5 0.5B | batch 4, 4,096 tokens | 56.1 ms | 58.7 ms | -4.4% |
+| GPT-2 (f32) | batch 8, 1,024 tokens | 46.6 ms | 62.8 ms | -25.8% |
+| BERT base (f32) | batch 8, 512 tokens | 22.8 ms | 24.6 ms | -7.4% |
+| TinyLlama 1.1B | training, 8,192 tokens, AdamW | 346 ms | 334 ms | +3.5% |
+| Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 199 ms | 210 ms | -5.1% |
+| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 149 ms | 162 ms | -8.0% |
+| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 13.9 ms | 15.5 ms | -10.1% |
+| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 14.0 ms | 17.6 ms | -20.2% |
+| TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 119 ms | 131 ms | -9.0% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | 53.4 ms | 58.6 ms | -8.9% |
 
 Where it is still short:
 
-- **Tensor-parallel decoding.** These two rows come from another pair of
-  H100s. The host's calls cost more here than the measured average, and
-  each sum's host time comes on top.
-- **Pipelines.** The schedule's own host work is not modeled.
-- **Decoding at larger batches.** Small kernels take longer than the
-  measured floor.
-
-The host time varies by machine: the same step differed by up to 20%
-between H100 hosts. Calibrate on the machine that will run.
+- **GPT-2 in f32.** Its weights are stored transposed (`Conv1D`), and
+  PyTorch runs those f32 products with a slower kernel than the measured
+  one.
+- **Tensor-parallel decoding.** Per-row cache writes and the attention
+  helper's calls cost the host more than the kinds measured alone.
 
 ## JSON and Python
 
@@ -348,18 +360,16 @@ On two H100s, each process against its own prediction:
 | --- | --- | --- | --- |
 | Llama 3.1 8B | decode, batch 16, cache 8,192, tensor parallel 2 | -0.1%, -0.1% | +0.0%, +0.0% |
 | Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | -0.0%, -0.0% | -0.5%, -0.5% |
-| GPT-2 | batch 8, 1,024 tokens, DTensor tensor parallel 2 | +0.2%, +0.2% | -22.3%, -22.3% |
+| GPT-2 | batch 8, 1,024 tokens, DTensor tensor parallel 2 | +0.2%, +0.2% | +0.0%, +0.0% |
 | BERT base | batch 8, 512 tokens, DTensor tensor parallel 2 | -0.6%, -0.6% | +0.1%, +0.1% |
 | ViT base | batch 32, DTensor tensor parallel 2 | -0.1%, -0.1% | +0.1%, +0.1% |
 | TinyLlama 1.1B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | -0.3%, -0.4% | +0.0%, -0.1% |
 | TinyLlama 1.1B | the same under GPipe | +0.1%, +0.1% | +0.0%, -0.1% |
 | Qwen2.5 0.5B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | -2.9%, -1.2% | +0.0%, -0.1% |
-| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | -9.2%, +3.5% | -0.4%, -12.0% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | -9.2%, +3.5% | -0.0%, -0.0% |
 
-Outside the allocator, the training pipeline's send and receive channels
-(745 MiB) are taken from the TinyLlama 1F1B run, so that row checks
-nothing; the inference pipeline's last stage held 0.26 GiB more than its
-first, unexplained. GPT-2's DTensor run also opened NCCL's point-to-point
-channels (0.43 GiB), which a tensor-parallel prediction leaves out. The pipeline's loss on real
+Outside the allocator, the point-to-point channels are taken from these
+runs (421 MiB to send, 677 MiB to receive, 745 MiB both ways, 440 MiB for
+DTensor's exchanges), so their rows check nothing new. The pipeline's loss on real
 TinyLlama weights matched one GPU's to six digits, and its gradient norms
 to within 0.7%.

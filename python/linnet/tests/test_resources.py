@@ -621,6 +621,31 @@ def test_a_slow_host_sets_the_step(tmp_path: Path) -> None:
     assert compiled.throughput(replace(device)).seconds < 1
 
 
+def test_point_to_point_channels_follow_what_a_process_does(tmp_path: Path) -> None:
+    from linnet.resources.backends import Channels, CudaTorchBackend
+
+    backend = CudaTorchBackend(processes=2)
+
+    def channels(training: bool, which: Channels) -> int | None:
+        items = {i.name: i.estimate.nbytes for i in backend.runtime(training, which)}
+        return items.get("NCCL send and receive")
+
+    assert channels(False, "none") is None
+    # A pipeline's first stage only sends, its last only receives.
+    sends, receives = channels(False, "send") or 0, channels(False, "receive") or 0
+    assert 0 < sends < receives < (channels(True, "both") or 0)
+    # DTensor's redistributions open them when it splits a weight.
+    split = memory(
+        source(tmp_path, SPLIT), ExecutionConfig(batch=2, bindings={"H": 16}, tensor_parallel=2)
+    ).analyze()
+    assert (split.component("NCCL send and receive").nbytes or 0) > 0
+    sharded = memory(
+        source(tmp_path, SHARDED),
+        ExecutionConfig(batch=4, bindings={"H": 16, "Out": 32}, tensor_parallel=2),
+    ).analyze()
+    assert all(c.name != "NCCL send and receive" for c in sharded.components)
+
+
 def test_a_calibrated_profile_loads(tmp_path: Path) -> None:
     import json
 
@@ -631,7 +656,10 @@ def test_a_calibrated_profile_loads(tmp_path: Path) -> None:
         "source": "measured",
         "memory": 1 << 30,
         "flops": {"bf16": 100.0, "f16": 100.0, "f32": 10.0},
-        "products": {"bf16": [[128, 10.0], [512, 50.0]]},
+        "products": {
+            "bf16": [[128, 128, 10.0], [128, 512, 20.0], [512, 128, 30.0], [512, 512, 50.0]]
+        },
+        "host": {"view": 2e-7},
         "bandwidth": 5.0,
         "attention": {"causal/64": 30.0, "causal/128": 60.0, "causal/64/f32": 3.0},
         "dispatch": 1e-6,
@@ -644,12 +672,14 @@ def test_a_calibrated_profile_loads(tmp_path: Path) -> None:
     path.write_text(json.dumps(profile), encoding="utf-8")
     loaded = device(str(path))
     assert loaded.name == "mine" and loaded.dispatch == 1e-6
-    # Between the measured sizes on a log scale; below them in proportion;
-    # past them toward the peak.
-    assert loaded.product("bf16", 256) == pytest.approx(30.0)
-    assert loaded.product("bf16", 64) == pytest.approx(5.0)
-    assert loaded.product("bf16", 1 << 20) == 100.0
-    assert loaded.product("f32", 256) == 10.0
+    # Between the measured shapes on a log scale; below them in proportion;
+    # past them at the nearest edge.
+    assert loaded.product("bf16", 256, 256) == pytest.approx(27.5)
+    assert loaded.product("bf16", 64, 512) == pytest.approx(10.0)
+    assert loaded.product("bf16", 1 << 20, 1 << 20) == 50.0
+    assert loaded.product("f32", 256, 256) == 10.0
+    # A kind measured costs its own; any other the mix's average.
+    assert loaded.host_of("view", "product") == pytest.approx(2e-7 + 1e-6)
     assert loaded.attention_rate("causal", 80) == 30.0
     assert loaded.attention_rate("causal", 120) == 60.0
     assert loaded.attention_rate("causal", 64, "f32") == 3.0
