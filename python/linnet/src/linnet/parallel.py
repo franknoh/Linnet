@@ -153,6 +153,19 @@ def assign_stages(units: Sequence[str], starts: Sequence[str]) -> list[int]:
     return [sum(1 for p in positions if p <= i) for i in range(len(units))]
 
 
+def layout_stages(
+    units: Sequence[str], sizes: Sequence[int], stages: int, starts: Sequence[str] | None = None
+) -> list[int]:
+    """Each unit's stage: from `starts` (the unit each stage after the first
+    begins at) when given, else balanced by `sizes` (`pipeline_stages`)."""
+    assigned = (
+        assign_stages(units, starts) if starts is not None else pipeline_stages(sizes, stages)
+    )
+    if max(assigned, default=0) + 1 != stages:
+        raise ValueError(f"{max(assigned, default=0) + 1} stages where {stages} are wanted")
+    return assigned
+
+
 def stage_of_path(units: Sequence[str], assigned: Sequence[int], path: str) -> int | None:
     """The stage of the block holding `path` (a parameter, a state, or a
     block), or None when no block holds it."""
@@ -166,6 +179,7 @@ __all__ = [
     "DEFAULT_RULES",
     "ONE_SHOT_BYTES",
     "assign_stages",
+    "layout_stages",
     "pipeline_stages",
     "split_axis",
     "stage_of_path",

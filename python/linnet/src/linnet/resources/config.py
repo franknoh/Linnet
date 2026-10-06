@@ -31,7 +31,11 @@ class ExecutionConfig:
     which is also the dtype parameters are stored in: a model that stores
     weights otherwise declares them so in its source). `kv_dtype` and
     `kv_layout` describe a backend that stores caches differently from
-    their declaration. `bindings` gives any other generic a value."""
+    their declaration. `bindings` gives any other generic a value. A pipeline
+    (`pipeline_parallel` stages) cuts each step's inputs into
+    `microbatches` along their first axis and runs them under `schedule`;
+    `stages` names the block each stage after the first starts at, as
+    `linnet.torch.pipeline` takes it."""
 
     backend: str = "cuda"
     entry: str | None = None
@@ -47,6 +51,9 @@ class ExecutionConfig:
     training: TrainingConfig | None = None
     tensor_parallel: int = 1
     pipeline_parallel: int = 1
+    microbatches: int = 1
+    schedule: Literal["1f1b", "gpipe"] = "1f1b"
+    stages: tuple[str, ...] | None = None
     data_parallel: int = 1
     sharding: Literal["none", "fsdp"] = "none"
     batch_generics: tuple[str, ...] = ("B", "Batch")
@@ -70,6 +77,9 @@ class ExecutionConfig:
             "bindings": dict(self.bindings),
             "tensor_parallel": self.tensor_parallel,
             "pipeline_parallel": self.pipeline_parallel,
+            "microbatches": self.microbatches,
+            "schedule": self.schedule,
+            "stages": None if self.stages is None else list(self.stages),
             "data_parallel": self.data_parallel,
             "sharding": self.sharding,
         }

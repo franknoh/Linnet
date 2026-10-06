@@ -110,6 +110,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="processes each weight is split across (binds the model's Shards)",
     )
     parser.add_argument(
+        "--pipeline-parallel", type=int, default=1, metavar="N", help="pipeline stages"
+    )
+    parser.add_argument(
+        "--microbatches", type=int, default=1, help="parts the first input axis is cut into"
+    )
+    parser.add_argument("--schedule", choices=("1f1b", "gpipe"), default="1f1b")
+    parser.add_argument(
+        "--stages",
+        type=lambda text: tuple(part for part in text.split(",") if part),
+        metavar="BLOCKS",
+        help="the block each stage after the first starts at: layers.8,layers.16",
+    )
+    parser.add_argument(
         "--context-bytes", type=parse_size, help="the CUDA context's size, if known"
     )
     parser.add_argument("--json", action="store_true", help="one JSON document instead of text")
@@ -144,6 +157,10 @@ def config_from_args(args: argparse.Namespace, checkpoint: CheckpointPolicy) -> 
         optionals=frozenset(args.optional),
         training=training,
         tensor_parallel=args.tensor_parallel,
+        pipeline_parallel=args.pipeline_parallel,
+        microbatches=args.microbatches,
+        schedule=args.schedule,
+        stages=args.stages,
         data_parallel=args.shards,
         sharding="fsdp" if args.shards > 1 else "none",
         context_bytes=args.context_bytes,

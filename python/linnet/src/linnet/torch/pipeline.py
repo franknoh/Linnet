@@ -43,7 +43,7 @@ from typing import Any, Literal
 import torch
 from torch import nn
 
-from ..parallel import assign_stages, pipeline_stages, stage_of_path, stage_starts
+from ..parallel import layout_stages, stage_of_path, stage_starts
 from ..plan import PlanError, compile_plan
 from ..weights import paths_by_tensor
 from .compiled import CompiledLinnetModule
@@ -375,15 +375,9 @@ def pipeline(
     found = units_of(module)
     names = [unit.path for unit in found]
     try:
-        assigned = (
-            assign_stages(names, stages)
-            if stages is not None
-            else pipeline_stages([unit.bytes for unit in found], size)
-        )
+        assigned = layout_stages(names, [unit.bytes for unit in found], size, stages)
     except ValueError as error:
-        raise PlanError(str(error)) from None
-    if max(assigned, default=0) + 1 != size:
-        raise PlanError(f"{max(assigned, default=0) + 1} stages for a group of {size} processes")
+        raise PlanError(f"{error} (one per process of the group)") from None
     for name, _ in module.root.named_parameters(remove_duplicate=False):
         if stage_of_path(names, assigned, name) is None:
             raise PlanError(f"`{name}` belongs to no block; a pipeline splits the root's blocks")
