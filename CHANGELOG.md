@@ -33,15 +33,19 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
 - `linnet serve`, which serves a model with OpenAI's API.
 - `linnet memory` and `linnet fit`: static memory analysis of inference and
   training (weights, KV caches, activation liveness, gradients, optimizer
-  states, checkpointing, sharding), each number marked exact,
-  backend-modeled, estimated or unknown; and the largest batch, context or
-  cache that fits a device.
+  states, checkpointing, sharding, tensor and pipeline parallelism), each
+  number marked exact, backend-modeled, estimated or unknown; the largest
+  batch, context or cache that fits a device; and the layout over several
+  devices with the highest roofline throughput bound.
 
 ### Python package (`linnet-lang`)
 
 - Loaders for PyTorch (as a `torch.nn.Module`, compiled or replayed as CUDA
   graphs), JAX (XLA, `jax.numpy`, Flax NNX) and ONNX Runtime (CUDA,
   TensorRT).
+- PyTorch across GPUs: block placement and offloading, tensor parallelism,
+  and pipelines of stages over processes under GPipe or 1F1B
+  (`linnet.torch.pipeline`).
 - Imports from PyTorch, JAX, StableHLO and ONNX; exports to a Triton
   Inference Server model, a transformers checkpoint for vLLM, SGLang and
   TGI, and GGUF for llama.cpp and Ollama.
