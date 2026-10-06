@@ -24,7 +24,7 @@ from ..parallel import layout_stages, split_axis, state_axis
 from ..plan import holds
 from ..weights import paths_by_tensor, read_bindings
 from . import expr as ex
-from .backends import BackendResourceModel, Estimate, backend_model
+from .backends import BackendResourceModel, Channels, Estimate, backend_model
 from .config import ExecutionConfig
 from .graph import Category, Confidence, TensorGraph, lifetimes, peak, peak_expr, plan_buffers
 from .kvcache import kv_state_paths
@@ -195,7 +195,6 @@ class MemoryModel:
             context_bytes=config.context_bytes,
             compiled=config.compiled,
             processes=max(processes, config.pipeline_parallel),
-            pipelined=config.pipeline_parallel > 1,
         )
         numerics = config.numerics
         card, self.source_path = nest.model_source(model)
@@ -490,7 +489,8 @@ class MemoryModel:
             received, sent = size(part.receives), size(part.sends)
             extras: list[MemoryComponent] = []
             if config.training is None:
-                base = self._inference(micro, part.graph)
+                ends: dict[int, Channels] = {0: "send", stages - 1: "receive"}
+                base = self._inference(micro, part.graph, ends.get(part.stage, "both"))
                 if count > 1:
                     extras.append(
                         MemoryComponent(
@@ -551,7 +551,7 @@ class MemoryModel:
                     return found
 
                 accumulated = config.schedule == "1f1b"
-                results.append(self._training(micro, part.graph, flight, accumulated))
+                results.append(self._training(micro, part.graph, flight, accumulated, "both"))
                 continue
             added = sum(c.nbytes or 0 for c in extras)
             results.append(
@@ -630,11 +630,15 @@ class MemoryModel:
             )
         return components, graph_total, laid_out
 
-    def _runtime(self, training: bool) -> tuple[list[MemoryComponent], int, list[str]]:
+    def _runtime(
+        self, training: bool, channels: Channels = "none"
+    ) -> tuple[list[MemoryComponent], int, list[str]]:
         components: list[MemoryComponent] = []
         total = 0
         unknown: list[str] = []
-        for item in self.backend.runtime(training):
+        if channels == "none" and self._split_paths:
+            channels = "exchange"
+        for item in self.backend.runtime(training, channels):
             estimate = item.estimate
             if estimate.nbytes is None:
                 unknown.append(f"{item.name}: {estimate.note}" if estimate.note else item.name)
@@ -669,7 +673,7 @@ class MemoryModel:
         return sizes, estimates, unknown
 
     def _inference(
-        self, env: Mapping[str, int], graph: TensorGraph | None = None
+        self, env: Mapping[str, int], graph: TensorGraph | None = None, channels: Channels = "none"
     ) -> MemoryAnalysisResult:
         graph = graph or self.graph
         spans = self.spans if graph is self.graph else lifetimes(graph)
@@ -704,7 +708,7 @@ class MemoryModel:
                 + ("; a split weight's results counted split" if whole else ""),
             )
         )
-        runtime, runtime_total, runtime_unknown = self._runtime(False)
+        runtime, runtime_total, runtime_unknown = self._runtime(False, channels)
         if at_work:
             confidence = estimates[with_work.step].confidence
             components.append(
@@ -749,6 +753,7 @@ class MemoryModel:
         graph: TensorGraph | None = None,
         flight: Callable[[TrainingTimeline], list[MemoryComponent]] | None = None,
         accumulated: bool = True,
+        channels: Channels = "none",
     ) -> MemoryAnalysisResult:
         """A training step. With `flight` (a pipeline stage), the peak is one
         micro-batch's forward or backward with what `flight` adds for the
@@ -822,7 +827,7 @@ class MemoryModel:
             components.append(MemoryComponent(name, category, size, confidence))
             if category in graph_categories:
                 graph_peak += size
-        runtime, runtime_total, runtime_unknown = self._runtime(True)
+        runtime, runtime_total, runtime_unknown = self._runtime(True, channels)
         components.extend(extras)
         components.extend(runtime)
         phase = (

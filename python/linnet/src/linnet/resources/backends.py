@@ -52,6 +52,14 @@ class Saved:
     extra: Estimate = ZERO
 
 
+# Point-to-point channels a process opens, and what NCCL 2.30 allocates for
+# them outside the allocator on two H100s: a pipeline's first stage sends,
+# its last receives, a training step goes both ways, and DTensor's
+# all-to-all exchanges.
+Channels = Literal["none", "send", "receive", "both", "exchange"]
+_CHANNELS = {"send": 421, "receive": 677, "both": 745, "exchange": 440}
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeItem:
     """Memory the backend holds whatever the model: a library handle's
@@ -80,8 +88,10 @@ class BackendResourceModel(Protocol):
         apply the generic rule; `grads` says which objects carry gradients."""
         ...
 
-    def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
-        """Memory held regardless of the model."""
+    def runtime(self, training: bool, channels: Channels = "none") -> tuple[RuntimeItem, ...]:
+        """Memory held regardless of the model. `channels` are the
+        point-to-point channels the process opens: a pipeline stage's sends
+        and receives, or DTensor's all-to-all exchanges."""
         ...
 
     def alignment(self) -> int:
@@ -125,7 +135,7 @@ class GenericBackend:
     ) -> Saved | None:
         return None
 
-    def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
+    def runtime(self, training: bool, channels: Channels = "none") -> tuple[RuntimeItem, ...]:
         return (
             RuntimeItem(
                 "Runtime overhead",
@@ -168,8 +178,7 @@ class CudaTorchBackend:
     allocator's fragmentation and any compilation's autotuning are unknown.
     `context_bytes` overrides the context estimate. `processes` is the size
     of the group a process belongs to: with more than one, collectives
-    allocate and the group has communication buffers; `pipelined` adds a
-    pipeline's point-to-point channels."""
+    allocate and the group has communication buffers."""
 
     name = "cuda"
 
@@ -178,12 +187,10 @@ class CudaTorchBackend:
         context_bytes: int | None = None,
         compiled: bool = False,
         processes: int = 1,
-        pipelined: bool = False,
     ) -> None:
         self.context_bytes = context_bytes
         self.compiled = compiled
         self.processes = processes
-        self.pipelined = pipelined
 
     # ---- workspace
 
@@ -296,7 +303,7 @@ class CudaTorchBackend:
 
     # ---- the process
 
-    def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
+    def runtime(self, training: bool, channels: Channels = "none") -> tuple[RuntimeItem, ...]:
         # Measured outside the caching allocator on an H100 with PyTorch
         # 2.14, CUDA 13 and NCCL 2.30 (`python -m linnet.resources.probe`
         # measures them on any machine): they vary with the GPU, the driver
@@ -350,16 +357,21 @@ class CudaTorchBackend:
                     ),
                 ),
             ]
-        if self.pipelined:
+        if channels != "none":
             items.append(
                 RuntimeItem(
                     "NCCL send and receive",
                     Category.RUNTIME,
                     Estimate(
-                        (745 if training else 415) * MIB,
+                        _CHANNELS[channels] * MIB,
                         Confidence.ESTIMATED,
-                        "the pipeline's point-to-point channels, one each way in training; "
-                        "measured on H100s, beside the context, libraries and communicator",
+                        {
+                            "send": "a pipeline stage's channel to the next",
+                            "receive": "a pipeline stage's channel from the one before",
+                            "both": "a pipeline stage's channels both ways",
+                            "exchange": "the channels DTensor's all-to-all redistributions open",
+                        }[channels]
+                        + "; measured on H100s, beside the context, libraries and communicator",
                     ),
                 )
             )
@@ -472,7 +484,6 @@ def backend_model(name: str, **options: object) -> BackendResourceModel:
             context_bytes=int(context) if isinstance(context, int) else None,
             compiled=bool(options.get("compiled", False)),
             processes=processes if isinstance(processes, int) else 1,
-            pipelined=bool(options.get("pipelined", False)),
         )
     if name == "generic":
         return GenericBackend()
