@@ -132,7 +132,7 @@ class Pipeline:
         losses: list[torch.Tensor] | None = [] if self.is_last else None
         built.schedule.step(
             kwarg_mbs=self._microbatches(built, inputs),
-            target_mbs=[None] * self.microbatches if self.is_last else None,
+            target_mbs=self._targets(),
             losses=losses,
             return_outputs=False,
         )
@@ -153,11 +153,18 @@ class Pipeline:
             with torch.no_grad():
                 merged: Any = built.schedule.eval(
                     kwarg_mbs=self._microbatches(built, inputs),
-                    target_mbs=[None] * self.microbatches if self.is_last else None,
+                    target_mbs=self._targets(),
                 )
         finally:
             built.module.joining = False
         return merged if self.is_last else None
+
+    def _targets(self) -> list[torch.Tensor] | None:
+        """What the schedule hands the loss on the last stage: nothing it
+        reads (the entry's result is the loss), but a tensor it requires."""
+        if not self.is_last:
+            return None
+        return [torch.zeros((), device=self.device)] * self.microbatches
 
     # ---- one build per input signature
 
