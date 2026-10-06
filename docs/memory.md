@@ -255,9 +255,11 @@ in the last column:
 
 Where it is still short:
 
-- **Tensor-parallel decoding.** Each all-reduce costs the host 100 to
-  300 µs in the eager runtime (functional collectives and their tensor
-  subclass). A two-GPU decode step measured slower than one GPU's.
+- **Tensor-parallel decoding.** The two rows were measured while each
+  eager all-reduce cost the host 100 to 300 µs (a functional collective's
+  tensor subclass). With the sums made cheaper, the steps take 16.3 and
+  18.8 ms on another pair of H100s; the rest of the gap is the host's
+  calls, dearer here than the measured average.
 - **Pipelines.** The schedule's own host work is not modeled.
 - **Decoding at larger batches.** Small kernels take longer than the
   measured floor.
