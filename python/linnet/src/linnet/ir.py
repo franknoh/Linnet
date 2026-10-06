@@ -9,8 +9,9 @@ the language spells them (`Tensor[B, S, H; bf16]`).
 
 from __future__ import annotations
 
+import fnmatch
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -322,18 +323,11 @@ class Program:
                 return function
         raise LinnetError(f"block `{block}` has no method `{name}`")
 
-    def entry(self, name: str | None = None) -> Function:
-        """The root entry called `name`, or the only one."""
-        entries = self.entries()
-        if name is None:
-            if len(entries) != 1:
-                names = ", ".join(e.short_name for e in entries)
-                raise LinnetError(f"block `{self.root.name}` has {len(entries)} entries: {names}")
-            return entries[0]
-        for entry in entries:
-            if entry.short_name == name:
-                return entry
-        raise LinnetError(f"block `{self.root.name}` has no entry `{name}`")
+    def entry(self, name: str | None = None, *, prefer: str | None = None) -> Function:
+        """The root entry called `name`; without one, the only entry, or
+        else the one called `prefer`."""
+        entries = {e.short_name: e for e in self.entries()}
+        return entries[choose_entry(self.root.name, list(entries), name, prefer)]
 
     def parameters(self) -> tuple[ManifestEntry, ...]:
         return tuple(e for e in self.manifest if e.kind == "param")
@@ -784,6 +778,58 @@ def repeat_paths(path: str, counts: Sequence[int]) -> list[str]:
     for count in counts:
         paths = [p.replace("[*]", f".{i}", 1) for p in paths for i in range(count)]
     return paths
+
+
+def chosen_paths(
+    paths: Iterable[str],
+    trainable: bool | str | Sequence[str],
+    tied: Mapping[str, str] | None = None,
+) -> list[str]:
+    """The parameter paths a `trainable` choice picks: every one for True,
+    none for False, those matching a glob pattern (or any of several)
+    otherwise. Paths bound to one tensor (`tied[path]` names the path that
+    holds it) are picked together, when any of them matches."""
+    listed = list(paths)
+    if trainable is True:
+        return listed
+    if trainable is False:
+        return []
+    patterns = [trainable] if isinstance(trainable, str) else list(trainable)
+    links = tied or {}
+    picked = {
+        links.get(path, path)
+        for path in listed
+        if any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+    }
+    return [path for path in listed if links.get(path, path) in picked]
+
+
+def shared_paths(values: Iterable[tuple[str, object]]) -> dict[str, str]:
+    """Each path whose object (a parameter, an array) an earlier path holds
+    too, to that earlier path: the ties `chosen_paths` takes."""
+    first: dict[int, str] = {}
+    tied: dict[str, str] = {}
+    for path, value in values:
+        holder = first.setdefault(id(value), path)
+        if holder != path:
+            tied[path] = holder
+    return tied
+
+
+def choose_entry(
+    block: str, names: Sequence[str], name: str | None, prefer: str | None = None
+) -> str:
+    """Entry `name` of `block`, which has entries `names`; without a name,
+    the only one, or else `prefer` when it has that one."""
+    if name is not None:
+        if name not in names:
+            raise LinnetError(f"block `{block}` has no entry `{name}`")
+        return name
+    if len(names) == 1:
+        return names[0]
+    if prefer is not None and prefer in names:
+        return prefer
+    raise LinnetError(f"block `{block}` has {len(names)} entries: {', '.join(names)}; name one")
 
 
 def expand_paths(entry: ManifestEntry, bindings: Bindings) -> list[str]:

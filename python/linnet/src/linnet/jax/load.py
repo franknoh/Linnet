@@ -28,6 +28,7 @@ import numpy as np
 from jax.core import Tracer
 from jax.sharding import SingleDeviceSharding
 
+from .. import ir
 from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..weights import apply_bindings, read_arrays
 from .dtypes import MLIR_TYPES
@@ -510,11 +511,7 @@ def load(
         for f in cast(list[dict[str, Any]], plan["functions"])
         if f["kind"] == "entry" and f["block"] == root_name
     ]
-    entry_name = entry
-    if entry_name is None:
-        if len(entries) != 1:
-            raise LinnetError(f"block `{root_name}` has {len(entries)} entries; name one")
-        entry_name = entries[0]
+    entry_name = ir.choose_entry(root_name, entries, entry)
     loaded = apply_bindings(read_arrays(weights), bindings)
     return LinnetFunction(
         source_path, plan, generics, loaded, std_root, root_name, entry_name, numerics, cast_dtype

@@ -492,14 +492,10 @@ def export(
     `.linnet` file with `generics`, `weights`, and `bindings` given here.
     `tokenizer` names a Hub repository whose tokenizer files are copied in.
     """
-    card: nest.Card | None = None
-    path = Path(model)
-    if (path / "nest.toml").exists() or not path.exists():
-        card = nest.resolve(model)
+    card, source = nest.model_source(model)
     values: dict[str, int | str] = {}
     if card is not None:
         values.update(card.generics)
-        source = card.source_path
         root = card.root if root is None else root
         if weights is None:
             weights = nest.download_weights(card)
@@ -507,8 +503,6 @@ def export(
             bindings = card.bindings_path
         if tokenizer is None and card.weights is not None:
             tokenizer = card.weights.repo
-    else:
-        source = path
     values.update(generics or {})
     if weights is None:
         raise LinnetError("an export needs weights: a SafeTensors file or directory")

@@ -21,6 +21,8 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from ..parallel import units
+
 _axis: contextvars.ContextVar[str | None] = contextvars.ContextVar("linnet_fsdp_axis", default=None)
 
 
@@ -65,26 +67,6 @@ def gather_as(axis: str, dim: int, dtype: Any) -> Callable[[Any], Any]:
 
     gather_part.defvjp(forward, backward)
     return gather_part
-
-
-def units(paths: Sequence[str]) -> tuple[list[str], list[str]]:
-    """The blocks a model's parameters (`paths`) are gathered by, as
-    `linnet.torch.fully_shard` splits them: each element of the root's
-    lists (`layers.0`, `layers.1`, ...) and each other block the root holds;
-    and the list elements alone, which are worth recomputing. Parameters of
-    the root block itself belong to none."""
-    every: list[str] = []
-    listed: list[str] = []
-    for path in paths:
-        parts = path.split(".")
-        if len(parts) < 2:
-            continue
-        unit = f"{parts[0]}.{parts[1]}" if parts[1].isdigit() and len(parts) > 2 else parts[0]
-        if unit not in every:
-            every.append(unit)
-            if unit != parts[0]:
-                listed.append(unit)
-    return every, listed
 
 
 def gathered_by_code(path: str, sharded: Sequence[str]) -> bool:

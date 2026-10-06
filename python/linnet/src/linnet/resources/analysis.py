@@ -14,9 +14,8 @@ the steps, not a new trace. That is what makes the fit search in
 
 from __future__ import annotations
 
-import fnmatch
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 
 from .. import ir, nest
@@ -39,12 +38,8 @@ _FORMULA_LIMIT = 4000
 _programs: dict[tuple[str, str | None, str | None, str, int], ir.Program] = {}
 
 
-def _compiled(
-    source: Path,
-    root: str | None,
-    std_root: str | Path | None,
-    numerics: str,
-    compile: Callable[[], ir.Program],
+def _program(
+    source: Path, root: str | None, std_root: str | Path | None, numerics: str
 ) -> ir.Program:
     key = (
         str(source.resolve()),
@@ -54,7 +49,7 @@ def _compiled(
         source.stat().st_mtime_ns,
     )
     if key not in _programs:
-        _programs[key] = compile()
+        _programs[key] = ir.load_program(source, root=root, std_root=std_root, numerics=numerics)
     return _programs[key]
 
 
@@ -65,19 +60,6 @@ def _arrays(program: ir.Program) -> tuple[str, ...]:
         if "[*]" in entry.path:
             found.append(entry.path.split("[*]", 1)[0])
     return tuple(dict.fromkeys(found))
-
-
-def _choose_entry(program: ir.Program, name: str | None) -> ir.Function:
-    if name is not None:
-        return program.entry(name)
-    entries = program.entries()
-    if len(entries) == 1:
-        return entries[0]
-    for entry in entries:
-        if entry.short_name == "forward":
-            return entry
-    names = ", ".join(e.short_name for e in entries)
-    raise TraceError(f"the model has several entries ({names}); name one")
 
 
 class MemoryModel:
@@ -110,46 +92,11 @@ class MemoryModel:
             config.backend, context_bytes=config.context_bytes, compiled=config.compiled
         )
         numerics = config.numerics
-        file = None if isinstance(model, nest.Card) else Path(model)
-        card: nest.Card | None = None
-        if isinstance(model, nest.Card):
-            card = model
-        elif file is None or not (file.suffix == ".linnet" and file.is_file()):
-            card = nest.resolve(model)
-        if card is None:
-            assert file is not None
-            self.source_path = file
-            self.name = self.source_path.stem
-            self.generics: Mapping[str, int | str] = {}
-            source_root = root
-            program = _compiled(
-                self.source_path,
-                root,
-                std_root,
-                numerics,
-                lambda: ir.load_program(
-                    self.source_path, root=root, std_root=std_root, numerics=numerics
-                ),
-            )
-        else:
-            loaded = card
-            self.source_path = card.source_path
-            self.name = card.name
-            self.generics = dict(card.generics)
-            source_root = root or card.root
-            program = _compiled(
-                self.source_path,
-                source_root,
-                std_root,
-                numerics,
-                lambda: (
-                    loaded.program(std_root, numerics=numerics)
-                    if root is None
-                    else ir.load_program(
-                        loaded.source_path, root=root, std_root=std_root, numerics=numerics
-                    )
-                ),
-            )
+        card, self.source_path = nest.model_source(model)
+        self.name = card.name if card is not None else self.source_path.stem
+        self.generics: Mapping[str, int | str] = dict(card.generics) if card is not None else {}
+        source_root = root if root is not None or card is None else card.root
+        program = _program(self.source_path, source_root, std_root, numerics)
         self.card = card
         self.program = program
         self.root = source_root
@@ -163,7 +110,7 @@ class MemoryModel:
             for paths in paths_by_tensor(bound).values():
                 self.tied.update((path, paths[0]) for path in paths[1:])
             self.present = frozenset(bound)
-        function = _choose_entry(program, config.entry)
+        function = program.entry(config.entry, prefer="forward")
         self.entry = function.short_name
         self.free = tuple(
             r
@@ -414,7 +361,7 @@ class MemoryModel:
     def _training(self, env: Mapping[str, int]) -> MemoryAnalysisResult:
         config = self.config.training
         assert config is not None
-        steps = timeline(self.graph, env, config, self.backend, self.arrays)
+        steps = timeline(self.graph, env, config, self.backend, self.arrays, self.tied)
         at, total, parts = steps.peak()
         components: list[MemoryComponent] = []
         names = [
@@ -518,7 +465,3 @@ class MemoryModel:
 def _formula(expr: ex.Expr) -> str | None:
     text = ex.format_expr(expr)
     return text if len(text) <= _FORMULA_LIMIT else None
-
-
-def matches(path: str, patterns: tuple[str, ...]) -> bool:
-    return any(fnmatch.fnmatchcase(path, p) for p in patterns)

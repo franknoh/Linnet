@@ -35,6 +35,7 @@ import torch
 
 from .. import packing
 from ..packing import Example
+from ..torch.fsdp import sharded
 from .checkpoints import load_checkpoint, save_checkpoint
 
 
@@ -253,14 +254,10 @@ def reduce_gradients(parameters: list[torch.Tensor]) -> None:
     pending = [
         dist.all_reduce(parameter.grad, async_op=True)
         for parameter in parameters
-        if parameter.grad is not None and not _split(parameter)
+        if parameter.grad is not None and not sharded(parameter)
     ]
     for work in pending:
         work.wait()
-
-
-def _split(tensor: torch.Tensor) -> bool:
-    return callable(getattr(tensor, "to_local", None))
 
 
 def clip_gradients(parameters: list[torch.Tensor], limit: float) -> float:
@@ -268,15 +265,15 @@ def clip_gradients(parameters: list[torch.Tensor], limit: float) -> float:
     before. The parts of parameters split by `fully_shard` add up across
     processes."""
     grads = [p.grad for p in parameters if p.grad is not None]
-    if not any(_split(g) for g in grads):
+    if not any(sharded(g) for g in grads):
         return float(torch.nn.utils.clip_grad_norm_(parameters, limit))
     import torch.distributed as dist
 
     # A part of a split gradient adds to the others; a scalar kept whole on
     # every process (`Replicate`) counts once.
-    split = [cast(Any, g) for g in grads if _split(g)]
+    split = [cast(Any, g) for g in grads if sharded(g)]
     local = [g.to_local() for g in split if g.placements[0].is_shard()]
-    whole = [g for g in grads if not _split(g)]
+    whole = [g for g in grads if not sharded(g)]
     whole += [g.to_local() for g in split if not g.placements[0].is_shard()]
     device = [*local, *whole][0].device
     squares = torch.zeros((), dtype=torch.float32, device=device)
