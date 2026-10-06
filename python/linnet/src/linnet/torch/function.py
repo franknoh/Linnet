@@ -26,20 +26,11 @@ from typing import Any
 import torch
 
 from ..compiler import find_compiler
+from ..dtypes import CLASSES
 from ..plan import Env, Plan, PlanError, compile_plan
 from .dtypes import torch_dtype
 from .interp import Interpreter
 from .module import bind_generics, bind_input
-
-# The dtypes each class of dtype generic admits (`T: Float`).
-_FLOATS = {"f16", "bf16", "f32", "f64"}
-_INTEGERS = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
-_CLASSES: dict[str, set[str]] = {
-    "float": _FLOATS,
-    "integer": _INTEGERS,
-    "numeric": _FLOATS | _INTEGERS,
-    "any": _FLOATS | _INTEGERS | {"bool"},
-}
 
 
 class Function:
@@ -137,7 +128,7 @@ class Function:
             else:
                 dtype = env.dtypes.get(int(generic["var"]))
                 bound = dtype is not None
-                if dtype is not None and dtype not in _CLASSES[generic.get("class", "any")]:
+                if dtype is not None and dtype not in CLASSES[generic.get("class", "any")]:
                     raise PlanError(f"`{name}` of `{self.name}` is {generic['class']}, not {dtype}")
             if not bound:
                 raise PlanError(

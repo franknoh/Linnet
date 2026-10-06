@@ -31,6 +31,7 @@ from torch import nn
 
 from ..compiler import find_compiler
 from ..plan import PlanError
+from .dtypes import LINNET_DTYPES
 
 
 class ExportError(PlanError):
@@ -64,27 +65,10 @@ def _identifier(name: str) -> str:
     return clean
 
 
-_DTYPES: dict[torch.dtype, str] = {
-    torch.bool: "bool",
-    torch.int8: "i8",
-    torch.int16: "i16",
-    torch.int32: "i32",
-    torch.int64: "i64",
-    torch.uint8: "u8",
-    torch.uint16: "u16",
-    torch.uint32: "u32",
-    torch.uint64: "u64",
-    torch.float16: "f16",
-    torch.bfloat16: "bf16",
-    torch.float32: "f32",
-    torch.float64: "f64",
-}
-
-
 def _dtype_name(dtype: torch.dtype) -> str:
-    if dtype not in _DTYPES:
+    if dtype not in LINNET_DTYPES:
         raise ExportError(f"dtype {dtype} has no Linnet equivalent")
-    return _DTYPES[dtype]
+    return LINNET_DTYPES[dtype]
 
 
 # --------------------------------------------------------------- dimensions

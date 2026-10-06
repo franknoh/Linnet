@@ -18,9 +18,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from .. import dtypes
 from . import expr as ex
 from .graph import Category, Confidence, MemoryObject, Step, TensorGraph
-from .storage import storage
 
 MIB = 1 << 20
 
@@ -97,7 +97,7 @@ def _bytes(obj: MemoryObject, env: Mapping[str, int]) -> int:
 
 
 def _element(obj: MemoryObject) -> int:
-    return storage(obj.dtype).element_bytes
+    return dtypes.dtype(obj.dtype).element_bytes
 
 
 def _base(implementation: str) -> str:

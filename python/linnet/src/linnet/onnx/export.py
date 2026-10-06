@@ -19,26 +19,14 @@ from pathlib import Path
 from typing import Any
 
 from ..compiler import LinnetError, run_compiler, std_arguments
-from ..weights import RawTensor, read_bindings, safetensors_index
-
-# SafeTensors dtype names to ONNX TensorProto data types.
-ONNX_DTYPES = {
-    "BOOL": 9,
-    "I8": 3,
-    "I16": 5,
-    "I32": 6,
-    "I64": 7,
-    "U8": 2,
-    "U16": 4,
-    "U32": 12,
-    "U64": 13,
-    "F16": 10,
-    "BF16": 16,
-    "F32": 1,
-    "F64": 11,
-}
-# ONNX data types to Linnet dtype names, for reporting.
-LINNET_DTYPES = {v: k.lower() for k, v in ONNX_DTYPES.items()}
+from ..dtypes import BY_ONNX, BY_SAFETENSORS
+from ..weights import (
+    RawTensor,
+    decode_floats,
+    encode_floats,
+    read_bindings,
+    safetensors_index,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,9 +239,6 @@ def export_function(
     )
 
 
-FLOATS = ("F32", "F16", "BF16", "F64")
-
-
 def _matches(
     dtype: str,
     shape: tuple[int, ...],
@@ -271,10 +256,11 @@ def _matches(
     if wanted != shape:
         problems.append(f"`{name}` has shape {list(shape)}, `{path}` needs {list(wanted)}")
         return False
-    if ONNX_DTYPES.get(dtype) != info.elem_type:
-        wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
-        if not (cast_dtype and dtype in FLOATS and wanted_dtype in FLOATS):
-            needs = LINNET_DTYPES.get(info.elem_type, str(info.elem_type))
+    found, needed = BY_SAFETENSORS.get(dtype), BY_ONNX.get(info.elem_type)
+    if found is None or found.onnx != info.elem_type:
+        floats = found is not None and found.is_float and needed is not None and needed.is_float
+        if not (cast_dtype and floats):
+            needs = str(info.elem_type) if needed is None else needed.name
             problems.append(f"`{name}` is {dtype}, `{path}` needs {needs}")
             return False
     return True
@@ -299,9 +285,9 @@ def _take(
         return
     info = declared[input_name].type.tensor_type
     data = tensor.data
-    if ONNX_DTYPES.get(tensor.dtype) != info.elem_type:
-        wanted_dtype = LINNET_DTYPES.get(info.elem_type, "").upper()
-        data = _cast_float(data, tensor.dtype, wanted_dtype)
+    stored = BY_SAFETENSORS.get(tensor.dtype)
+    if stored is None or stored.onnx != info.elem_type:
+        data = encode_floats(decode_floats(tensor.dtype, data), BY_ONNX[info.elem_type].safetensors)
     initializer = onnx.TensorProto()
     initializer.name = input_name
     initializer.data_type = info.elem_type
@@ -310,32 +296,10 @@ def _take(
     found[input_name] = initializer
 
 
-def _cast_float(data: bytes, source: str, target: str) -> bytes:
-    """Floating-point bytes from one dtype to another. NumPy has no bf16, so
-    it is decoded as the top half of an f32 and encoded by rounding to
-    nearest, ties to even, as every framework's cast does."""
-    import numpy as np
-
-    if source == "BF16":
-        wide = (np.frombuffer(data, dtype=np.uint16).astype(np.uint32) << 16).view(np.float32)
-    else:
-        wide = np.frombuffer(
-            data, dtype={"F32": np.float32, "F16": np.float16, "F64": np.float64}[source]
-        )
-    values = wide.astype(np.float32)
-    if target == "BF16":
-        bits = values.view(np.uint32)
-        rounded = bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))
-        return (rounded >> 16).astype(np.uint16).tobytes()
-    return values.astype(
-        {"F32": np.float32, "F16": np.float16, "F64": np.float64}[target]
-    ).tobytes()
-
-
 def _port(value: Any) -> Port:
     info = value.type.tensor_type
     return Port(
         name=value.name,
-        dtype=LINNET_DTYPES.get(info.elem_type, str(info.elem_type)),
+        dtype=BY_ONNX[info.elem_type].name if info.elem_type in BY_ONNX else str(info.elem_type),
         shape=tuple(d.dim_value for d in info.shape.dim),
     )

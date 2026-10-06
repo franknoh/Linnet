@@ -21,10 +21,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from .. import ir
+from .. import dtypes, ir
 from . import expr as ex
 from .graph import Confidence, MemoryObject
-from .storage import storage
 
 
 def _block_paths(program: ir.Program) -> dict[str, str]:
@@ -113,7 +112,7 @@ class ContiguousLayout:
             return CacheBytes(ex.evaluate(cache.nbytes, env), Confidence.EXACT)
         elements = ex.evaluate(ex.product(cache.shape), env)
         return CacheBytes(
-            elements * storage(dtype).element_bytes,
+            elements * dtypes.dtype(dtype).element_bytes,
             Confidence.MODELED,
             f"stored as {dtype} rather than the declared {cache.dtype}",
         )
@@ -137,7 +136,7 @@ class PagedLayout:
         shape = [ex.evaluate(d, env) for d in cache.shape]
         tokens = math.prod(shape[a] for a in self.token_axes)
         per_token = math.prod(s for i, s in enumerate(shape) if i not in self.token_axes)
-        element = storage(dtype or cache.dtype).element_bytes
+        element = dtypes.dtype(dtype or cache.dtype).element_bytes
         block = per_token * self.block_tokens * element
         block = -(-block // self.alignment) * self.alignment
         blocks = -(-tokens // self.block_tokens) + self.reserve_blocks

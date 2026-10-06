@@ -30,23 +30,17 @@ from typing import Any
 import numpy as np
 
 from ..compiler import LinnetError, run_compiler, std_arguments
+from ..dtypes import BY_ONNX, DTYPES
+from ..dtypes import dtype as dtype_info
+from ..weights import from_bf16_bits, to_bf16_bits
 from .export import export_model
 
 # ONNX element types and the NumPy dtypes their bytes are read as. bf16 has
 # no NumPy type; its bytes travel as uint16.
-_NUMPY = {
-    1: np.float32,
-    2: np.uint8,
-    3: np.int8,
-    5: np.int16,
-    6: np.int32,
-    7: np.int64,
-    9: np.bool_,
-    10: np.float16,
-    11: np.float64,
-    16: np.uint16,
+_NUMPY: dict[int, Any] = {
+    code: np.uint16 if info.name == "bf16" else np.dtype(info.numpy).type
+    for code, info in BY_ONNX.items()
 }
-_ELEMENTS = {"f32": 1, "f16": 10, "bf16": 16, "i32": 6, "i64": 7, "bool": 9}
 
 
 class OnnxModel:
@@ -245,7 +239,7 @@ class OnnxModel:
         """`array` as an `OrtValue` on the model's device in `dtype` (`f32`,
         `f16`, `bf16`, `i32`, ...): an input reused call after call, bound
         without a copy from the host each time."""
-        element = _ELEMENTS[dtype]
+        element = dtype_info(dtype).onnx
         return _to_device(self._ort, _encode(np.asarray(array), element), element, self._device)
 
     # ---- compilation
@@ -800,17 +794,15 @@ def _consumed(graph: Any) -> set[str]:
 
 def _encode(array: np.ndarray, element: int) -> np.ndarray:
     """An input as the graph's element type; bf16 as its rounded bits."""
-    if element == 16:
-        bits = np.ascontiguousarray(array, dtype=np.float32).view(np.uint32)
-        rounded = bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))
-        return (rounded >> 16).astype(np.uint16)
+    if element == DTYPES["bf16"].onnx:
+        return to_bf16_bits(array)
     return np.ascontiguousarray(array.astype(_NUMPY[element]))
 
 
 def _decode(array: np.ndarray, element: int) -> np.ndarray:
     """A result as NumPy can hold it: bf16 bits widened to f32."""
-    if element == 16:
-        return (np.asarray(array).view(np.uint16).astype(np.uint32) << 16).view(np.float32)
+    if element == DTYPES["bf16"].onnx:
+        return from_bf16_bits(array)
     return array
 
 

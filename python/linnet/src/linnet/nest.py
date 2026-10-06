@@ -38,6 +38,7 @@ from typing import Any, Literal, cast
 
 from . import diagram, ir
 from .compiler import LinnetError, run_compiler, std_arguments
+from .dtypes import from_safetensors
 from .weights import read_bindings
 
 REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
@@ -45,21 +46,6 @@ REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
 # `@revision`.
 HUB_REPO = re.compile(r"^(?:hf://)?(?P<repo>[\w.-]+/[\w.-]+)(?:@(?P<revision>[\w./-]+))?$")
 EXPORTS = ("stablehlo", "onnx", "torch", "jax")
-SAFETENSORS_DTYPES = {
-    "BOOL": "bool",
-    "I8": "i8",
-    "I16": "i16",
-    "I32": "i32",
-    "I64": "i64",
-    "U8": "u8",
-    "U16": "u16",
-    "U32": "u32",
-    "U64": "u64",
-    "F16": "f16",
-    "BF16": "bf16",
-    "F32": "f32",
-    "F64": "f64",
-}
 
 
 class NestError(LinnetError):
@@ -366,7 +352,7 @@ def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> li
                 problems.append(
                     f"`{source}` has shape {list(found_shape)}, `{path}` needs {list(shape)}"
                 )
-            elif SAFETENSORS_DTYPES.get(found_dtype) != dtype:
+            elif from_safetensors(found_dtype) != dtype:
                 problems.append(f"`{source}` is {found_dtype}, `{path}` needs {dtype}")
     return problems
 

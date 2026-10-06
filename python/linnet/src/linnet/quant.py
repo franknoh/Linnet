@@ -45,9 +45,15 @@ from typing import Any
 import numpy as np
 
 from .compiler import LinnetError
-from .weights import RawTensor, iter_safetensors, read_bindings, write_safetensors
-
-_FLOATS = {"F32": np.float32, "F16": np.float16, "F64": np.float64}
+from .dtypes import DTYPES
+from .weights import (
+    RawTensor,
+    decode_floats,
+    encode_floats,
+    iter_safetensors,
+    read_bindings,
+    write_safetensors,
+)
 
 
 def quantize_int4_groups(
@@ -78,27 +84,6 @@ def dequantize_int4_groups(packed: np.ndarray, scale: np.ndarray, zero: np.ndarr
     return weight.reshape(out_features, groups * 2 * half)
 
 
-def _to_f32(dtype: str, data: bytes, shape: tuple[int, ...]) -> np.ndarray:
-    if dtype == "BF16":
-        bits = np.frombuffer(data, dtype=np.uint16).astype(np.uint32) << 16
-        return bits.view(np.float32).reshape(shape)
-    if dtype not in _FLOATS:
-        raise LinnetError(f"cannot quantize a {dtype} tensor")
-    return np.frombuffer(data, dtype=_FLOATS[dtype]).astype(np.float32).reshape(shape)
-
-
-def _from_f32(values: np.ndarray, dtype: str) -> tuple[str, bytes]:
-    if dtype == "bf16":
-        bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
-        rounded = (bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))) >> 16
-        return "BF16", rounded.astype(np.uint16).tobytes()
-    names = {"f32": ("F32", np.float32), "f16": ("F16", np.float16)}
-    if dtype not in names:
-        raise LinnetError(f"scales are stored as bf16, f16, or f32, not {dtype}")
-    name, numpy_dtype = names[dtype]
-    return name, np.ascontiguousarray(values, dtype=numpy_dtype).tobytes()
-
-
 def quantize_checkpoint(
     weights: str | Path,
     output: str | Path,
@@ -119,7 +104,7 @@ def quantize_checkpoint(
     for tensor in iter_safetensors(weights):
         for path in paths_of.get(tensor.name, [tensor.name]):
             if path.endswith(".weight") and any(fnmatch.fnmatchcase(path, p) for p in chosen):
-                values = _to_f32(tensor.dtype, tensor.data, tensor.shape)
+                values = decode_floats(tensor.dtype, tensor.data).reshape(tensor.shape)
                 packed, scale, zero = quantize_int4_groups(values, group)
                 out += _int4_tensors(path.removesuffix(".weight"), packed, scale, zero, dtype)
                 quantized.append(path)
@@ -150,7 +135,10 @@ def _paths_of(bindings: str | Path | Mapping[str, str] | None) -> dict[str, list
 def _int4_tensors(
     prefix: str, packed: np.ndarray, scale: np.ndarray, zero: np.ndarray, dtype: str
 ) -> list[tuple[str, str, tuple[int, ...], bytes]]:
-    scale_dtype, scale_bytes = _from_f32(scale, dtype)
+    if dtype not in ("bf16", "f16", "f32"):
+        raise LinnetError(f"scales are stored as bf16, f16, or f32, not {dtype}")
+    scale_dtype = DTYPES[dtype].safetensors
+    scale_bytes = encode_floats(scale, scale_dtype)
     return [
         (prefix + ".weight", "U8", tuple(packed.shape), packed.tobytes()),
         (prefix + ".scale", scale_dtype, tuple(scale.shape), scale_bytes),
@@ -229,11 +217,8 @@ def import_quantized(
     for layer in layers:
         qweight = tensors[layer + ".qweight"]
         qzeros = tensors[layer + ".qzeros"]
-        scales = _to_f32(
-            tensors[layer + ".scales"].dtype,
-            tensors[layer + ".scales"].data,
-            tensors[layer + ".scales"].shape,
-        )
+        stored = tensors[layer + ".scales"]
+        scales = decode_floats(stored.dtype, stored.data).reshape(stored.shape)
         words = np.frombuffer(qweight.data, dtype=np.int32).reshape(qweight.shape)
         zero_words = np.frombuffer(qzeros.data, dtype=np.int32).reshape(qzeros.shape)
         order: np.ndarray | None = None

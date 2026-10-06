@@ -81,18 +81,7 @@ def _inputs(model: MemoryModel, env: Mapping[str, int], device: Any) -> list[Any
 
     program = model.program
     function = program.entry(model.entry)
-    dtypes = {
-        "bool": torch.bool,
-        "i8": torch.int8,
-        "i16": torch.int16,
-        "i32": torch.int32,
-        "i64": torch.int64,
-        "u8": torch.uint8,
-        "f16": torch.float16,
-        "bf16": torch.bfloat16,
-        "f32": torch.float32,
-        "f64": torch.float64,
-    }
+    from ..torch.dtypes import TORCH_DTYPES
     from .trace import entry_env, root_env
 
     root = root_env(program, {**root_values(model, env)})
@@ -108,7 +97,7 @@ def _inputs(model: MemoryModel, env: Mapping[str, int], device: Any) -> list[Any
     for param in function.params:
         if isinstance(param.type, ir.TensorType):
             shape = [ex.evaluate(d, {}) for d in bound.shape(param.type.shape)]
-            dtype = dtypes[bound.dtype(param.type.dtype)]
+            dtype = TORCH_DTYPES[bound.dtype(param.type.dtype)]
             values.append(
                 torch.randn(shape, dtype=dtype, device=device)
                 if dtype.is_floating_point
@@ -116,7 +105,7 @@ def _inputs(model: MemoryModel, env: Mapping[str, int], device: Any) -> list[Any
             )
         elif isinstance(param.type, ir.ScalarType):
             values.append(
-                torch.tensor(0, dtype=dtypes[bound.dtype(param.type.dtype)], device=device)
+                torch.tensor(0, dtype=TORCH_DTYPES[bound.dtype(param.type.dtype)], device=device)
             )
         else:
             raise LinnetError(f"cannot make an input of `{param.name}`'s type")

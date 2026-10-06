@@ -6,27 +6,23 @@ from typing import Any
 
 import torch
 
+from ..dtypes import BY_SAFETENSORS, DTYPES
 from ..plan import Env
 
 TORCH_DTYPES: dict[str, torch.dtype] = {
-    "bool": torch.bool,
-    "i8": torch.int8,
-    "i16": torch.int16,
-    "i32": torch.int32,
-    "i64": torch.int64,
-    "u8": torch.uint8,
-    "u16": torch.uint16,
-    "u32": torch.uint32,
-    "u64": torch.uint64,
-    "f16": torch.float16,
-    "bf16": torch.bfloat16,
-    "f32": torch.float32,
-    "f64": torch.float64,
+    name: getattr(torch, info.torch) for name, info in DTYPES.items()
 }
-
 
 # PyTorch dtypes back to Linnet names, for binding a dtype generic from an input.
 LINNET_DTYPES: dict[torch.dtype, str] = {dtype: name for name, dtype in TORCH_DTYPES.items()}
+
+# PyTorch dtypes as SafeTensors names them, and back.
+SAFETENSORS_NAMES: dict[torch.dtype, str] = {
+    TORCH_DTYPES[name]: info.safetensors for name, info in DTYPES.items()
+}
+FROM_SAFETENSORS: dict[str, torch.dtype] = {
+    code: TORCH_DTYPES[info.name] for code, info in BY_SAFETENSORS.items()
+}
 
 
 def torch_dtype(env: Env, spec: str | dict[str, Any]) -> torch.dtype:

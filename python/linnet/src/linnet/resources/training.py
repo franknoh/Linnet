@@ -26,10 +26,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .. import dtypes
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate
 from .graph import Category, Confidence, Step, TensorGraph, sweep, weakest
-from .storage import is_float, storage
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +205,7 @@ def timeline(
         owner = objects[obj.storage]
         grad[obj.id] = (
             owner.category == Category.PARAMETER and _trainable(owner.path, config.trainable)
-        ) and is_float(obj.dtype)
+        ) and dtypes.dtype(obj.dtype).is_float
     differentiable: list[bool] = []
     for step in steps:
         flows = step.kind not in _NOT_DIFFERENTIABLE and any(
@@ -213,7 +213,7 @@ def timeline(
         )
         differentiable.append(flows)
         for out in step.outputs:
-            grad[out] = flows and is_float(objects[out].dtype)
+            grad[out] = flows and dtypes.dtype(objects[out].dtype).is_float
 
     # ---- the schedule: forward, then backward, recomputing each region first
     regions = _regions(steps, config.checkpoint, arrays)
@@ -442,25 +442,24 @@ def _persistent(
             put(obj.category, size)
             continue
         put(Category.PARAMETER, -(-size // shards))
-        if not _trainable(obj.path, config.trainable) or not is_float(obj.dtype):
+        if not _trainable(obj.path, config.trainable) or not dtypes.dtype(obj.dtype).is_float:
             continue
         elements = ex.evaluate(ex.product(obj.shape), env)
         share = -(-elements // shards)
         updated = config.master_dtype or obj.dtype
         if config.master_dtype is not None and config.master_dtype != obj.dtype:
-            put(Category.MASTER, share * storage(config.master_dtype).element_bytes)
+            put(Category.MASTER, share * dtypes.dtype(config.master_dtype).element_bytes)
         state_dtype = config.optimizer.state_dtype or updated
         if config.optimizer.states:
             put(
                 Category.OPTIMIZER,
-                share * config.optimizer.states * storage(state_dtype).element_bytes,
+                share * config.optimizer.states * dtypes.dtype(state_dtype).element_bytes,
             )
         gradient_dtype = config.gradient_dtype or updated
         consumers = [u for u in readers.get(obj.id, []) if differentiable[u]]
         if consumers:
-            grads.append(
-                (min(t_back[u] for u in consumers), share * storage(gradient_dtype).element_bytes)
-            )
+            element = dtypes.dtype(gradient_dtype).element_bytes
+            grads.append((min(t_back[u] for u in consumers), share * element))
     return totals, confidence, grads
 
 

@@ -1,5 +1,8 @@
 """SafeTensors checkpoints and the bindings that map Linnet paths onto them."""
 
+# NumPy's stubs leave `frombuffer` partly unknown on some versions.
+# pyright: reportUnknownMemberType=false
+
 from __future__ import annotations
 
 import json
@@ -12,6 +15,7 @@ from typing import Any, cast
 import numpy as np
 
 from .compiler import LinnetError
+from .dtypes import BY_SAFETENSORS
 
 
 def safetensors_files(weights: str | Path) -> list[Path]:
@@ -27,16 +31,61 @@ def read_arrays(weights: str | Path | Mapping[str, Any]) -> dict[str, Any]:
     """Loads a checkpoint as NumPy arrays by tensor name.
 
     `weights` is a mapping (returned as arrays), a `.safetensors` file, or a
-    directory of them.
+    directory of them. `BF16` tensors come back as `ml_dtypes.bfloat16`
+    arrays (installed with JAX).
     """
     if isinstance(weights, Mapping):
         return {str(name): np.asarray(value) for name, value in weights.items()}
-    from safetensors.numpy import load_file  # type: ignore[import-untyped]
+    return {tensor.name: numpy_array(tensor) for tensor in iter_safetensors(weights)}
 
-    loaded: dict[str, Any] = {}
-    for file in safetensors_files(weights):
-        loaded.update(cast(dict[str, Any], load_file(str(file))))
-    return loaded
+
+def numpy_array(tensor: RawTensor) -> np.ndarray:
+    """A raw tensor as a NumPy array over its bytes, in its own dtype."""
+    found = BY_SAFETENSORS.get(tensor.dtype)
+    if found is None:
+        raise LinnetError(f"`{tensor.name}` has dtype {tensor.dtype}, which Linnet does not read")
+    if found.name == "bf16":
+        import ml_dtypes  # type: ignore[import-untyped]
+
+        dtype = np.dtype(ml_dtypes.bfloat16)
+    else:
+        dtype = np.dtype(found.numpy)
+    # Over a copy the array owns, so it is writable as any other.
+    return np.frombuffer(bytearray(tensor.data), dtype=dtype).reshape(tensor.shape)
+
+
+def to_bf16_bits(values: np.ndarray) -> np.ndarray:
+    """Values as bf16 bit patterns (`uint16`, NumPy having no bf16), rounded
+    to nearest, ties to even, as every framework's cast does."""
+    bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
+    rounded = bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))
+    return (rounded >> 16).astype(np.uint16)
+
+
+def from_bf16_bits(bits: np.ndarray) -> np.ndarray:
+    """bf16 bit patterns (`uint16`) as the f32 values they are."""
+    return (np.asarray(bits).view(np.uint16).astype(np.uint32) << 16).view(np.float32)
+
+
+def decode_floats(dtype: str, data: bytes) -> np.ndarray:
+    """Floating-point bytes of SafeTensors dtype `dtype` (`F32`, `F16`, `F64`,
+    `BF16`) as a flat f32 array."""
+    if dtype == "BF16":
+        return from_bf16_bits(np.frombuffer(data, dtype=np.uint16))
+    found = BY_SAFETENSORS.get(dtype)
+    if found is None or not found.is_float:
+        raise LinnetError(f"{dtype} is not a floating-point dtype")
+    return np.frombuffer(data, dtype=np.dtype(found.numpy)).astype(np.float32)
+
+
+def encode_floats(values: np.ndarray, dtype: str) -> bytes:
+    """Values as bytes of SafeTensors floating-point dtype `dtype`."""
+    if dtype == "BF16":
+        return to_bf16_bits(values).tobytes()
+    found = BY_SAFETENSORS.get(dtype)
+    if found is None or not found.is_float:
+        raise LinnetError(f"{dtype} is not a floating-point dtype")
+    return np.ascontiguousarray(values, dtype=np.float32).astype(np.dtype(found.numpy)).tobytes()
 
 
 def read_bindings(bindings: str | Path) -> dict[str, str]:

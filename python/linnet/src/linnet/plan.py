@@ -16,22 +16,6 @@ from .compiler import LinnetError, run_compiler, std_arguments
 DimExpr = int | dict[str, Any]
 ShapeUnit = DimExpr  # a dimension, or {"pack": id, "name": ...}
 
-DTYPES: tuple[str, ...] = (
-    "bool",
-    "i8",
-    "i16",
-    "i32",
-    "i64",
-    "u8",
-    "u16",
-    "u32",
-    "u64",
-    "f16",
-    "bf16",
-    "f32",
-    "f64",
-)
-
 
 class PlanError(LinnetError):
     """A plan could not be produced, read, or instantiated."""
