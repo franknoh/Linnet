@@ -186,7 +186,8 @@ class Pipeline:
                     f"micro-batches; one has shape {tuple(value.shape)}"
                 )
         one = [value[: value.shape[0] // self.microbatches] for value in inputs]
-        bindings = self.module.bindings_for(self.entry, one, self.generics)
+        # The root's generics are the module's own; the entry's come from the inputs.
+        bindings = self.module.bindings_for(self.entry, one, {})
         source = self.module.source_for(self.entry, bindings, trains=True, prepare=False)
         pieces = split(source, self.stage_of, self.stages)
         generated = self.module.import_source(
