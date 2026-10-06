@@ -137,15 +137,20 @@ class TensorGraph:
 
 
 def restrict(
-    graph: TensorGraph, steps: Sequence[int], inputs: Sequence[int], outputs: Sequence[int]
+    graph: TensorGraph,
+    steps: Sequence[int],
+    inputs: Sequence[int],
+    outputs: Sequence[int],
+    held: Sequence[int] = (),
 ) -> TensorGraph:
     """The part of `graph` that `steps` run, renumbered: their objects and
     the storage those view, with `inputs` (made elsewhere and handed in)
-    and `outputs` (read elsewhere) as the part's own. An object made by a
-    step outside the part exists before it, as an input does."""
+    and `outputs` (read elsewhere) as the part's own, and `held` (the
+    part's parameters and state, read or not). An object made by a step
+    outside the part exists before it, as an input does."""
     chosen = sorted(set(steps))
     step_ids = {old: new for new, old in enumerate(chosen)}
-    used: set[int] = set(inputs) | set(outputs)
+    used: set[int] = set(inputs) | set(outputs) | set(held)
     for index in chosen:
         used.update(graph.steps[index].inputs)
         used.update(graph.steps[index].outputs)

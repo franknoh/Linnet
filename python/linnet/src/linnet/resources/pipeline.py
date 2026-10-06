@@ -95,11 +95,21 @@ def split_graph(
         )
         read = {objects[i].storage for s in steps for i in graph.steps[s].inputs}
         inputs = [i for i in graph.inputs if objects[i].storage in read & entry_inputs]
+        # The stage's blocks hold their weights and state (a KV cache) whether
+        # this entry reads them or not.
+        held = [
+            o.id
+            for o in objects
+            if o.persistent
+            and o.owns_storage
+            and o.path is not None
+            and stage_of_path(units, assigned, o.path) == stage
+        ]
         parts.append(
             StagePart(
                 stage,
                 tuple(u for u, s in zip(units, assigned, strict=True) if s == stage),
-                restrict(graph, steps, [*inputs, *receives], sends),
+                restrict(graph, steps, [*inputs, *receives], sends, held),
                 tuple(receives),
                 tuple(sends),
             )
