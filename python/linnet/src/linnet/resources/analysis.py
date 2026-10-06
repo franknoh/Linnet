@@ -6,10 +6,9 @@ asks for them, and `analyze` evaluates it for given values: one sweep over
 the steps, not a new trace. That is what makes the fit search in
 `linnet.resources.planner` cheap.
 
-    from linnet.resources import ExecutionConfig, MemoryModel, load_source
+    from linnet.resources import ExecutionConfig, MemoryModel
 
-    config = ExecutionConfig(batch=16, context=8192)
-    model = MemoryModel(load_source("llama-3.1-8b-instruct"), config)
+    model = MemoryModel("llama-3.1-8b-instruct", ExecutionConfig(batch=16, context=8192))
     print(model.analyze().expected_peak)
 """
 
@@ -17,12 +16,10 @@ from __future__ import annotations
 
 import fnmatch
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import MappingProxyType
 
-from .. import ir
+from .. import ir, nest
 from ..weights import read_bindings
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate, backend_model
@@ -36,51 +33,29 @@ from .training import timeline
 ROLES = ("batch", "context", "cache")
 _FORMULA_LIMIT = 4000
 
-
-@dataclass(frozen=True, slots=True)
-class Source:
-    """A compiled model and what its card adds: generic values, which
-    parameters share storage, and which optional ones are present."""
-
-    program: ir.Program
-    name: str
-    generics: Mapping[str, int | str] = field(default_factory=lambda: MappingProxyType({}))
-    tied: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
-    present: frozenset[str] = frozenset()
+# Compiled programs by source, root, standard library, numerics and the
+# source's modification time: a planner builds a model per candidate, and
+# compiling is the slow part.
+_programs: dict[tuple[str, str | None, str | None, str, int], ir.Program] = {}
 
 
-def load_source(
-    model: str | Path,
-    *,
-    numerics: str = "fast",
-    root: str | None = None,
-    std_root: str | Path | None = None,
-) -> Source:
-    """A `.linnet` file, or anything `linnet.nest.load` takes (a Nest name,
-    a Hugging Face Hub repo, a model directory), compiled with `numerics`.
-    A card supplies generic values and its bindings decide tied and
-    present parameters."""
-    path = Path(model)
-    if path.suffix == ".linnet" and path.is_file():
-        program = ir.load_program(path, root=root, std_root=std_root, numerics=numerics)
-        return Source(program, path.stem)
-    from .. import nest
-
-    card = nest.resolve(model)
-    program = ir.load_program(
-        card.source_path, root=card.root, std_root=std_root, numerics=numerics
+def _compiled(
+    source: Path,
+    root: str | None,
+    std_root: str | Path | None,
+    numerics: str,
+    compile: Callable[[], ir.Program],
+) -> ir.Program:
+    key = (
+        str(source.resolve()),
+        root,
+        None if std_root is None else str(std_root),
+        numerics,
+        source.stat().st_mtime_ns,
     )
-    tied: dict[str, str] = {}
-    present: set[str] = set()
-    if card.bindings_path is not None and card.bindings_path.exists():
-        first: dict[str, str] = {}
-        for linnet_path, tensor in read_bindings(card.bindings_path).items():
-            present.add(linnet_path)
-            if tensor in first:
-                tied[linnet_path] = first[tensor]
-            else:
-                first[tensor] = linnet_path
-    return Source(program, card.name, dict(card.generics), tied, frozenset(present))
+    if key not in _programs:
+        _programs[key] = compile()
+    return _programs[key]
 
 
 def _arrays(program: ir.Program) -> tuple[str, ...]:
@@ -111,22 +86,87 @@ class MemoryModel:
 
     def __init__(
         self,
-        source: Source,
+        model: str | Path | nest.Card,
         config: ExecutionConfig,
+        *,
+        root: str | None = None,
+        std_root: str | Path | None = None,
+        bindings: bool = True,
         free: tuple[str, ...] = (),
         backend: BackendResourceModel | None = None,
     ) -> None:
+        """`model` is a `.linnet` file or anything `linnet.nest.load` takes:
+        a Nest name, a Hugging Face Hub repo, a model directory, or a
+        `nest.Card`. A card's generics are defaults the configuration's
+        `bindings` override; with `bindings`, its weight bindings decide
+        which parameters are tied and which optional ones are present."""
         if config.tensor_parallel > 1 or config.pipeline_parallel > 1:
             raise TraceError(
                 "tensor and pipeline parallelism are not analyzed yet; "
                 "data parallelism with sharded training state is"
             )
-        self.source = source
         self.config = config
         self.backend = backend or backend_model(
             config.backend, context_bytes=config.context_bytes, compiled=config.compiled
         )
-        program = source.program
+        numerics = config.numerics
+        file = None if isinstance(model, nest.Card) else Path(model)
+        card: nest.Card | None = None
+        if isinstance(model, nest.Card):
+            card = model
+        elif file is None or not (file.suffix == ".linnet" and file.is_file()):
+            card = nest.resolve(model)
+        if card is None:
+            assert file is not None
+            self.source_path = file
+            self.name = self.source_path.stem
+            self.generics: Mapping[str, int | str] = {}
+            source_root = root
+            program = _compiled(
+                self.source_path,
+                root,
+                std_root,
+                numerics,
+                lambda: ir.load_program(
+                    self.source_path, root=root, std_root=std_root, numerics=numerics
+                ),
+            )
+        else:
+            loaded = card
+            self.source_path = card.source_path
+            self.name = card.name
+            self.generics = dict(card.generics)
+            source_root = root or card.root
+            program = _compiled(
+                self.source_path,
+                source_root,
+                std_root,
+                numerics,
+                lambda: (
+                    loaded.program(std_root, numerics=numerics)
+                    if root is None
+                    else ir.load_program(
+                        loaded.source_path, root=root, std_root=std_root, numerics=numerics
+                    )
+                ),
+            )
+        self.card = card
+        self.program = program
+        self.root = source_root
+        # Paths bound to one checkpoint tensor share it; bound paths are
+        # the optional parameters present.
+        self.tied: dict[str, str] = {}
+        self.present: frozenset[str] = frozenset()
+        mapping = card.bindings_path if bindings and card is not None else None
+        if mapping is not None and mapping.exists():
+            bound = read_bindings(mapping)
+            first: dict[str, str] = {}
+            for path, tensor in bound.items():
+                if tensor in first:
+                    self.tied[path] = first[tensor]
+                else:
+                    first[tensor] = path
+            self.present = frozenset(bound)
         function = _choose_entry(program, config.entry)
         self.entry = function.short_name
         self.free = tuple(
@@ -141,7 +181,7 @@ class MemoryModel:
             "context": config.context_generics,
             "cache": config.cache_generics,
         }
-        root_values: dict[str, int | str | ex.Expr] = dict(source.generics)
+        root_values: dict[str, int | str | ex.Expr] = dict(self.generics)
         root_values.update(config.bindings)
         for generic in program.root.generics:
             role = self._role(generic.name)
@@ -164,10 +204,10 @@ class MemoryModel:
                 inputs[generic.name] = ex.sym(role)
             elif isinstance(config.bindings.get(generic.name), int):
                 inputs[generic.name] = int(config.bindings[generic.name])
-        present = set(source.present) | set(config.optionals)
+        present = set(self.present) | set(config.optionals)
         options = TraceOptions(
             present=lambda path: path in present or any(p.startswith(f"{path}.") for p in present),
-            tied=source.tied,
+            tied=self.tied,
             kv_states=kv_state_paths(program),
         )
         self.graph: TensorGraph = trace(
@@ -175,10 +215,10 @@ class MemoryModel:
         )
         self.spans = lifetimes(self.graph)
         self.arrays = _arrays(program)
-        root = root_env(program, root_values)
-        bound = entry_env(function, root, inputs)
+        base = root_env(program, root_values)
+        bound = entry_env(function, base, inputs)
         self.constraints = [
-            (c.relation, root.dim(c.lhs), root.dim(c.rhs)) for c in program.root.constraints
+            (c.relation, base.dim(c.lhs), base.dim(c.rhs)) for c in program.root.constraints
         ] + [(c.relation, bound.dim(c.lhs), bound.dim(c.rhs)) for c in function.constraints]
 
     def _role(self, name: str) -> str | None:
@@ -457,7 +497,7 @@ class MemoryModel:
 
     def _describe(self) -> dict[str, object]:
         described = self.config.describe()
-        described["model"] = self.source.name
+        described["model"] = self.name
         described["entry"] = self.entry
         return described
 

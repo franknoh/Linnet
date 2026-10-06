@@ -33,7 +33,7 @@ from typing import Any
 from .. import ir
 from ..compiler import LinnetError
 from . import expr as ex
-from .analysis import MemoryModel, Source, load_source
+from .analysis import MemoryModel
 from .cli import add_arguments, config_from_args
 from .graph import Category
 from .result import MemoryAnalysisResult, format_bytes
@@ -62,9 +62,9 @@ class Comparison:
 def root_values(model: MemoryModel, env: Mapping[str, int]) -> dict[str, int | str]:
     """The root block's generics as the analysis bound them, with the roles
     at `env`."""
-    program = model.source.program
+    program = model.program
     values: dict[str, int | str] = {}
-    given: dict[str, int | str] = {**model.source.generics, **model.config.bindings}
+    given: dict[str, int | str] = {**model.generics, **model.config.bindings}
     for generic in program.root.generics:
         role = next((r for r in model.free if generic.name in model.roles[r]), None)
         if generic.kind == "dim" and role is not None:
@@ -79,7 +79,7 @@ def root_values(model: MemoryModel, env: Mapping[str, int]) -> dict[str, int | s
 def _inputs(model: MemoryModel, env: Mapping[str, int], device: Any) -> list[Any]:
     import torch
 
-    program = model.source.program
+    program = model.program
     function = program.entry(model.entry)
     dtypes = {
         "bool": torch.bool,
@@ -145,11 +145,10 @@ def measure(
         )
     device = torch.device("cuda")
     torch.cuda.init()
-    program_source = _source_path(model)
     module = linnet_torch.load(
-        program_source,
+        model.source_path,
         generics=root_values(model, env),
-        root=model.source.program.root.name,
+        root=model.program.root.name,
         weights=weights,
         device=device,
         numerics=config.numerics,
@@ -205,31 +204,22 @@ def measure(
     return prediction, comparisons
 
 
-def _source_path(model: MemoryModel) -> str:
-    from pathlib import Path
-
-    name = model.source.name
-    candidate = Path(name)
-    if candidate.suffix == ".linnet":
-        return str(candidate)
-    from .. import nest
-
-    return str(nest.resolve(name).source_path)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m linnet.resources.validate")
     add_arguments(parser)
     parser.add_argument("--weights", help="a checkpoint to load (default: zero weights)")
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        source = load_source(args.model, numerics=args.numerics, root=args.root, std_root=args.std)
-        if args.weights is None:
-            # Zero weights load without bindings: no tied tensors, no
-            # optional parameters. Predict that module, not the card's.
-            source = Source(source.program, source.name, source.generics)
         policy = args.checkpoint[0] if args.checkpoint else CheckpointPolicy()
-        model = MemoryModel(source, config_from_args(args, policy))
+        # Zero weights load without bindings: no tied tensors, no optional
+        # parameters. Predict that module, not the card's.
+        model = MemoryModel(
+            args.model,
+            config_from_args(args, policy),
+            root=args.root,
+            std_root=args.std,
+            bindings=args.weights is not None,
+        )
         prediction, comparisons = measure(model, args.weights)
     except LinnetError as error:
         print(f"linnet: {error}", file=sys.stderr)

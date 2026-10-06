@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..compiler import LinnetError
-from .analysis import MemoryModel, load_source
+from .analysis import MemoryModel
 from .config import ExecutionConfig, Numerics
 from .kvcache import ContiguousLayout, KVLayout, PagedLayout
 from .planner import ExecutionPlanner, ResourceConstraint, Target
@@ -167,13 +167,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     fit.add_argument("--reserve-percent", type=float, default=0.0)
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        source = load_source(args.model, numerics=args.numerics, root=args.root, std_root=args.std)
         policies: list[CheckpointPolicy] = args.checkpoint or [CheckpointPolicy()]
         if args.command == "memory":
             results: list[dict[str, Any]] = []
             texts: list[str] = []
             for policy in policies:
-                result = MemoryModel(source, config_from_args(args, policy)).analyze()
+                result = MemoryModel(
+                    args.model, config_from_args(args, policy), root=args.root, std_root=args.std
+                ).analyze()
                 results.append(result.to_dict())
                 heading = f"Checkpointing: {_policy_name(policy)}\n" if len(policies) > 1 else ""
                 texts.append(heading + format_result(result))
@@ -185,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         constraint = ResourceConstraint(args.device_memory, args.reserve, args.reserve_percent)
         target: Target = args.maximize
-        found = ExecutionPlanner(source).maximize(
+        found = ExecutionPlanner(args.model, root=args.root, std_root=args.std).maximize(
             config_from_args(args, policies[0]), constraint, target
         )
         if args.json:
