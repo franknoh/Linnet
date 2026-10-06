@@ -104,7 +104,8 @@ optimizer step on one timeline:
 - `--trainable 'layers.*'` limits gradients and optimizer states to those
   parameters, and `--shards N` splits parameters, gradients, master weights
   and optimizer states across N devices (FSDP), adding the layer being
-  gathered.
+  gathered. Each process keeps its part of a trained weight in f32, as
+  `linnet.torch.fsdp.fully_shard` does.
 
 Repeat `--checkpoint` to compare policies in one report.
 
@@ -152,8 +153,10 @@ listed above it for a pipeline.
 - Without training, the other micro-batches' received and sent values
   stay until the step ends.
 
-Tensor and pipeline parallelism together, and FSDP inside pipeline stages,
-are refused with a message.
+Pipelines combine with tensor parallelism for a model with a `Shards`
+generic (each stage's processes split its weights; no training, as the
+runtime runs it) and with `--shards` (each stage's weights sharded across
+its processes). Each process group holds its own NCCL communicator.
 
 ## The largest configuration that fits
 
@@ -268,6 +271,11 @@ zero weights), the median of six; rates calibrated on the same pair:
 | Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 14.0 ms | 17.6 ms | -20.2% |
 | TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 119 ms | 131 ms | -9.0% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | 53.4 ms | 58.6 ms | -8.9% |
+| TinyLlama 1.1B | training, 8,192 tokens, sharded 2 ways | 372 ms | 353 ms | +5.4% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4, stages split 2 ways | 45.9 ms | 48.0 ms | -4.4% |
+| Llama 3.1 8B | batch 2, 8,192 tokens, pipeline 2 x 2, stages split 2 ways | 251 ms | 219 ms | +14.9% |
+
+The last three rows ran on four other H100s.
 
 Where it is still short:
 
@@ -276,6 +284,9 @@ Where it is still short:
   one.
 - **Tensor-parallel decoding.** Per-row cache writes and the attention
   helper's calls cost the host more than the kinds measured alone.
+- **Pipelines of sharded stages.** A step measured 793 ms against 184
+  predicted: every micro-batch gathers and reduce-scatters every weight,
+  eagerly, which the runtime does not yet defer to the last micro-batch.
 
 ## JSON and Python
 
@@ -366,7 +377,20 @@ On two H100s, each process against its own prediction:
 | TinyLlama 1.1B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | -0.3%, -0.4% | +0.0%, -0.1% |
 | TinyLlama 1.1B | the same under GPipe | +0.1%, +0.1% | +0.0%, -0.1% |
 | Qwen2.5 0.5B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | -2.9%, -1.2% | +0.0%, -0.1% |
-| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | -9.2%, +3.5% | -0.0%, -0.0% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | -9.1%, -4.7% | +0.1%, +0.1% |
+
+On four H100s, one process of each stage (or of each part) shown:
+
+| Model | Configuration | Graph and workspaces | Outside the allocator |
+| --- | --- | --- | --- |
+| TinyLlama 1.1B | training, 8,192 tokens, AdamW, sharded 2 ways | +0.0%, +0.0% | -0.2%, -0.2% |
+| TinyLlama 1.1B | the same, pipeline 2 x 4, each stage sharded 2 ways | -16.9%, -1.3% | +12.7%, +12.7% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4, each stage split 2 ways | -11.2%, -3.9% | -4.5%, -4.1% |
+| Llama 3.1 8B | batch 2, 8,192 tokens, pipeline 2 x 2, each stage split 2 ways | -4.7%, -2.1% | -4.5%, -4.1% |
+
+A pipeline's last stage peaks either during a forward pass or at the end,
+when every micro-batch's results lie beside their join; the larger moment
+counts. These runs found it (the last stages were 3.5 to 21% over before).
 
 Outside the allocator, the point-to-point channels are taken from these
 runs (421 MiB to send, 677 MiB to receive, 745 MiB both ways, 440 MiB for
