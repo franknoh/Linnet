@@ -247,14 +247,6 @@ def _join(path: str, name: str) -> str:
     return f"{path}.{name}" if path else name
 
 
-def expand_path(path: str, repeat: Sequence[int]) -> list[str]:
-    """`layers[*].w` repeated `(2,)` is `layers.0.w`, `layers.1.w`."""
-    paths = [path]
-    for count in repeat:
-        paths = [p.replace("[*]", f".{i}", 1) for p in paths for i in range(count)]
-    return paths
-
-
 def root_env(program: ir.Program, values: Mapping[str, int | str | ex.Expr]) -> SymEnv:
     """The root block's bindings: a value for each generic from `values`
     (an integer, an expression of free symbols, or a dtype name), or its
@@ -422,7 +414,7 @@ class _Tracer:
             repeat = [constant(env.dim(d), f"the length of `{entry.path}`") for d in entry.repeat]
             shape = env.shape(entry.shape)
             dtype = env.dtype(entry.dtype)
-            for path in expand_path(entry.path, repeat):
+            for path in ir.repeat_paths(entry.path, repeat):
                 if entry.optional and not self.options.present(path):
                     continue
                 if entry.kind == "state":

@@ -30,6 +30,7 @@ from typing import Any, cast
 from . import ir, nest
 from .compiler import LinnetError
 from .dtypes import from_safetensors
+from .weights import header_tensors, read_bindings
 
 Config = Mapping[str, Any]
 
@@ -359,11 +360,7 @@ def _tensors(repo: str, sha: str, files: list[str]) -> dict[str, tuple[tuple[int
             raise nest.NestError(
                 f"cannot read the headers of {repo}/{filename}: {error}"
             ) from error
-        for tensor, entry in header.items():
-            if tensor != "__metadata__":
-                table = cast(dict[str, Any], entry)
-                shape = tuple(int(d) for d in cast(list[Any], table["shape"]))
-                tensors[str(tensor)] = (shape, str(table["dtype"]))
+        tensors.update(header_tensors(header))
     return tensors
 
 
@@ -403,7 +400,7 @@ def _rewrite_constants(path: Path, constants: Mapping[str, float]) -> None:
 def _bindings(base: nest.Card, layers: int) -> dict[str, str]:
     """The base card's bindings with its layer 0 repeated for `layers`."""
     assert base.bindings_path is not None
-    mapping = nest.read_bindings(base.bindings_path)
+    mapping = read_bindings(base.bindings_path)
     out: dict[str, str] = {}
     for path, tensor in mapping.items():
         layer = re.match(r"^\w+\.(\d+)\.", path)
@@ -455,7 +452,7 @@ def _complete_bindings(
     for entry in program.manifest:
         if entry.kind not in ("param", "buffer"):
             continue
-        for path in nest.expand_paths(entry, values):
+        for path in ir.expand_paths(entry, values):
             if path in out:
                 continue
             if path not in tensors and _present(path, tensors) in tensors:
@@ -483,7 +480,7 @@ def _unbound(
     used: set[str] = set()
     for entry in program.manifest:
         if entry.kind in ("param", "buffer"):
-            used.update(bindings.get(p, p) for p in nest.expand_paths(entry, values))
+            used.update(bindings.get(p, p) for p in ir.expand_paths(entry, values))
     return sorted(t for t in tensors if t not in used and not IGNORED.search(t))
 
 

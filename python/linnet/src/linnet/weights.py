@@ -14,8 +14,9 @@ from typing import Any, cast
 
 import numpy as np
 
+from . import ir
 from .compiler import LinnetError
-from .dtypes import BY_SAFETENSORS
+from .dtypes import BY_SAFETENSORS, from_safetensors
 
 
 def safetensors_files(weights: str | Path) -> list[Path]:
@@ -96,6 +97,58 @@ def read_bindings(bindings: str | Path) -> dict[str, str]:
     return {str(path): str(name) for path, name in cast(dict[Any, Any], loaded).items()}
 
 
+def paths_by_tensor(mapping: Mapping[str, str]) -> dict[str, list[str]]:
+    """The Linnet paths bound to each checkpoint tensor, in binding order:
+    a tied embedding and output head share one."""
+    paths: dict[str, list[str]] = {}
+    for path, name in mapping.items():
+        paths.setdefault(name, []).append(path)
+    return paths
+
+
+def match_checkpoint(
+    program: ir.Program,
+    bindings: ir.Bindings,
+    tensors: Mapping[str, tuple[tuple[int, ...], str]],
+    mapping: Mapping[str, str],
+) -> tuple[list[tuple[ir.ManifestEntry, list[tuple[str, str]]]], list[str]]:
+    """Each parameter of `program` against a checkpoint's tensors (name ->
+    shape and SafeTensors dtype), a path read from `mapping[path]` when
+    bound: the tensors found for each manifest entry as (path, tensor
+    name), and every problem (a required tensor missing, a shape or dtype
+    that differs, a size that does not evaluate)."""
+    found: list[tuple[ir.ManifestEntry, list[tuple[str, str]]]] = []
+    problems: list[str] = []
+    for entry in program.manifest:
+        if entry.kind != "param":
+            continue
+        try:
+            shape = ir.evaluate_shape(entry.shape, bindings)
+            dtype = ir.evaluate_dtype(entry.dtype, bindings)
+            paths = ir.expand_paths(entry, bindings)
+        except LinnetError as error:
+            problems.append(f"{entry.path}: {error}")
+            continue
+        located: list[tuple[str, str]] = []
+        for path in paths:
+            source = mapping.get(path, path)
+            if source not in tensors:
+                if not entry.optional:
+                    problems.append(f"missing tensor `{source}` for `{path}`")
+                continue
+            found_shape, found_dtype = tensors[source]
+            if found_shape != shape:
+                problems.append(
+                    f"`{source}` has shape {list(found_shape)}, `{path}` needs {list(shape)}"
+                )
+            elif from_safetensors(found_dtype) != dtype:
+                problems.append(f"`{source}` is {found_dtype}, `{path}` needs {dtype}")
+            else:
+                located.append((path, source))
+        found.append((entry, located))
+    return found, problems
+
+
 def apply_bindings(loaded: Mapping[str, Any], bindings: str | Path | None) -> dict[str, Any]:
     """Adds every bound Linnet path to a checkpoint mapping, keeping the original names."""
     if bindings is None:
@@ -137,14 +190,35 @@ class TensorLocation:
             return handle.read(self.nbytes)
 
 
+def read_header(file: str | Path) -> dict[str, Any]:
+    """The JSON header of a SafeTensors file on disk."""
+    return _header(Path(file))[0]
+
+
+def _header(file: Path) -> tuple[dict[str, Any], int]:
+    """A file's header and where its tensor data starts."""
+    with file.open("rb") as handle:
+        (size,) = struct.unpack("<Q", handle.read(8))
+        return cast(dict[str, Any], json.loads(handle.read(size).decode("utf-8"))), 8 + size
+
+
+def header_tensors(header: Mapping[str, Any]) -> dict[str, tuple[tuple[int, ...], str]]:
+    """Each tensor of a SafeTensors header as its shape and dtype name."""
+    tensors: dict[str, tuple[tuple[int, ...], str]] = {}
+    for name, info in header.items():
+        if name == "__metadata__":
+            continue
+        entry = cast(dict[str, Any], info)
+        shape = tuple(int(d) for d in cast(list[Any], entry["shape"]))
+        tensors[str(name)] = (shape, str(entry["dtype"]))
+    return tensors
+
+
 def safetensors_index(weights: str | Path) -> dict[str, TensorLocation]:
     """Every tensor of a checkpoint by name, from the file headers alone."""
     index: dict[str, TensorLocation] = {}
     for file in safetensors_files(weights):
-        with file.open("rb") as handle:
-            (size,) = struct.unpack("<Q", handle.read(8))
-            header = cast(dict[str, Any], json.loads(handle.read(size).decode("utf-8")))
-        base = 8 + size
+        header, base = _header(file)
         for name, info in header.items():
             if name == "__metadata__":
                 continue

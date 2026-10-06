@@ -234,7 +234,7 @@ def write_checkpoint(directory: Path, card: nest.Card) -> dict[str, tuple[int, .
         if entry.kind != "param":
             continue
         shape = ir.evaluate_shape(entry.shape, bindings)
-        for path in nest.expand_paths(entry, bindings):
+        for path in nest.ir.expand_paths(entry, bindings):
             arrays[mapping.get(path, path)] = np.full(shape, 0.01, dtype=np.float32)
     save_file(arrays, str(directory / "model.safetensors"))
     return {name: array.shape for name, array in arrays.items()}

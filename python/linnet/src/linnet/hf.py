@@ -28,8 +28,14 @@ from typing import Any
 
 from . import ir, nest
 from .compiler import LinnetError
-from .dtypes import DTYPES, from_safetensors
-from .weights import TensorLocation, read_bindings, safetensors_index, write_safetensors
+from .dtypes import DTYPES
+from .weights import (
+    TensorLocation,
+    match_checkpoint,
+    read_bindings,
+    safetensors_index,
+    write_safetensors,
+)
 
 TOKENIZER_FILES = (
     "tokenizer.json",
@@ -524,43 +530,19 @@ def export(
     index = safetensors_index(weights)
 
     # Every parameter's tensors under the checkpoint's names; an optional
-    # one (a bias) counts as present when every layer has it.
+    # one (a bias) counts as present when every layer has it. The tensors
+    # are copied as they are, and `config.json` declares the program's
+    # dtype: they must agree.
+    shapes = {name: (location.shape, location.dtype) for name, location in index.items()}
+    matched, problems = match_checkpoint(program, bound, shapes, mapping)
     found: list[tuple[str, str, TensorLocation]] = []
     present: set[str] = set()
-    problems: list[str] = []
-    for entry in program.manifest:
-        if entry.kind != "param":
-            continue
-        shape = ir.evaluate_shape(entry.shape, bound)
-        dtype = ir.evaluate_dtype(entry.dtype, bound)
-        paths = nest.expand_paths(entry, bound)
-        located: list[tuple[str, str, TensorLocation]] = []
-        for linnet_path in paths:
-            source_name = mapping.get(linnet_path, linnet_path)
-            location = index.get(source_name)
-            if location is None:
-                if not entry.optional:
-                    problems.append(f"missing tensor `{source_name}` for `{linnet_path}`")
-                continue
-            if location.shape != shape:
-                found_shape, needs = list(location.shape), list(shape)
-                problems.append(
-                    f"`{source_name}` has shape {found_shape}, `{linnet_path}` needs {needs}"
-                )
-                continue
-            # The tensors are copied as they are, and `config.json` declares
-            # the program's dtype: they must agree.
-            if from_safetensors(location.dtype) != dtype:
-                problems.append(
-                    f"`{source_name}` is {location.dtype}, `{linnet_path}` needs {dtype}"
-                )
-                continue
-            located.append((linnet_path, source_name, location))
-        if entry.optional and located and len(located) != len(paths):
+    for entry, located in matched:
+        if entry.optional and located and len(located) != len(ir.expand_paths(entry, bound)):
             problems.append(f"`{entry.path}` is in the checkpoint for some layers only")
         if located:
             present.add(entry.path)
-            found += located
+            found += [(path, source, index[source]) for path, source in located]
     if problems:
         raise LinnetError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
 
