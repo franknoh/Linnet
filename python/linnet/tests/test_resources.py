@@ -501,7 +501,7 @@ def test_dtensor_splits_weights_by_the_rules(tmp_path: Path) -> None:
     # q_proj by output and o_proj by input split in two; `norm` matches no
     # rule and is copied.
     assert whole.component("Weights").nbytes == 3 * 16 * 16 * 4
-    assert part.component("Weights").nbytes == (16 * 16 + 16 * 16 * 2) * 4
+    assert part.component("Weights").nbytes == (16 * 16 // 2 * 2 + 16 * 16) * 4
     assert part.component("Peak activations").confidence == Confidence.ESTIMATED
 
 
