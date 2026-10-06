@@ -490,7 +490,7 @@ def test_a_sharded_model_is_one_process_part(tmp_path: Path) -> None:
     assert model.backend.workspace(gather, model.graph, model.env()).nbytes == 4 * 32 * 4
     out = model.graph.objects[by["torch.distributed.all_reduce"].outputs[0]]
     assert out.storage == out.id
-    assert "NCCL communicators" in " ".join(part.unknown)
+    assert (part.component("NCCL communicator").nbytes or 0) > 0
     assert any("tensor parallelism" in a for a in part.assumptions)
 
 
@@ -503,6 +503,53 @@ def test_dtensor_splits_weights_by_the_rules(tmp_path: Path) -> None:
     assert whole.component("Weights").nbytes == 3 * 16 * 16 * 4
     assert part.component("Weights").nbytes == (16 * 16 // 2 * 2 + 16 * 16) * 4
     assert part.component("Peak activations").confidence == Confidence.ESTIMATED
+
+
+def test_dtensor_splits_values_made_from_split_weights(tmp_path: Path) -> None:
+    part = memory(source(tmp_path, SPLIT), config(batch=2, bindings={"H": 16}, tensor_parallel=2))
+    graph, env = part.graph, part.env()
+    first = next(s for s in graph.steps if s.implementation == "torch.nn.functional.linear")
+    # q_proj's rows are split, so its result is too; the input is whole.
+    assert ex.evaluate(graph.objects[first.outputs[0]].nbytes, env) == 2 * 16 * 4 // 2
+    assert ex.evaluate(graph.objects[graph.inputs[0]].nbytes, env) == 2 * 16 * 4
+
+
+STATEFUL = """\
+module stateful
+
+use std.nn.linear::{Linear}
+
+pub block Layer<H: Dim, T: Float = f32> {
+    sub up: Linear<H, H, T>
+    state seen: Tensor[4, H; T]
+
+    pub fn forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        return up.forward(x)
+    }
+}
+
+pub block Model<H: Dim, Layers: Dim, T: Float = f32> {
+    sub layers: [Layer<H, T>; Layers]
+
+    pub entry forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        var h = x
+        static for layer in layers {
+            h = layer.forward(h)
+        }
+        return h
+    }
+}
+"""
+
+
+def test_a_stage_holds_its_state_whether_the_entry_reads_it_or_not(tmp_path: Path) -> None:
+    model = memory(
+        source(tmp_path, STATEFUL),
+        config(batch=8, bindings={"H": 16, "Layers": 2}, pipeline_parallel=2),
+    )
+    for part in model.stages:
+        held = {o.path for o in part.graph.objects if o.category == Category.STATE}
+        assert held == {f"{unit}.seen" for unit in part.units}
 
 
 def _pipeline(tmp_path: Path, **kwargs: object) -> MemoryModel:
@@ -537,22 +584,166 @@ def test_gpipe_keeps_more_micro_batches_than_1f1b(tmp_path: Path) -> None:
     assert peak("gpipe") > peak("1f1b")
 
 
-def test_the_roofline_bound_follows_arithmetic_and_bytes(tmp_path: Path) -> None:
+def test_each_call_runs_at_its_rate(tmp_path: Path) -> None:
     from linnet.resources.performance import DeviceSpec
 
     device = DeviceSpec("toy", 1 << 30, {"f32": 1e9}, 1e9, 1e9, 0.0)
     model = memory(source(tmp_path, MLP), config(batch=8, bindings={"H": 32, "Layers": 3}))
     flops = sum(ex.evaluate(step.flops, model.env()) for step in model.graph.steps)
-    weights = 4 * 32 * 32 * 4
-    bound = model.throughput(device)
-    assert bound.compute == pytest.approx(flops / 1e9)
-    assert bound.memory == pytest.approx(weights / 1e9)
-    assert bound.seconds == pytest.approx(max(flops, weights) / 1e9)
-    assert bound.tokens == 8  # samples: the input is not token ids
+    predicted = model.throughput(device)
+    # No host time: the kernels run back to back, each at its arithmetic or
+    # its bytes, whichever is longer.
+    assert predicted.host == 0
+    assert predicted.seconds == pytest.approx(predicted.compute + predicted.memory)
+    assert predicted.seconds >= flops / 1e9
+    assert predicted.tokens == 8  # samples: the input is not token ids
     # Two replicas take twice the tokens in the same time.
     assert model.throughput(device, replicas=2).tokens_per_second == pytest.approx(
-        2 * bound.tokens_per_second
+        2 * predicted.tokens_per_second
     )
+
+
+def test_a_slow_host_sets_the_step(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from linnet.resources.performance import DeviceSpec
+
+    device = DeviceSpec("toy", 1 << 30, {"f32": 1e12}, 1e12, 1e12, 0.0, dispatch=1.0)
+    model = memory(source(tmp_path, MLP), config(batch=8, bindings={"H": 32, "Layers": 3}))
+    predicted = model.throughput(device)
+    calls = len(model.graph.steps)
+    assert predicted.limit == "host"
+    assert calls <= predicted.seconds < calls + 1
+    # Compiled, the host issues nothing per call.
+    compiled = memory(
+        source(tmp_path, MLP), config(batch=8, bindings={"H": 32, "Layers": 3}, compiled=True)
+    )
+    assert compiled.throughput(replace(device)).seconds < 1
+
+
+def test_a_calibrated_profile_loads(tmp_path: Path) -> None:
+    import json
+
+    from linnet.resources.performance import device
+
+    profile = {
+        "name": "mine",
+        "source": "measured",
+        "memory": 1 << 30,
+        "flops": {"bf16": 100.0, "f16": 100.0, "f32": 10.0},
+        "products": {"bf16": [[128, 10.0], [512, 50.0]]},
+        "bandwidth": 5.0,
+        "attention": {"causal/64": 30.0, "causal/128": 60.0, "causal/64/f32": 3.0},
+        "dispatch": 1e-6,
+        "kernel": 2e-6,
+        "link": 0.0,
+        "latency": 0.0,
+        "reduce": 0.0,
+    }
+    path = tmp_path / "mine.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    loaded = device(str(path))
+    assert loaded.name == "mine" and loaded.dispatch == 1e-6
+    # Between the measured sizes on a log scale; below them in proportion;
+    # past them toward the peak.
+    assert loaded.product("bf16", 256) == pytest.approx(30.0)
+    assert loaded.product("bf16", 64) == pytest.approx(5.0)
+    assert loaded.product("bf16", 1 << 20) == 100.0
+    assert loaded.product("f32", 256) == 10.0
+    assert loaded.attention_rate("causal", 80) == 30.0
+    assert loaded.attention_rate("causal", 120) == 60.0
+    assert loaded.attention_rate("causal", 64, "f32") == 3.0
+    assert loaded.link > 0  # one process measures no link: the H100's
+    with pytest.raises(ValueError, match="unknown device"):
+        device("no-such-device")
+
+
+ATTEND = """\
+module attend
+
+use std.nn.attention::{attention, causal_mask}
+use std.nn.linear::{Linear}
+use std.nn.norm::{RmsNorm}
+
+pub block Model<H: Dim, Heads: Dim, T: Float = bf16>
+where
+    Heads > 0,
+    H % Heads == 0
+{
+    sub norm: RmsNorm<H, T>
+    sub q_proj: Linear<H, H, T>
+    sub k_proj: Linear<H, H, T>
+    sub v_proj: Linear<H, H, T>
+    sub o_proj: Linear<H, H, T>
+
+    pub entry forward<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, S, H; T] {
+        let h = norm.forward(x)
+        let q = permute(reshape(q_proj.forward(h), [B, S, Heads, H / Heads]), [0, 2, 1, 3])
+        let k = permute(reshape(k_proj.forward(h), [B, S, Heads, H / Heads]), [0, 2, 1, 3])
+        let v = permute(reshape(v_proj.forward(h), [B, S, Heads, H / Heads]), [0, 2, 1, 3])
+        let mixed = attention(q, k, v, 0.125, some(causal_mask<S, S>()))
+        return o_proj.forward(reshape(permute(mixed, [0, 2, 1, 3]), [B, S, H]))
+    }
+}
+"""
+
+
+def _attend(tmp_path: Path, **kwargs: object) -> MemoryModel:
+    return memory(
+        source(tmp_path, ATTEND),
+        ExecutionConfig(batch=2, context=16, bindings={"H": 32, "Heads": 4}, **kwargs),  # type: ignore[arg-type]
+    )
+
+
+def test_fused_attention_results_lie_as_the_kernel_writes_them(tmp_path: Path) -> None:
+    model = _attend(tmp_path)
+    graph = model.graph
+    attention = next(
+        s for s in graph.steps if (s.implementation or "").startswith("torch.nn.functional.scaled")
+    )
+    readers = {i: s for s in graph.steps for i in s.inputs}
+    permuted = readers[attention.outputs[0]]
+    merged = readers[permuted.outputs[0]]
+    # [B, S, Heads, D] in memory: its heads merge without a copy.
+    assert merged.kind == "reshape"
+    assert not graph.objects[merged.outputs[0]].owns_storage
+
+
+def test_the_step_costs_follow_the_generated_calls(tmp_path: Path) -> None:
+    from linnet.resources import performance
+
+    model = _attend(tmp_path)
+    graph = model.graph
+    # The three projections of one input run as one product.
+    fused = performance._fused(graph)  # pyright: ignore[reportPrivateUsage]
+    assert [len(members) for members in fused.values()] == [3]
+    # The causal mask is made once per shape, not per call.
+    hoisted = performance._hoisted(graph)  # pyright: ignore[reportPrivateUsage]
+    assert any(graph.steps[i].label == "causal_mask" for i in hoisted)
+    assert all(graph.steps[i].implementation != "torch.nn.functional.linear" for i in hoisted)
+
+
+def test_normalizations_and_collectives_keep_what_autograd_keeps(tmp_path: Path) -> None:
+    model = _attend(tmp_path, training=TrainingConfig())
+    graph, env = model.graph, model.env()
+    norm = next(s for s in graph.steps if (s.implementation or "").startswith("torch.rms_norm"))
+    every = {o.id: True for o in graph.objects}
+    saved = model.backend.saved(norm, graph, env, every)
+    assert saved is not None
+    rows, width = 2 * 16, 32
+    # f32 statistics, and the normalized rows the weight's gradient reads.
+    assert saved.extra.nbytes == rows * 4 + rows * width * 2
+    frozen = model.backend.saved(norm, graph, env, {**every, norm.inputs[1]: False})
+    assert frozen is not None and frozen.extra.nbytes == rows * 4
+    sharded = memory(
+        source(tmp_path, SHARDED),
+        ExecutionConfig(batch=4, bindings={"H": 16, "Out": 32}, tensor_parallel=2),
+    )
+    reduce = next(
+        s for s in sharded.graph.steps if s.implementation == "torch.distributed.all_reduce"
+    )
+    kept = sharded.backend.saved(reduce, sharded.graph, sharded.env(), every)
+    assert kept is not None and kept.objects == ()
 
 
 def test_the_planner_ranks_layouts_by_throughput(tmp_path: Path) -> None:

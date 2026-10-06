@@ -36,7 +36,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   states, checkpointing, sharding, tensor and pipeline parallelism), each
   number marked exact, backend-modeled, estimated or unknown; the largest
   batch, context or cache that fits a device; and the layout over several
-  devices with the highest roofline throughput bound.
+  devices with the highest throughput, predicted operation by operation
+  from rates `python -m linnet.resources.calibrate` measures.
 
 ### Python package (`linnet-lang`)
 

@@ -29,7 +29,7 @@ from typing import Literal
 from .. import dtypes, ir
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate
-from .graph import Category, Confidence, Step, TensorGraph, sweep, weakest
+from .graph import Category, Confidence, MemoryObject, Step, TensorGraph, sweep, weakest
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +115,7 @@ class Interval:
     nbytes: int
     category: Category
     confidence: Confidence = Confidence.EXACT
+    what: str = ""  # the object or step it is, for explaining a peak
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +157,14 @@ class TrainingTimeline:
             if item.start <= at <= item.end and item.category not in skip:
                 parts[item.category] = parts.get(item.category, 0) + item.nbytes
         return at, live[at] + sum(self.persistent.values()), parts
+
+
+def _name(step: Step) -> str:
+    return f"{step.implementation or step.label} in `{step.scope or 'the root'}`"
+
+
+def _made(obj: MemoryObject, steps: Sequence[Step]) -> str:
+    return obj.name if obj.producer is None else f"{obj.name} from {_name(steps[obj.producer])}"
 
 
 def _regions(
@@ -277,6 +286,7 @@ def timeline(
                     kept.extra.nbytes,
                     Category.ACTIVATION,
                     kept.extra.confidence,
+                    f"kept by {_name(step)}",
                 )
             )
         if kept.extra.nbytes is None:
@@ -294,7 +304,7 @@ def timeline(
             continue
         size = nbytes(obj.id)
         if obj.id in inputs:
-            intervals.append(Interval(0, length - 1, size, Category.INPUT))
+            intervals.append(Interval(0, length - 1, size, Category.INPUT, what=obj.name))
             continue
         if obj.producer is None:
             continue
@@ -302,7 +312,9 @@ def timeline(
         uses = readers.get(obj.id, [])
         keepers = saved_by.get(obj.id, [])
         if obj.id in outputs:
-            intervals.append(Interval(p, length - 1, size, Category.ACTIVATION))
+            intervals.append(
+                Interval(p, length - 1, size, Category.ACTIVATION, what=_made(obj, steps))
+            )
             continue
         if p in region_of:
             r = region_of[p]
@@ -317,7 +329,7 @@ def timeline(
                     *(t_back[u] for u in uses if u in region_of and region_of[u] != r),
                 ]
             )
-            intervals.append(Interval(p, end, size, Category.ACTIVATION))
+            intervals.append(Interval(p, end, size, Category.ACTIVATION, what=_made(obj, steps)))
             # The recomputation just before the region's backward.
             redo_end = max(
                 [
@@ -327,12 +339,15 @@ def timeline(
                 ]
             )
             if inside or keepers:
-                intervals.append(Interval(t_redo[p], redo_end, size, Category.ACTIVATION))
+                made = _made(obj, steps)
+                intervals.append(
+                    Interval(t_redo[p], redo_end, size, Category.ACTIVATION, what=made)
+                )
             continue
         end = max([p, *uses, *(t_back[s] for s in keepers)])
         # A checkpointed region recomputes from its inputs.
         end = max([end, *(t_back[u] for u in uses if u in region_of)])
-        intervals.append(Interval(p, end, size, Category.ACTIVATION))
+        intervals.append(Interval(p, end, size, Category.ACTIVATION, what=_made(obj, steps)))
 
     # ---- workspaces, in the forward pass, the recomputation and backward
     for step in steps:
@@ -349,7 +364,10 @@ def timeline(
             times.append((t_back[step.index], backend.workspace(step, graph, env, "backward")))
         for t, work in times:
             if work.nbytes:
-                intervals.append(Interval(t, t, work.nbytes, Category.WORKSPACE, work.confidence))
+                what = f"workspace of {_name(step)}"
+                intervals.append(
+                    Interval(t, t, work.nbytes, Category.WORKSPACE, work.confidence, what)
+                )
 
     # ---- gradients of activations, and of parameters
     for obj in objects:
@@ -363,7 +381,15 @@ def timeline(
             continue
         if obj.producer is None:
             continue
-        intervals.append(Interval(start, t_back[obj.producer], nbytes(obj.id), Category.TEMPORARY))
+        intervals.append(
+            Interval(
+                start,
+                t_back[obj.producer],
+                nbytes(obj.id),
+                Category.TEMPORARY,
+                what=f"gradient of {_made(obj, steps)}",
+            )
+        )
 
     persistent, confidence, parameter_grads = _persistent(
         graph, env, config, trained, readers, differentiable, t_back
@@ -399,7 +425,7 @@ def _saved(
     """What autograd keeps from a step: a product keeps each operand only
     for the other operands' gradients, as PyTorch's autograd does."""
     if step.implementation is not None:
-        kept = backend.saved(step, graph, env, True)
+        kept = backend.saved(step, graph, env, grad)
         if kept is not None:
             return _Kept(kept.objects, kept.extra)
         unknown.append(

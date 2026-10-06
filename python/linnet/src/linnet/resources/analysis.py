@@ -15,7 +15,7 @@ the steps, not a new trace. That is what makes the fit search in
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -28,7 +28,7 @@ from .backends import BackendResourceModel, Estimate, backend_model
 from .config import ExecutionConfig
 from .graph import Category, Confidence, TensorGraph, lifetimes, peak, peak_expr, plan_buffers
 from .kvcache import kv_state_paths
-from .performance import DeviceSpec, Throughput, step_bound
+from .performance import DeviceSpec, Throughput, step_time
 from .pipeline import StagePart, split_graph
 from .result import Allocation, DeviceMemory, MemoryAnalysisResult, MemoryComponent
 from .storage import tensor_bytes
@@ -92,6 +92,26 @@ def entry_roles(
         if found:
             return found
     return set()
+
+
+def _split_derived(
+    graph: TensorGraph, paths: Collection[str], devices: int
+) -> tuple[TensorGraph, set[int]]:
+    """`graph` as DTensor runs it: a value computed from a split weight stays
+    split, one part per device, so it holds a `devices`-th of its bytes.
+    Returns the graph and the values so split."""
+    split = {o.id for o in graph.objects if o.persistent and o.path in paths}
+    derived: set[int] = set()
+    for step in graph.steps:
+        if any(graph.objects[i].storage in split | derived for i in step.inputs):
+            derived |= {graph.objects[i].storage for i in step.outputs}
+    objects = tuple(
+        replace(o, nbytes=ex.floordiv(o.nbytes, ex.const(devices)))
+        if o.id in derived and o.owns_storage and not o.persistent
+        else o
+        for o in graph.objects
+    )
+    return replace(graph, objects=objects), derived
 
 
 def _units(program: ir.Program, env: SymEnv) -> list[str]:
@@ -174,7 +194,8 @@ class MemoryModel:
             config.backend,
             context_bytes=config.context_bytes,
             compiled=config.compiled,
-            processes=processes,
+            processes=max(processes, config.pipeline_parallel),
+            pipelined=config.pipeline_parallel > 1,
         )
         numerics = config.numerics
         card, self.source_path = nest.model_source(model)
@@ -236,6 +257,8 @@ class MemoryModel:
         # process's own program, its collectives real; any other is split
         # as DTensors split it, weights and caches only.
         self.splitting = "none"
+        self._split_paths: set[str] = set()  # the weights and caches DTensor splits
+        self._derived: set[int] = set()  # values computed from them
         if processes > 1:
             if any(g.name == "Shards" for g in program.root.generics):
                 root_values["Shards"] = processes
@@ -258,6 +281,8 @@ class MemoryModel:
         self.graph: TensorGraph = trace(
             program, function.short_name, root_values, inputs, lowering=lowering, options=options
         )
+        if self.splitting == "dtensor":
+            self.graph, self._derived = _split_derived(self.graph, self._split_paths, processes)
         self.spans = lifetimes(self.graph)
         self.arrays = _arrays(program)
         base = root_env(program, root_values)
@@ -315,7 +340,10 @@ class MemoryModel:
         devices = self.config.tensor_parallel
         sizes = [d.value if isinstance(d, ex.Const) else -1 for d in shape]
         axis = split_axis(path, sizes, devices) if kind == "param" else state_axis(sizes, devices)
-        return devices if axis is not None else 1
+        if axis is None:
+            return 1
+        self._split_paths.add(path)
+        return devices
 
     def _role(self, name: str) -> str | None:
         for role in self.free:
@@ -389,7 +417,7 @@ class MemoryModel:
         cache: int | None = None,
         replicas: int = 1,
     ) -> Throughput:
-        """The roofline bound of one step on `device` (see
+        """The predicted time of one step on `device` (see
         `linnet.resources.performance`), over `replicas` copies of this
         layout each on its own data."""
         env = self.env(batch, context, cache)
@@ -402,11 +430,12 @@ class MemoryModel:
             tokens = ex.evaluate(ex.product(first.shape) if ids else first.shape[0], env)
         training = self.config.training
 
-        def repeated(graph: TensorGraph, at: Mapping[str, int]) -> int:
+        def repeated(graph: TensorGraph, at: Mapping[str, int]) -> float:
+            """The share of the forward pass checkpointing runs again."""
             if training is None or training.checkpoint.kind == "none":
-                return 0
+                return 0.0
             steps = timeline(graph, at, training, self.backend, self.arrays, self.tied)
-            return steps.recomputed_flops
+            return steps.recomputed_flops / steps.forward_flops if steps.forward_flops else 0.0
 
         if self.stages:
             micro = self._micro(env)
@@ -427,7 +456,7 @@ class MemoryModel:
             for o in self.graph.objects
             if o.category == Category.PARAMETER and o.owns_storage
         )
-        return step_bound(
+        return step_time(
             parts,
             device,
             tokens=tokens,
@@ -436,6 +465,8 @@ class MemoryModel:
             microbatches=self.config.microbatches,
             replicas=replicas,
             gradient_bytes=gradients if training is not None else 0,
+            compiled=self.config.compiled,
+            optimizer_states=training.optimizer.states if training is not None else 0,
         )
 
     def _pipeline(self, env: Mapping[str, int]) -> MemoryAnalysisResult:
@@ -645,6 +676,18 @@ class MemoryModel:
         components, graph_persistent, laid_out = self._persistent(env, graph)
         transient = peak(graph, env, spans)
         work, estimates, unknown = self._workspaces(env, graph)
+        gathered = [i for i in graph.outputs if graph.objects[i].storage in self._derived]
+        if gathered and graph is self.graph and graph.steps:
+            # DTensor hands each split result back whole: a gathered copy
+            # beside the part, when the entry returns.
+            last = len(graph.steps) - 1
+            whole = self.config.tensor_parallel * sum(
+                ex.evaluate(graph.objects[i].nbytes, env) for i in gathered
+            )
+            work[last] = work.get(last, 0) + whole
+            estimates[last] = Estimate(
+                work[last], Confidence.ESTIMATED, "results gathered whole from the processes"
+            )
         with_work = peak(graph, env, spans, work)
         activations = ex.evaluate(ex.total(graph.objects[i].nbytes for i in with_work.live), env)
         at_work = work.get(with_work.step, 0)
@@ -658,7 +701,7 @@ class MemoryModel:
                 Confidence.ESTIMATED if whole else Confidence.EXACT,
                 _formula(formula),
                 "inputs and outputs included"
-                + ("; counted whole: DTensor's redistributions are not followed" if whole else ""),
+                + ("; a split weight's results counted split" if whole else ""),
             )
         )
         runtime, runtime_total, runtime_unknown = self._runtime(False)

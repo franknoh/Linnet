@@ -21,6 +21,7 @@ from .analysis import MemoryModel
 from .config import ExecutionConfig, Numerics
 from .kvcache import ContiguousLayout, KVLayout, PagedLayout
 from .performance import DEVICES
+from .performance import device as find_device
 from .planner import ExecutionPlanner, ResourceConstraint, Target, ThroughputPlan
 from .result import format_result
 from .training import OPTIMIZERS, CheckpointPolicy, TrainingConfig
@@ -181,8 +182,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     fit.add_argument(
         "--device",
-        choices=sorted(DEVICES),
-        help="the device: its memory, and for throughput, speed",
+        metavar="NAME|PROFILE",
+        help=f"the device ({', '.join(sorted(DEVICES))}, or a profile "
+        "`python -m linnet.resources.calibrate` wrote): its memory, and for throughput, speed",
     )
     fit.add_argument(
         "--devices", type=int, default=1, help="throughput: devices to spread the model over"
@@ -208,7 +210,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print("\n\n".join(texts))
             return 0
-        device = DEVICES[args.device] if args.device is not None else None
+        try:
+            device = find_device(args.device) if args.device is not None else None
+        except (ValueError, OSError, KeyError) as error:
+            raise LinnetError(str(error)) from None
         memory = args.device_memory or (device.memory if device is not None else None)
         if memory is None:
             raise LinnetError("give --device-memory or --device")
@@ -282,8 +287,7 @@ def _layout(config: ExecutionConfig, replicas: int) -> str:
 def _plan_text(plan: ThroughputPlan) -> str:
     sized = {"batch": "batch", "context": "length"}.get(plan.target or "", "")
     lines = [
-        f"Throughput bound on {plan.devices} x {plan.device.name} (roofline: data-sheet peak "
-        "rates, not a measured speed)",
+        f"Predicted throughput on {plan.devices} x {plan.device.name} ({plan.device.source})",
         "",
         f"{'layout':<40} {sized:>8} {'tokens/s':>12} {'limit':<14} {'peak':>10}",
     ]
