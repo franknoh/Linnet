@@ -51,6 +51,7 @@ from .weights import (
     decode_floats,
     encode_floats,
     iter_safetensors,
+    paths_by_tensor,
     read_bindings,
     write_safetensors,
 )
@@ -126,10 +127,7 @@ def _paths_of(bindings: str | Path | Mapping[str, str] | None) -> dict[str, list
         if bindings is not None
         else {}
     )
-    paths_of: dict[str, list[str]] = {}
-    for path, name in mapping.items():
-        paths_of.setdefault(name, []).append(path)
-    return paths_of
+    return paths_by_tensor(mapping)
 
 
 def _int4_tensors(

@@ -37,9 +37,8 @@ from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from . import diagram, ir
-from .compiler import LinnetError, run_compiler, std_arguments
-from .dtypes import from_safetensors
-from .weights import read_bindings
+from .compiler import LinnetError, bind_arguments, run_compiler, std_arguments
+from .weights import header_tensors, match_checkpoint, read_bindings, read_header
 
 REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
 # A Hugging Face Hub repo: `org/name`, or `hf://org/name`, with an optional
@@ -256,15 +255,6 @@ def check(
     return problems
 
 
-def expand_paths(entry: ir.ManifestEntry, bindings: ir.Bindings) -> list[str]:
-    """`layers[*].w` with repeat (2,) becomes `layers.0.w`, `layers.1.w`."""
-    paths = [entry.path]
-    for repeat in entry.repeat:
-        count = ir.evaluate_dim(repeat, bindings)
-        paths = [p.replace("[*]", f".{i}", 1) for p in paths for i in range(count)]
-    return paths
-
-
 def hub_safetensors_header(repo: str, filename: str, revision: str | None = None) -> dict[str, Any]:
     """The SafeTensors header of one file in a Hub repository.
 
@@ -291,13 +281,6 @@ def hub_safetensors_header(repo: str, filename: str, revision: str | None = None
     return cast(dict[str, Any], json.loads(body.content.decode("utf-8")))
 
 
-def local_safetensors_header(path: Path) -> dict[str, Any]:
-    """The SafeTensors header of a file on disk."""
-    with path.open("rb") as file:
-        (size,) = struct.unpack("<Q", file.read(8))
-        return cast(dict[str, Any], json.loads(file.read(size).decode("utf-8")))
-
-
 def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> list[str]:
     assert card.weights is not None
     weights = card.weights
@@ -311,65 +294,34 @@ def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> li
     for filename in weights.files:
         try:
             header = (
-                local_safetensors_header(card.directory / filename)
+                read_header(card.directory / filename)
                 if beside
                 else hub_safetensors_header(weights.repo, filename, revision=weights.revision)
             )
         except Exception as error:  # any read failure is one problem
             where = card.directory if beside else weights.repo
             return [f"cannot read the headers of {where}/{filename}: {error}"]
-        for name, info in header.items():
-            if name == "__metadata__":
-                continue
-            entry = cast(dict[str, Any], info)
-            shape = tuple(int(d) for d in cast(list[Any], entry["shape"]))
-            tensors[str(name)] = (shape, str(entry["dtype"]))
+        tensors.update(header_tensors(header))
     mapping: dict[str, str] = {}
     bindings_path = card.bindings_path
     if bindings_path is not None:
         if not bindings_path.exists():
             return [f"weights.bindings `{card.weights.bindings}` does not exist"]
         mapping = read_bindings(bindings_path)
-
-    problems: list[str] = []
-    for entry in program.manifest:
-        if entry.kind != "param":
-            continue
-        try:
-            shape = ir.evaluate_shape(entry.shape, bindings)
-            dtype = ir.evaluate_dtype(entry.dtype, bindings)
-        except LinnetError as error:
-            problems.append(f"{entry.path}: {error}")
-            continue
-        for path in expand_paths(entry, bindings):
-            source = mapping.get(path, path)
-            if source not in tensors:
-                if not entry.optional:
-                    problems.append(f"missing tensor `{source}` for `{path}`")
-                continue
-            found_shape, found_dtype = tensors[source]
-            if found_shape != shape:
-                problems.append(
-                    f"`{source}` has shape {list(found_shape)}, `{path}` needs {list(shape)}"
-                )
-            elif from_safetensors(found_dtype) != dtype:
-                problems.append(f"`{source}` is {found_dtype}, `{path}` needs {dtype}")
-    return problems
+    return match_checkpoint(program, bindings, tensors, mapping)[1]
 
 
 def _check_exports(
     card: Card, program: ir.Program, entry: ir.Function, std_root: str | Path | None
 ) -> list[str]:
-    binds = [f"{k}={v}" for k, v in {**card.generics, **card.check}.items()]
+    binds = bind_arguments({**card.generics, **card.check})
     missing = [g.name for g in entry.generics if g.name not in card.check and g.default is None]
     if missing:
         names = ", ".join(missing)
         return [f"[check] must bind the entry generics {names} to export `{entry.short_name}`"]
     problems: list[str] = []
     for target in EXPORTS:
-        arguments = [target, "--root", program.root.name, "--entry", entry.short_name]
-        for bind in binds:
-            arguments += ["--bind", bind]
+        arguments = [target, "--root", program.root.name, "--entry", entry.short_name, *binds]
         try:
             run_compiler(*arguments, *std_arguments(std_root), str(card.source_path))
         except LinnetError as error:
@@ -435,29 +387,12 @@ def describe(card: Card, std_root: str | Path | None = None) -> dict[str, Any]:
 
 
 def parameter_count(card: Card, program: ir.Program) -> int:
-    """The model's parameters, counting a tensor two paths share only once.
-
-    Tied embeddings are two parameters of the program bound to one tensor of
-    the checkpoint, and the published figure counts that tensor once.
-    """
+    """The model's parameters, counting a tensor two paths share only once:
+    tied embeddings are two parameters bound to one checkpoint tensor, and
+    the published figure counts it once."""
     bindings = card.bindings_path
     mapping = read_bindings(bindings) if bindings is not None and bindings.exists() else {}
-    values = ir.bind_generics(program.root.generics, card.generics)
-    counted: set[str] = set()
-    total = 0
-    for entry in program.manifest:
-        if entry.kind != "param":
-            continue
-        elements = 1
-        for size in ir.evaluate_shape(entry.shape, values):
-            elements *= size
-        for path in expand_paths(entry, values):
-            source = mapping.get(path, path)
-            if source in counted:
-                continue
-            counted.add(source)
-            total += elements
-    return total
+    return ir.parameter_count(program, card.generics, mapping)
 
 
 def index(root: str | Path, std_root: str | Path | None = None) -> dict[str, Any]:

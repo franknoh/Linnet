@@ -19,45 +19,25 @@ names every one of them; custom calls are never mapped.
 
 from __future__ import annotations
 
-import json
 import math
 import re
-import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import jax
 import numpy as np
 
-from ..compiler import LinnetError, find_compiler
+from ..compiler import LinnetError
 from ..dtypes import BY_MLIR, BY_NUMPY
+from ..importing import Block, Hierarchy, Member, identifier, write_source
+from ..weights import write_bindings
 from .dtypes import NUMPY_TYPES
 
 
 class ExportError(LinnetError):
     """The function cannot be expressed in Linnet as captured."""
-
-
-_RESERVED = {
-    "as", "const", "type", "struct", "enum", "fn", "op", "block", "entry", "param", "buffer",
-    "state", "sub", "let", "var", "return", "if", "else", "match", "static", "for", "in", "while",
-    "where", "true", "false", "none", "some", "extern", "module", "use", "pub", "Tensor", "Dim",
-    "Shape", "DType", "Numeric", "Integer", "Float", "cast", "reshape", "permute", "broadcast_to",
-    "concat", "pad", "iota", "fill", "gather", "scatter", "exp", "log", "sqrt", "rsqrt", "sin",
-    "cos", "tanh", "abs", "select", "min", "max", "sum", "prod", "any", "all", "bool", "i8", "i16",
-    "i32", "i64", "u8", "u16", "u32", "u64", "f16", "bf16", "f32", "f64",
-}  # fmt: skip
-
-
-def _identifier(name: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not clean or clean[0].isdigit():
-        clean = "_" + clean
-    if clean in _RESERVED:
-        clean += "_"
-    return clean
 
 
 @dataclass
@@ -89,23 +69,6 @@ class _Value:
     type: _Type
     # Compile-time facts for constants: a splat value, so fills stay fills.
     splat: float | int | bool | None = None
-
-
-@dataclass
-class _Block:
-    name: str
-    members: list[dict[str, Any]] = field(default_factory=lambda: [])
-
-
-@dataclass
-class _Member:
-    kind: str  # "param" | "sub"
-    name: str
-    block: _Block | None = None
-    length: int | None = None
-    element: _Block | None = None
-    children: dict[str, _Member] = field(default_factory=lambda: {})
-    leaf: _Type | None = None  # param: its tensor type
 
 
 class _Builder:
@@ -282,27 +245,14 @@ def import_stablehlo(
     `jax.ShapeDtypeStruct`, in which case `weights` cannot be written.
     """
     output_path = Path(output)
-    module = module_name or _identifier(output_path.stem)
+    module = module_name or identifier(output_path.stem)
     hierarchy = _Hierarchy(module)
     root = hierarchy.describe(params, root_name)
     leaves = [path for path, _ in _flatten_with_paths(params)]
     translator = _Translator(text, hierarchy, root, leaves, module)
     plan = translator.run()
 
-    compiler = find_compiler()
-    emitted = subprocess.run(
-        [compiler, "emit", "-"], input=json.dumps(plan), capture_output=True, text=True, check=False
-    )
-    if emitted.returncode != 0:
-        raise ExportError("the compiler rejected the exported plan:\n" + emitted.stderr)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(emitted.stdout, encoding="utf-8")
-    check = [compiler, "check", str(output_path)]
-    if std_root is not None:
-        check[2:2] = ["--std", str(std_root)]
-    checked = subprocess.run(check, capture_output=True, text=True, check=False)
-    if checked.returncode != 0:
-        raise ExportError("the exported source does not check:\n" + checked.stderr + checked.stdout)
+    write_source(plan, output_path, std_root, ExportError)
 
     weights_path: Path | None = None
     bindings_path: Path | None = None
@@ -321,9 +271,8 @@ def import_stablehlo(
         weights_path = weights_dir / "model.safetensors"
         save_file(tensors, str(weights_path))
         if hierarchy.renamed:
-            bindings_path = weights_dir / "bindings.json"
-            bindings_path.write_text(
-                json.dumps(hierarchy.renamed, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            bindings_path = write_bindings(
+                weights_dir / "bindings.json", dict(sorted(hierarchy.renamed.items()))
             )
     return ExportResult(
         output_path,
@@ -375,21 +324,18 @@ def _leaf_type(node: Any) -> _Type:
     return _leaf_type(np.asarray(node))
 
 
-class _Hierarchy:
-    def __init__(self, module: str) -> None:
-        self.module = module
-        self.blocks: dict[str, _Block] = {}
-        self._by_signature: dict[Any, _Block] = {}
-        self.renamed: dict[str, str] = {}
+class _Hierarchy(Hierarchy):
+    def leaf_type(self, member: Member) -> dict[str, Any] | None:
+        return _Builder.type_json(cast(_Type, member.leaf))
 
-    def describe(self, params: Any, root_name: str) -> _Member:
+    def describe(self, params: Any, root_name: str) -> Member:
         signature, member = self._describe(params, root_name)
         if member is None:
             raise ExportError("the parameter tree has no arrays")
-        member.block = self._block_for(root_name, signature, member)
+        member.block = self.block_for(root_name, signature, member)
         return member
 
-    def _describe(self, node: Any, name_hint: str) -> tuple[Any, _Member | None]:
+    def _describe(self, node: Any, name_hint: str) -> tuple[Any, Member | None]:
         if isinstance(node, dict) and _is_indexed(node):
             # A dict keyed 0..n-1 (Flax and Haiku layer stacks) is a sub array,
             # so `layers.0.q` names the same member either way.
@@ -397,21 +343,21 @@ class _Hierarchy:
             return self._describe([node[k] for k in keys], name_hint)
         if isinstance(node, dict):
             entries: list[Any] = []
-            children: dict[str, _Member] = {}
+            children: dict[str, Member] = {}
             # Members in the order `jax.tree_util` flattens a dict (sorted keys).
             for key in sorted(cast(dict[Any, Any], node), key=str):
                 signature, child = self._describe(node[key], str(key))
                 if child is None:
                     continue
-                child.name = _identifier(str(key))
+                child.name = identifier(str(key))
                 if child.kind == "sub" and child.length is None:
                     class_name = str(key) if not str(key).isdigit() else f"{name_hint}_{key}"
-                    child.block = self._block_for(class_name.capitalize(), signature, child)
+                    child.block = self.block_for(class_name.capitalize(), signature, child)
                 children[str(key)] = child
                 entries.append((str(key), signature))
             if not entries:
                 return (), None
-            return tuple(entries), _Member("sub", "", children=children)
+            return tuple(entries), Member("sub", "", children=children)
         if isinstance(node, list | tuple):
             described = [self._describe(child, name_hint) for child in cast(Sequence[Any], node)]
             if not described or any(m is None for _, m in described):
@@ -420,62 +366,23 @@ class _Hierarchy:
             if len(signatures) != 1:
                 raise ExportError("lists of parameters must have identical elements")
             signature = described[0][0]
-            block = self._block_for(
-                name_hint.rstrip("s").capitalize(), signature, cast(_Member, described[0][1])
+            block = self.block_for(
+                name_hint.rstrip("s").capitalize(), signature, cast(Member, described[0][1])
             )
-            children: dict[str, _Member] = {}
+            children: dict[str, Member] = {}
             for i, (_, child) in enumerate(described):
-                cast(_Member, child).block = block
-                children[str(i)] = cast(_Member, child)
-            return ("array", len(described), signature), _Member(
+                cast(Member, child).block = block
+                children[str(i)] = cast(Member, child)
+            return ("array", len(described), signature), Member(
                 "sub", "", length=len(described), element=block, children=children
             )
         leaf = _leaf_type(node)
-        return ("param", leaf.dtype, leaf.shape), _Member("param", "", leaf=leaf)
-
-    def _block_for(self, class_name: str, signature: Any, member: _Member) -> _Block:
-        key = (class_name, signature)
-        if key in self._by_signature:
-            return self._by_signature[key]
-        base = _identifier(class_name)
-        name = base
-        for suffix in range(2, 1000):
-            if name not in self.blocks:
-                break
-            name = f"{base}_{suffix}"
-        block = _Block(name)
-        self.blocks[name] = block
-        self._by_signature[key] = block
-        for child in member.children.values():
-            if child.kind == "param":
-                leaf = cast(_Type, child.leaf)
-                block.members.append(
-                    {"name": child.name, "kind": "param", "type": _Builder.type_json(leaf)}
-                )
-            else:
-                block.members.append(
-                    {"name": child.name, "kind": "sub", "type": self.member_type(child)}
-                )
-        return block
-
-    def block_type(self, block: _Block) -> dict[str, Any]:
-        return {"kind": "block", "name": block.name, "module": self.module, "args": []}
-
-    def member_type(self, member: _Member) -> dict[str, Any]:
-        if member.length is not None:
-            assert member.element is not None
-            return {
-                "kind": "array",
-                "element": self.block_type(member.element),
-                "length": member.length,
-            }
-        assert member.block is not None
-        return self.block_type(member.block)
+        return ("param", leaf.dtype, leaf.shape), Member("param", "", leaf=leaf)
 
 
 class _Translator:
     def __init__(
-        self, text: str, hierarchy: _Hierarchy, root: _Member, leaves: list[str], module: str
+        self, text: str, hierarchy: _Hierarchy, root: Member, leaves: list[str], module: str
     ) -> None:
         self.text = text
         self.hierarchy = hierarchy
@@ -534,7 +441,7 @@ class _Translator:
         if result.type.is_scalar:
             raise ExportError("the function must return a tensor, not a scalar")
         self.builder.op("return", [result], None)
-        root_block = cast(_Block, self.root.block)
+        root_block = cast(Block, self.root.block)
         blocks = {
             name: {
                 "module": self.module,
@@ -598,7 +505,7 @@ class _Translator:
                 index = self.builder.const(int(part), "i64")
                 current = self.builder.op(
                     "array.get", [current, index], _Type((), "f32"),
-                    type_json=self.hierarchy.block_type(cast(_Block, member.element)),
+                    type_json=self.hierarchy.block_type(cast(Block, member.element)),
                 )  # fmt: skip
                 linnet_parts.append(part)
                 member = child

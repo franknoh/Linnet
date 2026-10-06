@@ -28,7 +28,7 @@ import numpy as np
 from jax.core import Tracer
 from jax.sharding import SingleDeviceSharding
 
-from ..compiler import LinnetError, run_compiler, std_arguments
+from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..weights import apply_bindings, read_arrays
 from .dtypes import MLIR_TYPES
 
@@ -103,8 +103,7 @@ class LinnetFunction:
             for pattern in patterns:
                 arguments += ["--lora", pattern]
             arguments += ["--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]
-        for name, value in bindings.items():
-            arguments += ["--bind", f"{name}={value}"]
+        arguments += bind_arguments(bindings)
 
         def run(absent: list[str]) -> str:
             if not absent:

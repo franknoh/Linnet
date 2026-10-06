@@ -9,9 +9,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+from ..sizes import format_bytes
 from .graph import Category, Confidence, weakest
-
-GIB = 1 << 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,18 +112,6 @@ class MemoryAnalysisResult:
             "warnings": list(self.warnings),
             "assumptions": list(self.assumptions),
         }
-
-
-def format_bytes(nbytes: int | None) -> str:
-    if nbytes is None:
-        return "unknown"
-    if nbytes >= GIB:
-        return f"{nbytes / GIB:.2f} GiB"
-    if nbytes >= 1 << 20:
-        return f"{nbytes / (1 << 20):.2f} MiB"
-    if nbytes >= 1 << 10:
-        return f"{nbytes / (1 << 10):.2f} KiB"
-    return f"{nbytes} B"
 
 
 def format_result(result: MemoryAnalysisResult) -> str:

@@ -17,10 +17,7 @@ without a verified mapping stops the export with a diagnostic that names it.
 
 from __future__ import annotations
 
-import json
 import operator
-import re
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,8 +26,9 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from ..compiler import find_compiler
+from ..importing import Block, Hierarchy, Member, identifier, write_source
 from ..plan import PlanError
+from ..weights import write_bindings
 from .dtypes import LINNET_DTYPES
 
 
@@ -39,30 +37,6 @@ class ExportError(PlanError):
 
 
 # ----------------------------------------------------------------- naming
-
-_KEYWORDS = {
-    "as", "const", "type", "struct", "enum", "fn", "op", "block", "entry", "param", "buffer",
-    "state", "sub", "let", "var", "return", "if", "else", "match", "static", "for", "in", "while",
-    "where", "true", "false", "none", "some", "extern", "module", "use", "pub",
-}  # fmt: skip
-_PRELUDE = {
-    "Tensor", "Dim", "Shape", "DType", "Numeric", "Integer", "Float", "cast", "reshape",
-    "permute", "broadcast_to", "concat", "pad", "iota", "fill", "gather", "scatter", "exp", "log",
-    "sqrt", "rsqrt", "sin", "cos", "tanh", "abs", "select", "min", "max", "sum", "prod", "any",
-    "all", "bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "bf16", "f32",
-    "f64",
-}  # fmt: skip
-_RESERVED = _KEYWORDS | _PRELUDE
-
-
-def _identifier(name: str) -> str:
-    """A Linnet identifier for a PyTorch attribute or class name."""
-    clean = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not clean or clean[0].isdigit():
-        clean = "_" + clean
-    if clean in _RESERVED:
-        clean += "_"
-    return clean
 
 
 def _dtype_name(dtype: torch.dtype) -> str:
@@ -147,26 +121,6 @@ class _Value:
     @property
     def is_tensor(self) -> bool:
         return self.shape is not None and self.type_json is None
-
-
-@dataclass
-class _Block:
-    """A Linnet block synthesized from a module class."""
-
-    name: str
-    members: list[dict[str, Any]] = field(default_factory=lambda: [])
-
-
-@dataclass
-class _Member:
-    """How one attribute of a module maps onto a block member."""
-
-    kind: str  # "param" | "buffer" | "sub"
-    name: str
-    block: _Block | None = None  # sub: the child's block
-    length: int | None = None  # sub: array length when the child is a uniform container
-    element: _Block | None = None  # sub: the array element block
-    children: dict[str, _Member] = field(default_factory=lambda: {})  # sub: by attribute name
 
 
 class _Builder:
@@ -307,37 +261,35 @@ class _Builder:
 # -------------------------------------------------------------- hierarchy
 
 
-class _Hierarchy:
+class _Hierarchy(Hierarchy):
     """Blocks for a module tree, with parameter paths kept identical to
-    PyTorch's wherever Linnet can spell them."""
+    PyTorch's wherever Linnet can spell them. A parameter's type is filled
+    in once its symbolic shape is known."""
 
     def __init__(self, symbols: _Symbols, module: str) -> None:
+        super().__init__(module)
         self.symbols = symbols
-        self.module = module
-        self.blocks: dict[str, _Block] = {}
-        self._by_signature: dict[Any, _Block] = {}
-        self.root: _Member | None = None
-        self.renamed: dict[str, str] = {}  # Linnet path -> PyTorch name, when different
+        self.root: Member | None = None
 
-    def describe(self, module: nn.Module) -> _Member | None:
+    def describe(self, module: nn.Module) -> Member | None:
         """The member tree of `module`, or None when it holds no tensors."""
         signature, member = self._describe(module)
         if member is None:
             return None
-        member.block = self._block_for(type(module).__name__, signature, member)
+        member.block = self.block_for(type(module).__name__, signature, member)
         self.root = member
         return member
 
-    def _describe(self, module: nn.Module) -> tuple[Any, _Member | None]:
+    def _describe(self, module: nn.Module) -> tuple[Any, Member | None]:
         entries: list[Any] = []
-        children: dict[str, _Member] = {}
+        children: dict[str, Member] = {}
         for name, parameter in module.named_parameters(recurse=False):
             entries.append(("param", name, _dtype_name(parameter.dtype), tuple(parameter.shape)))
-            children[name] = _Member("param", _identifier(name))
+            children[name] = Member("param", identifier(name))
         for name, buffer in module.named_buffers(recurse=False):
             entries.append(("buffer", name, _dtype_name(buffer.dtype), tuple(buffer.shape)))
-            children[name] = _Member("buffer", _identifier(name))
-        described: list[tuple[str, Any, _Member, str]] = []
+            children[name] = Member("buffer", identifier(name))
+        described: list[tuple[str, Any, Member, str]] = []
         for name, child in module.named_children():
             child_signature, child_member = self._describe(child)
             if child_member is not None:
@@ -351,69 +303,23 @@ class _Hierarchy:
         if is_uniform_sequence:
             # The container itself is the array; its parent names it.
             _, signature, first, class_name = described[0]
-            block = self._block_for(class_name, signature, first)
+            block = self.block_for(class_name, signature, first)
             for name, _, child, _ in described:
                 child.block = block
                 children[name] = child
             entries.append(("array", len(described), class_name, signature))
-            return tuple(entries), _Member(
+            return tuple(entries), Member(
                 "sub", "", length=len(described), element=block, children=children
             )
         for name, signature, child, class_name in described:
             if child.length is None:
-                child.block = self._block_for(class_name, signature, child)
-            child.name = _identifier(name)
+                child.block = self.block_for(class_name, signature, child)
+            child.name = identifier(name)
             children[name] = child
             entries.append(("sub", name, class_name, signature))
         if not entries:
             return (), None
-        return tuple(entries), _Member("sub", "", children=children)
-
-    def _block_for(self, class_name: str, signature: Any, member: _Member) -> _Block:
-        key = (class_name, signature)
-        if key in self._by_signature:
-            return self._by_signature[key]
-        base = _identifier(class_name)
-        name = base
-        for suffix in range(2, 1000):
-            if name not in self.blocks:
-                break
-            name = f"{base}_{suffix}"
-        block = _Block(name)
-        self.blocks[name] = block
-        self._by_signature[key] = block
-        for attribute, child in member.children.items():
-            block.members.append(self._member_json(attribute, child))
-        return block
-
-    def _member_json(self, attribute: str, child: _Member) -> dict[str, Any]:
-        if child.kind != "sub":
-            return {"name": child.name, "kind": child.kind, "type": None}  # type filled later
-        if child.length is not None:
-            assert child.element is not None
-            element_type = self.block_type(child.element)
-            return {
-                "name": child.name,
-                "kind": "sub",
-                "type": {"kind": "array", "element": element_type, "length": child.length},
-            }
-        assert child.block is not None
-        return {"name": child.name, "kind": "sub", "type": self.block_type(child.block)}
-
-    def block_type(self, block: _Block) -> dict[str, Any]:
-        return {"kind": "block", "name": block.name, "module": self.module, "args": []}
-
-    def member_type(self, member: _Member) -> dict[str, Any]:
-        """The plan type of a `sub` member."""
-        if member.length is not None:
-            assert member.element is not None
-            return {
-                "kind": "array",
-                "element": self.block_type(member.element),
-                "length": member.length,
-            }
-        assert member.block is not None
-        return self.block_type(member.block)
+        return tuple(entries), Member("sub", "", children=children)
 
 
 # ----------------------------------------------------------------- export
@@ -455,30 +361,13 @@ def export_linnet(
     from torch.export import export
 
     output_path = Path(output)
-    module = module_name or _identifier(output_path.stem)
+    module = module_name or identifier(output_path.stem)
     exported: Any = export(model, example_args, dynamic_shapes=dynamic_shapes)
     program = exported.run_decompositions()
     exporter = _Exporter(model, program, module, dynamic_shapes)
     plan = exporter.run()
 
-    compiler = find_compiler()
-    emitted = subprocess.run(
-        [compiler, "emit", "-"],
-        input=json.dumps(plan),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if emitted.returncode != 0:
-        raise ExportError("the compiler rejected the exported plan:\n" + emitted.stderr)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(emitted.stdout, encoding="utf-8")
-    check = [compiler, "check", str(output_path)]
-    if std_root is not None:
-        check[2:2] = ["--std", str(std_root)]
-    checked = subprocess.run(check, capture_output=True, text=True, check=False)
-    if checked.returncode != 0:
-        raise ExportError("the exported source does not check:\n" + checked.stderr + checked.stdout)
+    write_source(plan, output_path, std_root, ExportError)
 
     weights_path: Path | None = None
     bindings_path: Path | None = None
@@ -493,11 +382,8 @@ def export_linnet(
         weights_path = weights_dir / "model.safetensors"
         save_file(tensors, str(weights_path))
         if exporter.hierarchy.renamed:
-            bindings_path = weights_dir / "bindings.json"
-            bindings_path.write_text(
-                json.dumps(exporter.hierarchy.renamed, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            renamed = dict(sorted(exporter.hierarchy.renamed.items()))
+            bindings_path = write_bindings(weights_dir / "bindings.json", renamed)
     return ExportResult(
         output_path, module, exporter.root_name, "forward", weights_path, bindings_path, plan
     )
@@ -579,7 +465,7 @@ class _Exporter:
         ]
         body = {
             "args": [self.builder.value_json(self.self_value, "self")]
-            + [self.builder.value_json(v, _identifier(n)) for n, v in inputs],
+            + [self.builder.value_json(v, identifier(n)) for n, v in inputs],
             "ops": body_ops,
         }
         blocks = {
@@ -645,7 +531,7 @@ class _Exporter:
                 elif isinstance(spec, Sequence) and axis < len(cast(Sequence[Any], spec)):
                     axis_spec = cast(Sequence[Any], spec)[axis]
                 if axis_spec is not None and isinstance(axis_spec, ExportDim):
-                    name = _identifier(str(getattr(axis_spec, "__name__", "")) or "D")
+                    name = identifier(str(getattr(axis_spec, "__name__", "")) or "D")
                 if expr.is_Symbol:
                     self.symbols.declare(expr, name)
 
@@ -662,7 +548,7 @@ class _Exporter:
                 constraints.append({"relation": "<=", "lhs": sym, "rhs": int(upper)})
         return constraints
 
-    def _fill_member_types(self, root: _Member) -> None:
+    def _fill_member_types(self, root: Member) -> None:
         """Parameter and buffer members get their tensor types from the model."""
         for path, tensor in list(self.model.named_parameters()) + list(self.model.named_buffers()):
             member, linnet_path = self._walk(root, path)
@@ -675,7 +561,7 @@ class _Exporter:
         # Lifted tensor constants become buffers of the root block.
         for target in self.program.graph_signature.inputs_to_lifted_tensor_constants.values():
             tensor = self.program.constants[target]
-            member_name = _identifier(target)
+            member_name = identifier(target)
             assert root.block is not None
             root.block.members.append(
                 {
@@ -684,11 +570,11 @@ class _Exporter:
                     "type": self.builder.tensor_type(tuple(tensor.shape), tensor.dtype),
                 }
             )
-            root.children[target] = _Member("buffer", member_name)
+            root.children[target] = Member("buffer", member_name)
             if member_name != target:
                 self.hierarchy.renamed[member_name] = target
 
-    def _walk(self, root: _Member, path: str) -> tuple[_Member, str]:
+    def _walk(self, root: Member, path: str) -> tuple[Member, str]:
         """The member owning the tensor at PyTorch `path` and the Linnet path."""
         member = root
         parts: list[str] = []
@@ -704,7 +590,7 @@ class _Exporter:
         return member, ".".join(parts)
 
     @staticmethod
-    def _leaf_name(root: _Member, path: str) -> str:
+    def _leaf_name(root: Member, path: str) -> str:
         member = root
         for part in path.split(".")[:-1]:
             member = member.children[part]
@@ -728,7 +614,7 @@ class _Exporter:
                     "array.get",
                     [current, index],
                     (torch.float32, None),
-                    type_json=self.hierarchy.block_type(cast(_Block, member.element)),
+                    type_json=self.hierarchy.block_type(cast(Block, member.element)),
                 )
                 member = child
                 continue

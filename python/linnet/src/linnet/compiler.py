@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
 
@@ -46,8 +47,11 @@ def installed_compiler() -> Path | None:
     return None
 
 
-def run_compiler(*arguments: str, stdin: str | None = None) -> str:
-    """Runs one compiler command and returns its standard output."""
+def run_compiler(
+    *arguments: str, stdin: str | None = None, error: type[LinnetError] | None = None
+) -> str:
+    """Runs one compiler command and returns its standard output. A failure
+    raises `error` (a `LinnetError` by default) with what the compiler said."""
     completed = subprocess.run(
         [find_compiler(), *arguments],
         input=stdin,
@@ -56,10 +60,24 @@ def run_compiler(*arguments: str, stdin: str | None = None) -> str:
         check=False,
     )
     if completed.returncode != 0:
-        raise LinnetError(
+        raise (error or LinnetError)(
             f"linnet {' '.join(arguments)} failed:\n{completed.stderr}{completed.stdout}".rstrip()
         )
     return completed.stdout
+
+
+def parse_binding(text: str) -> tuple[str, int | str]:
+    """`NAME=VALUE` as a generic's binding: a whole number as an `int`, any
+    other value (a dtype) as text."""
+    name, sep, value = text.partition("=")
+    if not sep or not name:
+        raise LinnetError(f"`{text}` is not NAME=VALUE")
+    return name, int(value) if value.lstrip("-").isdigit() else value
+
+
+def bind_arguments(bindings: Mapping[str, object]) -> list[str]:
+    """`--bind NAME=VALUE` for each generic binding."""
+    return [part for name, value in bindings.items() for part in ("--bind", f"{name}={value}")]
 
 
 def std_arguments(std_root: str | Path | None) -> list[str]:

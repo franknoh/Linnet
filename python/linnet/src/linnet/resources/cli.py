@@ -10,46 +10,34 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from collections.abc import Sequence
 from typing import Any
 
-from ..compiler import LinnetError
+from .. import sizes
+from ..compiler import LinnetError, parse_binding
+from ..sizes import format_bytes
 from .analysis import MemoryModel
 from .config import ExecutionConfig, Numerics
 from .kvcache import ContiguousLayout, KVLayout, PagedLayout
 from .planner import ExecutionPlanner, ResourceConstraint, Target
-from .result import format_bytes, format_result
+from .result import format_result
 from .training import OPTIMIZERS, CheckpointPolicy, TrainingConfig
-
-_UNITS = {
-    "": 1,
-    "b": 1,
-    "kib": 1 << 10,
-    "mib": 1 << 20,
-    "gib": 1 << 30,
-    "tib": 1 << 40,
-    "kb": 10**3,
-    "mb": 10**6,
-    "gb": 10**9,
-    "tb": 10**12,
-}
 
 
 def parse_size(text: str) -> int:
-    """`48GiB`, `80GB`, `512MiB`, or bytes."""
-    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]*)\s*", text)
-    if match is None or match[2].lower() not in _UNITS:
-        raise argparse.ArgumentTypeError(f"`{text}` is not a size such as 48GiB or 80GB")
-    return int(float(match[1]) * _UNITS[match[2].lower()])
+    """`48GiB`, `80GB`, `512MiB`, or bytes, as an argument."""
+    try:
+        return sizes.parse_size(text)
+    except LinnetError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def _binding(text: str) -> tuple[str, int | str]:
-    name, sep, value = text.partition("=")
-    if not sep:
-        raise argparse.ArgumentTypeError(f"`{text}` is not NAME=VALUE")
-    return name, int(value) if value.lstrip("-").isdigit() else value
+    try:
+        return parse_binding(text)
+    except LinnetError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def _checkpoint(text: str) -> CheckpointPolicy:

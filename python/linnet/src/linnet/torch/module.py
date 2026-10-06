@@ -10,7 +10,6 @@ each tensor `root.` and its Linnet parameter path. Entries become methods;
 from __future__ import annotations
 
 import fnmatch
-import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +18,7 @@ import torch
 from torch import nn
 
 from ..plan import Env, Plan, PlanError
+from ..weights import read_bindings, safetensors_index
 from .dtypes import (
     FROM_SAFETENSORS,
     LINNET_DTYPES,
@@ -595,28 +595,8 @@ def bind_weights(
     """
     from safetensors import safe_open  # type: ignore[import-untyped]
 
-    files = (
-        sorted(Path(weights).glob("*.safetensors")) if Path(weights).is_dir() else [Path(weights)]
-    )
-    if not files:
-        raise PlanError(f"no .safetensors files under {weights}")
-    available: dict[str, tuple[Path, list[int], str]] = {}
-    for file in files:
-        # safetensors ships no type information; its handle is treated as Any.
-        with cast(Any, safe_open(str(file), framework="pt")) as handle:
-            for key in cast(list[str], list(handle.keys())):
-                slice_ = handle.get_slice(key)
-                shape = cast(list[int], list(slice_.get_shape()))
-                available[key] = (file, shape, str(slice_.get_dtype()))
-
-    mapping: dict[str, str] = {}
-    if bindings is not None:
-        loaded_mapping: object = json.loads(Path(bindings).read_text(encoding="utf-8"))
-        if not isinstance(loaded_mapping, dict):
-            raise PlanError(
-                "bindings must be a JSON object mapping parameter paths to tensor names"
-            )
-        mapping = {str(k): str(v) for k, v in cast(dict[Any, Any], loaded_mapping).items()}
+    available = safetensors_index(weights)
+    mapping = read_bindings(bindings) if bindings is not None else {}
 
     problems: list[str] = []
     assignments: list[tuple[str, str, Path]] = []
@@ -633,7 +613,7 @@ def bind_weights(
             if strict:
                 problems.append(f"missing tensor `{source}` for `{path}`")
             continue
-        _, shape, dtype_name = available[source]
+        shape, dtype_name = list(available[source].shape), available[source].dtype
         expected_dtype = tensor.dtype
         axis = _shard_axis(shape, list(tensor.shape), shard[1]) if shard is not None else None
         if axis is not None:
@@ -649,7 +629,7 @@ def bind_weights(
         ):
             problems.append(f"`{source}` has dtype {dtype_name}, `{path}` needs {expected_dtype}")
         else:
-            assignments.append((path, source, available[source][0]))
+            assignments.append((path, source, available[source].file))
     if problems:
         raise PlanError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
 

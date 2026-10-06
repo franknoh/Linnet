@@ -20,12 +20,10 @@ mapping stop the import with a diagnostic naming every one of them.
 
 from __future__ import annotations
 
-import json
 import math
 import re
-import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,32 +31,14 @@ import numpy as np
 import onnx  # type: ignore[import-untyped]
 from onnx import numpy_helper, shape_inference  # type: ignore[import-untyped]
 
-from ..compiler import LinnetError, find_compiler
+from ..compiler import LinnetError
 from ..dtypes import BY_NUMPY, BY_ONNX, DTYPES
+from ..importing import Block, Hierarchy, Member, identifier, write_source
+from ..weights import write_bindings
 
 
 class OnnxImportError(LinnetError):
     """The graph cannot be expressed in Linnet as captured."""
-
-
-_RESERVED = {
-    "as", "const", "type", "struct", "enum", "fn", "op", "block", "entry", "param", "buffer",
-    "state", "sub", "let", "var", "return", "if", "else", "match", "static", "for", "in", "while",
-    "where", "true", "false", "none", "some", "extern", "module", "use", "pub", "Tensor", "Dim",
-    "Shape", "DType", "Numeric", "Integer", "Float", "cast", "reshape", "permute", "broadcast_to",
-    "concat", "pad", "iota", "fill", "gather", "scatter", "exp", "log", "sqrt", "rsqrt", "sin",
-    "cos", "tanh", "abs", "select", "min", "max", "sum", "prod", "any", "all", "bool", "i8", "i16",
-    "i32", "i64", "u8", "u16", "u32", "u64", "f16", "bf16", "f32", "f64",
-}  # fmt: skip
-
-
-def _identifier(name: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not clean or clean[0].isdigit():
-        clean = "_" + clean
-    if clean in _RESERVED:
-        clean += "_"
-    return clean
 
 
 def _dtype_name(elem_type: int) -> str:
@@ -99,23 +79,6 @@ class _Value:
     const: Any = None
 
 
-@dataclass
-class _Block:
-    name: str
-    members: list[dict[str, Any]] = field(default_factory=lambda: [])
-
-
-@dataclass
-class _Member:
-    kind: str  # "param" | "sub"
-    name: str
-    block: _Block | None = None
-    length: int | None = None
-    element: _Block | None = None
-    children: dict[str, _Member] = field(default_factory=lambda: {})
-    leaf: _Type | None = None
-
-
 class _Symbols:
     """Named symbolic dimensions of the graph, numbered for the plan."""
 
@@ -132,7 +95,7 @@ class _Symbols:
             return dim
         if dim not in self.ids:
             raise OnnxImportError(f"dimension `{dim}` does not come from a graph input")
-        return {"sym": self.ids[dim], "name": _identifier(dim)}
+        return {"sym": self.ids[dim], "name": identifier(dim)}
 
 
 class _Builder:
@@ -275,16 +238,14 @@ def _broadcast(shapes: Sequence[tuple[Dim, ...]]) -> list[Dim]:
     return out
 
 
-class _Hierarchy:
+class _Hierarchy(Hierarchy):
     """Blocks from the dotted names of the initializers."""
 
-    def __init__(self, module: str) -> None:
-        self.module = module
-        self.blocks: dict[str, _Block] = {}
-        self._by_signature: dict[Any, _Block] = {}
-        self.renamed: dict[str, str] = {}
+    def leaf_type(self, member: Member) -> dict[str, Any] | None:
+        leaf = cast(_Type, member.leaf)
+        return {"kind": "tensor", "shape": list(leaf.shape), "dtype": leaf.dtype}
 
-    def describe(self, leaves: dict[str, _Type], root_name: str) -> _Member:
+    def describe(self, leaves: dict[str, _Type], root_name: str) -> Member:
         tree: dict[str, Any] = {}
         for name, kind in leaves.items():
             node = tree
@@ -295,12 +256,12 @@ class _Hierarchy:
         signature, member = self._describe(tree, root_name)
         if member is None:
             raise OnnxImportError("the graph has no initializers to become parameters")
-        member.block = self._block_for(root_name, signature, member)
+        member.block = self.block_for(root_name, signature, member)
         return member
 
-    def _describe(self, node: Any, name_hint: str) -> tuple[Any, _Member | None]:
+    def _describe(self, node: Any, name_hint: str) -> tuple[Any, Member | None]:
         if isinstance(node, _Type):
-            return ("param", node.dtype, node.shape), _Member("param", "", leaf=node)
+            return ("param", node.dtype, node.shape), Member("param", "", leaf=node)
         tree = cast(dict[str, Any], node)
         keys = list(tree)
         if (
@@ -312,74 +273,30 @@ class _Hierarchy:
             if len({s for s, _ in described}) == 1 and all(m is not None for _, m in described):
                 signature = described[0][0]
                 element_name = name_hint.rstrip("s").capitalize() or "Item"
-                block = self._block_for(element_name, signature, cast(_Member, described[0][1]))
-                children = {str(i): cast(_Member, m) for i, (_, m) in enumerate(described)}
+                block = self.block_for(element_name, signature, cast(Member, described[0][1]))
+                children = {str(i): cast(Member, m) for i, (_, m) in enumerate(described)}
                 for child in children.values():
                     child.block = block
-                return ("array", len(keys), signature), _Member(
+                return ("array", len(keys), signature), Member(
                     "sub", "", length=len(keys), element=block, children=children
                 )
         entries: list[Any] = []
-        children: dict[str, _Member] = {}
+        children: dict[str, Member] = {}
         for key in keys:
             signature, child = self._describe(tree[key], key)
             if child is None:
                 continue
-            child.name = _identifier(key)
+            child.name = identifier(key)
             if child.kind == "sub" and child.length is None:
                 # Numbered children of a mixed container get a block name of
                 # their own; a member and its block must not share a name.
                 class_name = f"Item{key}" if key.isdigit() else key.capitalize()
-                child.block = self._block_for(class_name, signature, child)
+                child.block = self.block_for(class_name, signature, child)
             children[key] = child
             entries.append((key, signature))
         if not entries:
             return (), None
-        return tuple(entries), _Member("sub", "", children=children)
-
-    def _block_for(self, class_name: str, signature: Any, member: _Member) -> _Block:
-        key = (class_name, signature)
-        if key in self._by_signature:
-            return self._by_signature[key]
-        base = _identifier(class_name)
-        name = base
-        for suffix in range(2, 1000):
-            if name not in self.blocks:
-                break
-            name = f"{base}_{suffix}"
-        block = _Block(name)
-        self.blocks[name] = block
-        self._by_signature[key] = block
-        for child in member.children.values():
-            if child.kind == "param":
-                block.members.append(
-                    {
-                        "name": child.name,
-                        "kind": "param",
-                        "type": {
-                            "kind": "tensor",
-                            "shape": list(cast(_Type, child.leaf).shape),
-                            "dtype": cast(_Type, child.leaf).dtype,
-                        },
-                    }
-                )
-            else:
-                block.members.append(
-                    {"name": child.name, "kind": "sub", "type": self.member_type(child)}
-                )
-        return block
-
-    def block_type(self, block: _Block) -> dict[str, Any]:
-        return {"kind": "block", "name": block.name, "module": self.module, "args": []}
-
-    def member_type(self, member: _Member) -> dict[str, Any]:
-        if member.length is not None:
-            return {
-                "kind": "array",
-                "element": self.block_type(cast(_Block, member.element)),
-                "length": member.length,
-            }
-        return self.block_type(cast(_Block, member.block))
+        return tuple(entries), Member("sub", "", children=children)
 
 
 @dataclass
@@ -406,28 +323,13 @@ def import_onnx(
     `output`. With `weights`, the initializers are saved there as SafeTensors
     under their ONNX names (plus `bindings.json` when a name had to change)."""
     output_path = Path(output)
-    module = module_name or _identifier(output_path.stem)
+    module = module_name or identifier(output_path.stem)
     proto: Any = onnx.load(str(model)) if isinstance(model, str | Path) else model
     proto = shape_inference.infer_shapes(proto, strict_mode=False)
     translator = _Translator(proto, module, root_name)
     plan = translator.run()
 
-    compiler = find_compiler()
-    emitted = subprocess.run(
-        [compiler, "emit", "-"], input=json.dumps(plan), capture_output=True, text=True, check=False
-    )
-    if emitted.returncode != 0:
-        raise OnnxImportError("the compiler rejected the imported plan:\n" + emitted.stderr)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(emitted.stdout, encoding="utf-8")
-    check = [compiler, "check", str(output_path)]
-    if std_root is not None:
-        check[2:2] = ["--std", str(std_root)]
-    checked = subprocess.run(check, capture_output=True, text=True, check=False)
-    if checked.returncode != 0:
-        raise OnnxImportError(
-            "the imported source does not check:\n" + checked.stderr + checked.stdout
-        )
+    write_source(plan, output_path, std_root, OnnxImportError, "imported")
 
     weights_path: Path | None = None
     bindings_path: Path | None = None
@@ -442,11 +344,8 @@ def import_onnx(
             str(weights_path),
         )
         if translator.hierarchy.renamed:
-            bindings_path = weights_dir / "bindings.json"
-            bindings_path.write_text(
-                json.dumps(translator.hierarchy.renamed, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            renamed = dict(sorted(translator.hierarchy.renamed.items()))
+            bindings_path = write_bindings(weights_dir / "bindings.json", renamed)
     return ImportResult(
         output_path,
         module,
@@ -514,7 +413,7 @@ class _Translator:
         if root is None:
             raise OnnxImportError("the graph has no tensor initializers to become parameters")
         self.self_value.type = _Type((), "f32")
-        root_block = cast(_Block, root.block)
+        root_block = cast(Block, root.block)
         initializer_names = {i.name for i in self.graph.initializer}
         for name in leaves:
             if name in self.constants:
@@ -534,7 +433,7 @@ class _Translator:
                 if isinstance(dim, str):
                     self.symbols.declare(dim)
             value = self.builder.fresh(kind)
-            inputs.append((_identifier(info.name), value))
+            inputs.append((identifier(info.name), value))
             self.values[info.name] = value
 
         for node in self.graph.node:
@@ -554,7 +453,7 @@ class _Translator:
         self.builder.op("return", [result], None)
 
         generics = [
-            {"name": _identifier(name), "kind": "dim", "sym": i}
+            {"name": identifier(name), "kind": "dim", "sym": i}
             for name, i in self.symbols.ids.items()
         ]
         blocks = {
@@ -611,7 +510,7 @@ class _Translator:
                 return None
         return _Type(tuple(shape), _dtype_name(tensor.elem_type))
 
-    def _member_value(self, root: _Member, name: str) -> _Value:
+    def _member_value(self, root: Member, name: str) -> _Value:
         member = root
         current = self.self_value
         parts = re.split(r"[./]", name)
@@ -623,7 +522,7 @@ class _Translator:
                 index = self.builder.const(int(part), "i64")
                 current = self.builder.op(
                     "array.get", [current, index], _Type((), "f32"),
-                    type_json=self.hierarchy.block_type(cast(_Block, member.element)),
+                    type_json=self.hierarchy.block_type(cast(Block, member.element)),
                 )  # fmt: skip
                 linnet_parts.append(part)
                 member = child

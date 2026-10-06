@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..compiler import LinnetError, run_compiler, std_arguments
+from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_ONNX, BY_SAFETENSORS
 from ..weights import (
     RawTensor,
@@ -114,8 +114,7 @@ def export_model(
         arguments += ["--root", root]
     if entry is not None:
         arguments += ["--entry", entry]
-    for name, value in generics.items():
-        arguments += ["--bind", f"{name}={value}"]
+    arguments += bind_arguments(generics)
     text = run_compiler(*arguments, *std_arguments(std_root), str(source))
     model = parser.parse_model(text)
     index = safetensors_index(weights)
@@ -227,8 +226,7 @@ def export_function(
     plan = compile_plan(source, std_root=std_root, optimize=False, functions=True)
     entry = str(plan.module_entry(name)["name"]).rsplit("::", 1)[1]
     arguments = ["onnx", "--numerics", numerics, "--entry", entry]
-    for generic, value in generics.items():
-        arguments += ["--bind", f"{generic}={value}"]
+    arguments += bind_arguments(generics)
     model = parser.parse_model(run_compiler(*arguments, *std_arguments(std_root), str(source)))
     onnx.checker.check_model(model)
     return Exported(

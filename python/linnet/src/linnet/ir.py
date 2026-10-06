@@ -778,19 +778,41 @@ def evaluate_dtype(dtype: DType, bindings: Bindings) -> str:
     return bindings.dtypes[dtype.id]
 
 
-def parameter_count(program: Program, values: Mapping[str, int | str]) -> int:
-    """The number of parameter elements once the root generics are bound."""
+def repeat_paths(path: str, counts: Sequence[int]) -> list[str]:
+    """`layers[*].w` repeated `(2,)` is `layers.0.w`, `layers.1.w`."""
+    paths = [path]
+    for count in counts:
+        paths = [p.replace("[*]", f".{i}", 1) for p in paths for i in range(count)]
+    return paths
+
+
+def expand_paths(entry: ManifestEntry, bindings: Bindings) -> list[str]:
+    """A manifest entry's paths, one per element of the arrays it is in."""
+    return repeat_paths(entry.path, [evaluate_dim(r, bindings) for r in entry.repeat])
+
+
+def parameter_count(
+    program: Program,
+    values: Mapping[str, int | str],
+    mapping: Mapping[str, str] | None = None,
+) -> int:
+    """The number of parameter elements once the root generics are bound.
+    With `mapping` (path -> checkpoint tensor), a tensor several paths are
+    bound to (a tied embedding) counts once, as published figures do."""
     bindings = bind_generics(program.root.generics, values)
+    counted: set[str] = set()
     total = 0
     for entry in program.manifest:
         if entry.kind != "param":
             continue
-        count = 1
+        elements = 1
         for size in evaluate_shape(entry.shape, bindings):
-            count *= size
-        for repeat in entry.repeat:
-            count *= evaluate_dim(repeat, bindings)
-        total += count
+            elements *= size
+        for path in expand_paths(entry, bindings):
+            source = path if mapping is None else mapping.get(path, path)
+            if source not in counted:
+                counted.add(source)
+                total += elements
     return total
 
 
