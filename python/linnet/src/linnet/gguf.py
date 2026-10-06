@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import hf
-from .compiler import LinnetError
+from .compiler import LinnetError, parse_binding
 
 OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
@@ -193,11 +193,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--keep-checkpoint", action="store_true", help="keep the Transformers directory"
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
-    generics: dict[str, int | str] = {}
-    for bind in args.bind:
-        key, _, value = bind.partition("=")
-        generics[key] = int(value) if value.lstrip("-").isdigit() else value
     try:
+        generics = dict(parse_binding(bind) for bind in args.bind)
         exported = export(
             args.model,
             args.output,

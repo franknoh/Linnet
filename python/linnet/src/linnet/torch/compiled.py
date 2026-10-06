@@ -14,7 +14,6 @@ from __future__ import annotations
 import fnmatch
 import importlib.util
 import math
-import subprocess
 import sys
 import tempfile
 import threading
@@ -25,7 +24,7 @@ from typing import Any, cast
 
 import torch
 
-from ..compiler import find_compiler
+from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..plan import Env, Plan, PlanError
 from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
 from .placement import Placement
@@ -515,7 +514,7 @@ class CompiledLinnetModule(LinnetModule):
     def _compile(
         self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
     ) -> _Generated:
-        command = [find_compiler(), "torch", "--root", self.plan.root["name"], "--entry", entry]
+        command = ["torch", "--root", self.plan.root["name"], "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
         absent = self._absent_optionals()
@@ -523,10 +522,8 @@ class CompiledLinnetModule(LinnetModule):
             listing = self._work / "absent.txt"
             listing.write_text("\n".join(absent) + "\n", encoding="utf-8")
             command += ["--absent-file", str(listing)]
-        if self._std_root is not None:
-            command += ["--std", str(self._std_root)]
-        for name, value in bindings.items():
-            command += ["--bind", f"{name}={value}"]
+        command += std_arguments(self._std_root)
+        command += bind_arguments(bindings)
         if self.lora is not None:
             patterns, rank, alpha = self.lora
             for pattern in patterns:
@@ -543,13 +540,9 @@ class CompiledLinnetModule(LinnetModule):
             if self.tensor_parallel is not None:
                 # Joining split weights would gather them onto every process.
                 command.append("--no-fuse")
-        completed = subprocess.run(
-            [*command, str(self._source)], capture_output=True, text=True, check=False
-        )
-        if completed.returncode != 0:
-            raise PlanError(completed.stderr.strip() or "`linnet torch` failed")
+        text = run_compiler(*command, str(self._source), error=PlanError)
         path = self._work / f"{entry}_{len(self._compiled)}.py"
-        path.write_text(completed.stdout, encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         spec = importlib.util.spec_from_file_location(f"linnet_generated_{path.stem}", path)
         if spec is None or spec.loader is None:
             raise PlanError(f"cannot load the generated module at {path}")

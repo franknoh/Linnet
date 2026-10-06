@@ -37,7 +37,7 @@ from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from . import diagram, ir
-from .compiler import LinnetError, run_compiler, std_arguments
+from .compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from .weights import header_tensors, match_checkpoint, read_bindings, read_header
 
 REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
@@ -314,16 +314,14 @@ def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> li
 def _check_exports(
     card: Card, program: ir.Program, entry: ir.Function, std_root: str | Path | None
 ) -> list[str]:
-    binds = [f"{k}={v}" for k, v in {**card.generics, **card.check}.items()]
+    binds = bind_arguments({**card.generics, **card.check})
     missing = [g.name for g in entry.generics if g.name not in card.check and g.default is None]
     if missing:
         names = ", ".join(missing)
         return [f"[check] must bind the entry generics {names} to export `{entry.short_name}`"]
     problems: list[str] = []
     for target in EXPORTS:
-        arguments = [target, "--root", program.root.name, "--entry", entry.short_name]
-        for bind in binds:
-            arguments += ["--bind", bind]
+        arguments = [target, "--root", program.root.name, "--entry", entry.short_name, *binds]
         try:
             run_compiler(*arguments, *std_arguments(std_root), str(card.source_path))
         except LinnetError as error:

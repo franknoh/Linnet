@@ -15,7 +15,6 @@ model's parameters.
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -25,7 +24,7 @@ from typing import Any
 
 import torch
 
-from ..compiler import find_compiler
+from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..dtypes import CLASSES
 from ..plan import Env, Plan, PlanError, compile_plan
 from .dtypes import torch_dtype
@@ -173,20 +172,21 @@ class Function:
     def _compile_entry(
         self, bindings: Mapping[str, str], device: torch.device, backend: str | None
     ) -> _Generated:
-        command = [find_compiler(), "torch", "--entry", self.name, "--numerics", self._numerics]
-        if self._std_root is not None:
-            command += ["--std", str(self._std_root)]
-        for name, value in bindings.items():
-            command += ["--bind", f"{name}={value}"]
-        completed = subprocess.run(
-            [*command, str(self._source)], capture_output=True, text=True, check=False
+        text = run_compiler(
+            "torch",
+            "--entry",
+            self.name,
+            "--numerics",
+            self._numerics,
+            *std_arguments(self._std_root),
+            *bind_arguments(bindings),
+            str(self._source),
+            error=PlanError,
         )
-        if completed.returncode != 0:
-            raise PlanError(completed.stderr.strip() or "`linnet torch` failed")
         if self._work is None:
             self._work = Path(tempfile.mkdtemp(prefix="linnet-function-"))
         path = self._work / f"{self.name}_{len(self._generated)}.py"
-        path.write_text(completed.stdout, encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         spec = importlib.util.spec_from_file_location(f"linnet_function_{path.stem}", path)
         if spec is None or spec.loader is None:
             raise PlanError(f"cannot load the generated module at {path}")

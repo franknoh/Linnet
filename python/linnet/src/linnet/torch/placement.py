@@ -18,7 +18,6 @@ same straight-line code as an unplaced one, with a few `.to()` calls in it.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -27,36 +26,13 @@ import torch
 from torch import nn
 
 from ..plan import PlanError
+from ..sizes import format_bytes, parse_size
 from .module import BlockModule, LinnetModule
 
 # Room left on every GPU for what the manifest does not count: activations,
 # attention workspace, the caching allocator's slack.
 ACTIVATION_RESERVE = 0.10
 MINIMUM_RESERVE = 1 << 30
-
-_SIZE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([KMGT]?i?B?)\s*$", re.IGNORECASE)
-_UNITS = {
-    "": 1,
-    "b": 1,
-    "kb": 10**3,
-    "mb": 10**6,
-    "gb": 10**9,
-    "tb": 10**12,
-    "kib": 1 << 10,
-    "mib": 1 << 20,
-    "gib": 1 << 30,
-    "tib": 1 << 40,
-}
-
-
-def parse_size(size: int | str) -> int:
-    """Bytes from `12345`, `"20GiB"`, or `"20GB"`."""
-    if isinstance(size, int):
-        return size
-    match = _SIZE.match(size)
-    if match is None or match.group(2).lower() not in _UNITS:
-        raise PlanError(f"cannot read the memory size {size!r}")
-    return int(float(match.group(1)) * _UNITS[match.group(2).lower()])
 
 
 @dataclass(frozen=True)
@@ -162,7 +138,7 @@ def plan(
     if offloaded and not offload:
         total = sum(unit.bytes for unit in found)
         raise PlanError(
-            f"the model's {total / 2**30:.1f} GiB of weights do not fit the GPUs, and offload=False"
+            f"the model's {format_bytes(total)} of weights do not fit the GPUs, and offload=False"
         )
     used = sorted({slots[unit.path] for unit in found} | {0})
     devices = tuple(torch.device("cuda", index) for index in range(used[-1] + 1))
@@ -258,7 +234,7 @@ def _fill(
         room[last] -= unit.state_bytes
         if room[last] < 0:
             raise PlanError(
-                f"`{unit.path}` keeps {unit.state_bytes / 2**30:.1f} GiB of state on the GPU even "
+                f"`{unit.path}` keeps {format_bytes(unit.state_bytes)} of state on the GPU even "
                 "when its weights are offloaded, and the GPUs have no room left for it; "
                 "a smaller maximum sequence length (for example `MaxSeq`) shrinks it"
             )

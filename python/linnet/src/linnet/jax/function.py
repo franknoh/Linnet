@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..compiler import LinnetError, run_compiler, std_arguments
+from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_NUMPY, CLASSES
 from ..plan import Plan, compile_plan
 from .dtypes import NUMPY_TYPES
@@ -166,8 +166,7 @@ class Function:
 
     def _compile(self, bindings: Mapping[str, str]) -> tuple[Callable[..., Any], Path]:
         arguments = ["jax", "--entry", self.name, "--numerics", self._numerics]
-        for name, value in bindings.items():
-            arguments += ["--bind", f"{name}={value}"]
+        arguments += bind_arguments(bindings)
         text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
         if self._work is None:
             self._work = Path(tempfile.mkdtemp(prefix="linnet-jax-function-"))

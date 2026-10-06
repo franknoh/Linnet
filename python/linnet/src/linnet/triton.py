@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import ir, nest
-from .compiler import LinnetError
+from .compiler import LinnetError, parse_binding
 
 TRITON_DTYPES = {
     "bool": "TYPE_BOOL",
@@ -358,11 +358,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     exp.add_argument("--numerics", default="equivalent")
     exp.add_argument("--version", type=int, default=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    generics: dict[str, int | str] = {}
-    for bind in args.bind:
-        key, _, value = bind.partition("=")
-        generics[key] = int(value) if value.lstrip("-").isdigit() else value
     try:
+        generics = dict(parse_binding(bind) for bind in args.bind)
         repository = export(
             args.model,
             args.output,

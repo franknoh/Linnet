@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ir, nest
-from .compiler import LinnetError
+from .compiler import LinnetError, parse_binding
 from .dtypes import DTYPES
 from .weights import (
     TensorLocation,
@@ -651,11 +651,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     exp.add_argument("--bindings")
     exp.add_argument("--tokenizer", help="a Hub repository to take tokenizer files from")
     args = parser.parse_args(list(argv) if argv is not None else None)
-    generics: dict[str, int | str] = {}
-    for bind in args.bind:
-        key, _, value = bind.partition("=")
-        generics[key] = int(value) if value.lstrip("-").isdigit() else value
     try:
+        generics = dict(parse_binding(bind) for bind in args.bind)
         exported = export(
             args.model,
             args.output,
