@@ -214,6 +214,17 @@ data-sheet rates. Real kernels reach a fraction of these, a different one
 for prefill, decoding and training. Treat the ranking as a guide to which
 layouts to measure, not as a prediction of their speed.
 
+Published runs of Llama 3.1 8B on H100s against their bounds:
+
+| Run | Bound | Measured | Of the bound |
+| --- | ---: | ---: | ---: |
+| decoding, batch 1, CUDA graphs | 207 tokens/s (memory) | 161 | 78% |
+| decoding, tensor parallel on 2 GPUs | 311 tokens/s (memory) | 238 | 77% |
+| full SFT, 4096-token rows, 4 GPUs | 67.6K tokens/s (compute) | 29.4K | 44% |
+
+The SFT run shards its state (FSDP) with f32 master weights, which the
+bound leaves out.
+
 ## JSON and Python
 
 `--json` prints one document: the configuration, every component with its
