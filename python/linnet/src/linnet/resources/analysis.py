@@ -110,13 +110,15 @@ class MemoryModel:
             config.backend, context_bytes=config.context_bytes, compiled=config.compiled
         )
         numerics = config.numerics
+        file = None if isinstance(model, nest.Card) else Path(model)
         card: nest.Card | None = None
         if isinstance(model, nest.Card):
             card = model
-        elif not (Path(model).suffix == ".linnet" and Path(model).is_file()):
+        elif file is None or not (file.suffix == ".linnet" and file.is_file()):
             card = nest.resolve(model)
         if card is None:
-            self.source_path = Path(model)
+            assert file is not None
+            self.source_path = file
             self.name = self.source_path.stem
             self.generics: Mapping[str, int | str] = {}
             source_root = root
@@ -213,10 +215,10 @@ class MemoryModel:
         )
         self.spans = lifetimes(self.graph)
         self.arrays = _arrays(program)
-        root = root_env(program, root_values)
-        bound = entry_env(function, root, inputs)
+        base = root_env(program, root_values)
+        bound = entry_env(function, base, inputs)
         self.constraints = [
-            (c.relation, root.dim(c.lhs), root.dim(c.rhs)) for c in program.root.constraints
+            (c.relation, base.dim(c.lhs), base.dim(c.rhs)) for c in program.root.constraints
         ] + [(c.relation, bound.dim(c.lhs), bound.dim(c.rhs)) for c in function.constraints]
 
     def _role(self, name: str) -> str | None:
