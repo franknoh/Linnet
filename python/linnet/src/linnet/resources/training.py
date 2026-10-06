@@ -22,7 +22,7 @@ and adds the layer being gathered.
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -130,18 +130,30 @@ class TrainingTimeline:
     recomputed_flops: int
     unknown: tuple[str, ...]
 
-    def peak(self) -> tuple[int, int, dict[Category, int]]:
+    def live_at(self, time: int, categories: Sequence[Category]) -> int:
+        """The bytes of `categories` live at `time`."""
+        live = [i for i in self.intervals if i.start <= time <= i.end]
+        return sum(i.nbytes for i in live if i.category in categories)
+
+    def peak(
+        self, skip: Collection[Category] = (), before: int | None = None
+    ) -> tuple[int, int, dict[Category, int]]:
         """The step of the timeline with the most memory, its bytes, and
-        their categories (persistent memory included)."""
+        their categories (persistent memory included); categories in `skip`
+        neither count nor are listed, and with `before` only earlier steps
+        are considered."""
         delta = [0] * (self.length + 1)
         for item in self.intervals:
+            if item.category in skip:
+                continue
             delta[item.start] += item.nbytes
             delta[item.end + 1] -= item.nbytes
         live = sweep(delta[: self.length])
-        at = max(range(self.length), key=live.__getitem__)
+        until = self.length if before is None else max(1, min(before, self.length))
+        at = max(range(until), key=live.__getitem__)
         parts: dict[Category, int] = dict(self.persistent)
         for item in self.intervals:
-            if item.start <= at <= item.end:
+            if item.start <= at <= item.end and item.category not in skip:
                 parts[item.category] = parts.get(item.category, 0) + item.nbytes
         return at, live[at] + sum(self.persistent.values()), parts
 

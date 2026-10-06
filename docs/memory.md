@@ -105,8 +105,49 @@ optimizer step on one timeline:
   and optimizer states across N devices (FSDP), adding the layer being
   gathered.
 
-Repeat `--checkpoint` to compare policies in one report. Tensor and
-pipeline parallelism are not analyzed yet, and say so.
+Repeat `--checkpoint` to compare policies in one report.
+
+## Several devices
+
+```bash
+linnet memory llama-3.1-8b-instruct --entry decode_rows --batch 64 --seq-len 8192 \
+    --tensor-parallel 2
+linnet memory llama-3.1-8b-instruct --entry loss_packed --training --seq-len 32768 \
+    --pipeline-parallel 4 --microbatches 8 --schedule 1f1b
+```
+
+The report is per device: the one that needs the most, with every stage
+listed above it for a pipeline.
+
+**Tensor parallelism** (`--tensor-parallel N`), as `linnet.torch.load(tensor_parallel=...)` runs it:
+
+- A model with a `Shards` generic is analyzed as one process's program,
+  `Shards` bound to N. Its weights and caches are that process's part, and
+  `all_reduce` and `all_gather` allocate their results. A gather also
+  stacks the parts before laying them side by side.
+- Any other model is split as DTensors split it: weights and caches by the
+  `linnet.parallel` rules. Its activations are counted whole, and DTensor's
+  redistributions are not followed, so the activations are an estimate:
+  GPT-2 measured 26% above it.
+- The one-shot all-reduce's buffers are estimated. NCCL's own buffers are
+  listed as unknown.
+
+**Pipeline parallelism** (`--pipeline-parallel N`), as `linnet.torch.pipeline` runs it:
+
+- Stages are runs of blocks, balanced by parameter bytes, or set by
+  `--stages layers.8,layers.16,layers.24`.
+- The analysis splits the step's graph the way the runtime splits the
+  generated source. Each stage is analyzed for one micro-batch, the first
+  input's first axis cut into `--microbatches` parts.
+- In training, a stage keeps as many micro-batches' activations as the
+  schedule holds in flight: all of them under `gpipe`; under `1f1b`, one
+  per stage from it to the last. Every gradient is counted as accumulated.
+  The receive buffers of every micro-batch are added as well.
+- Without training, the other micro-batches' received and sent values
+  stay until the step ends.
+
+Tensor and pipeline parallelism together, and FSDP inside pipeline stages,
+are refused with a message.
 
 ## The largest configuration that fits
 
@@ -122,11 +163,68 @@ Estimated peak memory: 77.50 GiB
 Headroom: 507.84 MiB of a 78.00 GiB budget
 ```
 
-`--maximize` is `batch`, `context` or `kv-cache`. The budget is the
-device memory less `--reserve` and `--reserve-percent`. Memory never
-shrinks as these grow, so the search doubles until a value does not fit
-and then bisects: about two dozen sweeps. The model's own `where` clauses
-bound it too.
+`--maximize` is `batch`, `context`, `kv-cache` or `throughput`. The
+budget is the device memory (`--device-memory`, or a `--device`'s) less
+`--reserve` and `--reserve-percent`. Memory never shrinks as these grow,
+so the search doubles until a value does not fit and then bisects: about
+two dozen sweeps. The model's own `where` clauses bound it too.
+
+## The fastest layout
+
+```bash
+linnet fit tinyllama-1.1b-chat --entry loss_packed --training \
+    --maximize throughput --device h100-80gb --devices 4
+```
+
+```text
+Throughput bound on 4 x h100-80gb (roofline: data-sheet peak rates, not a measured speed)
+
+layout                                     length     tokens/s limit                peak
+PP 2 x 8 1f1b, 2 replicas                    8192      462,058 compute          6.48 GiB
+PP 4 x 16 1f1b                               8192      440,013 compute          3.60 GiB
+4 replicas                                   2048      427,886 compute         11.39 GiB
+...
+TP 2, 2 replicas                                             - the model's `where` clauses: none fits
+```
+
+`--maximize throughput` compares layouts of `--devices` devices:
+
+- tensor and pipeline degrees (powers of two), with the remaining devices
+  as replicas on their own data;
+- for a pipeline, 1, 2 and 4 micro-batches per stage;
+- in training, no checkpointing or block checkpointing.
+
+In each layout the batch, or for an entry without one the sequence length,
+grows to the largest size that fits. That size and the powers of two below
+it are tried, and the fastest is kept. A layout that does not fit, or that
+the analysis refuses, says why. `--batch` or `--seq-len` fixes the size.
+
+The ranking is a roofline bound:
+
+- a step takes at least its arithmetic at the device's peak rate, or
+  reading every weight and cache once at its memory bandwidth, whichever is
+  longer;
+- training adds the backward pass (twice the forward), recomputation, and
+  the optimizer's pass over weights, gradients and states;
+- collectives add their transfer over the link and a latency each;
+- a pipeline adds its bubble, `(stages - 1) / (micro-batches + stages - 1)`
+  of the step.
+
+`--device` is `h100-80gb`, `h200`, `a100-80gb`, `a100-40gb` or `l4`, with
+data-sheet rates. Real kernels reach a fraction of these, a different one
+for prefill, decoding and training. Treat the ranking as a guide to which
+layouts to measure, not as a prediction of their speed.
+
+Published runs of Llama 3.1 8B on H100s against their bounds:
+
+| Run | Bound | Measured | Of the bound |
+| --- | ---: | ---: | ---: |
+| decoding, batch 1, CUDA graphs | 207 tokens/s (memory) | 161 | 78% |
+| decoding, tensor parallel on 2 GPUs | 311 tokens/s (memory) | 238 | 77% |
+| full SFT, 4096-token rows, 4 GPUs | 67.6K tokens/s (compute) | 29.4K | 44% |
+
+The SFT run shards its state (FSDP) with f32 master weights, which the
+bound leaves out.
 
 ## JSON and Python
 
@@ -195,3 +293,26 @@ on packed sequences. The process adds more than the graph:
   It measured from 0.14 to 7.9 GiB and depends on the order of
   allocations, so the analysis lists it as unknown. Leave room for it with
   `--reserve` or `--reserve-percent` when fitting.
+
+Under `torchrun`, each process measures its own device:
+
+```bash
+torchrun --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
+    --entry decode_rows --batch 16 --cache-len 8192 --tensor-parallel 2
+```
+
+On two H100s, each process against its own prediction:
+
+| Model | Configuration | Error per process |
+| --- | --- | --- |
+| Llama 3.1 8B | decode, batch 16, cache 8,192, tensor parallel 2 | -0.1%, -0.1% |
+| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | -0.0%, -0.0% |
+| TinyLlama 1.1B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | +0.6%, -0.5% |
+| TinyLlama 1.1B | the same under GPipe | +2.3%, +2.0% |
+| Qwen2.5 0.5B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | -2.4%, -1.3% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | -12.2%, -4.9% |
+| GPT-2 | batch 8, 1,024 tokens, DTensor tensor parallel 2 | -25.5%, -25.5% |
+
+With two processes, 1.5 to 2.4 GiB sat outside the allocator: the CUDA
+context and NCCL's buffers. The pipeline's loss on real TinyLlama weights
+matched one GPU's to six digits, and its gradient norms to within 0.7%.

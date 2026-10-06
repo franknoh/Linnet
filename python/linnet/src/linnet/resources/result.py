@@ -50,6 +50,17 @@ class Allocation:
 
 
 @dataclass(frozen=True, slots=True)
+class DeviceMemory:
+    """One device of a configuration that spreads a model over several (a
+    pipeline's stages): what it holds and its peaks."""
+
+    name: str
+    holds: str
+    graph_peak: int
+    expected_peak: int
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryAnalysisResult:
     """A model's memory under one configuration, per device.
 
@@ -72,11 +83,18 @@ class MemoryAnalysisResult:
     formulas: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     allocation: Allocation | None = None
     recompute: float | None = None
+    # Every device, when the configuration spreads the model over several;
+    # the rest of the result is the device that needs the most.
+    devices: tuple[DeviceMemory, ...] = ()
 
     @property
     def confidence(self) -> Confidence:
         """The weakest confidence among the components counted."""
         return weakest(c.confidence for c in self.components if c.nbytes is not None)
+
+    def devices_heaviest(self) -> str:
+        """The name of the device the rest of the result describes."""
+        return max(self.devices, key=lambda d: d.expected_peak).name if self.devices else ""
 
     def component(self, name: str) -> MemoryComponent:
         for component in self.components:
@@ -107,6 +125,15 @@ class MemoryAnalysisResult:
                 "lower_bound": self.allocation.lower_bound,
             },
             "recompute": self.recompute,
+            "devices": [
+                {
+                    "name": d.name,
+                    "holds": d.holds,
+                    "graph_peak": d.graph_peak,
+                    "expected_peak": d.expected_peak,
+                }
+                for d in self.devices
+            ],
             "formulas": dict(self.formulas),
             "unknown": list(self.unknown),
             "warnings": list(self.warnings),
@@ -118,6 +145,12 @@ def format_result(result: MemoryAnalysisResult) -> str:
     """The breakdown as `linnet memory` prints it."""
     width = max([len(c.name) for c in result.components] + [20])
     lines: list[str] = []
+    if result.devices:
+        for device in result.devices:
+            lines.append(
+                f"{device.name:<10} {format_bytes(device.expected_peak):>12}  {device.holds}"
+            )
+        lines.append(f"\nThe most loaded, {result.devices_heaviest()}:\n")
     for component in result.components:
         if component.nbytes is None:
             continue

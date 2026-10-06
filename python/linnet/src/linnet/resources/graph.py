@@ -14,8 +14,8 @@ live until the last use of any object that shares it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import accumulate
 
@@ -134,6 +134,48 @@ class TensorGraph:
 
     def by_category(self, category: Category) -> tuple[MemoryObject, ...]:
         return tuple(o for o in self.objects if o.owns_storage and o.category == category)
+
+
+def restrict(
+    graph: TensorGraph, steps: Sequence[int], inputs: Sequence[int], outputs: Sequence[int]
+) -> TensorGraph:
+    """The part of `graph` that `steps` run, renumbered: their objects and
+    the storage those view, with `inputs` (made elsewhere and handed in)
+    and `outputs` (read elsewhere) as the part's own. An object made by a
+    step outside the part exists before it, as an input does."""
+    chosen = sorted(set(steps))
+    step_ids = {old: new for new, old in enumerate(chosen)}
+    used: set[int] = set(inputs) | set(outputs)
+    for index in chosen:
+        used.update(graph.steps[index].inputs)
+        used.update(graph.steps[index].outputs)
+    used |= {graph.objects[id].storage for id in used}
+    ids = {old: new for new, old in enumerate(sorted(used))}
+    objects = tuple(
+        replace(
+            graph.objects[old],
+            id=ids[old],
+            storage=ids[graph.objects[old].storage],
+            producer=None if (made := graph.objects[old].producer) is None else step_ids.get(made),
+        )
+        for old in sorted(used)
+    )
+    rebuilt = tuple(
+        replace(
+            graph.steps[old],
+            index=step_ids[old],
+            inputs=tuple(ids[i] for i in graph.steps[old].inputs),
+            outputs=tuple(ids[i] for i in graph.steps[old].outputs),
+        )
+        for old in chosen
+    )
+    return TensorGraph(
+        graph.entry,
+        objects,
+        rebuilt,
+        tuple(ids[i] for i in dict.fromkeys(inputs)),
+        tuple(ids[i] for i in dict.fromkeys(outputs)),
+    )
 
 
 @dataclass(frozen=True, slots=True)
