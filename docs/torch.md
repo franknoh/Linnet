@@ -82,6 +82,28 @@ from the inputs.
 | `device_map`, `max_memory`, `offload` | see [Placement and offload](#placement-and-offload) |
 | `tensor_parallel`, `tp_rules` | see [Tensor parallelism](#tensor-parallelism) |
 
+### Compiling a layer once
+
+Under `torch.compile` (`compile="inductor"`, or the capture of
+`"reduce-overhead"`), each kind of repeated block compiles once. The
+generated step's block-array elements (`layers.0`, `layers.1`, ...) become
+one function, which the step calls once per layer, and only that function
+is compiled. The first call compiles one layer rather than all of them:
+
+| On an H100 | Layer compiled once | Whole step compiled |
+| --- | ---: | ---: |
+| Llama 3.1 8B, 2,048 tokens, first call | 4.8 s | 18.9 s |
+| Llama 3.1 8B decoding, CUDA graphs, first call | 7.2 s | 50.4 s |
+| TinyLlama training step, 4,096 tokens, first step | 10.9 s | 69.8 s |
+| TinyLlama serving warmup (`Engine.warmup`) | 20.1 s | 113.4 s |
+
+Steps run at the same speed (Llama decoding 6.55 ms both ways, a training
+step 95.8 against 93.8 ms).
+
+`generated_source()` still shows the step as `linnet torch` printed it. Set
+`model.regional = False` to compile the whole step. Entries whose blocks
+differ, or that branch or loop, compile whole.
+
 ### CUDA graphs
 
 `compile="reduce-overhead"` is for decoding. The first call runs through

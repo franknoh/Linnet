@@ -144,56 +144,88 @@ def regional(source: str) -> Regions | None:
         for name in reads[i]:
             readers.setdefault(name, set()).update(runs[i])
 
-    # Each element's function: what it receives, its body, what it sends.
-    defined_in: dict[str, int] = {}
-    for i, where in enumerate(place):
-        if where >= 0:
-            for name in writes[i]:
-                defined_in[name] = where
-    read_after: dict[int, set[str]] = {}
-    for i, where in enumerate(runs):
-        for unit in where:
-            for name in reads[i]:
-                if defined_in.get(name, unit) != unit:
-                    read_after.setdefault(unit, set()).add(name)
-    outside: set[str] = set(returned)
-    for i, where in enumerate(runs):
-        if _OUTER in where:
-            outside.update(reads[i])
+    def assemble() -> tuple[
+        dict[int, list[int]],
+        dict[int, ast.FunctionDef],
+        dict[int, tuple[list[str], list[str]]],
+    ]:
+        """Each element's statements, function, and what it receives and
+        sends, from where every statement runs now."""
+        defined_in: dict[str, int] = {}
+        for i, where in enumerate(place):
+            if where >= 0:
+                for name in writes[i]:
+                    defined_in[name] = where
+        read_after: dict[int, set[str]] = {}
+        for i, where in enumerate(runs):
+            for unit in where:
+                for name in reads[i]:
+                    if defined_in.get(name, unit) != unit:
+                        read_after.setdefault(unit, set()).add(name)
+        outside: set[str] = set(returned)
+        for i, where in enumerate(runs):
+            if _OUTER in where:
+                outside.update(reads[i])
+        bodies: dict[int, list[int]] = {}
+        for i, where in enumerate(runs):
+            for unit in where:
+                if unit >= 0:
+                    bodies.setdefault(unit, []).append(i)
+        functions: dict[int, ast.FunctionDef] = {}
+        signatures: dict[int, tuple[list[str], list[str]]] = {}
+        for unit, members in bodies.items():
+            local = {name for i in members for name in writes[i]}
+            wanted: dict[str, None] = {}
+            for i in members:
+                for name in reads[i]:
+                    if name not in local:
+                        wanted[name] = None
+            sends = [
+                name
+                for i in members
+                if place[i] == unit
+                for name in writes[i]
+                if name in outside or any(name in read_after.get(u, ()) for u in bodies if u > unit)
+            ]
+            signatures[unit] = (list(wanted), sends)
+            functions[unit] = _function([statements[i] for i in members], list(wanted), sends)
+        return bodies, functions, signatures
 
-    bodies: dict[int, list[int]] = {}
-    for i, where in enumerate(runs):
-        for unit in where:
-            if unit >= 0:
-                bodies.setdefault(unit, []).append(i)
+    bodies, functions, signatures = assemble()
     if sorted(bodies) != list(range(len(elements))):
         return None
-    functions: dict[int, ast.FunctionDef] = {}
-    signatures: dict[int, tuple[list[str], list[str]]] = {}
-    for unit, members in bodies.items():
-        body = [statements[i] for i in members]
-        local = {name for i in members for name in writes[i]}
-        wanted: dict[str, None] = {}
-        for i in members:
-            for name in reads[i]:
-                if name not in local:
-                    wanted[name] = None
-        sends = [
-            name
-            for i in members
-            if place[i] == unit
-            for name in writes[i]
-            if name in outside or any(name in read_after.get(u, ()) for u in bodies if u > unit)
-        ]
-        signatures[unit] = (list(wanted), sends)
-        functions[unit] = _function(body, list(wanted), sends)
+    keys = {unit: _normalized(function) for unit, function in functions.items()}
+    # An element unlike the rest may end in what only `main` reads (the last
+    # layer's output cut for the final norm): those statements are
+    # `main`'s, as long as moving them makes it like the rest.
+    common = max(set(keys.values()), key=list(keys.values()).count)
+    for unit in sorted(keys):
+        moved: list[int] = []
+        while keys[unit] != common:
+            own = [i for i in bodies[unit] if place[i] == unit and i not in moved]
+            last = own[-1] if own else None
+            if (
+                last is None
+                or len(moved) >= 4
+                or any(name in arguments and owner.get(name) == unit for name in reads[last])
+            ):
+                break
+            moved.append(last)
+            place[last], runs[last] = _OUTER, {_OUTER}
+            bodies, functions, signatures = assemble()
+            keys = {u: _normalized(f) for u, f in functions.items()}
+        if keys[unit] != common:
+            for i in moved:
+                place[i], runs[i] = unit, {unit}
+            bodies, functions, signatures = assemble()
+            keys = {u: _normalized(f) for u, f in functions.items()}
 
     # Elements the same but for their names share a function.
     shared: dict[str, str] = {}
     kinds: list[ast.FunctionDef] = []
     name_of: dict[int, str] = {}
     for unit in sorted(functions):
-        key = _normalized(functions[unit])
+        key = keys[unit]
         if key not in shared:
             name = f"_region_{len(kinds)}"
             shared[key] = name
