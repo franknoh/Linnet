@@ -223,14 +223,13 @@ def measure(
     used = int(total - free)
     outside = used - int(torch.cuda.memory_reserved())
     runtime = sum(c.nbytes or 0 for c in prediction.components if c.category == Category.RUNTIME)
-    context = sum(c.nbytes or 0 for c in prediction.components if c.name == "CUDA context")
     comparisons = [
         Comparison("graph-visible vs allocator peak", prediction.graph_peak, allocated),
         Comparison(
             "graph + workspaces vs allocator peak", prediction.expected_peak - runtime, allocated
         ),
         Comparison("allocator reserve beyond its peak", None, reserved - allocated),
-        Comparison("CUDA context vs outside the allocator", context, outside),
+        Comparison("runtime vs outside the allocator", runtime, outside),
         Comparison("whole process vs device in use", prediction.expected_peak, used),
     ]
     return prediction, comparisons
