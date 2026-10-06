@@ -47,9 +47,10 @@ DEFAULT_RULES: dict[str, int | None] = {
 STATE_AXIS = 1
 
 # The largest all-reduce `linnet.torch.collectives` sums with its one-shot
-# kernel; past it NCCL is faster. Each process holds a buffer of twice this
-# (`ONE_SHOT_BYTES / 2` f32 slots), which its peers read.
-ONE_SHOT_BYTES = 64 * 1024
+# kernel; past it NCCL is faster (on two H100s, 10.3 against 11.0 us at
+# 128 KiB, 14.4 against 12.5 at 256). Each process holds a buffer of twice
+# this (`ONE_SHOT_BYTES / 2` f32 slots), which its peers read.
+ONE_SHOT_BYTES = 128 * 1024
 
 
 def split_axis(

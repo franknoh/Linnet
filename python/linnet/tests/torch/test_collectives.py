@@ -1,6 +1,6 @@
 """The one-shot all-reduce (`linnet.torch.collectives`) sums what NCCL sums,
 call after call and replayed in a CUDA graph, and leaves larger messages to
-NCCL. Needs two CUDA devices."""
+NCCL; gathers lay the parts as NCCL does. Needs two CUDA devices."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
@@ -26,7 +26,7 @@ def _sum(rank: int, port: int, out: str) -> None:
     dist.init_process_group("nccl", rank=rank, world_size=2, device_id=torch.device("cuda", rank))
     from torch.distributed import _functional_collectives as funcol
 
-    from linnet.torch.collectives import ONE_SHOT_BYTES, all_reduce, prepare
+    from linnet.torch.collectives import ONE_SHOT_BYTES, all_gather, all_reduce, prepare
 
     group = dist.group.WORLD
     assert group is not None and prepare(group)
@@ -39,7 +39,7 @@ def _sum(rank: int, port: int, out: str) -> None:
     for dtype, count in (
         (torch.bfloat16, 4096),  # one token's hidden state
         (torch.float16, 8193),  # a length no block divides
-        (torch.float32, 16384),  # the largest f32 message it takes
+        (torch.float32, ONE_SHOT_BYTES // 4),  # the largest f32 message it takes
         (torch.bfloat16, ONE_SHOT_BYTES),  # past the limit: NCCL
     ):
         x = torch.randn(count, device="cuda", generator=generator).to(dtype)
@@ -53,6 +53,11 @@ def _sum(rank: int, port: int, out: str) -> None:
         y = all_reduce(x + i, group)
         if i % 50 == 0 and not torch.allclose(y.float(), nccl(x + i).float(), atol=0.5):
             problems.append(f"call {i}")
+    # Gathered side by side, as NCCL lays the parts.
+    part = torch.randn(4, 8, device="cuda", generator=generator)
+    whole = funcol.wait_tensor(funcol.all_gather_tensor(part, 1, group))
+    if not torch.equal(all_gather(part, group), whole):
+        problems.append("gather")
     # Captured in a CUDA graph and replayed.
     static = x.clone()
     for _ in range(2):

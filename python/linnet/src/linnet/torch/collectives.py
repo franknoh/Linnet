@@ -2,12 +2,19 @@
 
 `all_reduce` sums a tensor over the processes of a group. A decoding step's
 messages are small -- one token's hidden state is 8 KiB -- and their cost is
-latency, not bandwidth: NCCL takes about 11 us for one on two NVLink-joined
+latency, not bandwidth: NCCL takes about 10 us for one on two NVLink-joined
 H100s. Up to `ONE_SHOT_BYTES` the sum is instead one Triton kernel over
-symmetric memory, about 4.5 us: each process copies its part into a buffer
+symmetric memory, 7 to 10 us: each process copies its part into a buffer
 its peers can read, flags them, waits for their flags, and adds. Larger
 messages, CPU tensors, and anything else the kernel does not cover go to
 NCCL (or whatever backend the group has).
+
+Run eagerly, a call's host time outweighs the sum's. Outside
+`torch.compile` the kernel is launched directly: the custom operator
+compiled code needs costs the host about 10 us more. Outside compiled code,
+graph capture and autograd, NCCL sums a copy in place: a functional
+collective's result is a tensor subclass, and every operation on it goes
+through Python, about 100 us a call.
 
 The buffers are set up once per group by `prepare`, a collective every
 process of the group calls together (`linnet.torch.load` does, when it
@@ -30,7 +37,7 @@ from ..parallel import ONE_SHOT_BYTES
 # NCCL is faster: the kernel reads every peer's whole part, where NCCL
 # splits the work.
 _BLOCK = 1024
-_MAX_BLOCKS = 64  # ONE_SHOT_BYTES of the narrowest dtype the kernel takes, by _BLOCK
+_MAX_BLOCKS = ONE_SHOT_BYTES // 2 // _BLOCK  # of the narrowest dtype the kernel takes
 _DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 _one_shots: dict[str, OneShot] = {}
@@ -112,6 +119,16 @@ def prepare(group: Any) -> bool:
     return True
 
 
+def _eager(x: torch.Tensor) -> bool:
+    """Whether `x` is summed outside compiled code, graph capture and
+    autograd, where NCCL's eager calls apply."""
+    return not (
+        torch.compiler.is_compiling()
+        or (x.is_cuda and torch.cuda.is_current_stream_capturing())
+        or (x.requires_grad and torch.is_grad_enabled())
+    )
+
+
 def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
     """The sum of `x` over the processes of `group`."""
     name = str(group.group_name)
@@ -121,7 +138,15 @@ def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
         and x.dtype in _DTYPES
         and x.numel() * x.element_size() <= ONE_SHOT_BYTES
     ):
-        return one_shot_all_reduce(x.contiguous(), name)
+        if torch.compiler.is_compiling():
+            return one_shot_all_reduce(x.contiguous(), name)
+        return _one_shots[name](x.contiguous())
+    if _eager(x):
+        import torch.distributed as dist
+
+        out = x.clone(memory_format=torch.contiguous_format)
+        dist.all_reduce(out, group=group)
+        return out
     from torch.distributed import _functional_collectives as funcol
 
     return funcol.all_reduce(x, "sum", group)
@@ -129,6 +154,13 @@ def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
 
 def all_gather(x: torch.Tensor, group: Any) -> torch.Tensor:
     """The processes' `x` side by side along the last axis, in rank order."""
+    if _eager(x):
+        import torch.distributed as dist
+
+        world = dist.get_world_size(group)
+        stacked = x.new_empty((world * x.shape[0], *x.shape[1:]))
+        dist.all_gather_single(stacked, x.contiguous(), group=group)
+        return torch.cat(stacked.chunk(world), dim=x.dim() - 1)
     from torch.distributed import _functional_collectives as funcol
 
     return funcol.all_gather_tensor(x.contiguous(), x.dim() - 1, group)
