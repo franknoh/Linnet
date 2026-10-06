@@ -126,8 +126,9 @@ listed above it for a pipeline.
   `all_reduce` and `all_gather` allocate their results. A gather also
   stacks the parts before laying them side by side.
 - Any other model is split as DTensors split it: weights and caches by the
-  `linnet.parallel` rules. Its activations are counted whole, as an upper
-  bound.
+  `linnet.parallel` rules. Its activations are counted whole, plus the
+  copy that gathers each result whole at the end. DTensor's other
+  redistributions are not followed, so this is an estimate.
 - The one-shot all-reduce's buffers are estimated. NCCL's own buffers are
   listed as unknown.
 

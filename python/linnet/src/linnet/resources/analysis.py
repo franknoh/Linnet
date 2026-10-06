@@ -471,6 +471,16 @@ class MemoryModel:
                             "the end of the step",
                         )
                     )
+                if count > 1 and part.stage == stages - 1:
+                    extras.append(
+                        MemoryComponent(
+                            "Joined results",
+                            Category.ACTIVATION,
+                            count * sent,
+                            Confidence.MODELED,
+                            note="every micro-batch's results joined into one, beside them",
+                        )
+                    )
             else:
                 in_flight = count if config.schedule == "gpipe" else min(stages - part.stage, count)
 
@@ -509,7 +519,8 @@ class MemoryModel:
                         )
                     return found
 
-                results.append(self._training(micro, part.graph, flight))
+                accumulated = config.schedule == "1f1b"
+                results.append(self._training(micro, part.graph, flight, accumulated))
                 continue
             added = sum(c.nbytes or 0 for c in extras)
             results.append(
@@ -634,6 +645,15 @@ class MemoryModel:
         components, graph_persistent, laid_out = self._persistent(env, graph)
         transient = peak(graph, env, spans)
         work, estimates, unknown = self._workspaces(env, graph)
+        if self.splitting == "dtensor" and graph.steps:
+            # DTensor hands results back whole: each a gathered copy, made
+            # when the entry returns.
+            last = len(graph.steps) - 1
+            gathered = sum(ex.evaluate(graph.objects[i].nbytes, env) for i in graph.outputs)
+            work[last] = work.get(last, 0) + gathered
+            estimates[last] = Estimate(
+                work[last], Confidence.MODELED, "the results, gathered whole from the processes"
+            )
         with_work = peak(graph, env, spans, work)
         activations = ex.evaluate(ex.total(graph.objects[i].nbytes for i in with_work.live), env)
         at_work = work.get(with_work.step, 0)
@@ -647,7 +667,7 @@ class MemoryModel:
                 Confidence.ESTIMATED if whole else Confidence.EXACT,
                 _formula(formula),
                 "inputs and outputs included"
-                + ("; counted whole, as an upper bound" if whole else ""),
+                + ("; counted whole: DTensor's redistributions are not followed" if whole else ""),
             )
         )
         runtime, runtime_total, runtime_unknown = self._runtime(False)
@@ -694,11 +714,15 @@ class MemoryModel:
         env: Mapping[str, int],
         graph: TensorGraph | None = None,
         flight: Callable[[TrainingTimeline], list[MemoryComponent]] | None = None,
+        accumulated: bool = True,
     ) -> MemoryAnalysisResult:
-        """A training step. With `flight` (a pipeline stage), the peak is the
-        stage's steady state: one micro-batch at its peak, every gradient
-        already accumulated, and what `flight` adds for the micro-batches in
-        flight and their buffers."""
+        """A training step. With `flight` (a pipeline stage), the peak is one
+        micro-batch's forward or backward with what `flight` adds for the
+        others in flight and their buffers: with every gradient already
+        accumulated (`accumulated`, 1F1B's steady state), or with the
+        gradients one micro-batch has at that point (GPipe, whose micro-
+        batches are all in flight before the first backward). The optimizer
+        step, when it is larger, is the peak instead."""
         config = self.config.training
         assert config is not None
         graph = graph or self.graph
@@ -707,11 +731,20 @@ class MemoryModel:
         if flight is None:
             at, total, parts = steps.peak()
         else:
-            at, total, parts = steps.peak(skip=(Category.GRADIENT,))
+            optimizer = steps.length - 1
             gradients = sum(i.nbytes for i in steps.intervals if i.category == Category.GRADIENT)
-            parts[Category.GRADIENT] = gradients
+            if accumulated:
+                at, total, parts = steps.peak(skip=(Category.GRADIENT,), before=optimizer)
+                parts[Category.GRADIENT] = gradients
+                total += gradients
+            else:
+                at, total, parts = steps.peak(before=optimizer)
             extras = flight(steps)
-            total += gradients + sum(c.nbytes or 0 for c in extras)
+            total += sum(c.nbytes or 0 for c in extras)
+            stepping = sum(steps.persistent.values()) + gradients
+            if stepping > total:
+                at, total, parts, extras = optimizer, stepping, dict(steps.persistent), []
+                parts[Category.GRADIENT] = gradients
         components: list[MemoryComponent] = []
         names = [
             (Category.PARAMETER, "Weights"),

@@ -135,10 +135,13 @@ class TrainingTimeline:
         live = [i for i in self.intervals if i.start <= time <= i.end]
         return sum(i.nbytes for i in live if i.category in categories)
 
-    def peak(self, skip: Collection[Category] = ()) -> tuple[int, int, dict[Category, int]]:
+    def peak(
+        self, skip: Collection[Category] = (), before: int | None = None
+    ) -> tuple[int, int, dict[Category, int]]:
         """The step of the timeline with the most memory, its bytes, and
         their categories (persistent memory included); categories in `skip`
-        neither count nor are listed."""
+        neither count nor are listed, and with `before` only earlier steps
+        are considered."""
         delta = [0] * (self.length + 1)
         for item in self.intervals:
             if item.category in skip:
@@ -146,7 +149,8 @@ class TrainingTimeline:
             delta[item.start] += item.nbytes
             delta[item.end + 1] -= item.nbytes
         live = sweep(delta[: self.length])
-        at = max(range(self.length), key=live.__getitem__)
+        until = self.length if before is None else max(1, min(before, self.length))
+        at = max(range(until), key=live.__getitem__)
         parts: dict[Category, int] = dict(self.persistent)
         for item in self.intervals:
             if item.start <= at <= item.end and item.category not in skip:
