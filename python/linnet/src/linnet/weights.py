@@ -1,5 +1,8 @@
 """SafeTensors checkpoints and the bindings that map Linnet paths onto them."""
 
+# NumPy's stubs leave `frombuffer` partly unknown on some versions.
+# pyright: reportUnknownMemberType=false
+
 from __future__ import annotations
 
 import json
