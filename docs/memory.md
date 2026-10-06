@@ -162,11 +162,57 @@ Estimated peak memory: 77.50 GiB
 Headroom: 507.84 MiB of a 78.00 GiB budget
 ```
 
-`--maximize` is `batch`, `context` or `kv-cache`. The budget is the
-device memory less `--reserve` and `--reserve-percent`. Memory never
-shrinks as these grow, so the search doubles until a value does not fit
-and then bisects: about two dozen sweeps. The model's own `where` clauses
-bound it too.
+`--maximize` is `batch`, `context`, `kv-cache` or `throughput`. The
+budget is the device memory (`--device-memory`, or a `--device`'s) less
+`--reserve` and `--reserve-percent`. Memory never shrinks as these grow,
+so the search doubles until a value does not fit and then bisects: about
+two dozen sweeps. The model's own `where` clauses bound it too.
+
+## The fastest layout
+
+```bash
+linnet fit tinyllama-1.1b-chat --entry loss_packed --training \
+    --maximize throughput --device h100-80gb --devices 4
+```
+
+```text
+Throughput bound on 4 x h100-80gb (roofline: data-sheet peak rates, not a measured speed)
+
+layout                                     length     tokens/s limit                peak
+PP 2 x 8 1f1b, 2 replicas                    8192      462,058 compute          6.48 GiB
+PP 4 x 16 1f1b                               8192      440,013 compute          3.60 GiB
+4 replicas                                   2048      427,886 compute         11.39 GiB
+...
+TP 2, 2 replicas                                             - the model's `where` clauses: none fits
+```
+
+`--maximize throughput` compares layouts of `--devices` devices:
+
+- tensor and pipeline degrees (powers of two), with the remaining devices
+  as replicas on their own data;
+- for a pipeline, 1, 2 and 4 micro-batches per stage;
+- in training, no checkpointing or block checkpointing.
+
+In each layout the batch, or for an entry without one the sequence length,
+grows to the largest size that fits. That size and the powers of two below
+it are tried, and the fastest is kept. A layout that does not fit, or that
+the analysis refuses, says why. `--batch` or `--seq-len` fixes the size.
+
+The ranking is a roofline bound:
+
+- a step takes at least its arithmetic at the device's peak rate, or
+  reading every weight and cache once at its memory bandwidth, whichever is
+  longer;
+- training adds the backward pass (twice the forward), recomputation, and
+  the optimizer's pass over weights, gradients and states;
+- collectives add their transfer over the link and a latency each;
+- a pipeline adds its bubble, `(stages - 1) / (micro-batches + stages - 1)`
+  of the step.
+
+`--device` is `h100-80gb`, `h200`, `a100-80gb`, `a100-40gb` or `l4`, with
+data-sheet rates. Real kernels reach a fraction of these, a different one
+for prefill, decoding and training. Treat the ranking as a guide to which
+layouts to measure, not as a prediction of their speed.
 
 ## JSON and Python
 

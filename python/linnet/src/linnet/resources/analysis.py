@@ -28,6 +28,7 @@ from .backends import BackendResourceModel, Estimate, backend_model
 from .config import ExecutionConfig
 from .graph import Category, Confidence, TensorGraph, lifetimes, peak, peak_expr, plan_buffers
 from .kvcache import kv_state_paths
+from .performance import DeviceSpec, Throughput, step_bound
 from .pipeline import StagePart, split_graph
 from .result import Allocation, DeviceMemory, MemoryAnalysisResult, MemoryComponent
 from .storage import tensor_bytes
@@ -65,6 +66,32 @@ def _program(
     if key not in _programs:
         _programs[key] = ir.load_program(source, root=root, std_root=std_root, numerics=numerics)
     return _programs[key]
+
+
+def entry_roles(
+    model: str | Path | nest.Card,
+    config: ExecutionConfig,
+    *,
+    root: str | None = None,
+    std_root: str | Path | None = None,
+) -> set[str]:
+    """The roles (`batch`, `context`, `cache`) the configuration's entry
+    has generics for; for an entry with none, those of the model's root
+    (a decoding step sized by the root's `Batch`)."""
+    card, source = nest.model_source(model)
+    program = _program(source, root or (card.root if card else None), std_root, config.numerics)
+    function = program.entry(config.entry, prefer="forward")
+    roles = {
+        "batch": config.batch_generics,
+        "context": config.context_generics,
+        "cache": config.cache_generics,
+    }
+    for generics in (function.generics, program.root.generics):
+        names = {g.name for g in generics}
+        found = {role for role, bound in roles.items() if names & set(bound)}
+        if found:
+            return found
+    return set()
 
 
 def _units(program: ir.Program, env: SymEnv) -> list[str]:
@@ -243,6 +270,14 @@ class MemoryModel:
         self.stages: list[StagePart] = []
         self.microbatch_role: str | None = None
         if config.pipeline_parallel > 1:
+            kept = (Category.STATE, Category.KV_CACHE)
+            touched = {
+                self.graph.objects[self.graph.objects[i].storage].category
+                for step in self.graph.steps
+                for i in (*step.inputs, *step.outputs)
+            }
+            if touched & set(kept):
+                raise TraceError("a pipeline runs entries that keep no state between calls")
             units = _units(program, base)
             sizes = self._unit_bytes(units)
             try:
@@ -329,17 +364,86 @@ class MemoryModel:
 
     # ---- pipelines
 
+    def _micro(self, env: Mapping[str, int]) -> dict[str, int]:
+        """`env` for one micro-batch: the role the first input's first axis
+        has, cut into the configuration's micro-batches."""
+        count = self.config.microbatches
+        micro = dict(env)
+        role = self.microbatch_role
+        if count > 1 and role is None:
+            raise TraceError(
+                "micro-batches cut the first input's first axis, which is not a free batch "
+                "or sequence length here"
+            )
+        if count > 1 and role is not None:
+            if micro[role] % count:
+                raise TraceError(f"the {role} ({micro[role]}) does not divide into {count} parts")
+            micro[role] //= count
+        return micro
+
+    def throughput(
+        self,
+        device: DeviceSpec,
+        batch: int | None = None,
+        context: int | None = None,
+        cache: int | None = None,
+        replicas: int = 1,
+    ) -> Throughput:
+        """The roofline bound of one step on `device` (see
+        `linnet.resources.performance`), over `replicas` copies of this
+        layout each on its own data."""
+        env = self.env(batch, context, cache)
+        # Tokens are the positions of token ids (the first input, an
+        # integer tensor); any other input counts its samples.
+        first = self.graph.objects[self.graph.inputs[0]] if self.graph.inputs else None
+        tokens = 1
+        if first is not None and first.shape:
+            ids = not dtypes.dtype(first.dtype).is_float
+            tokens = ex.evaluate(ex.product(first.shape) if ids else first.shape[0], env)
+        training = self.config.training
+
+        def repeated(graph: TensorGraph, at: Mapping[str, int]) -> int:
+            if training is None or training.checkpoint.kind == "none":
+                return 0
+            steps = timeline(graph, at, training, self.backend, self.arrays, self.tied)
+            return steps.recomputed_flops
+
+        if self.stages:
+            micro = self._micro(env)
+            whole = self.graph.objects
+            parts = [
+                (
+                    part.graph,
+                    micro,
+                    sum(ex.evaluate(whole[i].nbytes, micro) for i in part.receives),
+                    repeated(part.graph, micro),
+                )
+                for part in self.stages
+            ]
+        else:
+            parts = [(self.graph, env, 0, repeated(self.graph, env))]
+        gradients = sum(
+            ex.evaluate(o.nbytes, env)
+            for o in self.graph.objects
+            if o.category == Category.PARAMETER and o.owns_storage
+        )
+        return step_bound(
+            parts,
+            device,
+            tokens=tokens,
+            training=training is not None,
+            processes=self.config.tensor_parallel,
+            microbatches=self.config.microbatches,
+            replicas=replicas,
+            gradient_bytes=gradients if training is not None else 0,
+        )
+
     def _pipeline(self, env: Mapping[str, int]) -> MemoryAnalysisResult:
         """Each stage's device: its part of one micro-batch's step, plus what
         the schedule keeps of the others and the buffers they arrive in."""
         config = self.config
         count = config.microbatches
-        micro = dict(env)
-        role = self.microbatch_role
-        if count > 1 and role is not None:
-            if micro[role] % count:
-                raise TraceError(f"the {role} ({micro[role]}) does not divide into {count} parts")
-            micro[role] //= count
+        micro = self._micro(env)
         stages = len(self.stages)
         whole = self.graph.objects
 

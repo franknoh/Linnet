@@ -537,6 +537,37 @@ def test_gpipe_keeps_more_micro_batches_than_1f1b(tmp_path: Path) -> None:
     assert peak("gpipe") > peak("1f1b")
 
 
+def test_the_roofline_bound_follows_arithmetic_and_bytes(tmp_path: Path) -> None:
+    from linnet.resources.performance import DeviceSpec
+
+    device = DeviceSpec("toy", 1 << 30, {"f32": 1e9}, 1e9, 1e9, 0.0)
+    model = memory(source(tmp_path, MLP), config(batch=8, bindings={"H": 32, "Layers": 3}))
+    flops = sum(ex.evaluate(step.flops, model.env()) for step in model.graph.steps)
+    weights = 4 * 32 * 32 * 4
+    bound = model.throughput(device)
+    assert bound.compute == pytest.approx(flops / 1e9)
+    assert bound.memory == pytest.approx(weights / 1e9)
+    assert bound.seconds == pytest.approx(max(flops, weights) / 1e9)
+    assert bound.tokens == 8  # samples: the input is not token ids
+    # Two replicas take twice the tokens in the same time.
+    assert model.throughput(device, replicas=2).tokens_per_second == pytest.approx(
+        2 * bound.tokens_per_second
+    )
+
+
+def test_the_planner_ranks_layouts_by_throughput(tmp_path: Path) -> None:
+    from linnet.resources.performance import DEVICES
+
+    planner = ExecutionPlanner(source(tmp_path, MLP), std_root=STDLIB)
+    base = config(bindings={"H": 32, "Layers": 3})
+    plan = planner.plan(base, ResourceConstraint(1 << 30), DEVICES["h100-80gb"], 2)
+    ranked = [c.throughput.tokens_per_second for c in plan.candidates if c.throughput]
+    assert plan.best is not None and ranked == sorted(ranked, reverse=True)
+    assert plan.target == "batch" and plan.best.size is not None
+    layouts = {(c.config.tensor_parallel, c.config.pipeline_parallel) for c in plan.candidates}
+    assert {(1, 1), (1, 2), (2, 1)} <= layouts
+
+
 def test_unsupported_parallelism_is_refused(tmp_path: Path) -> None:
     from linnet.resources.trace import TraceError
 

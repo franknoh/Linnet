@@ -20,7 +20,8 @@ from ..sizes import format_bytes
 from .analysis import MemoryModel
 from .config import ExecutionConfig, Numerics
 from .kvcache import ContiguousLayout, KVLayout, PagedLayout
-from .planner import ExecutionPlanner, ResourceConstraint, Target
+from .performance import DEVICES
+from .planner import ExecutionPlanner, ResourceConstraint, Target, ThroughputPlan
 from .result import format_result
 from .training import OPTIMIZERS, CheckpointPolicy, TrainingConfig
 
@@ -174,8 +175,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_arguments(memory)
     fit = commands.add_parser("fit", help="the largest batch, context or cache that fits a device")
     add_arguments(fit)
-    fit.add_argument("--device-memory", type=parse_size, required=True, metavar="SIZE")
-    fit.add_argument("--maximize", choices=("batch", "context", "kv-cache"), required=True)
+    fit.add_argument("--device-memory", type=parse_size, metavar="SIZE")
+    fit.add_argument(
+        "--maximize", choices=("batch", "context", "kv-cache", "throughput"), required=True
+    )
+    fit.add_argument(
+        "--device",
+        choices=sorted(DEVICES),
+        help="the device: its memory, and for throughput, speed",
+    )
+    fit.add_argument(
+        "--devices", type=int, default=1, help="throughput: devices to spread the model over"
+    )
     fit.add_argument("--reserve", type=parse_size, default=0, metavar="SIZE")
     fit.add_argument("--reserve-percent", type=float, default=0.0)
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -197,11 +208,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print("\n\n".join(texts))
             return 0
-        constraint = ResourceConstraint(args.device_memory, args.reserve, args.reserve_percent)
+        device = DEVICES[args.device] if args.device is not None else None
+        memory = args.device_memory or (device.memory if device is not None else None)
+        if memory is None:
+            raise LinnetError("give --device-memory or --device")
+        constraint = ResourceConstraint(memory, args.reserve, args.reserve_percent)
+        planner = ExecutionPlanner(args.model, root=args.root, std_root=args.std)
+        if args.maximize == "throughput":
+            if device is None:
+                raise LinnetError("throughput needs --device, for its speed")
+            plan = planner.plan(
+                config_from_args(args, policies[0]), constraint, device, args.devices
+            )
+            if args.json:
+                json.dump(_plan_json(plan), sys.stdout, indent=2)
+                sys.stdout.write("\n")
+            else:
+                print(_plan_text(plan))
+            return 0 if plan.best is not None else 1
         target: Target = args.maximize
-        found = ExecutionPlanner(args.model, root=args.root, std_root=args.std).maximize(
-            config_from_args(args, policies[0]), constraint, target
-        )
+        found = planner.maximize(config_from_args(args, policies[0]), constraint, target)
         if args.json:
             json.dump(
                 {
@@ -238,6 +264,64 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LinnetError as error:
         print(f"linnet: {error}", file=sys.stderr)
         return 1
+
+
+def _layout(config: ExecutionConfig, replicas: int) -> str:
+    parts: list[str] = []
+    if config.tensor_parallel > 1:
+        parts.append(f"TP {config.tensor_parallel}")
+    if config.pipeline_parallel > 1:
+        parts.append(f"PP {config.pipeline_parallel} x {config.microbatches} {config.schedule}")
+    if replicas > 1:
+        parts.append(f"{replicas} replicas")
+    if config.training is not None and config.training.checkpoint.kind != "none":
+        parts.append("checkpointed")
+    return ", ".join(parts) or "one device"
+
+
+def _plan_text(plan: ThroughputPlan) -> str:
+    sized = {"batch": "batch", "context": "length"}.get(plan.target or "", "")
+    lines = [
+        f"Throughput bound on {plan.devices} x {plan.device.name} (roofline: data-sheet peak "
+        "rates, not a measured speed)",
+        "",
+        f"{'layout':<40} {sized:>8} {'tokens/s':>12} {'limit':<14} {'peak':>10}",
+    ]
+    for candidate in plan.candidates:
+        layout = _layout(candidate.config, candidate.replicas)
+        if candidate.throughput is None:
+            lines.append(f"{layout:<40} {'':>8} {'-':>12} {candidate.refused or ''}")
+            continue
+        assert candidate.result is not None
+        size = "" if candidate.size is None else str(candidate.size)
+        lines.append(
+            f"{layout:<40} {size:>8} {candidate.throughput.tokens_per_second:>12,.0f} "
+            f"{candidate.throughput.limit:<14} {format_bytes(candidate.result.expected_peak):>10}"
+        )
+    best = plan.best
+    if best is not None and best.result is not None:
+        lines.append(f"\nBest: {_layout(best.config, best.replicas)}\n")
+        lines.append(format_result(best.result))
+    return "\n".join(lines)
+
+
+def _plan_json(plan: ThroughputPlan) -> dict[str, Any]:
+    return {
+        "device": plan.device.name,
+        "devices": plan.devices,
+        "target": plan.target,
+        "candidates": [
+            {
+                "configuration": c.config.describe(),
+                "replicas": c.replicas,
+                "size": c.size,
+                "throughput": None if c.throughput is None else c.throughput.to_dict(),
+                "result": None if c.result is None else c.result.to_dict(),
+                "refused": c.refused,
+            }
+            for c in plan.candidates
+        ],
+    }
 
 
 def _policy_name(policy: CheckpointPolicy) -> str:

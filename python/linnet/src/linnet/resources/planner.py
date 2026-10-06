@@ -6,21 +6,26 @@ grows (every size is a sum of products of non-negative dimensions), so the
 largest value that fits is found by doubling until it does not and then
 bisecting: about two dozen analyses, each one sweep over the traced steps.
 
-Throughput is not modeled yet. `ExecutionPlanner.plan` says so rather than
-ranking configurations by a number nothing measured.
+`ExecutionPlanner.plan` ranks layouts over several devices by the
+throughput bound of `linnet.resources.performance`: a roofline, not a
+prediction of measured speed.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from .. import nest
-from .analysis import MemoryModel
+from ..compiler import LinnetError
+from .analysis import MemoryModel, entry_roles
 from .config import ExecutionConfig
+from .performance import DeviceSpec, Throughput
 from .result import MemoryAnalysisResult
+from .training import CheckpointPolicy
 
 Target = Literal["batch", "context", "kv-cache"]
 _ROLE: dict[str, str] = {"batch": "batch", "context": "context", "kv-cache": "cache"}
@@ -67,10 +72,12 @@ def fit(
     constraint: ResourceConstraint,
     target: Target,
     upper: int = 1 << 24,
+    step: int = 1,
 ) -> FitResult:
-    """The largest `target` (batch, context or kv-cache) whose expected peak
-    fits the constraint, the other roles held at the model's configuration.
-    `model` must have been built with the target's role free."""
+    """The largest `target` (batch, context or kv-cache), a multiple of
+    `step`, whose expected peak fits the constraint, the other roles held
+    at the model's configuration. `model` must have been built with the
+    target's role free."""
     role = _ROLE[target]
     if role not in model.free:
         raise ValueError(f"build the model with `{role}` free to fit it")
@@ -85,8 +92,8 @@ def fit(
             return None
         return model.analyze(values["batch"], values["context"], values["cache"])
 
-    def ok(value: int) -> tuple[bool, MemoryAnalysisResult | None, bool]:
-        result = at(value)
+    def ok(multiple: int) -> tuple[bool, MemoryAnalysisResult | None, bool]:
+        result = at(multiple * step)
         if result is None:
             return False, None, True
         return constraint.fits(result), result, False
@@ -97,7 +104,7 @@ def fit(
     low, best = 1, result
     high = 2
     stopped: Literal["memory", "model", "search"] = "search"
-    while high <= upper:
+    while high * step <= upper:
         fits, result, blocked = ok(high)
         if not fits:
             stopped = "model" if blocked else "memory"
@@ -105,7 +112,7 @@ def fit(
         low, best = high, result
         high *= 2
     else:
-        return FitResult(target, low, best, constraint.budget, "search")
+        return FitResult(target, low * step, best, constraint.budget, "search")
     # `low` fits and `high` does not.
     while high - low > 1:
         middle = (low + high) // 2
@@ -115,7 +122,7 @@ def fit(
         else:
             high = middle
             stopped = "model" if blocked else "memory"
-    return FitResult(target, low, best, constraint.budget, stopped)
+    return FitResult(target, low * step, best, constraint.budget, stopped)
 
 
 # A model for a configuration, with the roles given left free.
@@ -153,6 +160,8 @@ class ExecutionPlanner:
             return MemoryModel(model, config, root=root, std_root=std_root, free=free)
 
         self.model = model
+        self.root = root
+        self.std_root = std_root
         self.build: Builder = build or default
 
     def evaluate(self, config: ExecutionConfig) -> MemoryAnalysisResult:
@@ -180,12 +189,159 @@ class ExecutionPlanner:
         return fit(self.build(config, (role,)), constraint, target)
 
     def plan(
-        self, config: ExecutionConfig, constraint: ResourceConstraint, objective: str
-    ) -> FitResult:
-        """Not yet: throughput needs a performance model, which Linnet does
-        not have. Memory-feasible configurations come from `feasible` and
-        `maximize`."""
-        raise NotImplementedError(
-            f"no performance model to {objective} with yet; use `maximize` for the largest "
-            "batch, context or cache that fits"
+        self,
+        config: ExecutionConfig,
+        constraint: ResourceConstraint,
+        device: DeviceSpec,
+        devices: int = 1,
+    ) -> ThroughputPlan:
+        """The layouts of `devices` devices ranked by the throughput bound
+        each reaches (`linnet.resources.performance`): tensor- and
+        pipeline-parallel degrees (powers of two), micro-batches, in
+        training block checkpointing or none, the remaining devices as
+        replicas. Within each layout the batch (or, for an entry without
+        one, the sequence length) grows to the largest that fits, unless
+        the configuration fixes it. A layout the analysis refuses or that
+        does not fit is listed with why."""
+        target: Target | None = None
+        roles = entry_roles(self.model, config, root=self.root, std_root=self.std_root)
+        if config.batch is None and "batch" in roles:
+            target, config = "batch", replace(config, batch=1)
+        elif config.context is None and "context" in roles:
+            target, config = "context", replace(config, context=1)
+        role = None if target is None else _ROLE[target]
+        candidates: list[ThroughputCandidate] = []
+        for tensor in _powers(devices):
+            for stages in _powers(devices // tensor):
+                replicas = devices // (tensor * stages)
+                layout = replace(
+                    config, tensor_parallel=tensor, pipeline_parallel=stages, microbatches=1
+                )
+                try:
+                    model = self.build(layout, () if role is None else (role,))
+                except LinnetError as error:
+                    candidates.append(
+                        ThroughputCandidate(layout, replicas, None, None, None, str(error))
+                    )
+                    continue
+                for variant in _variants(layout, stages):
+                    candidates.append(
+                        _evaluate(model, variant, constraint, device, replicas, target)
+                    )
+        candidates.sort(
+            key=lambda c: -1.0 if c.throughput is None else c.throughput.tokens_per_second,
+            reverse=True,
         )
+        return ThroughputPlan(device, devices, target, tuple(candidates))
+
+
+@dataclass(frozen=True, slots=True)
+class ThroughputCandidate:
+    """One layout: its configuration, the replicas of it the devices hold,
+    the size it runs at, its analysis and throughput bound; or why not."""
+
+    config: ExecutionConfig
+    replicas: int
+    size: int | None
+    result: MemoryAnalysisResult | None
+    throughput: Throughput | None
+    refused: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ThroughputPlan:
+    """Layouts of a model over `devices` devices, the fastest first."""
+
+    device: DeviceSpec
+    devices: int
+    target: Target | None
+    candidates: tuple[ThroughputCandidate, ...]
+
+    @property
+    def best(self) -> ThroughputCandidate | None:
+        first = self.candidates[0] if self.candidates else None
+        return first if first is not None and first.throughput is not None else None
+
+
+def _powers(limit: int) -> list[int]:
+    """1, 2, 4, ... up to `limit`, those dividing it."""
+    found: list[int] = []
+    value = 1
+    while value <= limit:
+        if limit % value == 0:
+            found.append(value)
+        value *= 2
+    return found
+
+
+def _variants(config: ExecutionConfig, stages: int) -> list[ExecutionConfig]:
+    """A layout's micro-batch counts and, in training, checkpoint policies."""
+    counts = [1] if stages == 1 else [stages, 2 * stages, 4 * stages]
+    policies: list[CheckpointPolicy | None] = (
+        [None] if config.training is None else [CheckpointPolicy(), CheckpointPolicy("blocks")]
+    )
+    found: list[ExecutionConfig] = []
+    for count in counts:
+        for policy in policies:
+            training = (
+                config.training
+                if policy is None or config.training is None
+                else replace(config.training, checkpoint=policy)
+            )
+            found.append(replace(config, microbatches=count, training=training))
+    return found
+
+
+def _evaluate(
+    model: MemoryModel,
+    config: ExecutionConfig,
+    constraint: ResourceConstraint,
+    device: DeviceSpec,
+    replicas: int,
+    target: Target | None,
+) -> ThroughputCandidate:
+    """`config` on the trace `model` made (micro-batches and checkpointing
+    change the analysis, not the trace)."""
+    variant = copy.copy(model)
+    variant.config = config
+    try:
+        if target is None:
+            result = variant.analyze()
+            if not constraint.fits(result):
+                return ThroughputCandidate(config, replicas, None, result, None, "does not fit")
+            return ThroughputCandidate(
+                config, replicas, None, result, variant.throughput(device, replicas=replicas)
+            )
+        found = fit(variant, constraint, target, step=config.microbatches)
+        if found.value is None or found.result is None:
+            why = "the model's `where` clauses" if found.limited_by == "model" else "memory"
+            return ThroughputCandidate(
+                config, replicas, None, found.result, None, f"{why}: none fits"
+            )
+        # The largest size that fits is not always the fastest: attention's
+        # cost per position grows with the length. Try the powers of two
+        # below it as well.
+        sizes = {found.value}
+        size = config.microbatches
+        while size < found.value:
+            sizes.add(size)
+            size *= 2
+        best: tuple[int, Throughput] | None = None
+        for size in sorted(sizes):
+            values = {_ROLE[target]: size}
+            if _ROLE[target] == "context" and config.cache is None:
+                values["cache"] = size
+            bound = variant.throughput(device, replicas=replicas, **values)
+            if best is None or bound.tokens_per_second > best[1].tokens_per_second:
+                best = (size, bound)
+        assert best is not None
+        size, bound = best
+        result = found.result
+        if size != found.value:
+            values = {_ROLE[target]: size}
+            if _ROLE[target] == "context" and config.cache is None:
+                values["cache"] = size
+            result = variant.analyze(**values)
+        return ThroughputCandidate(config, replicas, size, result, bound)
+    except LinnetError as error:
+        return ThroughputCandidate(config, replicas, None, None, None, str(error))
