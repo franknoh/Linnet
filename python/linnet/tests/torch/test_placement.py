@@ -11,8 +11,9 @@ import pytest
 import torch
 
 from linnet.compiler import find_compiler
+from linnet.sizes import parse_size
 from linnet.torch import CompiledLinnetModule, Placement, load
-from linnet.torch.placement import apply, parse_size, plan
+from linnet.torch.placement import apply, plan
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"

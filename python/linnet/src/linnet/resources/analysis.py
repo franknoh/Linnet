@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from .. import ir, nest
-from ..weights import read_bindings
+from ..weights import paths_by_tensor, read_bindings
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate, backend_model
 from .config import ExecutionConfig
@@ -160,12 +160,8 @@ class MemoryModel:
         mapping = card.bindings_path if bindings and card is not None else None
         if mapping is not None and mapping.exists():
             bound = read_bindings(mapping)
-            first: dict[str, str] = {}
-            for path, tensor in bound.items():
-                if tensor in first:
-                    self.tied[path] = first[tensor]
-                else:
-                    first[tensor] = path
+            for paths in paths_by_tensor(bound).values():
+                self.tied.update((path, paths[0]) for path in paths[1:])
             self.present = frozenset(bound)
         function = _choose_entry(program, config.entry)
         self.entry = function.short_name
