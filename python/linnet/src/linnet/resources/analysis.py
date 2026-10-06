@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .. import ir, nest
+from ..parallel import split_axis, state_axis
 from ..plan import holds
 from ..weights import paths_by_tensor, read_bindings
 from . import expr as ex
@@ -83,14 +84,15 @@ class MemoryModel:
         `nest.Card`. A card's generics are defaults the configuration's
         `bindings` override; with `bindings`, its weight bindings decide
         which parameters are tied and which optional ones are present."""
-        if config.tensor_parallel > 1 or config.pipeline_parallel > 1:
-            raise TraceError(
-                "tensor and pipeline parallelism are not analyzed yet; "
-                "data parallelism with sharded training state is"
-            )
+        if config.pipeline_parallel > 1:
+            raise TraceError("pipeline parallelism is not analyzed yet")
         self.config = config
+        processes = config.tensor_parallel
         self.backend = backend or backend_model(
-            config.backend, context_bytes=config.context_bytes, compiled=config.compiled
+            config.backend,
+            context_bytes=config.context_bytes,
+            compiled=config.compiled,
+            processes=processes,
         )
         numerics = config.numerics
         card, self.source_path = nest.model_source(model)
@@ -148,14 +150,31 @@ class MemoryModel:
                 inputs[generic.name] = ex.sym(role)
             elif isinstance(config.bindings.get(generic.name), int):
                 inputs[generic.name] = int(config.bindings[generic.name])
+        # Tensor parallelism: a model with a `Shards` generic is each
+        # process's own program, its collectives real; any other is split
+        # as DTensors split it, weights and caches only.
+        self.splitting = "none"
+        if processes > 1:
+            if any(g.name == "Shards" for g in program.root.generics):
+                root_values["Shards"] = processes
+                self.splitting = "shards"
+            elif config.training is not None:
+                raise TraceError(
+                    "training under DTensor tensor parallelism is not analyzed; a model with a "
+                    "`Shards` generic splits itself"
+                )
+            else:
+                self.splitting = "dtensor"
         present = set(self.present) | set(config.optionals)
         options = TraceOptions(
             present=lambda path: path in present or any(p.startswith(f"{path}.") for p in present),
             tied=self.tied,
             kv_states=kv_state_paths(program),
+            parts=self._parts if self.splitting == "dtensor" else lambda path, kind, shape: 1,
         )
+        lowering = Lowering(identities=frozenset()) if processes > 1 else Lowering()
         self.graph: TensorGraph = trace(
-            program, function.short_name, root_values, inputs, lowering=Lowering(), options=options
+            program, function.short_name, root_values, inputs, lowering=lowering, options=options
         )
         self.spans = lifetimes(self.graph)
         self.arrays = _arrays(program)
@@ -164,6 +183,14 @@ class MemoryModel:
         self.constraints = [
             (c.relation, base.dim(c.lhs), base.dim(c.rhs)) for c in program.root.constraints
         ] + [(c.relation, bound.dim(c.lhs), bound.dim(c.rhs)) for c in function.constraints]
+
+    def _parts(self, path: str, kind: str, shape: tuple[ex.Expr, ...]) -> int:
+        """How many parts DTensor splits the tensor at `path` into: the
+        rules of `linnet.parallel`, on sizes the configuration fixes."""
+        devices = self.config.tensor_parallel
+        sizes = [d.value if isinstance(d, ex.Const) else -1 for d in shape]
+        axis = split_axis(path, sizes, devices) if kind == "param" else state_axis(sizes, devices)
+        return devices if axis is not None else 1
 
     def _role(self, name: str) -> str | None:
         for role in self.free:
@@ -301,14 +328,16 @@ class MemoryModel:
         )
         at_work = work.get(with_work.step, 0)
         formula = peak_expr(self.graph, self.spans)
+        whole = self.splitting == "dtensor"
         components.append(
             MemoryComponent(
                 "Peak activations",
                 Category.ACTIVATION,
                 transient.nbytes,
-                Confidence.EXACT,
+                Confidence.ESTIMATED if whole else Confidence.EXACT,
                 _formula(formula),
-                "inputs and outputs included",
+                "inputs and outputs included"
+                + ("; counted whole, as an upper bound" if whole else ""),
             )
         )
         runtime, runtime_total, runtime_unknown = self._runtime(False)
@@ -437,13 +466,25 @@ class MemoryModel:
         return described
 
     def _assumptions(self) -> tuple[str, ...]:
-        return (
+        found = [
             f"lowering `{self.backend.name}`: library calls run what the plan selected for "
             f"`{self.config.numerics}` numerics",
             "reshape is a view of contiguous storage and a copy otherwise; permute, "
             "broadcast and slice are views",
             "scalars occupy no memory",
-        )
+        ]
+        processes = self.config.tensor_parallel
+        if self.splitting == "shards":
+            found.append(
+                f"tensor parallelism: one of {processes} processes, its `Shards` part of each "
+                "weight, collectives allocating their results"
+            )
+        elif self.splitting == "dtensor":
+            found.append(
+                f"tensor parallelism: one of {processes} processes; weights and caches split "
+                "as `linnet.parallel` rules split them, activations counted whole"
+            )
+        return tuple(found)
 
     def _warnings(self, env: Mapping[str, int]) -> list[str]:
         warnings: list[str] = []

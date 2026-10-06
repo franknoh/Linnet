@@ -103,6 +103,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--shards", type=int, default=1, help="FSDP: devices the training state is split across"
     )
     parser.add_argument(
+        "--tensor-parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="processes each weight is split across (binds the model's Shards)",
+    )
+    parser.add_argument(
         "--context-bytes", type=parse_size, help="the CUDA context's size, if known"
     )
     parser.add_argument("--json", action="store_true", help="one JSON document instead of text")
@@ -136,6 +143,7 @@ def config_from_args(args: argparse.Namespace, checkpoint: CheckpointPolicy) -> 
         bindings=dict(args.bind),
         optionals=frozenset(args.optional),
         training=training,
+        tensor_parallel=args.tensor_parallel,
         data_parallel=args.shards,
         sharding="fsdp" if args.shards > 1 else "none",
         context_bytes=args.context_bytes,

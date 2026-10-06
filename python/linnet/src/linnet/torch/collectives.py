@@ -24,9 +24,11 @@ from typing import Any
 
 import torch
 
-# The largest message the one-shot kernel sums. Past it NCCL is faster: the
-# kernel reads every peer's whole part, where NCCL splits the work.
-ONE_SHOT_BYTES = 64 * 1024
+from ..parallel import ONE_SHOT_BYTES
+
+# The largest message the one-shot kernel sums (`linnet.parallel`). Past it
+# NCCL is faster: the kernel reads every peer's whole part, where NCCL
+# splits the work.
 _BLOCK = 1024
 _MAX_BLOCKS = 64  # ONE_SHOT_BYTES of the narrowest dtype the kernel takes, by _BLOCK
 _DTYPES = (torch.bfloat16, torch.float16, torch.float32)

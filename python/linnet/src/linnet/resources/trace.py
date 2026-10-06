@@ -290,11 +290,15 @@ class TraceOptions:
     there (the weights decide that at load). `tied` maps a parameter path to
     the path whose storage it shares, as two paths bound to one checkpoint
     tensor do. `kv_states` are the state paths (with `[*]` for arrays) that
-    hold a key/value cache."""
+    hold a key/value cache. `parts(path, kind, shape)` says into how many
+    devices' parts tensor parallelism splits a parameter, buffer or state
+    (1: whole on each), as DTensor splits a model with no `Shards` of its
+    own."""
 
     present: Callable[[str], bool] = lambda path: False
     tied: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     kv_states: frozenset[str] = frozenset()
+    parts: Callable[[str, str, tuple[ex.Expr, ...]], int] = lambda path, kind, shape: 1
 
 
 class _Tracer:
@@ -323,8 +327,12 @@ class _Tracer:
         storage: int | None = None,
         persistent: bool = False,
         path: str | None = None,
+        parts: int = 1,
     ) -> int:
         id = len(self.objects)
+        nbytes = tensor_bytes(dtype, ex.product(shape)) if storage is None else ex.ZERO
+        if parts > 1:
+            nbytes = ex.floordiv(nbytes, ex.const(parts))
         self.objects.append(
             MemoryObject(
                 id=id,
@@ -332,7 +340,7 @@ class _Tracer:
                 category=category,
                 shape=shape,
                 dtype=dtype,
-                nbytes=tensor_bytes(dtype, ex.product(shape)) if storage is None else ex.ZERO,
+                nbytes=nbytes,
                 producer=producer,
                 storage=id if storage is None else self.objects[storage].storage,
                 persistent=persistent,
@@ -404,6 +412,7 @@ class _Tracer:
             for path in ir.repeat_paths(entry.path, repeat):
                 if entry.optional and not self.options.present(path):
                     continue
+                parts = self.options.parts(path, entry.kind, shape)
                 if entry.kind == "state":
                     category = (
                         Category.KV_CACHE
@@ -411,14 +420,22 @@ class _Tracer:
                         else Category.STATE
                     )
                     self.states[path] = self.new_object(
-                        path, category, shape, dtype, None, persistent=True, path=path
+                        path, category, shape, dtype, None, persistent=True, path=path, parts=parts
                     )
                     continue
                 category = Category.PARAMETER if entry.kind == "param" else Category.BUFFER
                 tied = self.options.tied.get(path)
                 storage = self.params.get(tied) if tied is not None else None
                 self.params[path] = self.new_object(
-                    path, category, shape, dtype, None, storage, persistent=True, path=path
+                    path,
+                    category,
+                    shape,
+                    dtype,
+                    None,
+                    storage,
+                    persistent=True,
+                    path=path,
+                    parts=parts,
                 )
 
     # ---- functions and regions

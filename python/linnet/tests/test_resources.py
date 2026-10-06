@@ -434,8 +434,89 @@ def test_fit_maximizes_the_cache(tmp_path: Path) -> None:
     assert found.value == 1000
 
 
+SHARDED = """\
+module sharded
+
+use std.nn.linear::{Linear}
+use std.nn.parallel::{all_gather, all_reduce}
+
+pub block Model<H: Dim, Out: Dim, T: Float = f32, Shards: Dim = 1>
+where
+    Shards > 0,
+    H % Shards == 0,
+    Out % Shards == 0
+{
+    sub up: Linear<H, H / Shards, T>
+    sub down: Linear<H / Shards, H, T>
+    sub head: Linear<H, Out / Shards, T>
+
+    pub entry forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, Out; T] {
+        let y = all_reduce(down.forward(up.forward(x)))
+        return all_gather<B, Out / Shards, Shards, T>(head.forward(y))
+    }
+}
+"""
+
+SPLIT = """\
+module split
+
+use std.nn.linear::{Linear}
+
+pub block Model<H: Dim, T: Float = f32> {
+    sub q_proj: Linear<H, H, T>
+    sub o_proj: Linear<H, H, T>
+    sub norm: Linear<H, H, T>
+
+    pub entry forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        return norm.forward(o_proj.forward(q_proj.forward(x)))
+    }
+}
+"""
+
+
+def test_a_sharded_model_is_one_process_part(tmp_path: Path) -> None:
+    built = source(tmp_path, SHARDED)
+    bindings = {"H": 16, "Out": 32}
+    whole = memory(built, ExecutionConfig(batch=4, bindings=bindings)).analyze()
+    model = memory(built, ExecutionConfig(batch=4, bindings=bindings, tensor_parallel=2))
+    part = model.analyze()
+    weights = 16 * 16 + 16 * 16 + 32 * 16
+    assert whole.component("Weights").nbytes == weights * 4
+    assert part.component("Weights").nbytes == weights * 4 // 2
+    # Across processes the sum is a tensor of its own, and the gather
+    # stacks the parts before laying them side by side.
+    by = {s.implementation: s for s in model.graph.steps if s.implementation}
+    gather = by["torch.distributed.all_gather"]
+    assert model.backend.workspace(gather, model.graph, model.env()).nbytes == 4 * 32 * 4
+    out = model.graph.objects[by["torch.distributed.all_reduce"].outputs[0]]
+    assert out.storage == out.id
+    assert "NCCL communicators" in " ".join(part.unknown)
+    assert any("tensor parallelism" in a for a in part.assumptions)
+
+
+def test_dtensor_splits_weights_by_the_rules(tmp_path: Path) -> None:
+    built = source(tmp_path, SPLIT)
+    whole = memory(built, config(batch=2, bindings={"H": 16})).analyze()
+    part = memory(built, config(batch=2, bindings={"H": 16}, tensor_parallel=2)).analyze()
+    # q_proj by output and o_proj by input split in two; `norm` matches no
+    # rule and is copied.
+    assert whole.component("Weights").nbytes == 3 * 16 * 16 * 4
+    assert part.component("Weights").nbytes == (16 * 16 + 16 * 16 * 2) * 4
+    assert part.component("Peak activations").confidence == Confidence.ESTIMATED
+
+
 def test_unsupported_parallelism_is_refused(tmp_path: Path) -> None:
     from linnet.resources.trace import TraceError
 
-    with pytest.raises(TraceError, match="tensor and pipeline"):
-        memory(source(tmp_path, CHAIN), config(batch=1, bindings={"N": 4}, tensor_parallel=2))
+    with pytest.raises(TraceError, match="pipeline"):
+        memory(source(tmp_path, CHAIN), config(batch=1, bindings={"N": 4}, pipeline_parallel=2))
+    with pytest.raises(TraceError, match="DTensor"):
+        memory(
+            source(tmp_path, MLP),
+            config(
+                batch=4,
+                bindings={"H": 32, "Layers": 3},
+                tensor_parallel=2,
+                training=TrainingConfig(),
+            ),
+        )

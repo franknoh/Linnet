@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from .. import dtypes
+from ..parallel import ONE_SHOT_BYTES
 from . import expr as ex
 from .graph import Category, Confidence, MemoryObject, Step, TensorGraph
 
@@ -165,13 +166,18 @@ class CudaTorchBackend:
     is known to allocate: PyTorch's kernels, and `linnet.torch`'s own (the
     chunked loss). The CUDA context is a typical value; the caching
     allocator's fragmentation and any compilation's autotuning are unknown.
-    `context_bytes` overrides the context estimate."""
+    `context_bytes` overrides the context estimate. `processes` is the size
+    of the tensor-parallel group a process belongs to: with more than one,
+    collectives allocate and the group has communication buffers."""
 
     name = "cuda"
 
-    def __init__(self, context_bytes: int | None = None, compiled: bool = False) -> None:
+    def __init__(
+        self, context_bytes: int | None = None, compiled: bool = False, processes: int = 1
+    ) -> None:
         self.context_bytes = context_bytes
         self.compiled = compiled
+        self.processes = processes
 
     # ---- workspace
 
@@ -195,6 +201,13 @@ class CudaTorchBackend:
             )
         if implementation in ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs"):
             return _loss_workspace(implementation, objects, env, phase)
+        if implementation == "torch.distributed.all_gather" and self.processes > 1:
+            gathered = graph.objects[step.outputs[0]]
+            return Estimate(
+                _bytes(gathered, env),
+                Confidence.MODELED,
+                "the processes' parts stacked before they are laid side by side",
+            )
         if implementation in _NO_WORKSPACE:
             return ZERO
         return Estimate(None, Confidence.UNKNOWN, f"`{implementation}`")
@@ -282,6 +295,27 @@ class CudaTorchBackend:
                 ),
             ),
         ]
+        if self.processes > 1:
+            items += [
+                RuntimeItem(
+                    "One-shot all-reduce buffers",
+                    Category.COMMUNICATION,
+                    Estimate(
+                        2 * ONE_SHOT_BYTES,
+                        Confidence.ESTIMATED,
+                        "the symmetric memory small sums go through (`linnet.torch.collectives`)",
+                    ),
+                ),
+                RuntimeItem(
+                    "NCCL communicators",
+                    Category.COMMUNICATION,
+                    Estimate(
+                        None,
+                        Confidence.UNKNOWN,
+                        "NCCL's buffers depend on the channels it opens between the GPUs",
+                    ),
+                ),
+            ]
         if self.compiled:
             items.append(
                 RuntimeItem(
@@ -374,7 +408,8 @@ _NO_WORKSPACE = frozenset(
         "torch.nn.functional.gelu",
         "torch.tril",
         "torch.Tensor.index_copy",
-        # One device: a collective returns its operand.
+        # A collective's result is its own output; `all_gather` across
+        # processes is the exception, above.
         "torch.distributed.all_reduce",
         "torch.distributed.all_gather",
     }
@@ -385,9 +420,11 @@ def backend_model(name: str, **options: object) -> BackendResourceModel:
     """The resource model of a backend by name: `cuda` or `generic`."""
     if name == "cuda":
         context = options.get("context_bytes")
+        processes = options.get("processes", 1)
         return CudaTorchBackend(
             context_bytes=int(context) if isinstance(context, int) else None,
             compiled=bool(options.get("compiled", False)),
+            processes=processes if isinstance(processes, int) else 1,
         )
     if name == "generic":
         return GenericBackend()

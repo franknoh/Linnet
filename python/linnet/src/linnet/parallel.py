@@ -46,6 +46,11 @@ DEFAULT_RULES: dict[str, int | None] = {
 # key and value projections that fill it are.
 STATE_AXIS = 1
 
+# The largest all-reduce `linnet.torch.collectives` sums with its one-shot
+# kernel; past it NCCL is faster. Each process holds a buffer of twice this
+# (`ONE_SHOT_BYTES / 2` f32 slots), which its peers read.
+ONE_SHOT_BYTES = 64 * 1024
+
 
 def split_axis(
     path: str,
@@ -159,6 +164,7 @@ def stage_of_path(units: Sequence[str], assigned: Sequence[int], path: str) -> i
 
 __all__ = [
     "DEFAULT_RULES",
+    "ONE_SHOT_BYTES",
     "assign_stages",
     "pipeline_stages",
     "split_axis",
