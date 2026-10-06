@@ -32,6 +32,7 @@ import numpy as np
 from ..compiler import LinnetError, run_compiler, std_arguments
 from ..dtypes import BY_ONNX, DTYPES
 from ..dtypes import dtype as dtype_info
+from ..plan import bind_shape_names
 from ..weights import from_bf16_bits, to_bf16_bits
 from .export import export_model
 
@@ -518,26 +519,21 @@ class OnnxModel:
         if names:
             settings.add_external_initializers(names, values)
 
-    def _bindings(self, name: str, inputs: Sequence[Any]) -> dict[str, int]:
+    def _bindings(self, name: str, inputs: Sequence[Any]) -> dict[str, int | str]:
         """The entry's own generics, from the shapes of its inputs."""
         arguments = self._signatures[name]["body"]["args"][1:]
         if len(arguments) != len(inputs):
             raise LinnetError(f"entry `{name}` takes {len(arguments)} inputs, got {len(inputs)}")
-        bindings: dict[str, int] = {}
+        # The root's generics are bound already: inputs are checked against
+        # them, and only the entry's own are returned.
+        bindings: dict[str, Any] = dict(self.generics)
         for argument, value in zip(arguments, inputs, strict=True):
             declared = argument["type"]
             if declared.get("kind") != "tensor":
                 continue
             shape = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
-            for unit, size in zip(declared["shape"], shape, strict=True):
-                if isinstance(unit, dict) and "sym" in unit and unit["name"] not in self.generics:
-                    previous = bindings.get(unit["name"])
-                    if previous is not None and previous != size:
-                        raise LinnetError(
-                            f"dimension `{unit['name']}` is both {previous} and {size}"
-                        )
-                    bindings[str(unit["name"])] = int(size)
-        return bindings
+            bind_shape_names(declared["shape"], [int(d) for d in shape], argument["name"], bindings)
+        return {name: size for name, size in bindings.items() if name not in self.generics}
 
 
 class _Session:

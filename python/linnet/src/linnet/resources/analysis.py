@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .. import ir, nest
+from ..plan import holds
 from ..weights import paths_by_tensor, read_bindings
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate, backend_model
@@ -194,19 +195,10 @@ class MemoryModel:
 
     def satisfied(self, env: Mapping[str, int]) -> bool:
         """Whether the model's own `where` clauses hold at these values."""
-        for relation, lhs, rhs in self.constraints:
-            a, b = ex.evaluate(lhs, env), ex.evaluate(rhs, env)
-            holds = {
-                "==": a == b,
-                "!=": a != b,
-                "<": a < b,
-                "<=": a <= b,
-                ">": a > b,
-                ">=": a >= b,
-            }[relation]
-            if not holds:
-                return False
-        return True
+        return all(
+            holds(relation, ex.evaluate(lhs, env), ex.evaluate(rhs, env))
+            for relation, lhs, rhs in self.constraints
+        )
 
     def analyze(
         self, batch: int | None = None, context: int | None = None, cache: int | None = None

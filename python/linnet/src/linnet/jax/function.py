@@ -27,9 +27,8 @@ import numpy as np
 
 from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_NUMPY, CLASSES
-from ..plan import Plan, compile_plan
+from ..plan import Plan, bind_shape_names, compile_plan
 from .dtypes import NUMPY_TYPES
-from .load import _unpack  # pyright: ignore[reportPrivateUsage]
 
 
 class Function:
@@ -113,20 +112,8 @@ class Function:
             if kind != "tensor":
                 raise LinnetError(f"input `{name}` has a type that cannot be passed from JAX")
             self._bind_dtype(param["type"]["dtype"], value, name, bindings)
-            units: list[Any] = param["type"]["shape"]
-            shape = tuple(int(size) for size in np.shape(value))
-            units, shape = _unpack(units, shape, name, bindings)
-            for unit, size in zip(units, shape, strict=True):
-                if isinstance(unit, dict) and "sym" in unit:
-                    symbol = str(unit["name"])
-                    if bindings.setdefault(symbol, str(size)) != str(size):
-                        raise LinnetError(
-                            f"input `{name}` has size {size} where `{symbol}` is {bindings[symbol]}"
-                        )
-                elif isinstance(unit, int) and unit != size:
-                    raise LinnetError(
-                        f"input `{name}` has size {size} on an axis that must be {unit}"
-                    )
+            shape = [int(size) for size in np.shape(value)]
+            bind_shape_names(param["type"]["shape"], shape, name, bindings)
         for generic in declared.values():
             if generic["name"] not in bindings:
                 raise LinnetError(
@@ -140,7 +127,8 @@ class Function:
                         f"`{generic['name']}` of `{self.name}` is {generic['class']}, "
                         f"not {bindings[generic['name']]}"
                     )
-        return bindings
+        # Sizes bound from shapes arrive as integers; `--bind` takes text.
+        return {name: str(value) for name, value in bindings.items()}
 
     def _bind_dtype(
         self, spec: str | dict[str, Any], value: Any, name: str, bindings: dict[str, str]

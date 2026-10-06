@@ -153,6 +153,34 @@ def mod(lhs: Expr, rhs: Expr) -> Expr:
     return Binary("mod", lhs, rhs)
 
 
+class _Expressions:
+    """Dimension arithmetic over expressions (`ir.fold_dim`)."""
+
+    def const(self, value: int) -> Expr:
+        return const(value)
+
+    def total(self, args: Sequence[Expr]) -> Expr:
+        return total(args)
+
+    def product(self, args: Sequence[Expr]) -> Expr:
+        return product(args)
+
+    def floordiv(self, a: Expr, b: Expr) -> Expr:
+        return floordiv(a, b)
+
+    def mod(self, a: Expr, b: Expr) -> Expr:
+        return mod(a, b)
+
+    def minimum(self, args: Sequence[Expr]) -> Expr:
+        return minimum(*args)
+
+    def maximum(self, args: Sequence[Expr]) -> Expr:
+        return maximum(*args)
+
+
+EXPRESSIONS = _Expressions()
+
+
 def evaluate(expr: Expr, env: Mapping[str, int]) -> int:
     """The expression's value with every symbol bound by `env`."""
     if isinstance(expr, Const):

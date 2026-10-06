@@ -7,9 +7,10 @@ parameters of one function or block instance and evaluates them.
 from __future__ import annotations
 
 import json
+from collections.abc import MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .compiler import LinnetError, run_compiler, std_arguments
 
@@ -89,17 +90,69 @@ class Env:
         return self.dtypes[var]
 
     def relation_holds(self, constraint: dict[str, Any]) -> bool:
-        lhs = self.dim(constraint["lhs"])
-        rhs = self.dim(constraint["rhs"])
-        relation = constraint["relation"]
-        return {
-            "==": lhs == rhs,
-            "!=": lhs != rhs,
-            "<": lhs < rhs,
-            "<=": lhs <= rhs,
-            ">": lhs > rhs,
-            ">=": lhs >= rhs,
-        }[relation]
+        lhs, rhs = self.dim(constraint["lhs"]), self.dim(constraint["rhs"])
+        return holds(constraint["relation"], lhs, rhs)
+
+
+def holds(relation: str, lhs: int, rhs: int) -> bool:
+    """Whether `lhs relation rhs` (`==`, `!=`, `<`, `<=`, `>`, `>=`) holds."""
+    return {
+        "==": lhs == rhs,
+        "!=": lhs != rhs,
+        "<": lhs < rhs,
+        "<=": lhs <= rhs,
+        ">": lhs > rhs,
+        ">=": lhs >= rhs,
+    }[relation]
+
+
+def align_shape(
+    units: Sequence[ShapeUnit], shape: Sequence[int], name: str
+) -> tuple[list[tuple[ShapeUnit, int]], tuple[dict[str, Any], list[int]] | None]:
+    """Input `name`'s declared shape (`units`, with at most one shape pack,
+    which covers whatever axes the others leave) lined up with its actual
+    `shape`: each declared dimension with its size, and the pack with the
+    sizes it covers."""
+    packs = [i for i, unit in enumerate(units) if isinstance(unit, dict) and "pack" in unit]
+    if len(packs) > 1:
+        raise PlanError(f"input `{name}` has more than one shape pack")
+    fixed = len(units) - len(packs)
+    if (packs and len(shape) < fixed) or (not packs and len(shape) != fixed):
+        expected = f"at least {fixed}" if packs else str(fixed)
+        raise PlanError(f"input `{name}` has rank {len(shape)}, expected {expected}")
+    if not packs:
+        return list(zip(units, shape, strict=True)), None
+    at, width = packs[0], len(shape) - fixed
+    rest = [*units[:at], *units[at + 1 :]]
+    sizes = [*shape[:at], *shape[at + width :]]
+    pack = cast(dict[str, Any], units[at])
+    return list(zip(rest, sizes, strict=True)), (pack, list(shape[at : at + width]))
+
+
+def bind_shape_names(
+    units: Sequence[ShapeUnit],
+    shape: Sequence[int],
+    name: str,
+    bindings: MutableMapping[str, Any],
+) -> None:
+    """Binds the generics of input `name`'s declared shape from its actual
+    `shape`, by name (a shape pack as `"2,3"`, as `--bind` takes it), and
+    checks the sizes already bound or fixed."""
+    dims, pack = align_shape(units, shape, name)
+    if pack is not None:
+        unit, sizes = pack
+        text = ",".join(map(str, sizes))
+        if str(bindings.setdefault(str(unit["name"]), text)) != text:
+            raise PlanError(f"input `{name}` disagrees on shape pack `{unit['name']}`")
+    for unit, size in dims:
+        if isinstance(unit, dict) and "sym" in unit:
+            symbol = str(unit["name"])
+            if str(bindings.setdefault(symbol, size)) != str(size):
+                raise PlanError(
+                    f"input `{name}` has size {size} where `{symbol}` is {bindings[symbol]}"
+                )
+        elif isinstance(unit, int) and unit != size:
+            raise PlanError(f"input `{name}` has size {size} on an axis that must be {unit}")
 
 
 @dataclass

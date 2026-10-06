@@ -18,7 +18,7 @@ import torch
 from torch import nn
 
 from .. import ir
-from ..plan import Env, Plan, PlanError
+from ..plan import Env, Plan, PlanError, align_shape
 from ..weights import read_bindings, safetensors_index
 from .dtypes import (
     FROM_SAFETENSORS,
@@ -521,28 +521,12 @@ def bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
     expected_dtype = torch_dtype(env, spec)
     if value.dtype != expected_dtype:
         raise PlanError(f"input `{name}` has dtype {value.dtype}, expected {expected_dtype}")
-    units: list[dict[str, Any] | int] = param_type["shape"]
-    packs = [i for i, unit in enumerate(units) if isinstance(unit, dict) and "pack" in unit]
-    if len(packs) > 1:
-        raise PlanError(f"input `{name}` has more than one shape pack")
-    fixed = len(units) - len(packs)
-    if (packs and value.dim() < fixed) or (not packs and value.dim() != fixed):
-        raise PlanError(
-            f"input `{name}` has rank {value.dim()}, expected {'at least ' if packs else ''}{fixed}"
-        )
-    actual = list(value.shape)
-    pack_width = value.dim() - fixed
-    at = 0
-    for unit in units:
-        if isinstance(unit, dict) and "pack" in unit:
-            symbol = int(unit["pack"])
-            sizes = actual[at : at + pack_width]
-            if env.packs.setdefault(symbol, sizes) != sizes:
-                raise PlanError(f"input `{name}` disagrees on shape pack `{unit['name']}`")
-            at += pack_width
-            continue
-        size = actual[at]
-        at += 1
+    dims, pack = align_shape(param_type["shape"], list(value.shape), name)
+    if pack is not None:
+        unit, sizes = pack
+        if env.packs.setdefault(int(unit["pack"]), sizes) != sizes:
+            raise PlanError(f"input `{name}` disagrees on shape pack `{unit['name']}`")
+    for unit, size in dims:
         if isinstance(unit, dict) and "sym" in unit:
             symbol = int(unit["sym"])
             if env.dims.setdefault(symbol, size) != size:

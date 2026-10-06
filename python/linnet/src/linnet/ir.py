@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import fnmatch
 import json
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+import math
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 from .compiler import LinnetError
 from .plan import compile_plan
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------- dimensions
 
@@ -685,6 +688,17 @@ class Bindings:
     dtypes: Mapping[int, str]
 
 
+def default_of(generic: Generic) -> int | str | None:
+    """A generic's declared default as a value: a dimension's size or a
+    dtype's name; None without one, or for one in terms of other generics."""
+    default = generic.default
+    if isinstance(default, DimArg) and isinstance(default.dim, int):
+        return default.dim
+    if isinstance(default, DTypeArg) and isinstance(default.dtype, str):
+        return default.dtype
+    return None
+
+
 def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) -> Bindings:
     """Binds generics by name, using declared defaults for the rest.
 
@@ -697,16 +711,9 @@ def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) 
     for generic in generics:
         value = values.get(generic.name)
         if value is None:
-            default = generic.default
-            if default is None:
+            value = default_of(generic)
+            if value is None:
                 raise LinnetError(f"generic `{generic.name}` needs a value")
-            if isinstance(default, DimArg) and isinstance(default.dim, int):
-                dims[generic.id] = default.dim
-            elif isinstance(default, DTypeArg) and isinstance(default.dtype, str):
-                dtypes[generic.id] = default.dtype
-            else:
-                raise LinnetError(f"generic `{generic.name}` needs a value")
-            continue
         if generic.kind == "dtype":
             if not isinstance(value, str):
                 raise LinnetError(f"`{generic.name}` is a dtype; give its name")
@@ -723,33 +730,87 @@ def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) 
     return Bindings(MappingProxyType(dims), MappingProxyType(packs), MappingProxyType(dtypes))
 
 
-def evaluate_dim(dim: Dim, bindings: Bindings) -> int:
-    if isinstance(dim, int):
-        return dim
-    if isinstance(dim, DimSymbol):
-        if dim.id not in bindings.dims:
-            raise LinnetError(f"dimension `{dim.name}` is not bound")
-        return bindings.dims[dim.id]
-    if isinstance(dim, PackSize):
-        if dim.id not in bindings.packs:
-            raise LinnetError(f"shape pack `{dim.name}` is not bound")
-        count = 1
-        for size in bindings.packs[dim.id]:
-            count *= size
-        return count
-    args = [evaluate_dim(a, bindings) for a in dim.args]
-    if dim.op == "add":
+class Arithmetic(Protocol[T]):
+    """What a dimension's operators mean over some kind of value: integers
+    (`INTEGERS`), or expressions of free symbols (`linnet.resources`)."""
+
+    def const(self, value: int) -> T: ...
+    def total(self, args: Sequence[T]) -> T: ...
+    def product(self, args: Sequence[T]) -> T: ...
+    def floordiv(self, a: T, b: T) -> T: ...
+    def mod(self, a: T, b: T) -> T: ...
+    def minimum(self, args: Sequence[T]) -> T: ...
+    def maximum(self, args: Sequence[T]) -> T: ...
+
+
+class _Integers:
+    def const(self, value: int) -> int:
+        return value
+
+    def total(self, args: Sequence[int]) -> int:
         return sum(args)
-    if dim.op == "mul":
-        product = 1
-        for a in args:
-            product *= a
-        return product
-    if dim.op in ("floordiv", "mod"):
-        if args[1] == 0:
+
+    def product(self, args: Sequence[int]) -> int:
+        return math.prod(args)
+
+    def floordiv(self, a: int, b: int) -> int:
+        if b == 0:
             raise LinnetError("division by zero in a dimension")
-        return args[0] // args[1] if dim.op == "floordiv" else args[0] % args[1]
-    return min(args) if dim.op == "min" else max(args)
+        return a // b
+
+    def mod(self, a: int, b: int) -> int:
+        if b == 0:
+            raise LinnetError("division by zero in a dimension")
+        return a % b
+
+    def minimum(self, args: Sequence[int]) -> int:
+        return min(args)
+
+    def maximum(self, args: Sequence[int]) -> int:
+        return max(args)
+
+
+INTEGERS: Arithmetic[int] = _Integers()
+
+
+def fold_dim(
+    dim: Dim,
+    symbol: Callable[[DimSymbol], T],
+    pack_size: Callable[[PackSize], T],
+    arithmetic: Arithmetic[T],
+) -> T:
+    """`dim` evaluated with each symbol's and pack's value from `symbol` and
+    `pack_size`, its operators as `arithmetic` computes them."""
+    if isinstance(dim, int):
+        return arithmetic.const(dim)
+    if isinstance(dim, DimSymbol):
+        return symbol(dim)
+    if isinstance(dim, PackSize):
+        return pack_size(dim)
+    args = [fold_dim(a, symbol, pack_size, arithmetic) for a in dim.args]
+    if dim.op == "add":
+        return arithmetic.total(args)
+    if dim.op == "mul":
+        return arithmetic.product(args)
+    if dim.op == "floordiv":
+        return arithmetic.floordiv(args[0], args[1])
+    if dim.op == "mod":
+        return arithmetic.mod(args[0], args[1])
+    return arithmetic.minimum(args) if dim.op == "min" else arithmetic.maximum(args)
+
+
+def evaluate_dim(dim: Dim, bindings: Bindings) -> int:
+    def symbol(found: DimSymbol) -> int:
+        if found.id not in bindings.dims:
+            raise LinnetError(f"dimension `{found.name}` is not bound")
+        return bindings.dims[found.id]
+
+    def pack_size(found: PackSize) -> int:
+        if found.id not in bindings.packs:
+            raise LinnetError(f"shape pack `{found.name}` is not bound")
+        return math.prod(bindings.packs[found.id])
+
+    return fold_dim(dim, symbol, pack_size, INTEGERS)
 
 
 def evaluate_shape(shape: Shape, bindings: Bindings) -> tuple[int, ...]:

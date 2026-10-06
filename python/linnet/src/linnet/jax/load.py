@@ -30,6 +30,7 @@ from jax.sharding import SingleDeviceSharding
 
 from .. import ir
 from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
+from ..plan import bind_shape_names
 from ..weights import apply_bindings, read_arrays
 from .dtypes import MLIR_TYPES
 
@@ -170,20 +171,8 @@ class LinnetFunction:
             declared = cast(dict[str, Any], argument["type"])
             if declared.get("kind") != "tensor":
                 continue
-            shape = cast(list[Any], declared["shape"])
-            actual = tuple(int(d) for d in np.shape(value))
-            shape, actual = _unpack(shape, actual, str(argument["name"]), bindings)
-            for unit, size in zip(shape, actual, strict=True):
-                if isinstance(unit, dict) and "sym" in unit:
-                    name = str(cast(dict[str, Any], unit)["name"])
-                    previous = bindings.get(name)
-                    if previous is not None and previous != size:
-                        raise LinnetError(f"dimension `{name}` is both {previous} and {size}")
-                    bindings[name] = size
-                elif isinstance(unit, int) and unit != size:
-                    raise LinnetError(
-                        f"input `{argument['name']}` has extent {size} where {unit} is declared"
-                    )
+            actual = [int(d) for d in np.shape(value)]
+            bind_shape_names(declared["shape"], actual, str(argument["name"]), bindings)
         return bindings
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
@@ -340,29 +329,6 @@ class LinnetFunction:
 
     def __call__(self, *inputs: Any, state: Any = None) -> Any:
         return self.apply(self._weights, *inputs, state=state)
-
-
-def _unpack(
-    units: list[Any], shape: tuple[int, ...], name: str, bindings: dict[str, Any]
-) -> tuple[list[Any], tuple[int, ...]]:
-    """An input's declared units and its shape with a shape pack's axes taken
-    out and bound (`S` to `"2,3"`, as `linnet jax --bind` takes it): the
-    pack covers whatever axes the other units leave."""
-    packs = [i for i, unit in enumerate(units) if isinstance(unit, dict) and "pack" in unit]
-    if len(packs) > 1:
-        raise LinnetError(f"input `{name}` has more than one shape pack")
-    fixed = len(units) - len(packs)
-    if (packs and len(shape) < fixed) or (not packs and len(shape) != fixed):
-        expected = f"at least {fixed}" if packs else str(fixed)
-        raise LinnetError(f"input `{name}` has rank {len(shape)}, expected {expected}")
-    if not packs:
-        return units, shape
-    at, width = packs[0], len(shape) - fixed
-    pack = str(units[at]["name"])
-    sizes = ",".join(map(str, shape[at : at + width]))
-    if bindings.setdefault(pack, sizes) != sizes:
-        raise LinnetError(f"input `{name}` disagrees on shape pack `{pack}`")
-    return units[:at] + units[at + 1 :], shape[:at] + shape[at + width :]
 
 
 def _platform() -> str:
