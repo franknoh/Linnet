@@ -32,6 +32,8 @@ import jax
 import numpy as np
 
 from ..compiler import LinnetError, find_compiler
+from ..dtypes import BY_MLIR, BY_NUMPY
+from .dtypes import NUMPY_TYPES
 
 
 class ExportError(LinnetError):
@@ -58,38 +60,6 @@ def _identifier(name: str) -> str:
     return clean
 
 
-_MLIR_DTYPES = {
-    "i1": "bool",
-    "i8": "i8",
-    "i16": "i16",
-    "i32": "i32",
-    "i64": "i64",
-    "ui8": "u8",
-    "ui16": "u16",
-    "ui32": "u32",
-    "ui64": "u64",
-    "f16": "f16",
-    "bf16": "bf16",
-    "f32": "f32",
-    "f64": "f64",
-}
-
-_NUMPY_DTYPES: dict[str, Any] = {
-    "bool": np.bool_,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "i64": np.int64,
-    "u8": np.uint8,
-    "u16": np.uint16,
-    "u32": np.uint32,
-    "u64": np.uint64,
-    "f16": np.float16,
-    "f32": np.float32,
-    "f64": np.float64,
-}
-
-
 @dataclass
 class _Type:
     """A tensor (or scalar, rank 0) type of the module."""
@@ -108,9 +78,9 @@ def _parse_type(text: str) -> _Type:
         raise ExportError(f"type `{text}` is not a static ranked tensor")
     dims = tuple(int(d) for d in match.group(1).split("x") if d)
     element = match.group(2)
-    if element not in _MLIR_DTYPES:
+    if element not in BY_MLIR:
         raise ExportError(f"element type `{element}` has no Linnet equivalent")
-    return _Type(dims, _MLIR_DTYPES[element])
+    return _Type(dims, BY_MLIR[element].name)
 
 
 @dataclass
@@ -752,12 +722,10 @@ def _numpy_dtype_name(array: Any) -> str:
 
 
 def _dtype_name(dtype: Any) -> str:
-    for name, candidate in _NUMPY_DTYPES.items():
-        if np.dtype(candidate) == dtype:
-            return name
-    if str(dtype) == "bfloat16":
-        return "bf16"
-    raise ExportError(f"dtype {dtype} has no Linnet equivalent")
+    found = BY_NUMPY.get(np.dtype(dtype).name)
+    if found is None:
+        raise ExportError(f"dtype {dtype} has no Linnet equivalent")
+    return found.name
 
 
 Handler = Callable[[_Translator, Any], _Value | None]
@@ -828,7 +796,8 @@ def _dense_to_numpy(literal: str, kind: _Type) -> Any:
         values = [_hex_float(x, kind.dtype) if x.startswith("0x") else float(x) for x in numbers]
     else:
         values = [int(x) for x in numbers]
-    dtype = _NUMPY_DTYPES.get(kind.dtype, np.float32)
+    # bf16 constants are parsed as the f32 numbers they print as.
+    dtype = np.float32 if kind.dtype == "bf16" else NUMPY_TYPES.get(kind.dtype, np.float32)
     return np.asarray(values, dtype=dtype).reshape(kind.shape)
 
 

@@ -34,6 +34,7 @@ import onnx  # type: ignore[import-untyped]
 from onnx import numpy_helper, shape_inference  # type: ignore[import-untyped]
 
 from ..compiler import LinnetError, find_compiler
+from ..dtypes import BY_NUMPY, BY_ONNX, DTYPES
 
 
 class OnnxImportError(LinnetError):
@@ -60,40 +61,17 @@ def _identifier(name: str) -> str:
     return clean
 
 
-_DTYPES: dict[int, str] = {
-    onnx.TensorProto.BOOL: "bool",
-    onnx.TensorProto.INT8: "i8",
-    onnx.TensorProto.INT16: "i16",
-    onnx.TensorProto.INT32: "i32",
-    onnx.TensorProto.INT64: "i64",
-    onnx.TensorProto.UINT8: "u8",
-    onnx.TensorProto.UINT16: "u16",
-    onnx.TensorProto.UINT32: "u32",
-    onnx.TensorProto.UINT64: "u64",
-    onnx.TensorProto.FLOAT16: "f16",
-    onnx.TensorProto.BFLOAT16: "bf16",
-    onnx.TensorProto.FLOAT: "f32",
-    onnx.TensorProto.DOUBLE: "f64",
-}
-
-_NUMPY_DTYPES: dict[str, Any] = {
-    "bool": np.bool_, "i8": np.int8, "i16": np.int16, "i32": np.int32, "i64": np.int64,
-    "u8": np.uint8, "u16": np.uint16, "u32": np.uint32, "u64": np.uint64, "f16": np.float16,
-    "f32": np.float32, "f64": np.float64,
-}  # fmt: skip
-
-
 def _dtype_name(elem_type: int) -> str:
-    if elem_type not in _DTYPES:
+    if elem_type not in BY_ONNX:
         raise OnnxImportError(f"ONNX element type {elem_type} has no Linnet equivalent")
-    return _DTYPES[elem_type]
+    return BY_ONNX[elem_type].name
 
 
 def _numpy_dtype_name(array: Any) -> str:
-    for name, dtype in _NUMPY_DTYPES.items():
-        if np.dtype(dtype) == array.dtype:
-            return name
-    raise OnnxImportError(f"dtype {array.dtype} has no Linnet equivalent")
+    found = BY_NUMPY.get(np.dtype(array.dtype).name)
+    if found is None:
+        raise OnnxImportError(f"dtype {array.dtype} has no Linnet equivalent")
+    return found.name
 
 
 # A dimension: an int, or a symbol name from `dim_param`.
@@ -1393,9 +1371,10 @@ def _compare(t: _Translator, node: Any) -> None:
 
 @_handles("Cast")
 def _cast(t: _Translator, node: Any) -> None:
-    if node.input[0] in t.constants and node.input[0] not in t.values:
-        target = _NUMPY_DTYPES[_dtype_name(int(t.attr(node, "to")))]
-        _fold_constant(t, node, t.constants[node.input[0]].astype(target))
+    target = _dtype_name(int(t.attr(node, "to")))
+    # NumPy has no bf16 to fold into; a cast to it stays an operation.
+    if node.input[0] in t.constants and node.input[0] not in t.values and target != "bf16":
+        _fold_constant(t, node, t.constants[node.input[0]].astype(DTYPES[target].numpy))
         return
     source = t.operand(node, 0)
     kind = t.result(node)

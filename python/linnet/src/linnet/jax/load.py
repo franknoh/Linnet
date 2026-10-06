@@ -30,38 +30,7 @@ from jax.sharding import SingleDeviceSharding
 
 from ..compiler import LinnetError, run_compiler, std_arguments
 from ..weights import apply_bindings, read_arrays
-
-_DTYPES: dict[str, Any] = {
-    "i1": np.bool_,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "i64": np.int64,
-    "ui8": np.uint8,
-    "ui16": np.uint16,
-    "ui32": np.uint32,
-    "ui64": np.uint64,
-    "f16": np.float16,
-    "bf16": jnp.bfloat16,
-    "f32": np.float32,
-    "f64": np.float64,
-}
-
-_LINNET_DTYPES: dict[str, Any] = {
-    "bool": np.bool_,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "i64": np.int64,
-    "u8": np.uint8,
-    "u16": np.uint16,
-    "u32": np.uint32,
-    "u64": np.uint64,
-    "f16": np.float16,
-    "bf16": jnp.bfloat16,
-    "f32": np.float32,
-    "f64": np.float64,
-}
+from .dtypes import MLIR_TYPES
 
 
 class LinnetFunction:
@@ -458,9 +427,9 @@ def _wrap_module(text: str) -> Any:
 
     def aval(tensor_type: Any) -> Any:
         element = str(tensor_type.element_type)
-        if element not in _DTYPES:
+        if element not in MLIR_TYPES:
             raise LinnetError(f"unsupported element type {element}")
-        return jax_core.ShapedArray(tuple(tensor_type.shape), _DTYPES[element])
+        return jax_core.ShapedArray(tuple(tensor_type.shape), MLIR_TYPES[element])
 
     in_avals = tuple(aval(t) for t in in_types)
     out_avals = tuple(aval(t) for t in out_types)

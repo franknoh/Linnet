@@ -28,9 +28,9 @@ from typing import Any
 
 from . import ir, nest
 from .compiler import LinnetError
+from .dtypes import DTYPES, from_safetensors
 from .weights import TensorLocation, read_bindings, safetensors_index, write_safetensors
 
-TORCH_DTYPE_NAMES = {"bf16": "bfloat16", "f16": "float16", "f32": "float32", "f64": "float64"}
 TOKENIZER_FILES = (
     "tokenizer.json",
     "tokenizer_config.json",
@@ -124,7 +124,7 @@ def _decoder_config(
         "rms_norm_eps": traits.eps,
         "hidden_act": "silu",
         "tie_word_embeddings": traits.tied,
-        "torch_dtype": TORCH_DTYPE_NAMES.get(dtype, dtype),
+        "torch_dtype": DTYPES[dtype].torch if dtype in DTYPES else dtype,
         "transformers_version": "4.0.0",
     }
 
@@ -229,7 +229,7 @@ def _gpt2_config(
         "activation_function": "gelu_new",
         "layer_norm_epsilon": traits.eps,
         "tie_word_embeddings": True,
-        "torch_dtype": TORCH_DTYPE_NAMES.get(dtype, dtype),
+        "torch_dtype": DTYPES[dtype].torch if dtype in DTYPES else dtype,
         "transformers_version": "4.0.0",
     }
 
@@ -550,7 +550,7 @@ def export(
                 continue
             # The tensors are copied as they are, and `config.json` declares
             # the program's dtype: they must agree.
-            if nest.SAFETENSORS_DTYPES.get(location.dtype) != dtype:
+            if from_safetensors(location.dtype) != dtype:
                 problems.append(
                     f"`{source_name}` is {location.dtype}, `{linnet_path}` needs {dtype}"
                 )

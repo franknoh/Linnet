@@ -29,6 +29,7 @@ from typing import Any, cast
 
 from . import ir, nest
 from .compiler import LinnetError
+from .dtypes import from_safetensors
 
 Config = Mapping[str, Any]
 
@@ -433,7 +434,7 @@ def _present(tensor: str, tensors: Mapping[str, Any]) -> str:
 def _dtype(tensors: Mapping[str, tuple[tuple[int, ...], str]], tensor: str) -> str:
     if tensor not in tensors:
         raise nest.NestError(f"the checkpoint has no `{tensor}`")
-    dtype = nest.SAFETENSORS_DTYPES.get(tensors[tensor][1], "")
+    dtype = from_safetensors(tensors[tensor][1]) or ""
     if dtype not in ("bf16", "f16", "f32"):
         raise nest.NestError(f"`{tensor}` is {tensors[tensor][1]}, not a float checkpoint")
     return dtype

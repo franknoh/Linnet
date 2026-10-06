@@ -19,7 +19,13 @@ import torch
 from torch import nn
 
 from ..plan import Env, Plan, PlanError
-from .dtypes import LINNET_DTYPES, TORCH_DTYPES, torch_dtype
+from .dtypes import (
+    FROM_SAFETENSORS,
+    LINNET_DTYPES,
+    SAFETENSORS_NAMES,
+    TORCH_DTYPES,
+    torch_dtype,
+)
 from .interp import BlockInstance, Interpreter
 
 
@@ -444,7 +450,7 @@ class LinnetModule(nn.Module):
             entries.append(
                 (
                     name,
-                    _SAFETENSORS_DTYPES[target],
+                    SAFETENSORS_NAMES[target],
                     tuple(tensor.shape),
                     LazyBytes(tensor.numel() * target.itemsize, _bytes_of(tensor, target)),
                 )
@@ -459,23 +465,6 @@ class LinnetModule(nn.Module):
                     _whole(tensor)
                 return Path(path)
         return write_safetensors(path, entries, metadata={"format": "pt"})
-
-
-_SAFETENSORS_DTYPES: dict[torch.dtype, str] = {
-    torch.bool: "BOOL",
-    torch.int8: "I8",
-    torch.int16: "I16",
-    torch.int32: "I32",
-    torch.int64: "I64",
-    torch.uint8: "U8",
-    torch.uint16: "U16",
-    torch.uint32: "U32",
-    torch.uint64: "U64",
-    torch.float16: "F16",
-    torch.bfloat16: "BF16",
-    torch.float32: "F32",
-    torch.float64: "F64",
-}
 
 
 def _whole(tensor: torch.Tensor) -> torch.Tensor:
@@ -629,22 +618,6 @@ def bind_weights(
             )
         mapping = {str(k): str(v) for k, v in cast(dict[Any, Any], loaded_mapping).items()}
 
-    safetensor_dtypes = {
-        "BOOL": torch.bool,
-        "I8": torch.int8,
-        "I16": torch.int16,
-        "I32": torch.int32,
-        "I64": torch.int64,
-        "U8": torch.uint8,
-        "U16": torch.uint16,
-        "U32": torch.uint32,
-        "U64": torch.uint64,
-        "F16": torch.float16,
-        "BF16": torch.bfloat16,
-        "F32": torch.float32,
-        "F64": torch.float64,
-    }
-
     problems: list[str] = []
     assignments: list[tuple[str, str, Path]] = []
     parts: dict[str, tuple[int, int]] = {}  # path -> (axis, extent) of its shard
@@ -668,10 +641,10 @@ def bind_weights(
             shape = list(tensor.shape)
         if shape != list(tensor.shape):
             problems.append(f"`{source}` has shape {shape}, `{path}` needs {list(tensor.shape)}")
-        elif safetensor_dtypes.get(dtype_name) != expected_dtype and not (
+        elif FROM_SAFETENSORS.get(dtype_name) != expected_dtype and not (
             cast_dtype
             and expected_dtype.is_floating_point
-            and (found := safetensor_dtypes.get(dtype_name)) is not None
+            and (found := FROM_SAFETENSORS.get(dtype_name)) is not None
             and found.is_floating_point
         ):
             problems.append(f"`{source}` has dtype {dtype_name}, `{path}` needs {expected_dtype}")

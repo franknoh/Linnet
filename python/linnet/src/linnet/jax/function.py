@@ -26,19 +26,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..compiler import LinnetError, run_compiler, std_arguments
+from ..dtypes import BY_NUMPY, CLASSES
 from ..plan import Plan, compile_plan
-from .load import _LINNET_DTYPES, _unpack  # pyright: ignore[reportPrivateUsage]
-
-# NumPy dtype names back to Linnet's, for binding a dtype generic.
-_NAMES: dict[str, str] = {np.dtype(dtype).name: name for name, dtype in _LINNET_DTYPES.items()}
-_FLOATS = {"f16", "bf16", "f32", "f64"}
-_INTEGERS = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
-_CLASSES: dict[str, set[str]] = {
-    "float": _FLOATS,
-    "integer": _INTEGERS,
-    "numeric": _FLOATS | _INTEGERS,
-    "any": _FLOATS | _INTEGERS | {"bool"},
-}
+from .dtypes import NUMPY_TYPES
+from .load import _unpack  # pyright: ignore[reportPrivateUsage]
 
 
 class Function:
@@ -143,7 +134,7 @@ class Function:
                     f"give it by name, `{self.name}(..., {generic['name']}=...)`"
                 )
             if generic["kind"] == "dtype":
-                admitted = _CLASSES[generic.get("class", "any")]
+                admitted = CLASSES[generic.get("class", "any")]
                 if bindings[generic["name"]] not in admitted:
                     raise LinnetError(
                         f"`{generic['name']}` of `{self.name}` is {generic['class']}, "
@@ -154,7 +145,8 @@ class Function:
     def _bind_dtype(
         self, spec: str | dict[str, Any], value: Any, name: str, bindings: dict[str, str]
     ) -> None:
-        actual = _NAMES.get(jnp.dtype(value.dtype).name)
+        found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
+        actual = None if found is None else found.name
         if actual is None:
             raise LinnetError(f"input `{name}` has dtype {value.dtype}, which Linnet lacks")
         wanted = spec if isinstance(spec, str) else bindings.setdefault(str(spec["name"]), actual)
@@ -168,7 +160,7 @@ class Function:
             raise LinnetError(
                 f"the dtype of `{param['name']}` is not bound; give it by name or pass an array"
             )
-        return jnp.asarray(value, dtype=_LINNET_DTYPES[dtype])
+        return jnp.asarray(value, dtype=NUMPY_TYPES[dtype])
 
     # ---- one compilation per binding
 

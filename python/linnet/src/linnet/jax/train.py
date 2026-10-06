@@ -36,7 +36,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..dtypes import BY_NUMPY
 from ..packing import Packed
+from ..weights import read_arrays, write_safetensors
 
 
 @dataclass
@@ -636,51 +638,15 @@ def _placed(array: Any, path: str, mesh: Any) -> Any:
 # ------------------------------------------------------------------ files
 
 PREFIX = "step-"
-_NAMES = {
-    "float32": "F32",
-    "float16": "F16",
-    "bfloat16": "BF16",
-    "float64": "F64",
-    "int64": "I64",
-    "int32": "I32",
-    "int16": "I16",
-    "int8": "I8",
-    "uint32": "U32",
-    "uint8": "U8",
-    "bool": "BOOL",
-}
 
 
 def _write(path: Path, arrays: dict[str, Any]) -> None:
-    from ..weights import write_safetensors
-
     entries: list[tuple[str, str, tuple[int, ...], Any]] = []
     for name, array in arrays.items():
         host = np.ascontiguousarray(np.asarray(jax.device_get(array)))
-        entries.append((name, _NAMES[host.dtype.name], tuple(host.shape), host.tobytes()))
+        code = BY_NUMPY[host.dtype.name].safetensors
+        entries.append((name, code, tuple(host.shape), host.tobytes()))
     write_safetensors(path, entries)
-
-
-def _read(path: Path) -> dict[str, np.ndarray]:
-    import json
-    import struct
-
-    import ml_dtypes  # type: ignore[import-untyped]
-
-    dtypes = {name: dtype for dtype, name in _NAMES.items()}
-    data = path.read_bytes()
-    (length,) = struct.unpack("<Q", data[:8])
-    header = json.loads(data[8 : 8 + length])
-    out: dict[str, np.ndarray] = {}
-    for name, entry in header.items():
-        if name == "__metadata__":
-            continue
-        begin, end = entry["data_offsets"]
-        kind = dtypes[entry["dtype"]]
-        dtype = np.dtype(ml_dtypes.bfloat16) if kind == "bfloat16" else np.dtype(kind)
-        raw = data[8 + length + begin : 8 + length + end]
-        out[name] = np.frombuffer(raw, dtype=dtype).reshape(entry["shape"])
-    return out
 
 
 def save_weights(parameters: dict[str, Any], path: str | Path, *, dtype: Any = None) -> Path:
@@ -733,10 +699,10 @@ def load_checkpoint(
     if not found:
         return None
     latest = found[-1]
-    stored = _read(latest / "parameters.safetensors")
+    stored = read_arrays(latest / "parameters.safetensors")
     trained = {path: jax.device_put(stored[path], like.sharding) for path, like in trained.items()}
     leaves, structure = jax.tree.flatten(state)
-    kept = _read(latest / "state.safetensors")
+    kept = read_arrays(latest / "state.safetensors")
     leaves = [jax.device_put(kept[f"{i:06d}"], like.sharding) for i, like in enumerate(leaves)]
     step = int(json.loads((latest / "progress.json").read_text(encoding="utf-8"))["step"])
     return step, trained, jax.tree.unflatten(structure, leaves)
