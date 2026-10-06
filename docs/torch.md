@@ -199,6 +199,47 @@ With `compile="reduce-overhead"`, run `del model` before
 `dist.destroy_process_group()`, which otherwise waits on the CUDA graphs'
 communicators.
 
+### Pipeline parallelism
+
+```python
+# torchrun --nproc-per-node 4 train.py
+import torch, torch.distributed as dist
+from linnet.torch import pipeline
+
+dist.init_process_group("nccl")
+torch.cuda.set_device(dist.get_rank())
+pipe = pipeline("model.linnet", generics=generics, weights="weights/",
+                entry="loss_packed", microbatches=8)
+optimizer = torch.optim.AdamW(pipe.parameters(), lr=1e-5)
+loss = pipe.step(tokens, positions, segments, targets, weights)  # on the last stage
+optimizer.step()
+optimizer.zero_grad()
+```
+
+Each process runs one stage: a run of the root's blocks, balanced by
+parameter bytes (`stages=["layers.8", "layers.16", "layers.24"]` sets the
+splits). A process holds only its own blocks' weights and reads only
+those from the checkpoint.
+
+The entry's generated source is split into one function per stage. Only
+values computed from weights cross between processes, usually the residual
+stream. Masks and positions are computed again on each stage that reads
+them.
+
+| Call | Effect |
+| --- | --- |
+| `pipe.step(*inputs)` | one training step over `microbatches` parts of the inputs' first axis; the last stage returns the summed result |
+| `pipe.run(*inputs)` | the forward pass alone; the last stage returns the results joined along the first axis |
+| `schedule="1f1b"` (default) | a stage keeps at most as many micro-batches in flight as there are stages after it |
+| `schedule="gpipe"` | every micro-batch's forward, then every backward |
+| `compile="inductor"` | each stage function through `torch.compile` |
+
+Every process calls with the same inputs. For a packed entry, pack each
+micro-batch's part on its own so no sequence spans two. Parameters tied
+across stages (an embedding and its output head) have their gradients
+summed after each step. Entries that write `state`, or loop with `while`,
+do not split.
+
 ## Training
 
 ```python

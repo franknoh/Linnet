@@ -550,8 +550,10 @@ def bind_weights(
     cast_dtype: bool = False,
     shard: tuple[int, int] | None = None,
     tie: bool = False,
-) -> None:
-    """Loads SafeTensors weights into the module.
+    only: Callable[[str], bool] | None = None,
+) -> dict[str, str]:
+    """Loads SafeTensors weights into the module and returns the checkpoint
+    tensor each parameter path is bound to.
 
     `weights` is a `.safetensors` file or a directory of them. `bindings` is an
     optional JSON file mapping Linnet parameter paths to checkpoint tensor
@@ -573,6 +575,10 @@ def bind_weights(
     `tie=True` makes parameters bound to one checkpoint tensor (an embedding
     and an output head the checkpoint ties) one `nn.Parameter`, so training
     updates them together and the weights are held once.
+
+    `only` reads just the paths it accepts (a pipeline stage's blocks); the
+    rest are still checked, and still decide which optional parameters are
+    present, so every stage compiles the same model.
     """
     from safetensors import safe_open  # type: ignore[import-untyped]
 
@@ -616,6 +622,10 @@ def bind_weights(
 
     with torch.no_grad():
         for path, source, file in assignments:
+            owner, leaf = owner_of(module, path)
+            owner.absent_params.discard(leaf)
+            if only is not None and not only(path):
+                continue
             with cast(Any, safe_open(str(file), framework="pt")) as handle:
                 if path in parts:
                     assert shard is not None
@@ -626,9 +636,7 @@ def bind_weights(
                     loaded = cast(torch.Tensor, handle.get_slice(source)[index])
                 else:
                     loaded = cast(torch.Tensor, handle.get_tensor(source))
-            owner, leaf = owner_of(module, path)
             getattr(owner, leaf).copy_(loaded)
-            owner.absent_params.discard(leaf)
             module.weight_names[path] = source
     if tie:
         _tie(module, [(path, source, parts.get(path)) for path, source, _ in assignments])
@@ -658,6 +666,7 @@ def bind_weights(
     forget = getattr(module, "forget_parameters", None)
     if callable(forget):
         forget()  # tying replaced parameters
+    return {path: source for path, source, _ in assignments}
 
 
 def _tie(module: LinnetModule, bound: list[tuple[str, str, tuple[int, int] | None]]) -> None:
