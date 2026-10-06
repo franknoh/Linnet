@@ -292,3 +292,48 @@ def test_intermediates_are_released_after_their_last_use(tmp_path: Path) -> None
         for name in re.findall(r"v\d+", line)
     ]
     assert sorted(released) == sorted(set(assigned) - returned)
+
+
+def test_torch_compile_compiles_each_kind_of_layer_once() -> None:
+    from torch._dynamo import register_backend  # pyright: ignore[reportPrivateImportUsage]
+
+    graphs: list[str] = []
+
+    @register_backend(name="linnet_counted")  # pyright: ignore[reportUntypedFunctionDecorator]
+    def counted(graph: Any, inputs: Any) -> Any:  # pyright: ignore[reportUnusedFunction]
+        graphs.append(str(graph.code))
+        return graph.forward
+
+    generics = {**GENERICS, "Layers": 4}
+    reference = load(LLAMA, generics=generics, std_root=STDLIB, compile=True)
+    compiled = load(LLAMA, generics=generics, std_root=STDLIB, compile="linnet_counted")
+    assert isinstance(compiled, CompiledLinnetModule)
+    weights = _weights(reference)
+    reference.load_state_dict(weights, strict=False)
+    compiled.load_state_dict(weights, strict=False)
+    tokens = torch.randint(0, 11, (2, 5), dtype=torch.int32)
+    torch.testing.assert_close(compiled(tokens), reference(tokens), atol=1e-5, rtol=1e-5)
+    # Four layers, one compiled graph; the source to read is the step as
+    # `linnet torch` printed it, every layer in it.
+    assert len(graphs) == 1
+    source = compiled.generated_source("forward")
+    assert "def _region_" not in source and source.count("F.linear(") > 4 * 4
+    # Decoding writes each layer's caches in place, inside the compiled layer.
+    graphs.clear()
+    for pos in range(3):
+        step = [tokens[:, pos : pos + 1], torch.tensor(pos, dtype=torch.int32)]
+        torch.testing.assert_close(
+            compiled.run_entry("decode", step),
+            reference.run_entry("decode", step),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+    assert len(graphs) == 1
+    # `regional = False` compiles the step whole again.
+    whole = load(LLAMA, generics=generics, std_root=STDLIB, compile="linnet_counted")
+    assert isinstance(whole, CompiledLinnetModule)
+    whole.regional = False
+    whole.load_state_dict(weights, strict=False)
+    graphs.clear()
+    torch.testing.assert_close(whole(tokens), reference(tokens), atol=1e-5, rtol=1e-5)
+    assert len(graphs) == 1 and graphs[0].count("linear(") > 4 * 4

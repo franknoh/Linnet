@@ -28,6 +28,7 @@ from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..plan import Env, Plan, PlanError
 from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
 from .placement import Placement
+from .regions import regional
 
 
 class CompiledLinnetModule(LinnetModule):
@@ -75,6 +76,10 @@ class CompiledLinnetModule(LinnetModule):
         self.lora_paths: list[str] = []
         # Units whose parameters are split across processes (`fully_shard`).
         self.fully_sharded: tuple[str, ...] = ()
+        # Under `torch.compile`, compile each kind of repeated block once
+        # (`linnet.torch.regions`) rather than the whole step: the first
+        # step compiles in a fraction of the time. False compiles the step.
+        self.regional = True
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
         self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
@@ -574,17 +579,7 @@ class CompiledLinnetModule(LinnetModule):
     def _compile(
         self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
     ) -> _Generated:
-        module = self.import_source(
-            self.source_for(entry, bindings, trains=trains), f"{entry}_{len(self._compiled)}"
-        )
-        path: Path = module.__linnet_path__
-        if self.shard_group is not None and hasattr(module, "_GROUP"):
-            module._GROUP = self.shard_group
-        if self.tensor_parallel is not None:
-            from .parallel import SplitFunctional
-
-            module.F = SplitFunctional()
-        main: Callable[..., Any] = module.main
+        source = self.source_for(entry, bindings, trains=trains)
         # CUDA graphs are captured by hand around the whole step, unless the
         # model is spread over devices by placement or trains: replaying one
         # graph costs a copy per input, where `torch.compile`'s own checks
@@ -598,7 +593,45 @@ class CompiledLinnetModule(LinnetModule):
             and not trains
             and not self.fully_sharded
         )
-        if captured:
+        # What `torch.compile` compiles: a layer once per kind of layer
+        # (`linnet.torch.regions`), or the whole step.
+        compiles = (
+            backend == "reduce-overhead"
+            if captured
+            else backend not in (None, "reduce-overhead", "cudagraphs")
+        )
+        regions = (
+            regional(source)
+            if compiles
+            and self.regional
+            and (self.placement is None or self.placement.trivial)
+            and not self.fully_sharded
+            else None
+        )
+        name = f"{entry}_{len(self._compiled)}"
+        if regions is None:
+            module = self.import_source(source, name)
+            path: Path = module.__linnet_path__
+        else:
+            # The step as `linnet torch` printed it stays the one to read
+            # (`generated_source`); its regions are what runs.
+            module = self.import_source(regions.source, f"{name}_regions")
+            path = self._work / f"{name}.py"
+            path.write_text(source, encoding="utf-8")
+        if self.shard_group is not None and hasattr(module, "_GROUP"):
+            module._GROUP = self.shard_group
+        if self.tensor_parallel is not None:
+            from .parallel import SplitFunctional
+
+            module.F = SplitFunctional()
+        main: Callable[..., Any] = module.main
+        if regions is not None:
+            # Each kind of layer compiles on its first call; `main` runs the
+            # rest eagerly (and is captured whole by hand when `captured`).
+            options: dict[str, Any] = {} if captured else {"backend": backend}
+            for name in regions.functions:
+                setattr(module, name, torch.compile(getattr(module, name), **options))
+        elif captured:
             if backend == "reduce-overhead":
                 main = torch.compile(main)
         elif backend in ("reduce-overhead", "cudagraphs"):
