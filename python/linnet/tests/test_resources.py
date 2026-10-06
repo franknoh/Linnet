@@ -545,7 +545,7 @@ pub block Model<H: Dim, Layers: Dim, T: Float = f32> {
 def test_a_stage_holds_its_state_whether_the_entry_reads_it_or_not(tmp_path: Path) -> None:
     model = memory(
         source(tmp_path, STATEFUL),
-        config(batch=8, bindings={"H": 16, "Layers": 2}, pipeline_parallel=2),
+        config(batch=8, bindings={"H": 16, "Layers": 2}, pipeline_parallel=2, microbatches=2),
     )
     for part in model.stages:
         held = {o.path for o in part.graph.objects if o.category == Category.STATE}
@@ -573,6 +573,86 @@ def test_a_pipeline_splits_blocks_as_the_runtime_does(tmp_path: Path) -> None:
     explicit = _pipeline(tmp_path, microbatches=4, stages=("layers.1",))
     units = [part.units for part in explicit.stages]
     assert units == [("layers.0",), ("layers.1", "layers.2", "head")]
+
+
+SPLIT_LAYERS = """\
+module split_layers
+
+use std.nn.activations::{silu}
+use std.nn.linear::{Linear}
+use std.nn.parallel::{all_reduce}
+
+pub block Layer<H: Dim, Inner: Dim, T: Float, Shards: Dim>
+where
+    Shards > 0,
+    Inner % Shards == 0
+{
+    sub up: Linear<H, Inner / Shards, T>
+    sub down: Linear<Inner / Shards, H, T>
+
+    pub fn forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        return x + all_reduce(down.forward(silu(up.forward(x))))
+    }
+}
+
+pub block Model<H: Dim, Inner: Dim, Layers: Dim, T: Float = f32, Shards: Dim = 1>
+where
+    Shards > 0,
+    Inner % Shards == 0
+{
+    sub layers: [Layer<H, Inner, T, Shards>; Layers]
+
+    pub entry forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        var h = x
+        static for layer in layers {
+            h = layer.forward(h)
+        }
+        return h
+    }
+}
+"""
+
+
+def test_a_pipeline_of_split_stages_holds_a_part_of_each_stage(tmp_path: Path) -> None:
+    model = memory(
+        source(tmp_path, SPLIT_LAYERS),
+        ExecutionConfig(
+            batch=8,
+            bindings={"H": 16, "Inner": 32, "Layers": 2},
+            tensor_parallel=2,
+            pipeline_parallel=2,
+            microbatches=2,
+        ),
+    )
+    assert [part.units for part in model.stages] == [("layers.0",), ("layers.1",)]
+    result = model.analyze()
+    # One layer a stage, half of each split weight: up's rows and down's
+    # columns.
+    assert (result.component("Weights").nbytes or 0) <= (16 * 16 + 16 * 16 + 16 + 16) * 4
+    # A communicator for the stage's processes, and one for the pipeline's.
+    single = memory(
+        source(tmp_path, SPLIT_LAYERS),
+        ExecutionConfig(batch=8, bindings={"H": 16, "Inner": 32, "Layers": 2}, tensor_parallel=2),
+    ).analyze()
+    both = result.component("NCCL communicator").nbytes or 0
+    assert both == 2 * (single.component("NCCL communicator").nbytes or 0)
+
+
+def test_sharded_weights_are_kept_as_the_runtime_keeps_them(tmp_path: Path) -> None:
+    bindings: dict[str, int | str] = {"H": 32, "Layers": 3, "T": "bf16"}
+    whole = memory(
+        source(tmp_path, MLP), config(batch=8, bindings=bindings, training=TrainingConfig())
+    ).analyze()
+    sharded = memory(
+        source(tmp_path, MLP),
+        config(batch=8, bindings=bindings, training=TrainingConfig(shards=2)),
+    ).analyze()
+    # Each process's part of a trained weight is kept in f32: half the
+    # elements at twice the bytes.
+    assert sharded.component("Weights").nbytes == whole.component("Weights").nbytes
+    # Stages shard too.
+    staged = _pipeline(tmp_path, microbatches=4, training=TrainingConfig(shards=2)).analyze()
+    assert [d.name for d in staged.devices] == ["stage 0", "stage 1"]
 
 
 def test_gpipe_keeps_more_micro_batches_than_1f1b(tmp_path: Path) -> None:
@@ -792,10 +872,22 @@ def test_the_planner_ranks_layouts_by_throughput(tmp_path: Path) -> None:
 def test_unsupported_parallelism_is_refused(tmp_path: Path) -> None:
     from linnet.resources.trace import TraceError
 
-    with pytest.raises(TraceError, match="together"):
+    with pytest.raises(TraceError, match="Shards"):
         memory(
             source(tmp_path, CHAIN),
             config(batch=1, bindings={"N": 4}, pipeline_parallel=2, tensor_parallel=2),
+        )
+    with pytest.raises(TraceError, match="without gradients"):
+        memory(
+            source(tmp_path, SPLIT_LAYERS),
+            ExecutionConfig(
+                batch=8,
+                bindings={"H": 16, "Inner": 32, "Layers": 2},
+                tensor_parallel=2,
+                pipeline_parallel=2,
+                microbatches=2,
+                training=TrainingConfig(),
+            ),
         )
     with pytest.raises(TraceError, match="divide"):
         _pipeline(tmp_path, microbatches=5).analyze()

@@ -201,3 +201,190 @@ def test_a_pipeline_over_two_processes_matches_one(
     assert set(staged) == set(expected)
     for name, grad in staged.items():
         torch.testing.assert_close(grad, expected[name], atol=1e-6, rtol=1e-5)
+
+
+SPLIT = """\
+module tests.split_pipeline
+
+use std.nn.activations::{silu}
+use std.nn.linear::{Linear}
+use std.nn.parallel::{all_reduce}
+
+pub block Layer<H: Dim, Inner: Dim, T: Float, Shards: Dim>
+where
+    Shards > 0,
+    Inner % Shards == 0
+{
+    sub up: Linear<H, Inner / Shards, T>
+    sub down: Linear<Inner / Shards, H, T>
+
+    pub fn forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        return x + all_reduce(down.forward(silu(up.forward(x))))
+    }
+}
+
+pub block Model<H: Dim, Inner: Dim, Layers: Dim, T: Float = f32, Shards: Dim = 1>
+where
+    Shards > 0,
+    Inner % Shards == 0
+{
+    sub layers: [Layer<H, Inner, T, Shards>; Layers]
+
+    pub entry forward<B: Dim>(x: Tensor[B, H; T]) -> Tensor[B, H; T] {
+        var h = x
+        static for layer in layers {
+            h = layer.forward(h)
+        }
+        return h
+    }
+}
+"""
+SPLIT_GENERICS: dict[str, int | str] = {"H": 8, "Inner": 12, "Layers": 2}
+
+
+def _split_rank(rank: int, port: int, source: str, weights: str, out: str) -> None:
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from linnet.torch import pipeline
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=4)
+    try:
+        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names=("pp", "tp"))
+        pipe = pipeline(
+            source,
+            generics=SPLIT_GENERICS,
+            std_root=STDLIB,
+            weights=weights,
+            entry="forward",
+            microbatches=2,
+            stages=["layers.1"],
+            device="cpu",
+            group=mesh["pp"].get_group(),
+            tensor_parallel=mesh["tp"],
+            trainable=False,
+        )
+        shapes = {name: tuple(p.shape) for name, p in pipe.named_parameters()}
+        x = torch.arange(32, dtype=torch.float32).reshape(4, 8) / 10
+        result = pipe.run(x)
+        torch.save({"shapes": shapes, "result": result}, f"{out}.{rank}")
+    finally:
+        dist.destroy_process_group()
+
+
+def test_a_pipeline_of_split_stages_matches_one_process(tmp_path: Path) -> None:
+    source = tmp_path / "split.linnet"
+    source.write_text(SPLIT, encoding="utf-8")
+    generator = torch.Generator().manual_seed(0)
+    tensors: dict[str, torch.Tensor] = {}
+    for layer in range(2):
+        tensors[f"layers.{layer}.up.weight"] = torch.randn(12, 8, generator=generator) * 0.3
+        tensors[f"layers.{layer}.up.bias"] = torch.randn(12, generator=generator) * 0.3
+        tensors[f"layers.{layer}.down.weight"] = torch.randn(8, 12, generator=generator) * 0.3
+    weights = tmp_path / "model.safetensors"
+    save_file(tensors, str(weights))
+    whole = load(source, generics=SPLIT_GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    x = torch.arange(32, dtype=torch.float32).reshape(4, 8) / 10
+    expected = whole.run_entry("forward", [x])
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = str(tmp_path / "rank")
+    torch.multiprocessing.spawn(_split_rank, args=(port, str(source), str(weights), out), nprocs=4)
+    for rank in range(4):
+        saved = torch.load(f"{out}.{rank}")
+        stage = rank // 2
+        # Each process holds its stage's layer, a half of each split weight.
+        assert all(name.startswith(f"layers.{stage}.") for name in saved["shapes"])
+        assert saved["shapes"][f"layers.{stage}.up.weight"] == (6, 8)
+        assert saved["shapes"][f"layers.{stage}.down.weight"] == (8, 6)
+        if stage == 1:
+            torch.testing.assert_close(saved["result"], expected)
+        else:
+            assert saved["result"] is None
+
+
+def _other_packs() -> list[list[torch.Tensor]]:
+    """Two more packs, for a second pipeline's batch."""
+    generator = torch.Generator().manual_seed(2)
+    examples = [
+        Example.prompted(
+            torch.randint(0, 11, (2,), generator=generator).tolist(),
+            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),
+        )
+        for n in [6, 5, 7, 4]
+    ]
+    packs = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
+    count = sum(p.count for p in packs)
+    return [p.inputs(count) for p in packs]
+
+
+def _sharded_rank(rank: int, port: int, weights: str, out: str) -> None:
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import DTensor
+
+    from linnet.torch import pipeline
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=4)
+    try:
+        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names=("pp", "dp"))
+        pipe = pipeline(
+            LLAMA,
+            generics=GENERICS,
+            std_root=STDLIB,
+            weights=weights,
+            entry="loss_packed",
+            microbatches=2,
+            stages=["layers.1"],
+            device="cpu",
+            group=mesh["pp"].get_group(),
+            data_parallel=mesh["dp"],
+        )
+        # Each data-parallel process trains its pipeline on its own batch.
+        packs = _packs() if mesh["dp"].get_local_rank() == 0 else _other_packs()
+        inputs = [torch.cat(parts) for parts in zip(*packs, strict=True)]
+        loss = pipe.step(*inputs)
+        result: dict[str, Any] = {}
+        for name, parameter in pipe.named_parameters():
+            grad = parameter.grad
+            if grad is None:
+                continue  # an optional parameter the model leaves out
+            assert isinstance(parameter, DTensor) and isinstance(grad, DTensor)
+            result[name] = grad.full_tensor()
+        if loss is not None:
+            result["loss"] = loss
+        torch.save(result, f"{out}.{rank}")
+    finally:
+        dist.destroy_process_group()
+
+
+def test_a_pipeline_of_sharded_stages_trains_as_one_process(weights: Path, tmp_path: Path) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = str(tmp_path / "rank")
+    torch.multiprocessing.spawn(_sharded_rank, args=(port, str(weights), out), nprocs=4)
+    model = _model(weights)
+    first = torch.stack([model.run_entry("loss_packed", i) for i in _packs()]).sum()
+    second = torch.stack([model.run_entry("loss_packed", i) for i in _other_packs()]).sum()
+    (first + second).backward()
+    expected = {
+        name.removeprefix("root."): parameter.grad
+        for name, parameter in model.named_parameters()
+        if parameter.grad is not None
+    }
+    seen: set[str] = set()
+    for rank in range(4):
+        saved = torch.load(f"{out}.{rank}")
+        loss = saved.pop("loss", None)
+        if loss is not None:
+            # The last stage of each pipeline: its own batch's loss.
+            torch.testing.assert_close(loss, first.detach() if rank % 2 == 0 else second.detach())
+        for name, grad in saved.items():
+            # The gradients of both batches, summed across the pipelines.
+            torch.testing.assert_close(grad, expected[name], atol=1e-6, rtol=1e-5)
+            seen.add(name)
+    assert seen == set(expected)
