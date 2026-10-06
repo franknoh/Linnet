@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <functional>
 #include <limits>
 #include <map>
@@ -50,29 +49,6 @@ std::string torch_dtype(ScalarKind dtype) {
         return "torch.float64";
     }
     return "torch.float32";
-}
-
-bool is_real(ScalarKind dtype) {
-    return dtype == ScalarKind::F16 || dtype == ScalarKind::BF16 || dtype == ScalarKind::F32 ||
-           dtype == ScalarKind::F64;
-}
-
-std::string dims_text(const Dims& dims) {
-    std::string out = "(";
-    for (std::size_t i = 0; i < dims.size(); ++i) {
-        out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
-    }
-    return out + (dims.size() == 1 ? ",)" : ")");
-}
-
-std::string real_text(double value) {
-    char buffer[64];
-    std::snprintf(buffer, sizeof buffer, "%.17g", value);
-    std::string text = buffer;
-    if (text.find_first_of(".einEIN") == std::string::npos) {
-        text += ".0";
-    }
-    return text;
 }
 
 // The generated module: straight-line PyTorch over static shapes.
@@ -160,7 +136,7 @@ public:
             if (b == 0.0) {
                 return;
             }
-            result = is_real(dtype) ? a / b : std::trunc(a / b);
+            result = sema::is_float(dtype) ? a / b : std::trunc(a / b);
             break;
         case Elementwise::Neg:
             result = -a;
@@ -180,7 +156,7 @@ public:
         default:
             return;
         }
-        if (!is_real(dtype)) {
+        if (!sema::is_float(dtype)) {
             if (kind != Elementwise::Add && kind != Elementwise::Sub && kind != Elementwise::Mul &&
                 kind != Elementwise::Div && kind != Elementwise::Neg) {
                 return;
@@ -193,7 +169,7 @@ public:
             result = static_cast<double>(static_cast<float>(result));
         }
         values_[name] = result;
-        literals_[name] = real_text(result);
+        literals_[name] = python_float(result);
     }
 
     std::string elementwise(Elementwise kind,
@@ -217,7 +193,7 @@ public:
         case Elementwise::Mul:
             return define(a + " * " + b);
         case Elementwise::Div:
-            return define(is_real(operands[0].dtype)
+            return define(sema::is_float(operands[0].dtype)
                               ? a + " / " + b
                               : "torch.div(" + a + ", " + b + ", rounding_mode=\"trunc\")");
         case Elementwise::Rem:
@@ -290,7 +266,7 @@ public:
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
         const std::string name = define(value.name + ".to(" + torch_dtype(dtype) + ")");
         const auto found = values_.find(value.name);
-        if (found != values_.end() && is_real(dtype)) {
+        if (found != values_.end() && sema::is_float(dtype)) {
             fold(name,
                  Elementwise::Add,
                  {{value.name, {}, dtype}, {zero_name(dtype), {}, dtype}},
@@ -311,13 +287,13 @@ public:
     }
 
     std::string reshape(const TensorInfo& value, const Dims& shape) override {
-        return define(value.name + ".reshape(" + dims_text(shape) + ")");
+        return define(value.name + ".reshape(" + python_tuple(shape) + ")");
     }
 
     std::string
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) override {
         (void)shape;
-        return define(value.name + ".permute(" + dims_text(permutation) + ")");
+        return define(value.name + ".permute(" + python_tuple(permutation) + ")");
     }
 
     std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
@@ -354,7 +330,7 @@ public:
         if (placed == shape) {
             return source.name;
         }
-        return define(source.name + ".expand(" + dims_text(shape) + ")");
+        return define(source.name + ".expand(" + python_tuple(shape) + ")");
     }
 
     std::string slice(const TensorInfo& value,
@@ -402,7 +378,7 @@ public:
     std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) override {
         (void)shape;
-        const std::string axes = dims_text(dims);
+        const std::string axes = python_tuple(dims);
         switch (kind) {
         case Reduction::Sum:
             return define(body.name + ".sum(dim=" + axes + ")");
@@ -519,9 +495,9 @@ public:
         }
         if (implementation_base == "torch.tril" && operands.empty() && shape.size() == 2) {
             // `keys[k] <= queries[q] + (K - Q)`: ones below the diagonal K - Q.
-            std::string mask =
-                define("torch.ones(" + dims_text(shape) + ", dtype=torch.bool, device=" + device() +
-                       ").tril(" + std::to_string(shape[1] - shape[0]) + ")");
+            std::string mask = define("torch.ones(" + python_tuple(shape) +
+                                      ", dtype=torch.bool, device=" + device() + ").tril(" +
+                                      std::to_string(shape[1] - shape[0]) + ")");
             if (shape[0] == shape[1]) {
                 causal_masks_.insert(mask);
             }
@@ -761,7 +737,7 @@ public:
             const std::string low =
                 define("F.linear(F.linear(" + name(0) + ", " + a + "), " + b + ")");
             return define(product + " + " + low + " * " +
-                          real_text(lora_alpha_ / static_cast<double>(lora_rank_)));
+                          python_float(lora_alpha_ / static_cast<double>(lora_rank_)));
         }
         // `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and
         // bf16 inputs themselves, so their results are bit-identical to the
@@ -2103,20 +2079,20 @@ private:
     static std::string literal_text(const Literal& literal, ScalarKind dtype) {
         switch (literal.kind) {
         case Literal::Kind::Integer:
-            return is_real(dtype) ? real_text(static_cast<double>(literal.integer))
-                                  : std::to_string(literal.integer);
+            return sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
+                                         : std::to_string(literal.integer);
         case Literal::Kind::Real:
-            return real_text(literal.real);
+            return python_float(literal.real);
         case Literal::Kind::Boolean:
             return literal.integer != 0 ? "True" : "False";
         case Literal::Kind::Lowest:
-            if (is_real(dtype)) {
+            if (sema::is_float(dtype)) {
                 return "float(\"-inf\")";
             }
             return dtype == ScalarKind::Bool ? "False"
                                              : "torch.iinfo(" + torch_dtype(dtype) + ").min";
         case Literal::Kind::Highest:
-            if (is_real(dtype)) {
+            if (sema::is_float(dtype)) {
                 return "float(\"inf\")";
             }
             return dtype == ScalarKind::Bool ? "True"

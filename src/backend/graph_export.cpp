@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <map>
@@ -2662,6 +2663,24 @@ std::string prune_python_assignments(const std::string& body, const std::string&
         }
     }
     return out;
+}
+
+std::string python_tuple(const Dims& dims) {
+    std::string out = "(";
+    for (std::size_t i = 0; i < dims.size(); ++i) {
+        out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
+    }
+    return out + (dims.size() == 1 ? ",)" : ")");
+}
+
+std::string python_float(double value) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof buffer, "%.17g", value);
+    std::string text = buffer;
+    if (text.find_first_of(".einEIN") == std::string::npos) {
+        text += ".0";
+    }
+    return text;
 }
 
 } // namespace linnet::backend

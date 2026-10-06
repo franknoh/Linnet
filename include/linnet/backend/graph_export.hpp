@@ -382,4 +382,10 @@ PreparedSplit split_prepared(const std::string& body,
 
 std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes);
 
+// Python literals the source targets (`torch`, `jax`) print: a tuple of
+// sizes, `(2, 3)` or `(4,)`, and a float with every digit kept and a
+// decimal point (`1.0`, not `1`).
+std::string python_tuple(const Dims& dims);
+std::string python_float(double value);
+
 } // namespace linnet::backend
