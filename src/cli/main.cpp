@@ -136,7 +136,7 @@ void print_usage(std::FILE* out) {
         "                                       running it (`python -m linnet.resources`)\n"
         "  fit <model> [options]                The largest batch, context or cache that\n"
         "                                       fits a device's memory, or the layout\n"
-        "                                       with the highest throughput bound\n"
+        "                                       with the highest predicted throughput\n"
         "  check [options] <path>...            Check syntax, types, and shapes of the\n"
         "                                       given files and everything they import\n"
         "  lint [--std <dir>] <path>...         Like check, but warnings also fail\n"

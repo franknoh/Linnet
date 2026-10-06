@@ -95,6 +95,19 @@ class Lowering:
         {"torch.distributed.all_reduce", "torch.distributed.all_gather"}
     )
 
+    # The memory order of a native result's axes where it is not their own:
+    # fused attention writes [batch, positions, heads, width] and returns
+    # it as [batch, heads, positions, width].
+    layouts: tuple[tuple[str, tuple[int, ...]], ...] = (
+        ("torch.nn.functional.scaled_dot_product_attention", (0, 2, 1, 3)),
+    )
+
+    def layout(self, implementation: str) -> tuple[int, ...]:
+        for prefix, order in self.layouts:
+            if implementation.startswith(prefix):
+                return order
+        return ()
+
     def native(self, op: ir.Op) -> str | None:
         if op.kind != "semantic.call" or self.inline_all:
             return None
@@ -192,8 +205,16 @@ class SymEnv:
 
 @dataclass(frozen=True, slots=True)
 class TensorValue:
+    """A tensor, and the order its axes lie in memory, outermost first: `()`
+    for its own order (contiguous), None for no order of its axes (a
+    broadcast, a strided slice)."""
+
     id: int
-    contiguous: bool = True
+    order: tuple[int, ...] | None = ()
+
+    @property
+    def contiguous(self) -> bool:
+        return self.order is not None and list(self.order) == sorted(self.order)
 
 
 @dataclass(frozen=True, slots=True)
@@ -639,15 +660,22 @@ class _Tracer:
         step = self.emit(op.kind, op.kind, operands, ex.ZERO)
         out = self.tensor_result(result, env, step, view_of=base.id)
         self.finish(step, [out])
-        contiguous = base.contiguous
+        order = base.order
         if op.kind == "permute":
             axes = [int(a) for a in cast(list[Any], op.attrs.get("shape", []))]
-            contiguous = contiguous and axes == sorted(axes)
-        elif op.kind == "broadcast":
-            contiguous = False
-        elif op.kind == "slice":
-            contiguous = contiguous and _slice_contiguous(op, env, self.objects[base.id].shape)
-        return TensorValue(out, contiguous)
+            # The memory order in the permuted tensor's own axes.
+            before = base.order or tuple(range(len(axes))) if base.order is not None else None
+            order = None if before is None else tuple(axes.index(a) for a in before)
+            if order is not None and list(order) == sorted(order):
+                order = ()
+        elif op.kind == "reshape":
+            order = ()
+        elif op.kind == "broadcast" or (
+            op.kind == "slice"
+            and not (base.contiguous and _slice_contiguous(op, env, self.objects[base.id].shape))
+        ):
+            order = None
+        return TensorValue(out, order)
 
     def comprehension(self, op: ir.Op, env: SymEnv, values: dict[int, Value]) -> Value:
         result = op.results[0]
@@ -719,7 +747,7 @@ class _Tracer:
                 continue
             out = self.tensor_result(result, env, step, view_of=in_place)
             outputs.append(out)
-            results.append(TensorValue(out))
+            results.append(TensorValue(out, self.lowering.layout(native)))
             in_place = None
         self.finish(step, outputs)
         return results

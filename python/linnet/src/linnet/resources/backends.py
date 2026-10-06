@@ -74,10 +74,10 @@ class BackendResourceModel(Protocol):
         ...
 
     def saved(
-        self, step: Step, graph: TensorGraph, env: Mapping[str, int], training: bool
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], grads: Mapping[int, bool]
     ) -> Saved | None:
         """What autograd keeps from a native step for backward, or None to
-        apply the generic rule."""
+        apply the generic rule; `grads` says which objects carry gradients."""
         ...
 
     def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
@@ -121,7 +121,7 @@ class GenericBackend:
         return Estimate(None, Confidence.UNKNOWN, f"`{step.implementation}`")
 
     def saved(
-        self, step: Step, graph: TensorGraph, env: Mapping[str, int], training: bool
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], grads: Mapping[int, bool]
     ) -> Saved | None:
         return None
 
@@ -167,17 +167,23 @@ class CudaTorchBackend:
     chunked loss). The CUDA context is a typical value; the caching
     allocator's fragmentation and any compilation's autotuning are unknown.
     `context_bytes` overrides the context estimate. `processes` is the size
-    of the tensor-parallel group a process belongs to: with more than one,
-    collectives allocate and the group has communication buffers."""
+    of the group a process belongs to: with more than one, collectives
+    allocate and the group has communication buffers; `pipelined` adds a
+    pipeline's point-to-point channels."""
 
     name = "cuda"
 
     def __init__(
-        self, context_bytes: int | None = None, compiled: bool = False, processes: int = 1
+        self,
+        context_bytes: int | None = None,
+        compiled: bool = False,
+        processes: int = 1,
+        pipelined: bool = False,
     ) -> None:
         self.context_bytes = context_bytes
         self.compiled = compiled
         self.processes = processes
+        self.pipelined = pipelined
 
     # ---- workspace
 
@@ -215,14 +221,21 @@ class CudaTorchBackend:
     # ---- autograd
 
     def saved(
-        self, step: Step, graph: TensorGraph, env: Mapping[str, int], training: bool
+        self, step: Step, graph: TensorGraph, env: Mapping[str, int], grads: Mapping[int, bool]
     ) -> Saved | None:
         if step.implementation is None:
             return None
         implementation = _base(step.implementation)
         inputs, outputs = step.inputs, step.outputs
+
+        def needs(index: int) -> bool:
+            return index < len(inputs) and grads.get(inputs[index], False)
+
         if implementation in ("torch.nn.functional.linear", "torch.matmul"):
-            return Saved(inputs[:2])
+            # Each operand for the other's gradient.
+            return Saved(tuple(inputs[i] for i in (0, 1) if needs(1 - i)))
+        if implementation in ("torch.distributed.all_reduce", "torch.distributed.all_gather"):
+            return Saved(())
         if implementation.startswith("torch.nn.functional.scaled_dot_product_attention"):
             objects = [graph.objects[i] for i in inputs]
             rows = _numel(objects[0], env) // ex.evaluate(objects[0].shape[-1], env)
@@ -235,9 +248,21 @@ class CudaTorchBackend:
                 ),
             )
         if implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):
+            # Generated as the normalization, then times the weight (plus the
+            # bias): the normalization keeps its input and f32 statistics,
+            # the product the normalized values for the weight's gradient.
             source = graph.objects[inputs[0]]
             rows = _numel(source, env) // ex.evaluate(source.shape[-1], env)
-            return Saved(inputs[:2], Estimate(rows * 4, Confidence.MODELED, "f32 reciprocal std"))
+            statistics = rows * 4 * (1 if implementation == "torch.rms_norm" else 2)
+            normalized = _bytes(source, env) if needs(1) else 0
+            return Saved(
+                inputs[:2],
+                Estimate(
+                    statistics + normalized,
+                    Confidence.MODELED,
+                    "f32 statistics, and the normalized values the weight's gradient reads",
+                ),
+            )
         if implementation in ("torch.softmax", "torch.sigmoid", "torch.relu", "torch.tanh"):
             return Saved(outputs)
         if implementation in (
@@ -272,18 +297,27 @@ class CudaTorchBackend:
     # ---- the process
 
     def runtime(self, training: bool) -> tuple[RuntimeItem, ...]:
+        # Measured outside the caching allocator on an H100 with PyTorch
+        # 2.14, CUDA 13 and NCCL 2.30 (`python -m linnet.resources.probe`
+        # measures them on any machine): they vary with the GPU, the driver
+        # and the libraries' versions.
         context = (
             Estimate(self.context_bytes, Confidence.MODELED, "given")
             if self.context_bytes is not None
-            else Estimate(
-                512 * MIB,
-                Confidence.ESTIMATED,
-                "typical for PyTorch on a recent driver; varies with the GPU, driver and "
-                "lazy loading",
-            )
+            else Estimate(621 * MIB, Confidence.ESTIMATED, "measured with PyTorch 2.14 on an H100")
         )
         items = [
             RuntimeItem("CUDA context", Category.RUNTIME, context),
+            RuntimeItem(
+                "CUDA libraries",
+                Category.RUNTIME,
+                Estimate(
+                    (146 if training else 74) * MIB,
+                    Confidence.ESTIMATED,
+                    "cuBLAS and attention kernels, and in training their backward kernels, "
+                    "loaded when first called",
+                ),
+            ),
             RuntimeItem("cuBLAS workspace", Category.WORKSPACE, _cublas_workspace()),
             RuntimeItem(
                 "Allocator fragmentation",
@@ -299,7 +333,7 @@ class CudaTorchBackend:
             items += [
                 RuntimeItem(
                     "One-shot all-reduce buffers",
-                    Category.COMMUNICATION,
+                    Category.RUNTIME,
                     Estimate(
                         2 * ONE_SHOT_BYTES,
                         Confidence.ESTIMATED,
@@ -307,15 +341,28 @@ class CudaTorchBackend:
                     ),
                 ),
                 RuntimeItem(
-                    "NCCL communicators",
-                    Category.COMMUNICATION,
+                    "NCCL communicator",
+                    Category.RUNTIME,
                     Estimate(
-                        None,
-                        Confidence.UNKNOWN,
-                        "NCCL's buffers depend on the channels it opens between the GPUs",
+                        842 * MIB,
+                        Confidence.ESTIMATED,
+                        "measured for two H100s over NVLink; grows with the GPUs and channels",
                     ),
                 ),
             ]
+        if self.pipelined:
+            items.append(
+                RuntimeItem(
+                    "NCCL send and receive",
+                    Category.RUNTIME,
+                    Estimate(
+                        (745 if training else 415) * MIB,
+                        Confidence.ESTIMATED,
+                        "the pipeline's point-to-point channels, one each way in training; "
+                        "measured on H100s, beside the context, libraries and communicator",
+                    ),
+                )
+            )
         if self.compiled:
             items.append(
                 RuntimeItem(
@@ -425,6 +472,7 @@ def backend_model(name: str, **options: object) -> BackendResourceModel:
             context_bytes=int(context) if isinstance(context, int) else None,
             compiled=bool(options.get("compiled", False)),
             processes=processes if isinstance(processes, int) else 1,
+            pipelined=bool(options.get("pipelined", False)),
         )
     if name == "generic":
         return GenericBackend()

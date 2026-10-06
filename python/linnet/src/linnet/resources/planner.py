@@ -6,9 +6,9 @@ grows (every size is a sum of products of non-negative dimensions), so the
 largest value that fits is found by doubling until it does not and then
 bisecting: about two dozen analyses, each one sweep over the traced steps.
 
-`ExecutionPlanner.plan` ranks layouts over several devices by the
-throughput bound of `linnet.resources.performance`: a roofline, not a
-prediction of measured speed.
+`ExecutionPlanner.plan` ranks layouts over several devices by the step
+time `linnet.resources.performance` predicts from the device's measured
+rates.
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ class ExecutionPlanner:
         device: DeviceSpec,
         devices: int = 1,
     ) -> ThroughputPlan:
-        """The layouts of `devices` devices ranked by the throughput bound
+        """The layouts of `devices` devices ranked by the predicted throughput
         each reaches (`linnet.resources.performance`): tensor- and
         pipeline-parallel degrees (powers of two), micro-batches, in
         training block checkpointing or none, the remaining devices as
@@ -238,7 +238,7 @@ class ExecutionPlanner:
 @dataclass(frozen=True, slots=True)
 class ThroughputCandidate:
     """One layout: its configuration, the replicas of it the devices hold,
-    the size it runs at, its analysis and throughput bound; or why not."""
+    the size it runs at, its analysis and predicted throughput; or why not."""
 
     config: ExecutionConfig
     replicas: int
@@ -331,17 +331,17 @@ def _evaluate(
             values = {_ROLE[target]: size}
             if _ROLE[target] == "context" and config.cache is None:
                 values["cache"] = size
-            bound = variant.throughput(device, replicas=replicas, **values)
-            if best is None or bound.tokens_per_second > best[1].tokens_per_second:
-                best = (size, bound)
+            predicted = variant.throughput(device, replicas=replicas, **values)
+            if best is None or predicted.tokens_per_second > best[1].tokens_per_second:
+                best = (size, predicted)
         assert best is not None
-        size, bound = best
+        size, predicted = best
         result = found.result
         if size != found.value:
             values = {_ROLE[target]: size}
             if _ROLE[target] == "context" and config.cache is None:
                 values["cache"] = size
             result = variant.analyze(**values)
-        return ThroughputCandidate(config, replicas, size, result, bound)
+        return ThroughputCandidate(config, replicas, size, result, predicted)
     except LinnetError as error:
         return ThroughputCandidate(config, replicas, None, None, None, str(error))
