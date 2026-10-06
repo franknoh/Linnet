@@ -182,9 +182,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     fit.add_argument(
         "--device",
-        metavar="NAME|PROFILE",
-        help=f"the device ({', '.join(sorted(DEVICES))}, or a profile "
-        "`python -m linnet.resources.calibrate` wrote): its memory, and for throughput, speed",
+        metavar="NAME|PROFILE|local",
+        help=f"the device ({', '.join(sorted(DEVICES))}, a profile "
+        "`python -m linnet.resources.calibrate` wrote, or `local`: this machine's GPU, "
+        "measured once and kept): its memory, and for throughput, speed",
+    )
+    fit.add_argument(
+        "--recalibrate", action="store_true", help="with --device local: measure again"
     )
     fit.add_argument(
         "--devices", type=int, default=1, help="throughput: devices to spread the model over"
@@ -211,8 +215,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("\n\n".join(texts))
             return 0
         try:
-            device = find_device(args.device) if args.device is not None else None
-        except (ValueError, OSError, KeyError) as error:
+            device = (
+                find_device(args.device, args.devices, refresh=args.recalibrate)
+                if args.device is not None
+                else None
+            )
+        except (ValueError, OSError, KeyError, RuntimeError) as error:
             raise LinnetError(str(error)) from None
         memory = args.device_memory or (device.memory if device is not None else None)
         if memory is None:

@@ -1,0 +1,120 @@
+// A small Llama-style decoder that `linnet.resources.calibrate` runs to
+// measure the host time of the generated code's calls: RMSNorm,
+// grouped-query attention with rotary positions over KV caches, SwiGLU.
+module calibration
+
+use std.nn.attention::{grouped_attention}
+use std.nn.cache::{write_at}
+use std.nn.embedding::{Embedding}
+use std.nn.linear::{Linear}
+use std.nn.mlp::{SwiGlu}
+use std.nn.norm::{RmsNorm}
+use std.nn.rope::{rope}
+
+fn tables<S: Dim, D: Dim, T: Float>() -> (Tensor[S, D; T], Tensor[S, D; T])
+where D % 2 == 0 {
+    let inv_freq[i] = exp(-(cast<f32>(iota<i64>(D / 2)[i]) * 2.0 / cast<f32>(D)) * log(10000.0))
+    let angles[s, i] = cast<f32>(iota<i64>(S)[s]) * inv_freq[i]
+    let full = concat(angles, angles, axis = -1)
+    return (cast<T>(cos(full)), cast<T>(sin(full)))
+}
+
+fn split_heads<B: Dim, N: Dim, D: Dim, T: Float>(
+    x: Tensor[B, 1, N * D; T],
+) -> Tensor[B, N, 1, D; T] {
+    return permute(reshape(x, [B, 1, N, D]), [0, 2, 1, 3])
+}
+
+pub block Attention<H: Dim, Heads: Dim, KvHeads: Dim, Batch: Dim, MaxSeq: Dim, T: Float>
+where
+    Heads > 0,
+    KvHeads > 0,
+    H % Heads == 0,
+    Heads % KvHeads == 0,
+    (H / Heads) % 2 == 0,
+    MaxSeq > 0
+{
+    sub q_proj: Linear<H, H, T>
+    sub k_proj: Linear<H, KvHeads * (H / Heads), T>
+    sub v_proj: Linear<H, KvHeads * (H / Heads), T>
+    sub o_proj: Linear<H, H, T>
+
+    state cache_k: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
+    state cache_v: Tensor[Batch, KvHeads, MaxSeq, H / Heads; T]
+
+    pub fn decode(x: Tensor[Batch, 1, H; T], pos: i32) -> Tensor[Batch, 1, H; T] {
+        let (cos_table, sin_table) = tables<MaxSeq, H / Heads, T>()
+        let cos_at[d] = cos_table[cast<i64>(pos), d]
+        let sin_at[d] = sin_table[cast<i64>(pos), d]
+        let cos_row = reshape(cos_at, [1, H / Heads])
+        let sin_row = reshape(sin_at, [1, H / Heads])
+        let q = rope(split_heads<Batch, Heads, H / Heads, T>(q_proj.forward(x)), cos_row, sin_row)
+        let k = rope(split_heads<Batch, KvHeads, H / Heads, T>(k_proj.forward(x)), cos_row, sin_row)
+        let v = split_heads<Batch, KvHeads, H / Heads, T>(v_proj.forward(x))
+        cache_k = write_at(cache_k, k, pos)
+        cache_v = write_at(cache_v, v, pos)
+        let positions = iota<i32>(MaxSeq)
+        let seen[s] = positions[s] <= pos
+        let mixed = grouped_attention(
+            q,
+            cache_k,
+            cache_v,
+            rsqrt(cast<f32>(H / Heads)),
+            some(reshape(seen, [1, MaxSeq])),
+        )
+        return o_proj.forward(reshape(permute(mixed, [0, 2, 1, 3]), [Batch, 1, H]))
+    }
+}
+
+pub block Layer<H: Dim, Heads: Dim, KvHeads: Dim, Inner: Dim, Batch: Dim, MaxSeq: Dim, T: Float>
+where
+    Heads > 0,
+    KvHeads > 0,
+    H % Heads == 0,
+    Heads % KvHeads == 0,
+    (H / Heads) % 2 == 0,
+    MaxSeq > 0
+{
+    sub attention_norm: RmsNorm<H, T>
+    sub attention: Attention<H, Heads, KvHeads, Batch, MaxSeq, T>
+    sub mlp_norm: RmsNorm<H, T>
+    sub mlp: SwiGlu<H, Inner, T>
+
+    pub fn decode(x: Tensor[Batch, 1, H; T], pos: i32) -> Tensor[Batch, 1, H; T] {
+        let attended = x + attention.decode(attention_norm.forward(x), pos)
+        return attended + mlp.forward(mlp_norm.forward(attended))
+    }
+}
+
+pub block Model<
+    Vocab: Dim,
+    H: Dim,
+    Heads: Dim,
+    KvHeads: Dim,
+    Inner: Dim,
+    Layers: Dim,
+    Batch: Dim,
+    MaxSeq: Dim,
+    T: Float = bf16,
+>
+where
+    Heads > 0,
+    KvHeads > 0,
+    H % Heads == 0,
+    Heads % KvHeads == 0,
+    (H / Heads) % 2 == 0,
+    MaxSeq > 0
+{
+    sub embedding: Embedding<Vocab, H, T>
+    sub layers: [Layer<H, Heads, KvHeads, Inner, Batch, MaxSeq, T>; Layers]
+    sub norm: RmsNorm<H, T>
+    sub lm_head: Linear<H, Vocab, T>
+
+    pub entry decode(token: Tensor[Batch, 1; i32], pos: i32) -> Tensor[Batch, Vocab; T] {
+        var x = embedding.forward(token)
+        static for layer in layers {
+            x = layer.decode(x, pos)
+        }
+        return lm_head.forward(norm.forward(reshape(x, [Batch, H])))
+    }
+}
