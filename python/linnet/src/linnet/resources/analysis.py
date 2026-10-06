@@ -184,17 +184,21 @@ class MemoryModel:
         `nest.Card`. A card's generics are defaults the configuration's
         `bindings` override; with `bindings`, its weight bindings decide
         which parameters are tied and which optional ones are present."""
-        if config.pipeline_parallel > 1 and config.tensor_parallel > 1:
-            raise TraceError("tensor and pipeline parallelism together are not analyzed yet")
-        if config.pipeline_parallel > 1 and config.training and config.training.shards > 1:
-            raise TraceError("sharding (FSDP) within pipeline stages is not analyzed yet")
         self.config = config
         processes = config.tensor_parallel
         self.backend = backend or backend_model(
             config.backend,
             context_bytes=config.context_bytes,
             compiled=config.compiled,
-            processes=max(processes, config.pipeline_parallel),
+            processes=max(
+                processes,
+                config.pipeline_parallel,
+                config.training.shards if config.training else 1,
+            ),
+            # A group each of tensor and pipeline parallelism and sharding.
+            communicators=(processes > 1)
+            + (config.pipeline_parallel > 1)
+            + bool(config.training and config.training.shards > 1),
         )
         numerics = config.numerics
         card, self.source_path = nest.model_source(model)
@@ -267,8 +271,23 @@ class MemoryModel:
                     "training under DTensor tensor parallelism is not analyzed; a model with a "
                     "`Shards` generic splits itself"
                 )
+            elif config.pipeline_parallel > 1:
+                raise TraceError(
+                    "a pipeline splits its stages over processes only for a model that says how "
+                    "it splits (a `Shards` generic)"
+                )
             else:
                 self.splitting = "dtensor"
+        if config.pipeline_parallel > 1 and config.microbatches < config.pipeline_parallel:
+            raise TraceError(
+                f"a pipeline of {config.pipeline_parallel} stages needs at least as many "
+                f"micro-batches, not {config.microbatches}"
+            )
+        if processes > 1 and config.pipeline_parallel > 1 and config.training is not None:
+            raise TraceError(
+                "a pipeline over split stages runs entries without gradients, as "
+                "`linnet.torch.pipeline` does"
+            )
         present = set(self.present) | set(config.optionals)
         options = TraceOptions(
             present=lambda path: path in present or any(p.startswith(f"{path}.") for p in present),
@@ -466,6 +485,7 @@ class MemoryModel:
             gradient_bytes=gradients if training is not None else 0,
             compiled=self.config.compiled,
             optimizer_states=training.optimizer.states if training is not None else 0,
+            shards=training.shards if training is not None else 1,
         )
 
     def _pipeline(self, env: Mapping[str, int]) -> MemoryAnalysisResult:
@@ -503,15 +523,25 @@ class MemoryModel:
                         )
                     )
                 if count > 1 and part.stage == stages - 1:
-                    extras.append(
-                        MemoryComponent(
-                            "Joined results",
-                            Category.ACTIVATION,
-                            count * sent,
-                            Confidence.MODELED,
-                            note="every micro-batch's results joined into one, beside them",
-                        )
+                    # At the end of the step one micro-batch's activations
+                    # are gone, and every micro-batch's results lie beside
+                    # their join: the stage's peak is the larger moment.
+                    transient = base.total(Category.ACTIVATION) + sum(
+                        c.nbytes or 0 for c in base.components if c.name == "Backend workspace"
                     )
+                    during = transient + (count - 1) * (received + sent)
+                    end = count * received + 2 * count * sent
+                    if end > during:
+                        extras.append(
+                            MemoryComponent(
+                                "Joined results",
+                                Category.ACTIVATION,
+                                end - during,
+                                Confidence.MODELED,
+                                note="at the step's end, every micro-batch's results joined "
+                                "into one beside them, beyond the forward pass's peak",
+                            )
+                        )
             else:
                 in_flight = count if config.schedule == "gpipe" else min(stages - part.stage, count)
 
@@ -567,6 +597,7 @@ class MemoryModel:
                 _ranges(part.units),
                 result.graph_peak,
                 result.expected_peak,
+                result.total(Category.RUNTIME),
             )
             for part, result in zip(self.stages, results, strict=True)
         )

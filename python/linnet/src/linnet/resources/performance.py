@@ -719,13 +719,26 @@ def _part(
     recomputed: float = 0.0,
     optimizer_states: int = 2,
     staged: bool = False,
+    shards: int = 1,
 ) -> _Part:
     """One device's share of one (micro-)step. `received` is what crosses
     into it from the stage before, which in training sends a gradient as
     large back; `recomputed` is the share of the forward pass checkpointing
-    runs again."""
+    runs again. With `shards`, each weight is gathered where it is read,
+    forward and backward, and its gradient summed back into the parts
+    (`linnet.torch.fsdp`)."""
     forward, backward = _costs(graph, env, device, processes, training, fuse=not staged)
     clock = _Clock(not compiled)
+    if shards > 1 and training:
+        weights = [
+            ex.evaluate(o.nbytes, env)
+            for o in graph.objects
+            if o.category == Category.PARAMETER and o.owns_storage
+        ]
+        share = (shards - 1) / shards
+        # Gathered twice in the model's dtype; summed back in f32.
+        moved = share * sum(weights) * (2 + 2) / device.link
+        clock.run(_Op(0.0, moved + 3 * len(weights) * device.latency, "communication"))
     transfer = _Op(device.host_of(), device.latency + received / device.link, "communication")
     if received:
         clock.run(transfer)
@@ -764,6 +777,7 @@ def step_time(
     gradient_bytes: int = 0,
     compiled: bool = False,
     optimizer_states: int = 2,
+    shards: int = 1,
 ) -> Throughput:
     """The time of a step whose devices run `parts`: one per pipeline stage
     (its graph, the environment of one micro-batch, the bytes it receives
@@ -782,6 +796,7 @@ def step_time(
             recomputed=recomputed,
             optimizer_states=optimizer_states,
             staged=len(parts) > 1,
+            shards=shards,
         )
         for graph, env, received, recomputed in parts
     ]

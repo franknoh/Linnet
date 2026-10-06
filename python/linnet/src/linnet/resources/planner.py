@@ -214,8 +214,9 @@ class ExecutionPlanner:
         for tensor in _powers(devices):
             for stages in _powers(devices // tensor):
                 replicas = devices // (tensor * stages)
+                # As many micro-batches as stages at least: the variants set them.
                 layout = replace(
-                    config, tensor_parallel=tensor, pipeline_parallel=stages, microbatches=1
+                    config, tensor_parallel=tensor, pipeline_parallel=stages, microbatches=stages
                 )
                 try:
                     model = self.build(layout, () if role is None else (role,))
