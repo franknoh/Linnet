@@ -117,26 +117,17 @@ class SymEnv:
     dtypes: Mapping[int, str] = field(default_factory=lambda: MappingProxyType({}))
 
     def dim(self, dim: ir.Dim) -> ex.Expr:
-        if isinstance(dim, int):
-            return ex.const(dim)
-        if isinstance(dim, ir.DimSymbol):
-            if dim.id not in self.dims:
-                raise TraceError(f"dimension `{dim.name}` is not bound")
-            return self.dims[dim.id]
-        if isinstance(dim, ir.PackSize):
-            if dim.id not in self.packs:
-                raise TraceError(f"shape pack `{dim.name}` is not bound")
-            return ex.product(self.packs[dim.id])
-        args = [self.dim(a) for a in dim.args]
-        if dim.op == "add":
-            return ex.total(args)
-        if dim.op == "mul":
-            return ex.product(args)
-        if dim.op == "floordiv":
-            return ex.floordiv(args[0], args[1])
-        if dim.op == "mod":
-            return ex.mod(args[0], args[1])
-        return ex.minimum(*args) if dim.op == "min" else ex.maximum(*args)
+        return ir.fold_dim(dim, self._symbol, self._pack_size, ex.EXPRESSIONS)
+
+    def _symbol(self, symbol: ir.DimSymbol) -> ex.Expr:
+        if symbol.id not in self.dims:
+            raise TraceError(f"dimension `{symbol.name}` is not bound")
+        return self.dims[symbol.id]
+
+    def _pack_size(self, pack: ir.PackSize) -> ex.Expr:
+        if pack.id not in self.packs:
+            raise TraceError(f"shape pack `{pack.name}` is not bound")
+        return ex.product(self.packs[pack.id])
 
     def shape(self, shape: ir.Shape) -> tuple[ex.Expr, ...]:
         out: list[ex.Expr] = []
@@ -257,13 +248,11 @@ def root_env(program: ir.Program, values: Mapping[str, int | str | ex.Expr]) -> 
     missing: list[str] = []
     for generic in program.root.generics:
         value = values.get(generic.name)
+        if value is None:
+            value = ir.default_of(generic)
         if generic.kind == "dtype":
             if isinstance(value, str):
                 dtypes[generic.id] = value
-            elif isinstance(generic.default, ir.DTypeArg) and isinstance(
-                generic.default.dtype, str
-            ):
-                dtypes[generic.id] = generic.default.dtype
             else:
                 missing.append(generic.name)
         elif generic.kind == "dim":
@@ -271,8 +260,6 @@ def root_env(program: ir.Program, values: Mapping[str, int | str | ex.Expr]) -> 
                 dims[generic.id] = ex.const(value)
             elif value is not None and not isinstance(value, str):
                 dims[generic.id] = value
-            elif isinstance(generic.default, ir.DimArg) and isinstance(generic.default.dim, int):
-                dims[generic.id] = ex.const(generic.default.dim)
             else:
                 missing.append(generic.name)
         else:
@@ -950,20 +937,15 @@ def entry_env(function: ir.Function, root: SymEnv, inputs: Mapping[str, int | ex
     dtypes = dict(root.dtypes)
     missing: list[str] = []
     for generic in function.generics:
-        value = inputs.get(generic.name)
-        if generic.kind == "dim":
-            if value is None:
-                if isinstance(generic.default, ir.DimArg) and isinstance(generic.default.dim, int):
-                    dims[generic.id] = ex.const(generic.default.dim)
-                else:
-                    missing.append(generic.name)
-            else:
-                dims[generic.id] = ex.const(value) if isinstance(value, int) else value
-        elif generic.kind == "dtype":
-            if isinstance(generic.default, ir.DTypeArg) and isinstance(generic.default.dtype, str):
-                dtypes[generic.id] = generic.default.dtype
-            else:
-                missing.append(generic.name)
+        value: int | str | ex.Expr | None = inputs.get(generic.name)
+        if value is None:
+            value = ir.default_of(generic)
+        if isinstance(value, int):
+            value = ex.const(value)
+        if generic.kind == "dim" and value is not None and not isinstance(value, str):
+            dims[generic.id] = value
+        elif generic.kind == "dtype" and isinstance(value, str):
+            dtypes[generic.id] = value
         else:
             missing.append(generic.name)
     if missing:

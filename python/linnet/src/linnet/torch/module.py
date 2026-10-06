@@ -17,7 +17,8 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from ..plan import Env, Plan, PlanError
+from .. import ir
+from ..plan import Env, Plan, PlanError, align_shape
 from ..weights import read_bindings, safetensors_index
 from .dtypes import (
     FROM_SAFETENSORS,
@@ -315,16 +316,14 @@ class LinnetModule(nn.Module):
         matches. A parameter the weights left out never trains. Parameters
         tied to one checkpoint tensor are one tensor: it trains if any of its
         paths matches."""
-        patterns = [trainable] if isinstance(trainable, str) else trainable
+        named = list(self.root.named_parameters(remove_duplicate=False))
+        picked = set(ir.chosen_paths([p for p, _ in named], trainable, ir.shared_paths(named)))
         wanted: dict[int, bool] = {}
         tensors: dict[int, torch.nn.Parameter] = {}
-        for path, parameter in self.root.named_parameters(remove_duplicate=False):
+        for path, parameter in named:
             owner, leaf = owner_of(self, path)
-            if isinstance(patterns, bool):
-                match = patterns
-            else:
-                match = any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
-            use = match and parameter.is_floating_point() and leaf not in owner.absent_params
+            use = path in picked and parameter.is_floating_point()
+            use = use and leaf not in owner.absent_params
             wanted[id(parameter)] = wanted.get(id(parameter), False) or use
             tensors[id(parameter)] = parameter
         for key, parameter in tensors.items():
@@ -367,12 +366,14 @@ class LinnetModule(nn.Module):
             _, rank, alpha = lora
             adapted = set(getattr(source, "lora_paths", []))
             scale = alpha / rank
+        from .parallel import whole
+
         theirs = dict(_all_tensors(source))
         with torch.no_grad():
             for path, tensor in _all_tensors(self):
                 if path not in theirs:
                     raise PlanError(f"`{path}` is not among the source model's weights")
-                value = _whole(theirs[path])
+                value = whole(theirs[path])
                 owner, leaf = owner_of(self, path)
                 their_owner, _ = owner_of(source, path)
                 absent = leaf in owner.absent_params
@@ -408,6 +409,7 @@ class LinnetModule(nn.Module):
         `fully_shard` is gathered a tensor at a time: every process calls
         this, and the first writes the file, whatever it holds."""
         from ..weights import LazyBytes, write_safetensors
+        from .parallel import whole
 
         if names not in ("checkpoint", "linnet"):
             raise PlanError('names must be "checkpoint" or "linnet"')
@@ -462,23 +464,18 @@ class LinnetModule(nn.Module):
                 # The first process gathers each as it writes; the others
                 # join every gather in the same order.
                 for tensor in split:
-                    _whole(tensor)
+                    whole(tensor)
                 return Path(path)
         return write_safetensors(path, entries, metadata={"format": "pt"})
-
-
-def _whole(tensor: torch.Tensor) -> torch.Tensor:
-    """A parameter split by `fully_shard` (a DTensor) gathered whole; any
-    other tensor as it is."""
-    full = getattr(tensor, "full_tensor", None)
-    return cast(torch.Tensor, full()) if callable(full) else tensor
 
 
 def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
     """Reads `tensor` as `dtype` into host bytes, when called."""
 
     def read() -> bytes:
-        value = _whole(tensor).detach().to(device="cpu", dtype=dtype).contiguous()
+        from .parallel import whole
+
+        value = whole(tensor).detach().to(device="cpu", dtype=dtype).contiguous()
         return value.reshape(-1).view(torch.uint8).numpy().tobytes()
 
     return read
@@ -524,28 +521,12 @@ def bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
     expected_dtype = torch_dtype(env, spec)
     if value.dtype != expected_dtype:
         raise PlanError(f"input `{name}` has dtype {value.dtype}, expected {expected_dtype}")
-    units: list[dict[str, Any] | int] = param_type["shape"]
-    packs = [i for i, unit in enumerate(units) if isinstance(unit, dict) and "pack" in unit]
-    if len(packs) > 1:
-        raise PlanError(f"input `{name}` has more than one shape pack")
-    fixed = len(units) - len(packs)
-    if (packs and value.dim() < fixed) or (not packs and value.dim() != fixed):
-        raise PlanError(
-            f"input `{name}` has rank {value.dim()}, expected {'at least ' if packs else ''}{fixed}"
-        )
-    actual = list(value.shape)
-    pack_width = value.dim() - fixed
-    at = 0
-    for unit in units:
-        if isinstance(unit, dict) and "pack" in unit:
-            symbol = int(unit["pack"])
-            sizes = actual[at : at + pack_width]
-            if env.packs.setdefault(symbol, sizes) != sizes:
-                raise PlanError(f"input `{name}` disagrees on shape pack `{unit['name']}`")
-            at += pack_width
-            continue
-        size = actual[at]
-        at += 1
+    dims, pack = align_shape(param_type["shape"], list(value.shape), name)
+    if pack is not None:
+        unit, sizes = pack
+        if env.packs.setdefault(int(unit["pack"]), sizes) != sizes:
+            raise PlanError(f"input `{name}` disagrees on shape pack `{unit['name']}`")
+    for unit, size in dims:
         if isinstance(unit, dict) and "sym" in unit:
             symbol = int(unit["sym"])
             if env.dims.setdefault(symbol, size) != size:

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -48,29 +47,6 @@ std::string jnp_dtype(ScalarKind dtype) {
         return "jnp.float64";
     }
     return "jnp.float32";
-}
-
-bool is_real(ScalarKind dtype) {
-    return dtype == ScalarKind::F16 || dtype == ScalarKind::BF16 || dtype == ScalarKind::F32 ||
-           dtype == ScalarKind::F64;
-}
-
-std::string dims_text(const Dims& dims) {
-    std::string out = "(";
-    for (std::size_t i = 0; i < dims.size(); ++i) {
-        out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
-    }
-    return out + (dims.size() == 1 ? ",)" : ")");
-}
-
-std::string real_text(double value) {
-    char buffer[64];
-    std::snprintf(buffer, sizeof buffer, "%.17g", value);
-    std::string text = buffer;
-    if (text.find_first_of(".einEIN") == std::string::npos) {
-        text += ".0";
-    }
-    return text;
 }
 
 // What a module with routed experts imports (`native_call`).
@@ -320,21 +296,21 @@ public:
         const auto found = values_.find(value.name);
         if (found != values_.end()) {
             values_[name] = found->second;
-            literals_[name] = is_real(dtype)
-                                  ? real_text(found->second)
+            literals_[name] = sema::is_float(dtype)
+                                  ? python_float(found->second)
                                   : std::to_string(static_cast<long long>(found->second));
         }
         return name;
     }
 
     std::string reshape(const TensorInfo& value, const Dims& shape) override {
-        return define(value.name + ".reshape(" + dims_text(shape) + ")");
+        return define(value.name + ".reshape(" + python_tuple(shape) + ")");
     }
 
     std::string
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) override {
         (void)shape;
-        return define("jnp.transpose(" + value.name + ", " + dims_text(permutation) + ")");
+        return define("jnp.transpose(" + value.name + ", " + python_tuple(permutation) + ")");
     }
 
     std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
@@ -369,7 +345,7 @@ public:
         if (placed == shape) {
             return source.name;
         }
-        return define("jnp.broadcast_to(" + source.name + ", " + dims_text(shape) + ")");
+        return define("jnp.broadcast_to(" + source.name + ", " + python_tuple(shape) + ")");
     }
 
     std::string slice(const TensorInfo& value,
@@ -413,7 +389,7 @@ public:
     std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) override {
         (void)shape;
-        const std::string axes = ", axis=" + dims_text(dims) + ")";
+        const std::string axes = ", axis=" + python_tuple(dims) + ")";
         switch (kind) {
         case Reduction::Sum:
             return define("jnp.sum(" + body.name + axes);
@@ -602,7 +578,7 @@ public:
             const auto [a, b] = adapters(*path);
             const std::string low = define("(" + name(0) + " @ " + a + ".T) @ " + b + ".T");
             return define(product + " + " + low + " * " +
-                          real_text(lora_alpha_ / static_cast<double>(lora_rank_)));
+                          python_float(lora_alpha_ / static_cast<double>(lora_rank_)));
         }
         if (implementation_base == "torch.softmax" && at.size() == 1 && at[0] != nullptr) {
             return define(back("jax.nn.softmax(" + f32(0) + ", axis=-1)", 0));
@@ -775,7 +751,7 @@ public:
     // mesh the weight is already whole and only cast.
     std::string gather(const TensorInfo& value) override {
         uses_gather_ = true;
-        const std::string name = define("_gather(" + value.name + ", " + dims_text(value.shape) +
+        const std::string name = define("_gather(" + value.name + ", " + python_tuple(value.shape) +
                                         ", " + jnp_dtype(value.dtype) + ")");
         gathered_.emplace(name, value.name);
         if (value.name.size() > 1 && value.name[0] == 'p') {
@@ -964,8 +940,8 @@ private:
         case Elementwise::Mul:
             return define(a + " * " + b);
         case Elementwise::Div:
-            return define(is_real(operands[0].dtype) ? a + " / " + b
-                                                     : "jax.lax.div(" + a + ", " + b + ")");
+            return define(sema::is_float(operands[0].dtype) ? a + " / " + b
+                                                            : "jax.lax.div(" + a + ", " + b + ")");
         case Elementwise::Rem:
             return define("jnp.fmod(" + a + ", " + b + ")");
         case Elementwise::Min:
@@ -1041,7 +1017,7 @@ private:
             if (b == 0.0) {
                 return;
             }
-            result = is_real(dtype) ? a / b : std::trunc(a / b);
+            result = sema::is_float(dtype) ? a / b : std::trunc(a / b);
             break;
         case Elementwise::Neg:
             result = -a;
@@ -1055,7 +1031,7 @@ private:
         default:
             return;
         }
-        if (!is_real(dtype)) {
+        if (!sema::is_float(dtype)) {
             values_[name] = result;
             literals_[name] = std::to_string(static_cast<long long>(result));
             return;
@@ -1064,7 +1040,7 @@ private:
             result = static_cast<double>(static_cast<float>(result));
         }
         values_[name] = result;
-        literals_[name] = real_text(result);
+        literals_[name] = python_float(result);
     }
 
     static std::string unpack(const std::vector<std::string>& names) {
@@ -1086,19 +1062,19 @@ private:
     static std::string literal_text(const Literal& literal, ScalarKind dtype) {
         switch (literal.kind) {
         case Literal::Kind::Integer:
-            return is_real(dtype) ? real_text(static_cast<double>(literal.integer))
-                                  : std::to_string(literal.integer);
+            return sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
+                                         : std::to_string(literal.integer);
         case Literal::Kind::Real:
-            return real_text(literal.real);
+            return python_float(literal.real);
         case Literal::Kind::Boolean:
             return literal.integer != 0 ? "True" : "False";
         case Literal::Kind::Lowest:
-            if (is_real(dtype)) {
+            if (sema::is_float(dtype)) {
                 return "-jnp.inf";
             }
             return dtype == ScalarKind::Bool ? "False" : "jnp.iinfo(" + jnp_dtype(dtype) + ").min";
         case Literal::Kind::Highest:
-            if (is_real(dtype)) {
+            if (sema::is_float(dtype)) {
                 return "jnp.inf";
             }
             return dtype == ScalarKind::Bool ? "True" : "jnp.iinfo(" + jnp_dtype(dtype) + ").max";

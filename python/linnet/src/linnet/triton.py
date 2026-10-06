@@ -225,23 +225,17 @@ def export(
     `generics`, `weights`, and `bindings` given here. `generics` also binds
     the entry's own generics (`B`, `S`); with a card they add to its values.
     """
-    card: nest.Card | None = None
-    path = Path(model)
-    if (path / "nest.toml").exists() or not path.exists():
-        card = nest.resolve(model)
+    card, source = nest.model_source(model)
     values: dict[str, int | str] = {}
     if card is not None:
         values.update(card.generics)
         values.update(card.check)
-        source = card.source_path
         root = card.root if root is None else root
         entry = card.entry if entry is None else entry
         if weights is None:
             weights = nest.download_weights(card)
         if bindings is None:
             bindings = card.bindings_path
-    else:
-        source = path
     values.update(generics or {})
 
     program = ir.load_program(source, root=root, std_root=std_root)

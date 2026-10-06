@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .. import dtypes
+from .. import dtypes, ir
 from . import expr as ex
 from .backends import BackendResourceModel, Estimate
 from .graph import Category, Confidence, Step, TensorGraph, sweep, weakest
@@ -146,10 +146,6 @@ class TrainingTimeline:
         return at, live[at] + sum(self.persistent.values()), parts
 
 
-def _trainable(path: str | None, patterns: Sequence[str]) -> bool:
-    return path is not None and any(fnmatch.fnmatchcase(path, p) for p in patterns)
-
-
 def _regions(
     steps: Sequence[Step], policy: CheckpointPolicy, arrays: Sequence[str]
 ) -> list[tuple[int, int]]:
@@ -186,12 +182,18 @@ def timeline(
     config: TrainingConfig,
     backend: BackendResourceModel,
     arrays: Sequence[str] = (),
+    tied: Mapping[str, str] | None = None,
 ) -> TrainingTimeline:
     """The training step of `graph` (an entry returning a loss) as intervals.
 
     `arrays` are the block arrays of the hierarchy (`layers`), which the
-    `blocks` checkpoint policy and sharding treat as units."""
+    `blocks` checkpoint policy and sharding treat as units. `tied` maps a
+    parameter path to the path whose tensor it shares; such a tensor trains
+    when any of its paths is trainable."""
     objects = graph.objects
+    links = dict(tied or {})
+    owned = [o.path for o in objects if o.category == Category.PARAMETER and o.path is not None]
+    trained = set(ir.chosen_paths([*owned, *links], config.trainable, links))
     steps = graph.steps
     n = len(steps)
     unknown: list[str] = []
@@ -204,7 +206,7 @@ def timeline(
     for obj in objects:
         owner = objects[obj.storage]
         grad[obj.id] = (
-            owner.category == Category.PARAMETER and _trainable(owner.path, config.trainable)
+            owner.category == Category.PARAMETER and owner.path in trained
         ) and dtypes.dtype(obj.dtype).is_float
     differentiable: list[bool] = []
     for step in steps:
@@ -352,7 +354,7 @@ def timeline(
         intervals.append(Interval(start, t_back[obj.producer], nbytes(obj.id), Category.TEMPORARY))
 
     persistent, confidence, parameter_grads = _persistent(
-        graph, env, config, readers, differentiable, t_back
+        graph, env, config, trained, readers, differentiable, t_back
     )
     for start, size in parameter_grads:
         intervals.append(Interval(start, step_time, size, Category.GRADIENT))
@@ -419,6 +421,7 @@ def _persistent(
     graph: TensorGraph,
     env: Mapping[str, int],
     config: TrainingConfig,
+    trained: set[str],
     readers: Mapping[int, list[int]],
     differentiable: Sequence[bool],
     t_back: Sequence[int],
@@ -442,7 +445,7 @@ def _persistent(
             put(obj.category, size)
             continue
         put(Category.PARAMETER, -(-size // shards))
-        if not _trainable(obj.path, config.trainable) or not dtypes.dtype(obj.dtype).is_float:
+        if obj.path not in trained or not dtypes.dtype(obj.dtype).is_float:
             continue
         elements = ex.evaluate(ex.product(obj.shape), env)
         share = -(-elements // shards)

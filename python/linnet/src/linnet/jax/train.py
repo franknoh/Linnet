@@ -25,9 +25,8 @@ weighted sum of each position's cross-entropy for its target.
 from __future__ import annotations
 
 import contextlib
-import fnmatch
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +35,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .. import ir
 from ..dtypes import BY_NUMPY
 from ..packing import Packed
 from ..weights import read_arrays, write_safetensors
@@ -263,11 +263,11 @@ class Learner:
             if id(array) not in moved:
                 moved[id(array)] = _placed(array, path, mesh)
             placed[path] = moved[id(array)]
-        self.ties = _ties(placed)
+        self.ties = ir.shared_paths(placed.items())
         if trainable is None:
             adapted = getattr(model, "lora", None) is not None
             trainable = ["*.lora_a", "*.lora_b"] if adapted else True
-        chosen = _chosen([path for path in placed if path not in self.ties], placed, trainable)
+        chosen = _chosen(list(placed), placed, trainable, self.ties)
         self.dtypes = {path: placed[path].dtype for path in chosen}
         shardings = {path: placed[path].sharding for path in chosen}
         self.trained: dict[str, Any] = jax.jit(
@@ -718,27 +718,16 @@ def _complete(root: Path) -> list[Path]:
     )
 
 
-def _ties(weights: dict[str, Any]) -> dict[str, str]:
-    """Each path whose array another path already holds, to that path."""
-    first: dict[int, str] = {}
-    ties: dict[str, str] = {}
-    for path, array in weights.items():
-        owner = first.setdefault(id(array), path)
-        if owner != path:
-            ties[path] = owner
-    return ties
-
-
 def _chosen(
-    paths: list[str], weights: dict[str, Any], trainable: bool | str | Sequence[str]
+    paths: list[str],
+    weights: dict[str, Any],
+    trainable: bool | str | Sequence[str],
+    ties: Mapping[str, str],
 ) -> list[str]:
-    floating = [p for p in paths if jnp.issubdtype(weights[p].dtype, jnp.floating)]
-    if trainable is True:
-        return floating
-    if trainable is False:
-        return []
-    patterns = [trainable] if isinstance(trainable, str) else list(trainable)
-    return [p for p in floating if any(fnmatch.fnmatchcase(p, pattern) for pattern in patterns)]
+    """The arrays to train: those `trainable` picks (a tied one when any of
+    its paths matches), floating-point, each once by its holding path."""
+    picked = ir.chosen_paths(paths, trainable, ties)
+    return [p for p in picked if p not in ties and jnp.issubdtype(weights[p].dtype, jnp.floating)]
 
 
 def _global_norm(tree: Any) -> Any:

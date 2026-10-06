@@ -41,6 +41,7 @@ from torch.utils.checkpoint import (
     create_selective_checkpoint_contexts,
 )
 
+from ..parallel import units as parallel_units
 from ..plan import PlanError
 from .module import LinnetModule, owner_of
 
@@ -83,12 +84,7 @@ def fully_shard(
     if mesh.ndim != 1:
         raise PlanError("sharding takes a one-dimensional mesh")
 
-    units: list[str] = []
-    for name, child in model.root.named_children():
-        if isinstance(child, nn.ModuleList):
-            units += [f"{name}.{i}" for i in range(len(child))]
-        else:
-            units.append(name)
+    units = parallel_units([p for p, _ in model.root.named_parameters(remove_duplicate=False)])[0]
     replaced: dict[int, nn.Parameter] = {}
     with torch.no_grad():
         for path, parameter in list(model.root.named_parameters(remove_duplicate=False)):

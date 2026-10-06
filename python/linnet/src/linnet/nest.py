@@ -540,6 +540,17 @@ def resolve(name_or_dir: str | Path, **fetch_options: Any) -> Card:
     return Card.read(fetch(str(name_or_dir), **fetch_options))
 
 
+def model_source(model: str | Path | Card) -> tuple[Card | None, Path]:
+    """A model as `load` takes it, or a Linnet source file: its card (None
+    for a file) and its source."""
+    if isinstance(model, Card):
+        return model, model.source_path
+    if Path(model).is_file():
+        return None, Path(model)
+    card = resolve(model)
+    return card, card.source_path
+
+
 def local_weights(card: Card) -> Path | None:
     """The card's checkpoint when it is beside the card: the files the card
     names, or, when it names none and no Hub repo, every SafeTensors file in

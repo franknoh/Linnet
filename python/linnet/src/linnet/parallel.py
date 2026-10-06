@@ -70,4 +70,24 @@ def state_axis(shape: Sequence[int], devices: int) -> int | None:
     return None
 
 
+def units(paths: Sequence[str]) -> tuple[list[str], list[str]]:
+    """The units of a model with parameters at `paths`, as sharding (FSDP)
+    gathers them and pipelining places them: each element of the root's
+    block arrays (`layers.0`, `layers.1`, ...) and each other block the root
+    holds; and the array elements alone, which are worth recomputing.
+    Parameters of the root block itself belong to none."""
+    every: list[str] = []
+    listed: list[str] = []
+    for path in paths:
+        parts = path.split(".")
+        if len(parts) < 2:
+            continue
+        unit = f"{parts[0]}.{parts[1]}" if parts[1].isdigit() and len(parts) > 2 else parts[0]
+        if unit not in every:
+            every.append(unit)
+            if unit != parts[0]:
+                listed.append(unit)
+    return every, listed
+
+
 __all__ = ["DEFAULT_RULES", "split_axis", "state_axis"]
