@@ -126,9 +126,9 @@ listed above it for a pipeline.
   `all_reduce` and `all_gather` allocate their results. A gather also
   stacks the parts before laying them side by side.
 - Any other model is split as DTensors split it: weights and caches by the
-  `linnet.parallel` rules. Its activations are counted whole, plus the
-  copy that gathers each result whole at the end. DTensor's other
-  redistributions are not followed, so this is an estimate.
+  `linnet.parallel` rules. Its activations are counted whole, and DTensor's
+  redistributions are not followed, so the activations are an estimate:
+  GPT-2 measured 26% above it.
 - The one-shot all-reduce's buffers are estimated. NCCL's own buffers are
   listed as unknown.
 
@@ -293,3 +293,26 @@ on packed sequences. The process adds more than the graph:
   It measured from 0.14 to 7.9 GiB and depends on the order of
   allocations, so the analysis lists it as unknown. Leave room for it with
   `--reserve` or `--reserve-percent` when fitting.
+
+Under `torchrun`, each process measures its own device:
+
+```bash
+torchrun --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
+    --entry decode_rows --batch 16 --cache-len 8192 --tensor-parallel 2
+```
+
+On two H100s, each process against its own prediction:
+
+| Model | Configuration | Error per process |
+| --- | --- | --- |
+| Llama 3.1 8B | decode, batch 16, cache 8,192, tensor parallel 2 | -0.1%, -0.1% |
+| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | -0.0%, -0.0% |
+| TinyLlama 1.1B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | +0.6%, -0.5% |
+| TinyLlama 1.1B | the same under GPipe | +2.3%, +2.0% |
+| Qwen2.5 0.5B | training, 8,192 tokens, AdamW, pipeline 2 x 4, 1F1B | -2.4%, -1.3% |
+| TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | -12.2%, -4.9% |
+| GPT-2 | batch 8, 1,024 tokens, DTensor tensor parallel 2 | -25.5%, -25.5% |
+
+With two processes, 1.5 to 2.4 GiB sat outside the allocator: the CUDA
+context and NCCL's buffers. The pipeline's loss on real TinyLlama weights
+matched one GPU's to six digits, and its gradient norms to within 0.7%.

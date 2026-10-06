@@ -645,15 +645,6 @@ class MemoryModel:
         components, graph_persistent, laid_out = self._persistent(env, graph)
         transient = peak(graph, env, spans)
         work, estimates, unknown = self._workspaces(env, graph)
-        if self.splitting == "dtensor" and graph.steps:
-            # DTensor hands results back whole: each a gathered copy, made
-            # when the entry returns.
-            last = len(graph.steps) - 1
-            gathered = sum(ex.evaluate(graph.objects[i].nbytes, env) for i in graph.outputs)
-            work[last] = work.get(last, 0) + gathered
-            estimates[last] = Estimate(
-                work[last], Confidence.MODELED, "the results, gathered whole from the processes"
-            )
         with_work = peak(graph, env, spans, work)
         activations = ex.evaluate(ex.total(graph.objects[i].nbytes for i in with_work.live), env)
         at_work = work.get(with_work.step, 0)
