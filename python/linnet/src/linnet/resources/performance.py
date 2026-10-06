@@ -198,7 +198,7 @@ _H100 = DeviceSpec(
     },
     dispatch=6.32e-6,
     kernel=2.11e-6,
-    reduce=32.1e-6,
+    reduce=19.8e-6,
     source="measured: H100 SXM, PyTorch 2.14.1+cu130",
 )
 
