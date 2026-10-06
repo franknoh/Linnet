@@ -163,9 +163,10 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str, schedule: st
             for name, parameter in pipe.named_parameters()
             if parameter.grad is not None
         }
+        # Every stage takes part in a forward pass; the last returns it.
+        values = pipe.run(*inputs)
         if loss is not None:
             result["loss"] = loss
-            values = pipe.run(*inputs)
             result["run"] = values
         torch.save(result, Path(out) / f"stage{rank}.pt")
     finally:
