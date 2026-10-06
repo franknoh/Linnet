@@ -511,9 +511,24 @@ class CompiledLinnetModule(LinnetModule):
                 absent += [prefix + sub for sub in sorted(module.absent_subs)]
         return tuple(absent)
 
-    def _compile(
-        self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
-    ) -> _Generated:
+    def bindings_for(
+        self, entry: str, inputs: list[torch.Tensor], generics: Mapping[str, int | str]
+    ) -> dict[str, str]:
+        """Every generic `linnet torch` needs to compile `entry` for these
+        inputs, as `--bind` values."""
+        function = self.entries[entry]
+        params = function["body"]["args"][1:]
+        if len(params) != len(inputs):
+            raise PlanError(f"entry `{entry}` takes {len(params)} inputs, got {len(inputs)}")
+        return self._bindings(function, inputs, generics)
+
+    def source_for(
+        self, entry: str, bindings: Mapping[str, str], *, trains: bool, prepare: bool = True
+    ) -> str:
+        """The PyTorch source `linnet torch` prints for `entry` under
+        `bindings`, with this module's placement, adapters, sharding and
+        absent optional parameters. `prepare=False` keeps weight-only work
+        in `main`."""
         command = ["torch", "--root", self.plan.root["name"], "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
@@ -533,22 +548,36 @@ class CompiledLinnetModule(LinnetModule):
             command += ["--fully-shard", unit]
         if self.placement is not None and not self.placement.trivial:
             command += self.placement.flags()
-        elif not trains and self.lora is None and not self.fully_sharded:
+        elif prepare and not trains and self.lora is None and not self.fully_sharded:
             # Weight-only work once at load; a model being trained keeps it
             # in the graph, where gradients flow through it.
             command.append("--prepare")
             if self.tensor_parallel is not None:
                 # Joining split weights would gather them onto every process.
                 command.append("--no-fuse")
-        text = run_compiler(*command, str(self._source), error=PlanError)
-        path = self._work / f"{entry}_{len(self._compiled)}.py"
-        path.write_text(text, encoding="utf-8")
-        spec = importlib.util.spec_from_file_location(f"linnet_generated_{path.stem}", path)
+        return run_compiler(*command, str(self._source), error=PlanError)
+
+    def import_source(self, source: str, name: str) -> Any:
+        """Writes generated `source` into this module's work directory and
+        imports it."""
+        path = self._work / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(f"linnet_generated_{id(self)}_{name}", path)
         if spec is None or spec.loader is None:
             raise PlanError(f"cannot load the generated module at {path}")
         module: Any = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        module.__linnet_path__ = path
+        return module
+
+    def _compile(
+        self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
+    ) -> _Generated:
+        module = self.import_source(
+            self.source_for(entry, bindings, trains=trains), f"{entry}_{len(self._compiled)}"
+        )
+        path: Path = module.__linnet_path__
         if self.shard_group is not None and hasattr(module, "_GROUP"):
             module._GROUP = self.shard_group
         if self.tensor_parallel is not None:

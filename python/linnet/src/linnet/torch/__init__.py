@@ -15,6 +15,7 @@ from .compiled import CompiledLinnetModule
 from .export import ExportError, ExportResult, export_linnet
 from .function import Function, load_function
 from .module import LinnetModule, bind_weights
+from .pipeline import Pipeline, pipeline
 from .placement import Placement
 from .placement import apply as apply_placement
 from .placement import from_map as placement_from_map
@@ -38,6 +39,7 @@ __all__ = [
     "ExportResult",
     "Function",
     "LinnetModule",
+    "Pipeline",
     "Placement",
     "Plan",
     "PlanError",
@@ -47,6 +49,7 @@ __all__ = [
     "fully_shard",
     "load",
     "load_function",
+    "pipeline",
 ]
 
 

@@ -1,4 +1,5 @@
-"""Tensor parallelism: which axis of each weight is split across devices.
+"""Model parallelism: which axis of each weight tensor parallelism splits
+across devices, and which blocks pipeline parallelism puts on each stage.
 
 A model runs tensor-parallel when its large weights are split across the
 devices of a mesh, each device computing its share and the framework adding
@@ -90,4 +91,79 @@ def units(paths: Sequence[str]) -> tuple[list[str], list[str]]:
     return every, listed
 
 
-__all__ = ["DEFAULT_RULES", "split_axis", "state_axis"]
+def pipeline_stages(sizes: Sequence[int], stages: int) -> list[int]:
+    """The stage of each unit when units of `sizes` bytes, in execution
+    order, are split into `stages` contiguous non-empty stages with the
+    largest stage as small as it can be: what `linnet.torch.pipeline` runs
+    and `linnet memory --pipeline-parallel` predicts."""
+    if stages < 1:
+        raise ValueError("a pipeline has at least one stage")
+    if len(sizes) < stages:
+        raise ValueError(f"{len(sizes)} blocks cannot fill {stages} stages")
+
+    def greedy(limit: int) -> list[int] | None:
+        assigned: list[int] = []
+        stage, load = 0, 0
+        for size in sizes:
+            if load and load + size > limit:
+                stage, load = stage + 1, 0
+            if stage >= stages:
+                return None
+            assigned.append(stage)
+            load += size
+        return assigned
+
+    low, high = max(sizes, default=0), max(sum(sizes), 1)
+    while low < high:
+        middle = (low + high) // 2
+        if greedy(middle) is None:
+            low = middle + 1
+        else:
+            high = middle
+    assigned = greedy(low)
+    assert assigned is not None
+    # Fewer stages than asked: split the last stage that has more than one
+    # unit, again and again, keeping the order.
+    while assigned[-1] + 1 < stages:
+        counts = [assigned.count(k) for k in range(assigned[-1] + 1)]
+        widest = max(k for k, count in enumerate(counts) if count > 1)
+        at = len(assigned) - 1 - assigned[::-1].index(widest)
+        assigned = [a + 1 if i >= at else a for i, a in enumerate(assigned)]
+    return assigned
+
+
+def stage_starts(units: Sequence[str], assigned: Sequence[int]) -> list[str]:
+    """The unit each stage after the first starts at."""
+    return [units[i] for i in range(1, len(units)) if assigned[i] != assigned[i - 1]]
+
+
+def assign_stages(units: Sequence[str], starts: Sequence[str]) -> list[int]:
+    """Each unit's stage when stages after the first start at `starts`."""
+    positions = [units.index(start) if start in units else -1 for start in starts]
+    for start, position in zip(starts, positions, strict=True):
+        if position < 0:
+            raise ValueError(f"`{start}` is not a block of the model ({', '.join(units)})")
+    if positions != sorted(set(positions)) or (positions and positions[0] == 0):
+        raise ValueError("stage starts must be distinct blocks after the first, in order")
+    return [sum(1 for p in positions if p <= i) for i in range(len(units))]
+
+
+def stage_of_path(units: Sequence[str], assigned: Sequence[int], path: str) -> int | None:
+    """The stage of the block holding `path` (a parameter, a state, or a
+    block), or None when no block holds it."""
+    for unit, stage in zip(units, assigned, strict=True):
+        if path == unit or path.startswith(unit + "."):
+            return stage
+    return None
+
+
+__all__ = [
+    "DEFAULT_RULES",
+    "assign_stages",
+    "pipeline_stages",
+    "split_axis",
+    "stage_of_path",
+    "stage_starts",
+    "state_axis",
+    "units",
+]
