@@ -27,8 +27,8 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
 from .. import ir
 from ..compiler import LinnetError
@@ -132,48 +132,91 @@ def measure(
         raise LinnetError(
             "validation runs plain training steps: no master weights, checkpointing or sharding"
         )
-    device = torch.device("cuda")
+    import torch.distributed as dist
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    device = torch.device("cuda", torch.cuda.current_device())
     torch.cuda.init()
-    module = linnet_torch.load(
-        model.source_path,
-        generics=root_values(model, env),
-        root=model.program.root.name,
-        weights=weights,
-        device=device,
-        numerics=config.numerics,
-        compile=True,
-        trainable=training is not None,
-        strict=weights is not None,
-    )
+    # Every process of a split model takes the same inputs.
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    generics = root_values(model, env)
     inputs = _inputs(model, env, device)
-    entry = getattr(module, model.entry)
-    if training is None:
-        with torch.no_grad():
-            entry(*inputs)
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats()
-            entry(*inputs)
-            torch.cuda.synchronize()
+    if config.pipeline_parallel > 1:
+        pipe = linnet_torch.pipeline(
+            model.source_path,
+            generics=generics,
+            root=model.program.root.name,
+            weights=weights,
+            strict=weights is not None,
+            entry=model.entry,
+            microbatches=config.microbatches,
+            schedule=config.schedule,
+            stages=config.stages,
+            numerics=config.numerics,
+            trainable=training is not None,
+            device=device,
+        )
+        parameters = pipe.parameters()
+
+        def step() -> None:
+            if training is None:
+                pipe.run(*inputs)
+            else:
+                pipe.step(*inputs)
+
     else:
+        mesh: Any = None
+        if config.tensor_parallel > 1:
+            from torch.distributed.device_mesh import init_device_mesh
+
+            mesh = init_device_mesh("cuda", (dist.get_world_size(),))
+        module = linnet_torch.load(
+            model.source_path,
+            generics=generics,
+            root=model.program.root.name,
+            weights=weights,
+            device=device,
+            numerics=config.numerics,
+            compile=True,
+            trainable=training is not None,
+            strict=weights is not None,
+            tensor_parallel=mesh,
+        )
+        entry = getattr(module, model.entry)
         parameters = [p for p in module.parameters() if p.requires_grad]
+
+        def step() -> None:
+            if training is None:
+                with torch.no_grad():
+                    entry(*inputs)
+            else:
+                entry(*inputs).backward()
+
+    optimizer: Any = None
+    if training is not None:
         name = training.optimizer.name
         if name == "sgd":
-            optimizer: Any = torch.optim.SGD(parameters, lr=1e-6)
+            optimizer = torch.optim.SGD(parameters, lr=1e-6)
         elif name == "sgd-momentum":
             optimizer = torch.optim.SGD(parameters, lr=1e-6, momentum=0.9)
         elif name == "adam":
             optimizer = torch.optim.Adam(parameters, lr=1e-6, fused=True)
         else:
             optimizer = torch.optim.AdamW(parameters, lr=1e-6, fused=True)
-        for repeat in range(2):
-            if repeat == 1:
-                torch.cuda.synchronize()
-                torch.cuda.reset_peak_memory_stats()
-            loss = entry(*inputs)
-            loss.backward()
+    # The second step is measured: by then the optimizer has its states.
+    for repeat in range(2):
+        if repeat == 1:
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+        step()
+        if optimizer is not None:
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
-            torch.cuda.synchronize()
+        torch.cuda.synchronize()
+    if prediction.devices:
+        # This process's stage: its own peaks, with the runtime the rest has.
+        own = prediction.devices[rank]
+        prediction = replace(prediction, graph_peak=own.graph_peak, expected_peak=own.expected_peak)
     allocated = int(torch.cuda.max_memory_allocated())
     reserved = int(torch.cuda.max_memory_reserved())
     free, total = torch.cuda.mem_get_info()
@@ -198,6 +241,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_arguments(parser)
     parser.add_argument("--weights", help="a checkpoint to load (default: zero weights)")
     args = parser.parse_args(list(argv) if argv is not None else None)
+    import os
+
+    distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
+    if distributed:
+        # Under torchrun: one process per GPU, each measuring its own.
+        import torch
+        import torch.distributed as dist
+
+        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+        dist.init_process_group("nccl")
     try:
         policy = args.checkpoint[0] if args.checkpoint else CheckpointPolicy()
         # Zero weights load without bindings: no tied tensors, no optional
@@ -213,32 +266,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LinnetError as error:
         print(f"linnet: {error}", file=sys.stderr)
         return 1
-    if args.json:
-        json.dump(
+    report: dict[str, Any] = {
+        "prediction": prediction.to_dict(),
+        "comparisons": [
             {
-                "prediction": prediction.to_dict(),
-                "comparisons": [
-                    {
-                        "name": c.name,
-                        "predicted": c.predicted,
-                        "measured": c.measured,
-                        "error": c.error,
-                        "relative": c.relative,
-                    }
-                    for c in comparisons
-                ],
-            },
-            sys.stdout,
-            indent=2,
-        )
-        sys.stdout.write("\n")
-        return 0
+                "name": c.name,
+                "predicted": c.predicted,
+                "measured": c.measured,
+                "error": c.error,
+                "relative": c.relative,
+            }
+            for c in comparisons
+        ],
+    }
+    lines: list[str] = []
     for c in comparisons:
         relative = "" if c.relative is None else f"  error {c.relative * 100:+.1f}%"
-        print(
+        lines.append(
             f"{c.name:<40} predicted {format_bytes(c.predicted):>12}  measured "
             f"{format_bytes(c.measured):>12}{relative}"
         )
+    reports: list[Any] = [report]
+    texts: list[Any] = [lines]
+    if distributed:
+        import torch.distributed as dist
+
+        reports = [report] * dist.get_world_size()
+        texts = [lines] * dist.get_world_size()
+        dist.all_gather_object(reports, report)
+        dist.all_gather_object(texts, lines)
+        first = dist.get_rank() == 0
+        dist.destroy_process_group()
+        if not first:
+            return 0
+    if args.json:
+        json.dump(reports[0] if len(reports) == 1 else reports, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+    for rank, text in enumerate(texts):
+        if len(texts) > 1:
+            print(f"rank {rank}")
+        print("\n".join(cast(list[str], text)))
     return 0
 
 
