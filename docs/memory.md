@@ -105,8 +105,48 @@ optimizer step on one timeline:
   and optimizer states across N devices (FSDP), adding the layer being
   gathered.
 
-Repeat `--checkpoint` to compare policies in one report. Tensor and
-pipeline parallelism are not analyzed yet, and say so.
+Repeat `--checkpoint` to compare policies in one report.
+
+## Several devices
+
+```bash
+linnet memory llama-3.1-8b-instruct --entry decode_rows --batch 64 --seq-len 8192 \
+    --tensor-parallel 2
+linnet memory llama-3.1-8b-instruct --entry loss_packed --training --seq-len 32768 \
+    --pipeline-parallel 4 --microbatches 8 --schedule 1f1b
+```
+
+The report is per device: the one that needs the most, with every stage
+listed above it for a pipeline.
+
+**Tensor parallelism** (`--tensor-parallel N`), as `linnet.torch.load(tensor_parallel=...)` runs it:
+
+- A model with a `Shards` generic is analyzed as one process's program,
+  `Shards` bound to N. Its weights and caches are that process's part, and
+  `all_reduce` and `all_gather` allocate their results. A gather also
+  stacks the parts before laying them side by side.
+- Any other model is split as DTensors split it: weights and caches by the
+  `linnet.parallel` rules. Its activations are counted whole, as an upper
+  bound.
+- The one-shot all-reduce's buffers are estimated. NCCL's own buffers are
+  listed as unknown.
+
+**Pipeline parallelism** (`--pipeline-parallel N`), as `linnet.torch.pipeline` runs it:
+
+- Stages are runs of blocks, balanced by parameter bytes, or set by
+  `--stages layers.8,layers.16,layers.24`.
+- The analysis splits the step's graph the way the runtime splits the
+  generated source. Each stage is analyzed for one micro-batch, the first
+  input's first axis cut into `--microbatches` parts.
+- In training, a stage keeps as many micro-batches' activations as the
+  schedule holds in flight: all of them under `gpipe`; under `1f1b`, one
+  per stage from it to the last. Every gradient is counted as accumulated.
+  The receive buffers of every micro-batch are added as well.
+- Without training, the other micro-batches' received and sent values
+  stay until the step ends.
+
+Tensor and pipeline parallelism together, and FSDP inside pipeline stages,
+are refused with a message.
 
 ## The largest configuration that fits
 
