@@ -18,7 +18,7 @@ The layers, each its own module:
 `linnet memory` and `linnet fit` are the command-line front ends.
 """
 
-from .analysis import MemoryModel, Source, load_source
+from .analysis import MemoryModel
 from .backends import BackendResourceModel, CudaTorchBackend, Estimate, GenericBackend
 from .config import ExecutionConfig
 from .graph import Category, Confidence, MemoryObject, Step, TensorGraph
@@ -50,11 +50,9 @@ __all__ = [
     "OptimizerModel",
     "PagedLayout",
     "ResourceConstraint",
-    "Source",
     "Step",
     "TensorGraph",
     "TrainingConfig",
     "fit",
-    "load_source",
     "trace",
 ]

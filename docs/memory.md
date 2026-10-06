@@ -135,18 +135,21 @@ bytes, confidence and formula, both peaks, the unknown items, warnings and
 assumptions.
 
 ```python
-from linnet.resources import ExecutionConfig, ExecutionPlanner, MemoryModel, ResourceConstraint, load_source
+from linnet.resources import ExecutionConfig, ExecutionPlanner, MemoryModel, ResourceConstraint
 
-source = load_source("llama-3.1-8b-instruct")
-model = MemoryModel(source, ExecutionConfig(batch=8, context=8192))
+model = MemoryModel("llama-3.1-8b-instruct", ExecutionConfig(batch=8, context=8192))
 result = model.analyze()                   # MemoryAnalysisResult
 result.expected_peak, result.component("KV cache").nbytes
 model.analyze(batch=16).expected_peak      # the same trace, another size
 
-found = ExecutionPlanner(source).maximize(
+found = ExecutionPlanner("llama-3.1-8b-instruct").maximize(
     ExecutionConfig(entry="decode_rows", context=8192), ResourceConstraint(80 << 30), "batch"
 )
 ```
+
+The model is what [`nest.load`](nest.md) takes (a name, a Hub repo, a
+directory, a `nest.Card`) or a `.linnet` file. The card's generics are
+defaults, and its bindings decide tied and present parameters.
 
 The layers are separate modules: `trace` (the program as memory objects
 and steps), `graph` (liveness, peaks and buffer planning), `backends`

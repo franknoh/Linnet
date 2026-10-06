@@ -14,9 +14,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal
 
-from .analysis import MemoryModel, Source
+from .. import nest
+from .analysis import MemoryModel
 from .config import ExecutionConfig
 from .result import MemoryAnalysisResult
 
@@ -116,11 +118,8 @@ def fit(
     return FitResult(target, low, best, constraint.budget, stopped)
 
 
-Builder = Callable[[Source, ExecutionConfig, tuple[str, ...]], MemoryModel]
-
-
-def _build(source: Source, config: ExecutionConfig, free: tuple[str, ...]) -> MemoryModel:
-    return MemoryModel(source, config, free)
+# A model for a configuration, with the roles given left free.
+Builder = Callable[[ExecutionConfig, tuple[str, ...]], MemoryModel]
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,12 +138,25 @@ class ExecutionPlanner:
     can compare backends, numerics, dtypes, checkpoint policies or sharding
     across candidates and maximize a size within each."""
 
-    def __init__(self, source: Source, build: Builder | None = None) -> None:
-        self.source = source
-        self.build: Builder = build or _build
+    def __init__(
+        self,
+        model: str | Path | nest.Card,
+        *,
+        root: str | None = None,
+        std_root: str | Path | None = None,
+        build: Builder | None = None,
+    ) -> None:
+        """`model` as `MemoryModel` takes it; `build` makes each candidate's
+        `MemoryModel` instead (another backend model, say)."""
+
+        def default(config: ExecutionConfig, free: tuple[str, ...]) -> MemoryModel:
+            return MemoryModel(model, config, root=root, std_root=std_root, free=free)
+
+        self.model = model
+        self.build: Builder = build or default
 
     def evaluate(self, config: ExecutionConfig) -> MemoryAnalysisResult:
-        return self.build(self.source, config, ()).analyze()
+        return self.build(config, ()).analyze()
 
     def feasible(
         self, configs: Iterable[ExecutionConfig], constraint: ResourceConstraint
@@ -165,7 +177,7 @@ class ExecutionPlanner:
             config = replace(config, context=1)
         if role == "cache" and config.cache is None:
             config = replace(config, cache=1)
-        return fit(self.build(self.source, config, (role,)), constraint, target)
+        return fit(self.build(config, (role,)), constraint, target)
 
     def plan(
         self, config: ExecutionConfig, constraint: ResourceConstraint, objective: str

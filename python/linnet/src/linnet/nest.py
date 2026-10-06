@@ -167,8 +167,10 @@ class Card:
             return None
         return self.directory / self.weights.bindings
 
-    def program(self, std_root: str | Path | None = None) -> ir.Program:
-        return ir.load_program(self.source_path, root=self.root, std_root=std_root)
+    def program(self, std_root: str | Path | None = None, *, numerics: str = "exact") -> ir.Program:
+        return ir.load_program(
+            self.source_path, root=self.root, std_root=std_root, numerics=numerics
+        )
 
 
 _KNOWN_TABLES = {"model", "links", "source", "generics", "check", "weights"}
