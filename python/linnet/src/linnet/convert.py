@@ -30,7 +30,7 @@ from typing import Any, cast
 from . import ir, nest
 from .compiler import LinnetError
 from .dtypes import from_safetensors
-from .weights import header_tensors, read_bindings
+from .weights import header_tensors, read_bindings, write_bindings
 
 Config = Mapping[str, Any]
 
@@ -304,7 +304,7 @@ def convert(
             own = _present("lm_head.weight", tensors) in tensors
             bindings["lm_head.weight"] = family.embedding if tied and not own else "lm_head.weight"
         bindings = {path: _present(tensor, tensors) for path, tensor in bindings.items()}
-        (directory / "bindings.json").write_text(json.dumps(bindings, indent=2) + "\n", "utf-8")
+        write_bindings(directory / "bindings.json", bindings)
 
         generics: dict[str, int | str] = dict(family.generics(config))
         generics["T"] = _dtype(tensors, next(iter(bindings.values())))
@@ -317,7 +317,7 @@ def convert(
         program = card.program(std_root)
         values = ir.bind_generics(program.root.generics, card.generics)
         bindings = _complete_bindings(program, values, bindings, tensors)
-        (directory / "bindings.json").write_text(json.dumps(bindings, indent=2) + "\n", "utf-8")
+        write_bindings(directory / "bindings.json", bindings)
         unbound = _unbound(program, values, tensors, bindings)
         if unbound:
             shown = ", ".join(f"`{t}`" for t in unbound[:5])

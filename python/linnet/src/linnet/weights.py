@@ -97,6 +97,14 @@ def read_bindings(bindings: str | Path) -> dict[str, str]:
     return {str(path): str(name) for path, name in cast(dict[Any, Any], loaded).items()}
 
 
+def write_bindings(path: str | Path, mapping: Mapping[str, str]) -> Path:
+    """Writes `mapping` (Linnet path -> checkpoint tensor name), in its
+    order, as the JSON `read_bindings` reads."""
+    target = Path(path)
+    target.write_text(json.dumps(dict(mapping), indent=2) + "\n", encoding="utf-8")
+    return target
+
+
 def paths_by_tensor(mapping: Mapping[str, str]) -> dict[str, list[str]]:
     """The Linnet paths bound to each checkpoint tensor, in binding order:
     a tied embedding and output head share one."""
