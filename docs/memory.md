@@ -250,16 +250,14 @@ in the last column:
 | Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 167 ms | 189 ms | -11.3% | -76.3% |
 | Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 139 ms | 143 ms | -2.7% | -35.0% |
 | TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 102 ms | 126 ms | -18.9% | -66.6% |
-| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 12.6 ms | 18.5 ms | -31.8% | -81.8% |
-| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 12.7 ms | 31.7 ms | -59.9% | -81.7% |
+| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 11.8 ms | 16.3 ms | -27.3% | -79.3% |
+| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 11.9 ms | 18.8 ms | -36.4% | -69.2% |
 
 Where it is still short:
 
-- **Tensor-parallel decoding.** The two rows were measured while each
-  eager all-reduce cost the host 100 to 300 µs (a functional collective's
-  tensor subclass). With the sums made cheaper, the steps take 16.3 and
-  18.8 ms on another pair of H100s; the rest of the gap is the host's
-  calls, dearer here than the measured average.
+- **Tensor-parallel decoding.** These two rows come from another pair of
+  H100s. The host's calls cost more here than the measured average, and
+  each sum's host time comes on top.
 - **Pipelines.** The schedule's own host work is not modeled.
 - **Decoding at larger batches.** Small kernels take longer than the
   measured floor.
