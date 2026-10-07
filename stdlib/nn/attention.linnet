@@ -136,3 +136,35 @@ where
     let mixed[b, g, r, q, d] = sum[k] weights[b, g, r, q, k] * cast<f32>(value[b, g, k, d])
     return reshape(cast<T>(mixed), [B, Hq, Q, D])
 }
+
+// One query a row over a pool of key/value pages (paged serving): row `b`
+// sees its positions up to `positions[b]`, position `s` lying at offset
+// `s % Size` of page `table[b, s / Size]` of the pool `key[0]` (`N`
+// positions, `Size` a page). Rows take pages as they grow, so the cache
+// holds what the rows use rather than a full row each. Query heads share
+// key/value heads as in `grouped_attention_rows`.
+//
+// The canonical body gathers each row's positions out of the pool and
+// attends over them; a backend with a paged kernel reads the pages where
+// they lie.
+pub op paged_attention<B: Dim, Hq: Dim, Hk: Dim, N: Dim, Pages: Dim, Size: Dim, D: Dim, T: Float>(
+    query: Tensor[B, Hq, 1, D; T],
+    key: Tensor[1, Hk, N, D; T],
+    value: Tensor[1, Hk, N, D; T],
+    table: Tensor[B, Pages; i32],
+    positions: Tensor[B; i32],
+    scale: f32,
+) -> Tensor[B, Hq, 1, D; T]
+where
+    Hk > 0,
+    Hq % Hk == 0,
+    Size > 0
+{
+    let logical = iota<i32>(Pages * Size)
+    let page[b, s] = table[b, cast<i64>(logical[s] / cast<i32>(Size))]
+    let at[b, s] = cast<i64>(page[b, s] * cast<i32>(Size) + logical[s] % cast<i32>(Size))
+    let keys[b, h, s, d] = key[0, h, at[b, s], d]
+    let values[b, h, s, d] = value[0, h, at[b, s], d]
+    let seen[b, s] = logical[s] <= positions[b]
+    return grouped_attention_rows(query, keys, values, scale, reshape(seen, [B, 1, Pages * Size]))
+}
