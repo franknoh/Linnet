@@ -76,6 +76,9 @@ class CompiledLinnetModule(LinnetModule):
         self.lora_paths: list[str] = []
         # Units whose parameters are split across processes (`fully_shard`).
         self.fully_sharded: tuple[str, ...] = ()
+        # Each sharded parameter's dtype before it was split: the one its
+        # whole is gathered in.
+        self.gathered_dtypes: dict[str, torch.dtype] = {}
         # Under `torch.compile`, compile each kind of repeated block once
         # (`linnet.torch.regions`) rather than the whole step: the first
         # step compiles in a fraction of the time. False compiles the step.

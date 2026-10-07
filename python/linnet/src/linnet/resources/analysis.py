@@ -796,7 +796,10 @@ class MemoryModel:
         config = self.config.training
         assert config is not None
         graph = graph or self.graph
-        steps = timeline(graph, env, config, self.backend, self.arrays, self.tied)
+        # A pipeline stage keeps its sharded weights whole through the step.
+        steps = timeline(
+            graph, env, config, self.backend, self.arrays, self.tied, held=flight is not None
+        )
         extras: list[MemoryComponent] = []
         if flight is None:
             at, total, parts = steps.peak()

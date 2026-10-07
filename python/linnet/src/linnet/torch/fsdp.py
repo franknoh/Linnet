@@ -17,6 +17,10 @@ Backward needs the gathered weights again. Under `torch.compile`, each
 gather is marked for recomputation, so backward gathers again rather than
 keeping the whole model. Without it, saved-tensor hooks keep a part in place
 of each whole weight and gather it again when backward reads it.
+
+A pipeline's stage runs many micro-batches a step. There `Held` gathers its
+weights once and keeps them whole for the step; each micro-batch's
+gradients are summed into the parts as its backward finishes them.
 """
 
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
@@ -93,6 +97,7 @@ def fully_shard(
     ]
     units = parallel_units(chosen)[0]
     replaced: dict[int, nn.Parameter] = {}
+    computes: dict[str, torch.dtype] = {}
     with torch.no_grad():
         for path, parameter in list(model.root.named_parameters(remove_duplicate=False)):
             owner, leaf = owner_of(model, path)
@@ -111,8 +116,10 @@ def fully_shard(
                     requires_grad=parameter.requires_grad,
                 )
                 replaced[id(parameter)] = split
+            computes[path] = parameter.dtype
             setattr(owner, leaf, split)
     model.fully_sharded = tuple(units)
+    model.gathered_dtypes = computes
     model._recompile()  # pyright: ignore[reportPrivateUsage]
     return units
 
@@ -221,4 +228,142 @@ def sharded(parameter: torch.Tensor) -> bool:
     return isinstance(parameter, DTensor)
 
 
-__all__ = ["fully_shard", "gather", "regathered", "sharded"]
+class Held:
+    """Sharded weights gathered whole once and kept through a pipeline
+    stage's step: every micro-batch's forward and backward read the same
+    wholes. When a micro-batch's backward finishes a whole's gradient, it is
+    summed into each process's part (a reduce-scatter in the part's dtype),
+    overlapping the rest of that backward; `finish` waits for the last."""
+
+    def __init__(self, trains: bool) -> None:
+        self.trains = trains
+        self._wholes: dict[int, torch.Tensor] = {}
+        self._summing: _Summing | None = None
+
+    def whole(self, part: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """`part`'s whole in `dtype`, gathered on the first call of the step."""
+        if not isinstance(part, DTensor):
+            return part
+        found = self._wholes.get(id(part))
+        if found is not None:
+            return found
+        with torch.no_grad():
+            whole = _joined(part, dtype)
+        if self.trains and part.requires_grad:
+            whole.requires_grad_(True)
+            whole.register_post_accumulate_grad_hook(functools.partial(self._sum, part))
+        self._wholes[id(part)] = whole
+        return whole
+
+    def finish(self) -> None:
+        """Waits for the last sum and drops the wholes."""
+        self._settle()
+        self._wholes.clear()
+
+    def _sum(self, part: DTensor, whole: torch.Tensor) -> None:
+        grad = whole.grad
+        whole.grad = None
+        assert grad is not None
+        # One sum in flight: waiting for the previous one here, rather than
+        # at once, lets it run beside this gradient's backward.
+        self._settle()
+        self._summing = _start_sum(part, grad)
+
+    def _settle(self) -> None:
+        summing, self._summing = self._summing, None
+        if summing is None:
+            return
+        local = summing.wait()
+        part = summing.part
+        with torch.no_grad():
+            if part.grad is None:
+                part.grad = DTensor.from_local(
+                    local,
+                    part.device_mesh,
+                    part.placements,
+                    run_check=False,
+                    shape=part.shape,
+                    stride=part.stride(),
+                )
+            else:
+                summed = part.grad
+                assert isinstance(summed, DTensor)
+                summed.to_local().add_(local)
+
+
+def _rows(part: DTensor) -> tuple[int, int]:
+    """The whole's rows and those of each process's padded part (`Shard(0)`
+    cuts them as `torch.chunk` does)."""
+    rows = part.shape[0]
+    return rows, -(-rows // part.device_mesh.size())
+
+
+def _nccl(group: Any) -> bool:
+    import torch.distributed as dist
+
+    return dist.get_backend(group) == "nccl"
+
+
+def _joined(part: DTensor, dtype: torch.dtype) -> torch.Tensor:
+    """The whole of `part` in `dtype`, outside autograd."""
+    import torch.distributed as dist
+
+    local = part.to_local()
+    if not isinstance(part.placements[0], Shard):
+        return local.to(dtype, copy=True)
+    mesh = part.device_mesh
+    group = mesh.get_group()
+    rows, each = _rows(part)
+    padded = local.new_zeros((each, *part.shape[1:]), dtype=dtype)
+    padded[: local.shape[0]].copy_(local)
+    joined = local.new_empty((mesh.size() * each, *part.shape[1:]), dtype=dtype)
+    if _nccl(group):
+        dist.all_gather_single(joined, padded, group=group)
+    else:
+        dist.all_gather(list(joined.chunk(mesh.size())), padded, group=group)
+    return joined[:rows].detach()
+
+
+@dataclass
+class _Summing:
+    part: DTensor
+    work: Any
+    out: torch.Tensor
+    full: torch.Tensor  # kept until the sum is done
+    rows: int | None  # of `out`, this process's; None: all of it
+
+    def wait(self) -> torch.Tensor:
+        self.work.wait()
+        return self.out if self.rows is None else self.out[: self.rows]
+
+
+def _start_sum(part: DTensor, grad: torch.Tensor) -> _Summing:
+    """Starts summing a whole's gradient into each process's part."""
+    import torch.distributed as dist
+
+    mesh = part.device_mesh
+    group = mesh.get_group()
+    local = part.to_local()
+    if not isinstance(part.placements[0], Shard):
+        full = grad.to(part.dtype, copy=True)
+        work = dist.all_reduce(full, group=group, async_op=True)
+        return _Summing(part, work, full, full, None)
+    rows, each = _rows(part)
+    size = mesh.size()
+    if rows == size * each:
+        full = grad.to(part.dtype).contiguous()
+    else:
+        full = grad.new_zeros((size * each, *grad.shape[1:]), dtype=part.dtype)
+        full[:rows].copy_(grad)
+    if _nccl(group):
+        out = full.new_empty((each, *grad.shape[1:]))
+        work = dist.reduce_scatter_single(out, full, group=group, async_op=True)
+    else:
+        # Gloo sums whole; each process keeps its rows.
+        work = dist.all_reduce(full, group=group, async_op=True)
+        rank = mesh.get_local_rank()
+        out = full[rank * each : (rank + 1) * each]
+    return _Summing(part, work, out, full, local.shape[0])
+
+
+__all__ = ["Held", "fully_shard", "gather", "regathered", "sharded"]

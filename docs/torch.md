@@ -277,6 +277,10 @@ pipe = pipeline("model.linnet", ..., group=mesh["pp"].get_group(),
 | `tensor_parallel=` | split its weights, for a model with a `Shards` generic, and run entries without gradients |
 | `data_parallel=` | shard its weights (`linnet.torch.fsdp`) and train on batches of their own; gradients are summed |
 
+A sharded stage gathers its weights once a step and keeps them whole for
+every micro-batch. As each micro-batch's backward finishes a gradient, it
+is summed into the parts while the rest of the backward runs.
+
 Stages that share a weight cannot be sharded.
 
 ## Training

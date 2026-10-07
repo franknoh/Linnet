@@ -346,16 +346,25 @@ def _sharded_rank(rank: int, port: int, weights: str, out: str) -> None:
         # Each data-parallel process trains its pipeline on its own batch.
         packs = _packs() if mesh["dp"].get_local_rank() == 0 else _other_packs()
         inputs = [torch.cat(parts) for parts in zip(*packs, strict=True)]
-        loss = pipe.step(*inputs)
         result: dict[str, Any] = {}
-        for name, parameter in pipe.named_parameters():
-            grad = parameter.grad
-            if grad is None:
-                continue  # an optional parameter the model leaves out
-            assert isinstance(parameter, DTensor) and isinstance(grad, DTensor)
-            result[name] = grad.full_tensor()
+
+        def gradients(prefix: str) -> None:
+            for name, parameter in pipe.named_parameters():
+                grad = parameter.grad
+                if grad is None:
+                    continue  # an optional parameter the model leaves out
+                assert isinstance(parameter, DTensor) and isinstance(grad, DTensor)
+                result[prefix + name] = grad.full_tensor()
+
+        loss = pipe.step(*inputs)
+        gradients("")
+        # A second step's gradients add to the first's.
+        pipe.step(*inputs)
+        gradients("twice.")
+        ran = pipe.run(*inputs)
         if loss is not None:
             result["loss"] = loss
+            result["ran"] = ran
         torch.save(result, f"{out}.{rank}")
     finally:
         dist.destroy_process_group()
@@ -380,11 +389,18 @@ def test_a_pipeline_of_sharded_stages_trains_as_one_process(weights: Path, tmp_p
     for rank in range(4):
         saved = torch.load(f"{out}.{rank}")
         loss = saved.pop("loss", None)
+        ran = saved.pop("ran", None)
         if loss is not None:
-            # The last stage of each pipeline: its own batch's loss.
-            torch.testing.assert_close(loss, first.detach() if rank % 2 == 0 else second.detach())
+            # The last stage of each pipeline: its own batch's loss, and
+            # each micro-batch's without gradients.
+            own = first.detach() if rank % 2 == 0 else second.detach()
+            torch.testing.assert_close(loss, own)
+            torch.testing.assert_close(ran.sum(), own)
         for name, grad in saved.items():
             # The gradients of both batches, summed across the pipelines.
-            torch.testing.assert_close(grad, expected[name], atol=1e-6, rtol=1e-5)
-            seen.add(name)
+            twice = name.startswith("twice.")
+            want = expected[name.removeprefix("twice.")]
+            torch.testing.assert_close(grad, 2 * want if twice else want, atol=2e-6, rtol=1e-5)
+            if not twice:
+                seen.add(name)
     assert seen == set(expected)
