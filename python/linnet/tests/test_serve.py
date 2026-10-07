@@ -28,16 +28,26 @@ STDLIB = REPO / "stdlib"
 SOURCE = """\
 module tests.serve
 
-use std.nn.attention::{causal_mask, grouped_attention, grouped_attention_rows}
-use std.nn.cache::{write_rows, write_slots, write_tokens}
+use std.nn.attention::{causal_mask, grouped_attention, grouped_attention_rows, paged_attention}
+use std.nn.cache::{page_slots, write_rows, write_slots, write_tokens}
 use std.nn.embedding::{Embedding}
 use std.nn.linear::{Linear}
 
-pub block Model<Vocab: Dim, H: Dim, Heads: Dim, Batch: Dim, MaxSeq: Dim, T: Float = f32>
+pub block Model<
+    Vocab: Dim,
+    H: Dim,
+    Heads: Dim,
+    Batch: Dim,
+    MaxSeq: Dim,
+    T: Float = f32,
+    PageSize: Dim = 8,
+>
 where
     Heads > 0,
     H % Heads == 0,
-    MaxSeq > 0
+    Batch > 0,
+    MaxSeq > 0,
+    PageSize > 0
 {
     sub embedding: Embedding<Vocab, H, T>
     sub positions: Embedding<MaxSeq, H, T>
@@ -188,6 +198,113 @@ where
         return head.forward((x + merge<Batch, 1>(mixed))[:, 0, :])
     }
 
+    // Paged serving: the caches' first row is a pool of pages, `PageSize`
+    // positions each, and a row's positions lie in the pages its row of
+    // `table` lists. `prefill_paged` is `prefill_packed` with each token's
+    // pool position given (`slots`); `decode_paged` steps every row, each
+    // over its own pages.
+    pub entry prefill_paged<P: Dim, Rows: Dim>(
+        tokens: Tensor[P; i32],
+        at: Tensor[P; i32],
+        segments: Tensor[P; i32],
+        slots: Tensor[P; i32],
+        last: Tensor[Rows; i32],
+    ) -> Tensor[Rows, Vocab; T]
+    where P > 0 {
+        let placed = reshape(positions.forward(at), [1, P, H])
+        let x = embedding.forward(reshape(tokens, [1, P])) + placed
+        let k = heads<1, P>(k_proj.forward(x))
+        let v = heads<1, P>(v_proj.forward(x))
+        let pool = fill<i32>([P], 0)
+        cache_k = write_tokens(cache_k, k, pool, slots)
+        cache_v = write_tokens(cache_v, v, pool, slots)
+        let own[i, j] = segments[i] == segments[j] && at[j] <= at[i]
+        let mixed = grouped_attention(
+            heads<1, P>(q_proj.forward(x)),
+            k,
+            v,
+            rsqrt(cast<f32>(H / Heads)),
+            some(own),
+        )
+        let out = x + merge<1, P>(mixed)
+        let ends[m, h] = out[0, cast<i64>(last[m]), h]
+        return head.forward(ends)
+    }
+
+    pub entry decode_paged<Rows: Dim, Pages: Dim>(
+        tokens: Tensor[Rows, 1; i32],
+        at: Tensor[Rows; i32],
+        table: Tensor[Rows, Pages; i32],
+    ) -> Tensor[Rows, Vocab; T]
+    where Rows > 0 {
+        let x = embedding.forward(tokens) + reshape(positions.forward(at), [Rows, 1, H])
+        let slots = page_slots<Rows, Pages, PageSize>(table, at)
+        let pool = fill<i32>([Rows], 0)
+        let k = permute(heads<Rows, 1>(k_proj.forward(x)), [2, 1, 0, 3])
+        let v = permute(heads<Rows, 1>(v_proj.forward(x)), [2, 1, 0, 3])
+        cache_k = write_tokens(cache_k, k, pool, slots)
+        cache_v = write_tokens(cache_v, v, pool, slots)
+        let mixed = paged_attention<Rows, Heads, Heads, MaxSeq, Pages, PageSize, H / Heads, T>(
+            heads<Rows, 1>(q_proj.forward(x)),
+            cache_k[0:1, :, :, :],
+            cache_v[0:1, :, :, :],
+            table,
+            at,
+            rsqrt(cast<f32>(H / Heads)),
+        )
+        return head.forward((x + merge<Rows, 1>(mixed))[:, 0, :])
+    }
+
+    // `prefill_paged`'s prompts and `decode_paged`'s step in one pass.
+    pub entry step_paged<P: Dim, Rows: Dim, Pages: Dim>(
+        tokens: Tensor[P; i32],
+        at: Tensor[P; i32],
+        segments: Tensor[P; i32],
+        slots: Tensor[P; i32],
+        last: Tensor[Rows; i32],
+        step_tokens: Tensor[Rows, 1; i32],
+        step_at: Tensor[Rows; i32],
+        table: Tensor[Rows, Pages; i32],
+    ) -> Tensor[2 * Rows, Vocab; T]
+    where P > 0 {
+        let every = concat(tokens, reshape(step_tokens, [Rows]), axis = 0)
+        let every_at = concat(at, step_at, axis = 0)
+        let x =
+            embedding.forward(reshape(every, [1, P + Rows])) +
+            reshape(positions.forward(every_at), [1, P + Rows, H])
+        let k = heads<1, P + Rows>(k_proj.forward(x))
+        let v = heads<1, P + Rows>(v_proj.forward(x))
+        let every_slot = concat(slots, page_slots<Rows, Pages, PageSize>(table, step_at), axis = 0)
+        let pool = fill<i32>([P + Rows], 0)
+        cache_k = write_tokens(cache_k, k, pool, every_slot)
+        cache_v = write_tokens(cache_v, v, pool, every_slot)
+        let q = heads<1, P + Rows>(q_proj.forward(x))
+        let own[i, j] = segments[i] == segments[j] && at[j] <= at[i]
+        let prompts = grouped_attention(
+            q[:, :, 0:P, :],
+            k[:, :, 0:P, :],
+            v[:, :, 0:P, :],
+            rsqrt(cast<f32>(H / Heads)),
+            some(own),
+        )
+        let steps = paged_attention<Rows, Heads, Heads, MaxSeq, Pages, PageSize, H / Heads, T>(
+            permute(q[:, :, P:P + Rows, :], [2, 1, 0, 3]),
+            cache_k[0:1, :, :, :],
+            cache_v[0:1, :, :, :],
+            table,
+            step_at,
+            rsqrt(cast<f32>(H / Heads)),
+        )
+        let mixed = concat(
+            merge<1, P>(prompts),
+            permute(merge<Rows, 1>(steps), [1, 0, 2]),
+            axis = 1,
+        )
+        let out = x + mixed
+        let ends[m, h] = out[0, cast<i64>(last[m]), h]
+        return head.forward(concat(ends, out[0, P:P + Rows, :], axis = 0))
+    }
+
     fn heads<B: Dim, S: Dim>(x: Tensor[B, S, H; T]) -> Tensor[B, Heads, S, H / Heads; T] {
         return permute(reshape(x, [B, S, Heads, H / Heads]), [0, 2, 1, 3])
     }
@@ -210,8 +327,7 @@ def _compiler() -> None:
                 break
 
 
-@pytest.fixture
-def model_files(tmp_path: Path) -> tuple[Path, Path]:
+def _files(tmp_path: Path, positions: int) -> tuple[Path, Path]:
     source = tmp_path / "serve.linnet"
     source.write_text(SOURCE, encoding="utf-8")
     generator = torch.Generator().manual_seed(0)
@@ -219,13 +335,28 @@ def model_files(tmp_path: Path) -> tuple[Path, Path]:
     def normal(*shape: int) -> torch.Tensor:
         return torch.randn(*shape, generator=generator)
 
-    tensors = {"embedding.weight": normal(64, 32), "positions.weight": normal(48, 32)}
+    tensors = {"embedding.weight": normal(64, 32), "positions.weight": normal(positions, 32)}
     for name in ("q_proj", "k_proj", "v_proj"):
         tensors[f"{name}.weight"] = normal(32, 32) * 0.3
     tensors["head.weight"] = normal(64, 32)
     weights = tmp_path / "model.safetensors"
     save_file(tensors, str(weights))
     return source, weights
+
+
+@pytest.fixture
+def model_files(tmp_path: Path) -> tuple[Path, Path]:
+    return _files(tmp_path, 48)
+
+
+@pytest.fixture
+def paged_files(tmp_path: Path) -> tuple[Path, Path]:
+    """The same model with positions for a pool of 128."""
+    return _files(tmp_path, 128)
+
+
+# One row of 128 positions: a pool of 16 pages of 8.
+PAGED: dict[str, int | str] = {"Vocab": 64, "H": 32, "Heads": 4, "Batch": 1, "MaxSeq": 128}
 
 
 def _requests() -> list[Request]:
@@ -391,6 +522,131 @@ def test_mixed_passes_on_flex_attention(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(engine.backend, "step_packed", counted)
     done, _ = engine.run(requests)
     assert passes
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
+
+
+@pytest.mark.parametrize("mix", [True, False])
+def test_paged_rows_decode_as_greedy(paged_files: tuple[Path, Path], mix: bool) -> None:
+    """Rows that take pages of one pool as they grow: each request gets
+    greedy decoding's tokens, with the prompts' passes alone or carrying the
+    rows' steps."""
+    source, weights = paged_files
+    model = load(source, generics=PAGED, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, pack=48, mix=mix, rows=4)
+    assert engine.paged and engine.slots == 4 and engine.backend.pages == 16
+    assert engine.mix == mix
+    requests = _requests()
+    done, stats = engine.run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
+    assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
+
+
+def test_paged_rows_wait_again_when_the_pool_runs_short(model_files: tuple[Path, Path]) -> None:
+    """Five pages of 8 to use for three rows of up to 33 positions: the rows
+    admitted last give their pages back and wait, then pass their tokens so
+    far as a prompt. Every request still gets greedy decoding's tokens, and
+    a sampled one the draws it gets with the pool to itself."""
+    source, weights = model_files
+    generics = {**GENERICS, "Batch": 1}
+    model = load(source, generics=generics, std_root=STDLIB, weights=weights, compile=True)
+    rng = random.Random(1)
+    requests = [
+        Request(
+            prompt=[rng.randrange(64) for _ in range(rng.randrange(2, 10))],
+            max_new_tokens=rng.randrange(10, 24),
+            id=i,
+            temperature=0.9 if i % 2 else 0.0,
+            seed=200 + i,
+        )
+        for i in range(6)
+    ]
+    tight = Engine(model, graphs=False, pack=48, rows=3, reserve=0)
+    done, stats = tight.run(requests)
+    assert stats.preempted > 0 and any(c.preempted for c in done)
+    alone, _ = Engine(model, graphs=False, pack=48, rows=1).run(requests)
+    for completion, single in zip(done, alone, strict=True):
+        assert completion.tokens == single.tokens
+        assert len(completion.tokens) == completion.request.max_new_tokens
+        if completion.request.temperature == 0:
+            assert completion.tokens == _greedy(model, completion.request)
+
+
+def test_paged_identical_prompts_copy_pages(paged_files: tuple[Path, Path]) -> None:
+    """Rows sharing a prompt's pass copy its pages into their own."""
+    source, weights = paged_files
+    requests = [
+        Request(
+            prompt=[5 + i, 9, 2, 7, 3, 1, 4, 4, 8, 6],
+            max_new_tokens=6,
+            temperature=1.0,
+            seed=100 * i + k,
+        )
+        for i in range(2)
+        for k in range(3)
+    ]
+    model = load(source, generics=PAGED, std_root=STDLIB, weights=weights, compile=True)
+    shared, _ = Engine(model, graphs=False, pack=48, rows=6, share=True).run(requests)
+    alone, _ = Engine(model, graphs=False, pack=48, rows=6, share=False).run(requests)
+    assert [c.tokens for c in shared] == [c.tokens for c in alone]
+
+
+def test_paged_rows_stop_at_their_longest(paged_files: tuple[Path, Path]) -> None:
+    """A row stops before `max_len`, as a slot stops at the cache's end."""
+    source, weights = paged_files
+    model = load(source, generics=PAGED, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, pack=48, rows=2, max_len=24)
+    request = Request(prompt=list(range(1, 11)), max_new_tokens=40)
+    (completion,), _ = engine.run([request])
+    assert completion.reason == "cache" and len(completion.tokens) == 24 - 10
+    shorter = Request(prompt=request.prompt, max_new_tokens=len(completion.tokens))
+    assert completion.tokens == _greedy(model, shorter)
+    with pytest.raises(ValueError, match="does not fit"):
+        engine.submit(Request(prompt=list(range(24)), max_new_tokens=1))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_paged_rows_on_flex_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pages of 16 positions read by FlexAttention, the step replayed as a
+    CUDA graph: more rows than the pool holds at their longest, so some wait
+    again, and every request gets greedy decoding's tokens."""
+    import linnet.torch.paged as paged
+
+    source = tmp_path / "serve.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    generics: dict[str, int | str] = {
+        "Vocab": 64,
+        "H": 64,
+        "Heads": 4,
+        "Batch": 1,
+        "MaxSeq": 1024,
+        "PageSize": 16,
+    }
+    model = load(source, generics=generics, std_root=STDLIB, device="cuda", compile=True)
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.copy_(torch.randn(parameter.shape, device="cuda", generator=generator) * 0.02)
+    flexed: list[int] = []
+    flex = paged._flex  # pyright: ignore[reportPrivateUsage]
+
+    def counted(*args: Any) -> Any:
+        flexed.append(1)
+        return flex(*args)
+
+    monkeypatch.setattr(paged, "_flex", counted)
+    rng = random.Random(0)
+    requests = [
+        Request(
+            prompt=[rng.randrange(64) for _ in range(rng.randrange(20, 120))],
+            max_new_tokens=rng.randrange(4, 40),
+        )
+        for _ in range(16)
+    ]
+    engine = Engine(model, pack=1024, rows=8)
+    done, _ = engine.run(requests)
+    assert flexed
     for completion in done:
         assert completion.tokens == _greedy(model, completion.request)
 
