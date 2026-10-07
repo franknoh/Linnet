@@ -178,7 +178,9 @@ class CudaTorchBackend:
     allocator's fragmentation and any compilation's autotuning are unknown.
     `context_bytes` overrides the context estimate. `processes` is the size
     of the group a process belongs to: with more than one, collectives
-    allocate and the group has communication buffers."""
+    allocate and the group has communication buffers; `communicators` is
+    how many process groups it joins (tensor and pipeline parallelism, one
+    each)."""
 
     name = "cuda"
 
@@ -187,10 +189,12 @@ class CudaTorchBackend:
         context_bytes: int | None = None,
         compiled: bool = False,
         processes: int = 1,
+        communicators: int = 1,
     ) -> None:
         self.context_bytes = context_bytes
         self.compiled = compiled
         self.processes = processes
+        self.communicators = communicators
 
     # ---- workspace
 
@@ -351,9 +355,10 @@ class CudaTorchBackend:
                     "NCCL communicator",
                     Category.RUNTIME,
                     Estimate(
-                        842 * MIB,
+                        842 * MIB * max(self.communicators, 1),
                         Confidence.ESTIMATED,
-                        "measured for two H100s over NVLink; grows with the GPUs and channels",
+                        "one a process group, measured for two H100s over NVLink; grows with "
+                        "the GPUs and channels",
                     ),
                 ),
             ]
@@ -480,10 +485,12 @@ def backend_model(name: str, **options: object) -> BackendResourceModel:
     if name == "cuda":
         context = options.get("context_bytes")
         processes = options.get("processes", 1)
+        communicators = options.get("communicators", 1)
         return CudaTorchBackend(
             context_bytes=int(context) if isinstance(context, int) else None,
             compiled=bool(options.get("compiled", False)),
             processes=processes if isinstance(processes, int) else 1,
+            communicators=communicators if isinstance(communicators, int) else 1,
         )
     if name == "generic":
         return GenericBackend()

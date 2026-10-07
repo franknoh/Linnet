@@ -47,7 +47,10 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   TensorRT).
 - PyTorch across GPUs: block placement and offloading, tensor parallelism,
   and pipelines of stages over processes under GPipe or 1F1B
-  (`linnet.torch.pipeline`).
+  (`linnet.torch.pipeline`), each stage split or sharded across processes
+  of its own.
+- Under `torch.compile`, each kind of repeated block compiles once: the
+  first step compiles in a fraction of the time.
 - Imports from PyTorch, JAX, StableHLO and ONNX; exports to a Triton
   Inference Server model, a transformers checkpoint for vLLM, SGLang and
   TGI, and GGUF for llama.cpp and Ollama.

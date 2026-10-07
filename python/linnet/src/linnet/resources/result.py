@@ -58,6 +58,7 @@ class DeviceMemory:
     holds: str
     graph_peak: int
     expected_peak: int
+    runtime: int = 0  # of `expected_peak`: what the process holds outside the graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +132,7 @@ class MemoryAnalysisResult:
                     "holds": d.holds,
                     "graph_peak": d.graph_peak,
                     "expected_peak": d.expected_peak,
+                    "runtime": d.runtime,
                 }
                 for d in self.devices
             ],

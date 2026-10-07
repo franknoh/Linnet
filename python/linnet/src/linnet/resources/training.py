@@ -74,7 +74,9 @@ class TrainingConfig:
     weights' when `master_dtype` is set (f32 masters of bf16 weights), the
     parameters' otherwise. `trainable` are fnmatch patterns over parameter
     paths. `shards` divides parameters, gradients, master weights and
-    optimizer states across that many devices (FSDP)."""
+    optimizer states across that many devices, as
+    `linnet.torch.fsdp.fully_shard` does: a trained weight's part is kept
+    in f32 (or `master_dtype`), which its gradient and states follow."""
 
     optimizer: OptimizerModel = field(default_factory=lambda: OPTIMIZERS["adamw"])
     gradient_dtype: str | None = None
@@ -482,14 +484,22 @@ def _persistent(
         if obj.category != Category.PARAMETER:
             put(obj.category, size)
             continue
-        put(Category.PARAMETER, -(-size // shards))
-        if obj.path not in trained or not dtypes.dtype(obj.dtype).is_float:
-            continue
+        trains = obj.path in trained and dtypes.dtype(obj.dtype).is_float
         elements = ex.evaluate(ex.product(obj.shape), env)
         share = -(-elements // shards)
-        updated = config.master_dtype or obj.dtype
-        if config.master_dtype is not None and config.master_dtype != obj.dtype:
-            put(Category.MASTER, share * dtypes.dtype(config.master_dtype).element_bytes)
+        if shards > 1 and trains:
+            # `linnet.torch.fsdp.fully_shard` keeps a trained weight's part in
+            # f32 (or the master dtype): the copy the optimizer updates, and
+            # its gradient's dtype; the whole is gathered per block.
+            updated = config.master_dtype or "f32"
+            put(Category.PARAMETER, share * dtypes.dtype(updated).element_bytes)
+        else:
+            put(Category.PARAMETER, -(-size // shards))
+            if not trains:
+                continue
+            updated = config.master_dtype or obj.dtype
+            if config.master_dtype is not None and config.master_dtype != obj.dtype:
+                put(Category.MASTER, share * dtypes.dtype(config.master_dtype).element_bytes)
         state_dtype = config.optimizer.state_dtype or updated
         if config.optimizer.states:
             put(

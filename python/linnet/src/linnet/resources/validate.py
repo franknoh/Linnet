@@ -126,12 +126,11 @@ def measure(
     prediction = model.analyze()
     config = model.config
     training = config.training
-    if training is not None and (
-        training.master_dtype or training.checkpoint.kind != "none" or training.shards > 1
-    ):
+    if training is not None and (training.master_dtype or training.checkpoint.kind != "none"):
         raise LinnetError(
-            "validation runs plain training steps: no master weights, checkpointing or sharding"
+            "validation runs plain or sharded training steps: no master weights or checkpointing"
         )
+    shards = training.shards if training is not None else 1
     import torch.distributed as dist
 
     rank = dist.get_rank() if dist.is_initialized() else 0
@@ -142,6 +141,22 @@ def measure(
     generics = root_values(model, env)
     inputs = _inputs(model, env, device)
     if config.pipeline_parallel > 1:
+        group: Any = None
+        split: Any = None
+        sharded: Any = None
+        if config.tensor_parallel > 1 or shards > 1:
+            from torch.distributed.device_mesh import init_device_mesh
+
+            # Stage-major: the processes of a stage are consecutive.
+            inner = config.tensor_parallel if config.tensor_parallel > 1 else shards
+            mesh = init_device_mesh(
+                "cuda", (config.pipeline_parallel, inner), mesh_dim_names=("pp", "inner")
+            )
+            group = mesh["pp"].get_group()
+            if config.tensor_parallel > 1:
+                split = mesh["inner"]
+            else:
+                sharded = mesh["inner"]
         pipe = linnet_torch.pipeline(
             model.source_path,
             generics=generics,
@@ -155,6 +170,9 @@ def measure(
             numerics=config.numerics,
             trainable=training is not None,
             device=device,
+            group=group,
+            tensor_parallel=split,
+            data_parallel=sharded,
         )
         parameters = pipe.parameters()
 
@@ -182,6 +200,12 @@ def measure(
             strict=weights is not None,
             tensor_parallel=mesh,
         )
+        if shards > 1:
+            from torch.distributed.device_mesh import init_device_mesh
+
+            from ..torch.fsdp import fully_shard
+
+            fully_shard(module, init_device_mesh("cuda", (shards,)))
         entry = getattr(module, model.entry)
         parameters = [p for p in module.parameters() if p.requires_grad]
 
@@ -213,16 +237,22 @@ def measure(
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         torch.cuda.synchronize()
+    runtime_of: int | None = None
     if prediction.devices:
-        # This process's stage: its own peaks, with the runtime the rest has.
-        own = prediction.devices[rank]
+        # This process's stage: its own peaks and runtime.
+        own = prediction.devices[rank // max(config.tensor_parallel, shards)]
         prediction = replace(prediction, graph_peak=own.graph_peak, expected_peak=own.expected_peak)
+        runtime_of = own.runtime
     allocated = int(torch.cuda.max_memory_allocated())
     reserved = int(torch.cuda.max_memory_reserved())
     free, total = torch.cuda.mem_get_info()
     used = int(total - free)
     outside = used - int(torch.cuda.memory_reserved())
-    runtime = sum(c.nbytes or 0 for c in prediction.components if c.category == Category.RUNTIME)
+    runtime = (
+        runtime_of
+        if runtime_of is not None
+        else sum(c.nbytes or 0 for c in prediction.components if c.category == Category.RUNTIME)
+    )
     comparisons = [
         Comparison("graph-visible vs allocator peak", prediction.graph_peak, allocated),
         Comparison(

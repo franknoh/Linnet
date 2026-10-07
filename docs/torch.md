@@ -262,6 +262,23 @@ across stages (an embedding and its output head) have their gradients
 summed after each step. Entries that write `state`, or loop with `while`,
 do not split.
 
+A stage can span several processes, from a two-dimensional mesh whose
+`"pp"` dimension is the pipeline:
+
+```python
+# torchrun --nproc-per-node 4: 2 stages, each over 2 GPUs
+mesh = init_device_mesh("cuda", (2, 2), mesh_dim_names=("pp", "split"))
+pipe = pipeline("model.linnet", ..., group=mesh["pp"].get_group(),
+                tensor_parallel=mesh["split"], trainable=False)   # or data_parallel=
+```
+
+| Option | Each stage's processes |
+| --- | --- |
+| `tensor_parallel=` | split its weights, for a model with a `Shards` generic, and run entries without gradients |
+| `data_parallel=` | shard its weights (`linnet.torch.fsdp`) and train on batches of their own; gradients are summed |
+
+Stages that share a weight cannot be sharded.
+
 ## Training
 
 ```python

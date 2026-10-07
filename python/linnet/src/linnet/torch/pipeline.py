@@ -35,6 +35,7 @@ so that no sequence spans two. `run` is the forward pass alone.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,6 +201,8 @@ class Pipeline:
         generated = self.module.import_source(
             pieces.source, f"{self.entry}_stages_{len(self._built)}"
         )
+        if self.module.shard_group is not None and hasattr(generated, "_GROUP"):
+            generated._GROUP = self.module.shard_group
         stage = pieces.stages[self.stage]
         with torch.no_grad():
             computed = generated.constants(self.device) if pieces.constants else ()
@@ -220,6 +223,10 @@ class Pipeline:
             self.device,
             last=self.is_last,
         )
+        if self.module.fully_sharded and self.compile is None:
+            from .fsdp import regathered
+
+            wrapped.regathered = regathered
         from torch.distributed.pipelining import PipelineStage, Schedule1F1B, ScheduleGPipe
 
         stage_runner = PipelineStage(
@@ -283,10 +290,14 @@ class _StageModule(nn.Module):
         self.device = device
         self.last = last
         self.joining = False
+        # Sharded weights gathered whole during a call keep only their parts
+        # for backward (`linnet.torch.fsdp`), without `torch.compile`.
+        self.regathered: Callable[[], Any] = contextlib.nullcontext
 
     def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Any:
         weights = [getattr(owner, leaf) for owner, leaf in self.locations]
-        out = self.function(*received, *weights, *self.constants, _device=self.device, **inputs)
+        with self.regathered():
+            out = self.function(*received, *weights, *self.constants, _device=self.device, **inputs)
         if self.last and self.joining:
             out = tuple(value.reshape(1) if value.dim() == 0 else value for value in out)
         return out[0] if self.last and len(out) == 1 else out
@@ -330,6 +341,8 @@ def pipeline(
     stages: Sequence[str] | None = None,
     schedule: Schedule = "1f1b",
     group: Any = None,
+    tensor_parallel: Any = None,
+    data_parallel: Any = None,
     device: str | torch.device | None = None,
     cast_dtype: bool = False,
     compile: str | None = None,
@@ -344,17 +357,44 @@ def pipeline(
     there are stages after it) or `"gpipe"` (every micro-batch's forward,
     then every backward). `device` defaults to the current CUDA device, or
     the CPU without one. `compile` passes each stage function through
-    `torch.compile` with that backend. The rest is as `linnet.torch.load`."""
+    `torch.compile` with that backend. The rest is as `linnet.torch.load`.
+
+    `tensor_parallel`, a one-dimensional `DeviceMesh`, splits each stage
+    over its processes, for a model that says how it splits (a `Shards`
+    generic): each binds its own part of its stage's weights. `group` then
+    names this process's pipeline, one process of each stage, as the
+    `"pp"` dimension of a two-dimensional mesh does. Split stages run
+    entries without gradients (`trainable=False`).
+
+    `data_parallel`, a one-dimensional `DeviceMesh`, shards each stage's
+    weights over the processes that train the same stage on batches of
+    their own (`linnet.torch.fsdp.fully_shard`): their gradients are summed.
+    `group` names this process's pipeline as with `tensor_parallel`."""
     import torch.distributed as dist
 
     if not dist.is_available() or not dist.is_initialized():
         raise PlanError("a pipeline runs in a torch.distributed job: call init_process_group first")
     if microbatches < 1:
         raise PlanError("a pipeline needs at least one micro-batch")
+
     if schedule not in ("1f1b", "gpipe"):
         raise PlanError('schedule must be "1f1b" or "gpipe"')
+    if (tensor_parallel is not None or data_parallel is not None) and group is None:
+        raise PlanError("a pipeline over split or sharded stages needs group=, its own processes")
+    if tensor_parallel is not None and data_parallel is not None:
+        raise PlanError("a pipeline's stages are split or sharded, not both")
+    if tensor_parallel is not None and trainable:
+        # A split stage's sums carry no gradient back to the inputs every
+        # process holds whole.
+        raise PlanError(
+            "a pipeline over split stages runs entries without gradients: trainable=False"
+        )
     group = group if group is not None else dist.group.WORLD
     rank, size = dist.get_rank(group), dist.get_world_size(group)
+    if microbatches < size:
+        raise PlanError(
+            f"a pipeline of {size} stages needs at least as many micro-batches, not {microbatches}"
+        )
     if device is None:
         device = (
             torch.device("cuda", torch.cuda.current_device())
@@ -363,6 +403,15 @@ def pipeline(
         )
     device = torch.device(device)
     plan = compile_plan(source, root=root, std_root=std_root, numerics=numerics)
+    shard: tuple[int, int] | None = None
+    if tensor_parallel is not None:
+        if not any(g["name"] == "Shards" for g in plan.root.get("generics", [])):
+            raise PlanError(
+                "a pipeline splits its stages only for a model that says how it splits "
+                "(a `Shards` generic)"
+            )
+        generics = {**generics, "Shards": tensor_parallel.size()}
+        shard = (tensor_parallel.get_local_rank(), tensor_parallel.size())
     module = CompiledLinnetModule(
         plan,
         generics,
@@ -389,12 +438,19 @@ def pipeline(
     bound: dict[str, str] = {}
     if weights is not None:
         bound = bind_weights(
-            module, weights, bindings, strict=strict, cast_dtype=cast_dtype, only=mine
+            module, weights, bindings, strict=strict, cast_dtype=cast_dtype, only=mine, shard=shard
         )
     # Parameters read from one checkpoint tensor: one parameter within a
     # stage, and summed gradients across stages.
     by_tensor = paths_by_tensor(bound)
     ties: list[tuple[list[str], Any]] = []
+    # Every process makes every group, in the same order: with the stages
+    # split, each place in the split has a pipeline of its own.
+    pipelines = [[dist.get_global_rank(group, s) for s in range(size)]]
+    if tensor_parallel is not None:
+        everyone: list[Any] = [None] * dist.get_world_size()
+        dist.all_gather_object(everyone, pipelines[0])
+        pipelines = [list(p) for p in sorted({tuple(p) for p in everyone})]
     for tensor in sorted(by_tensor):
         paths = by_tensor[tensor]
         if len(paths) < 2:
@@ -408,16 +464,35 @@ def pipeline(
                 setattr(owner, leaf, kept)
         holders = sorted({stage_of_path(names, assigned, p) or 0 for p in paths})
         if len(holders) > 1:
-            # Every process makes every group, in the same order.
-            ranks = [dist.get_global_rank(group, s) for s in holders]
-            ties.append((paths, dist.new_group(ranks)))
+            own: Any = None
+            for ranks_of in pipelines:
+                ranks = [ranks_of[s] for s in holders]
+                made = dist.new_group(ranks)
+                if dist.get_rank() in ranks:
+                    own = made
+            ties.append((paths, own))
     module.forget_parameters()
+    if tensor_parallel is not None:
+        from .collectives import prepare
+
+        module.shard_group = tensor_parallel.get_group()
+        # A collective over the stage's processes, once.
+        prepare(module.shard_group)
     if trainable:
         module.set_trainable(trainable)
         # Parameters of other stages hold no memory; never train them here.
         for name, parameter in module.root.named_parameters(remove_duplicate=False):
             if not mine(name):
                 parameter.requires_grad_(False)
+    # Sharded after what trains is known: those parts are kept in f32.
+    if data_parallel is not None:
+        from .fsdp import fully_shard
+
+        if ties:
+            raise PlanError(
+                "a pipeline shards its stages only when no weight is shared between them"
+            )
+        fully_shard(module, data_parallel, only=mine)
     return Pipeline(
         module,
         entry,

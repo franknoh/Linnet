@@ -27,7 +27,7 @@ import contextlib
 import functools
 import inspect
 import weakref
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,7 +47,11 @@ from .module import LinnetModule, owner_of
 
 
 def fully_shard(
-    model: LinnetModule, mesh: DeviceMesh | None = None, *, dtype: torch.dtype = torch.float32
+    model: LinnetModule,
+    mesh: DeviceMesh | None = None,
+    *,
+    dtype: torch.dtype = torch.float32,
+    only: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """Splits `model`'s parameters across the processes of `mesh` (one
     dimension; every process by default) and compiles its entries to gather
@@ -84,19 +88,26 @@ def fully_shard(
     if mesh.ndim != 1:
         raise PlanError("sharding takes a one-dimensional mesh")
 
-    units = parallel_units([p for p, _ in model.root.named_parameters(remove_duplicate=False)])[0]
+    chosen = [
+        p for p, _ in model.root.named_parameters(remove_duplicate=False) if only is None or only(p)
+    ]
+    units = parallel_units(chosen)[0]
     replaced: dict[int, nn.Parameter] = {}
     with torch.no_grad():
         for path, parameter in list(model.root.named_parameters(remove_duplicate=False)):
             owner, leaf = owner_of(model, path)
             if "." not in path or leaf in owner.absent_params or leaf in ("lora_a", "lora_b"):
                 continue
+            if only is not None and not only(path):
+                continue
             split = replaced.get(id(parameter))
             if split is None:
                 # A weight that does not train needs no f32 copy to update.
                 kept = dtype if parameter.requires_grad else parameter.dtype
                 split = nn.Parameter(
-                    _split(parameter.detach(), mesh, kept, model.interpreter.device),
+                    # Where the weight is: a pipeline's model is on `meta`, its
+                    # own stage's weights on the device.
+                    _split(parameter.detach(), mesh, kept, parameter.device),
                     requires_grad=parameter.requires_grad,
                 )
                 replaced[id(parameter)] = split
