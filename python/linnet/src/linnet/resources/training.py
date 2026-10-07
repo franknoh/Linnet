@@ -206,13 +206,16 @@ def timeline(
     backend: BackendResourceModel,
     arrays: Sequence[str] = (),
     tied: Mapping[str, str] | None = None,
+    held: bool = False,
 ) -> TrainingTimeline:
     """The training step of `graph` (an entry returning a loss) as intervals.
 
     `arrays` are the block arrays of the hierarchy (`layers`), which the
     `blocks` checkpoint policy and sharding treat as units. `tied` maps a
     parameter path to the path whose tensor it shares; such a tensor trains
-    when any of its paths is trainable."""
+    when any of its paths is trainable. `held`: sharded weights are gathered
+    once and kept whole through the step, as a pipeline stage keeps them
+    for its micro-batches (`linnet.torch.fsdp.Held`)."""
     objects = graph.objects
     links = dict(tied or {})
     owned = [o.path for o in objects if o.category == Category.PARAMETER and o.path is not None]
@@ -401,7 +404,7 @@ def timeline(
     if not config.optimizer.fused:
         unknown.append(f"the {config.optimizer.name} step's temporaries (not fused)")
     if config.shards > 1:
-        intervals.extend(_gathered(graph, env, config, arrays, t_back))
+        intervals.extend(_gathered(graph, env, config, arrays, t_back, trained, held))
 
     forward = sum(ex.evaluate(s.flops, env) for s in steps)
     redone = sum(ex.evaluate(steps[k].flops, env) for k in region_of)
@@ -520,17 +523,28 @@ def _gathered(
     config: TrainingConfig,
     arrays: Sequence[str],
     t_back: Sequence[int],
+    trained: set[str],
+    held: bool,
 ) -> list[Interval]:
     """Sharded parameters gathered whole where they run: each array
     element's while its steps run forward and backward, the rest throughout
-    the step."""
+    the step. `held`: every one throughout the step, with the gradient sums
+    in flight during backward."""
     shards = max(config.shards, 1)
     units: dict[str, int] = {}
     loose = 0
+    wholes = 0
+    summed: list[int] = []
     for obj in graph.objects:
         if not obj.persistent or not obj.owns_storage or obj.category != Category.PARAMETER:
             continue
         size = ex.evaluate(obj.nbytes, env)
+        wholes += size
+        if obj.path in trained and dtypes.dtype(obj.dtype).is_float:
+            elements = ex.evaluate(ex.product(obj.shape), env)
+            part = dtypes.dtype(config.master_dtype or "f32").element_bytes
+            # Its gradient whole, and the copy in the part's dtype summed.
+            summed.append(size + elements * part)
         unit = _unit(obj.path or "", arrays)
         if unit is None:
             loose += size - -(-size // shards)
@@ -538,6 +552,21 @@ def _gathered(
             units[unit] = units.get(unit, 0) + size - -(-size // shards)
     out: list[Interval] = []
     length = max(t_back, default=0) + 2
+    if held:
+        out.append(Interval(0, length - 1, wholes, Category.COMMUNICATION, Confidence.MODELED))
+        if summed and t_back:
+            # The largest gradient being summed: whole in its dtype and in
+            # the part's.
+            out.append(
+                Interval(
+                    min(t_back),
+                    max(t_back),
+                    max(summed),
+                    Category.COMMUNICATION,
+                    Confidence.MODELED,
+                )
+            )
+        return out
     if loose:
         out.append(Interval(0, length - 1, loose, Category.COMMUNICATION, Confidence.MODELED))
     spans: dict[str, list[int]] = {}

@@ -705,6 +705,7 @@ class _Part:
     host: float
     spent: Mapping[str, float]
     optimizer: float  # once a step
+    once: float = 0.0  # also once a step: a stage's sharded weights gathered
 
 
 def _part(
@@ -726,19 +727,29 @@ def _part(
     large back; `recomputed` is the share of the forward pass checkpointing
     runs again. With `shards`, each weight is gathered where it is read,
     forward and backward, and its gradient summed back into the parts
-    (`linnet.torch.fsdp`)."""
+    (`linnet.torch.fsdp`); a pipeline's stage (`staged`) gathers its
+    weights once a step and sums each micro-batch's gradients."""
     forward, backward = _costs(graph, env, device, processes, training, fuse=not staged)
     clock = _Clock(not compiled)
+    once = 0.0
+    summing: _Op | None = None
     if shards > 1 and training:
-        weights = [
-            ex.evaluate(o.nbytes, env)
-            for o in graph.objects
-            if o.category == Category.PARAMETER and o.owns_storage
-        ]
+        owned = [o for o in graph.objects if o.category == Category.PARAMETER and o.owns_storage]
+        weights = sum(ex.evaluate(o.nbytes, env) for o in owned)
+        # Summed back in f32, the parts' dtype.
+        summed = sum(4 * ex.evaluate(ex.product(o.shape), env) for o in owned)
         share = (shards - 1) / shards
-        # Gathered twice in the model's dtype; summed back in f32.
-        moved = share * sum(weights) * (2 + 2) / device.link
-        clock.run(_Op(0.0, moved + 3 * len(weights) * device.latency, "communication"))
+        if staged:
+            once = share * weights / device.link + len(owned) * device.latency
+            summing = _Op(
+                len(owned) * device.dispatch,
+                share * summed / device.link + len(owned) * device.latency,
+                "communication",
+            )
+        else:
+            # Gathered twice in the model's dtype.
+            moved = share * (2 * weights + summed) / device.link
+            clock.run(_Op(0.0, moved + 3 * len(owned) * device.latency, "communication"))
     transfer = _Op(device.host_of(), device.latency + received / device.link, "communication")
     if received:
         clock.run(transfer)
@@ -751,6 +762,8 @@ def _part(
                 clock.run(_Op(op.host * recomputed, op.seconds * recomputed, op.by))
         for op in reversed(backward):
             clock.run(op)
+        if summing is not None:
+            clock.run(summing)
         if received:
             clock.run(transfer)
         weights = sum(
@@ -762,7 +775,7 @@ def _part(
         # and reads and writes each state.
         optimizer = (3 + 2 * optimizer_states) * weights / device.bandwidth
     busy = sum(clock.spent.values())
-    return _Part(clock.device, max(clock.device - busy, 0.0), dict(clock.spent), optimizer)
+    return _Part(clock.device, max(clock.device - busy, 0.0), dict(clock.spent), optimizer, once)
 
 
 def step_time(
@@ -803,10 +816,11 @@ def step_time(
     slowest = max(stages, key=lambda p: p.seconds)
     count = microbatches if len(stages) > 1 else 1
     slots = count + len(stages) - 1
-    seconds = slots * slowest.seconds + slowest.optimizer
+    seconds = slots * slowest.seconds + slowest.optimizer + slowest.once
     bubble = (len(stages) - 1) / slots
     totals = {k: v * slots for k, v in slowest.spent.items()}
     totals["memory"] += slowest.optimizer
+    totals["communication"] = totals.get("communication", 0.0) + slowest.once
     totals["host"] = slowest.host * slots
     if training and replicas > 1 and gradient_bytes:
         # Summing gradients overlaps the backward pass; the longer one sets the step.
