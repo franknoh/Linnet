@@ -120,6 +120,11 @@ def dpo(
     import torch.distributed as dist
 
     device = next(model.parameters()).device
+    if getattr(model, "shard_group", None) is not None:
+        raise ValueError(
+            "dpo trains a model whole on each process or split by `fully_shard`, "
+            "not by `tensor_parallel`"
+        )
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     trained = [p for group in optimizer.param_groups for p in group["params"]]
     precomputed: list[tuple[float, float]] | None = None

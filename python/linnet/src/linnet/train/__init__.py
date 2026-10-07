@@ -166,6 +166,11 @@ def train(
     state across them. Only the first process saves; all stop when any runs
     out of batches.
 
+    A model split across processes (`load(tensor_parallel=...)`) is one copy
+    over its group: those processes take the same batches, and the sums run
+    across the copies, one process of each group to a sum. Its gradient's
+    norm adds the split parameters' parts across the group.
+
     With `checkpoint`, a directory, training resumes from the latest
     checkpoint there (`load_checkpoint`), skipping the batches its steps
     took, and `steps` counts from the start of the run. A checkpoint is
@@ -177,6 +182,7 @@ def train(
         device = next(model.parameters()).device
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     trained = [p for group in optimizer.param_groups for p in group["params"]]
+    layout = copies(model) if distributed else Copies()
     # One process saves; a sharded model is gathered to be saved, by every one.
     saves = not distributed or dist.get_rank() == 0 or bool(getattr(model, "fully_sharded", ()))
     history = History()
@@ -194,7 +200,7 @@ def train(
             ready = torch.tensor([float(bool(group))], dtype=torch.float64, device=device)
             summed = torch.tensor([local], dtype=torch.float64, device=device)
             dist.all_reduce(ready, op=dist.ReduceOp.MIN)
-            dist.all_reduce(summed)
+            dist.all_reduce(summed, group=layout.copies)
             if not ready.item():
                 break
             local = float(summed.item())
@@ -208,9 +214,9 @@ def train(
             loss.backward()
             total += loss.detach().double()
         if distributed:
-            reduce_gradients(trained)
-            dist.all_reduce(total)
-        norm = clip_gradients(trained, clip) if clip is not None else None
+            reduce_gradients(trained, layout.copies)
+            dist.all_reduce(total, group=layout.copies)
+        norm = clip_gradients(trained, clip, layout) if clip is not None else None
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         if schedule is not None:
@@ -244,15 +250,62 @@ def train(
     return history
 
 
-def reduce_gradients(parameters: list[torch.Tensor]) -> None:
-    """Sums every gradient across the processes of `torch.distributed`: one
-    collective per tensor, all in flight at once, so no buffer the size of
-    the model is made. A parameter split by `fully_shard` has its part
-    summed already."""
+@dataclass(frozen=True)
+class Copies:
+    """How processes hold a model they train: `copies`, the group a sum
+    across copies runs over (None: every process); `shards`, the group a
+    copy split across processes runs over; `split`, the ids of the
+    parameters split across it."""
+
+    copies: Any = None
+    shards: Any = None
+    split: frozenset[int] = frozenset()
+
+
+def copies(model: Any) -> Copies:
+    """The copies of a model under `torch.distributed`. Split across
+    processes (`load(tensor_parallel=...)`), a copy is its group, and each
+    of its processes sums with the same place in the other groups: every
+    process makes those groups, in the same order, the first time."""
+    shards = getattr(model, "shard_group", None)
+    if shards is None:
+        return Copies()
+    found = getattr(model, "copies_layout", None)
+    if isinstance(found, Copies):
+        return found
     import torch.distributed as dist
 
+    from ..torch.module import owner_of
+
+    every: list[Any] = [None] * dist.get_world_size()
+    dist.all_gather_object(every, dist.get_process_group_ranks(shards))
+    groups = sorted({tuple(ranks) for ranks in every})
+    mine: Any = None
+    for place in range(len(groups[0])):
+        ranks = [group[place] for group in groups]
+        made = dist.new_group(ranks)
+        if dist.get_rank() in ranks:
+            mine = made
+    split = frozenset(
+        id(getattr(owner, leaf))
+        for owner, leaf in (owner_of(model, path) for path in getattr(model, "shard_parts", {}))
+    )
+    layout = Copies(mine, shards, split)
+    model.copies_layout = layout
+    return layout
+
+
+def reduce_gradients(parameters: list[torch.Tensor], group: Any = None) -> None:
+    """Sums every gradient across the processes of `group` (all of
+    `torch.distributed` by default): one collective per tensor, all in
+    flight at once, so no buffer the size of the model is made. A parameter
+    split by `fully_shard` has its part summed already."""
+    import torch.distributed as dist
+
+    if group is not None and dist.get_world_size(group) == 1:
+        return
     pending = [
-        dist.all_reduce(parameter.grad, async_op=True)
+        dist.all_reduce(parameter.grad, group=group, async_op=True)
         for parameter in parameters
         if parameter.grad is not None and not sharded(parameter)
     ]
@@ -260,11 +313,15 @@ def reduce_gradients(parameters: list[torch.Tensor]) -> None:
         work.wait()
 
 
-def clip_gradients(parameters: list[torch.Tensor], limit: float) -> float:
+def clip_gradients(
+    parameters: list[torch.Tensor], limit: float, layout: Copies | None = None
+) -> float:
     """Scales the gradients to a norm of `limit` at most; returns the norm
-    before. The parts of parameters split by `fully_shard` add up across
-    processes."""
+    before. The parts of parameters split by `fully_shard`, or across a
+    copy's processes (`layout`), add up across processes."""
     grads = [p.grad for p in parameters if p.grad is not None]
+    if layout is not None and layout.shards is not None:
+        return _clip_split(parameters, limit, layout)
     if not any(sharded(g) for g in grads):
         return float(torch.nn.utils.clip_grad_norm_(parameters, limit))
     import torch.distributed as dist
@@ -289,6 +346,32 @@ def clip_gradients(parameters: list[torch.Tensor], limit: float) -> float:
     return float(norm)
 
 
+def _clip_split(parameters: list[torch.Tensor], limit: float, layout: Copies) -> float:
+    """`clip_gradients` for a copy split across processes: the split
+    parameters' squares summed across them, the rest, which every process
+    holds alike, counted once."""
+    import torch.distributed as dist
+
+    held = [p for p in parameters if p.grad is not None]
+    if not held:
+        return 0.0
+    device = held[0].grad.device  # type: ignore[union-attr]
+    parts = torch.zeros((), dtype=torch.float32, device=device)
+    whole = torch.zeros((), dtype=torch.float32, device=device)
+    for p in held:
+        squares = cast(torch.Tensor, p.grad).float().pow(2).sum()
+        if id(p) in layout.split:
+            parts = parts + squares
+        else:
+            whole = whole + squares
+    dist.all_reduce(parts, group=layout.shards)
+    norm = (parts + whole).sqrt()
+    scale = (limit / (norm + 1e-6)).clamp(max=1.0)
+    for p in held:
+        cast(torch.Tensor, p.grad).mul_(scale.to(cast(torch.Tensor, p.grad).dtype))
+    return float(norm)
+
+
 def _save(model: Any, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if getattr(model, "lora", None) is not None:
@@ -301,10 +384,12 @@ def _save(model: Any, directory: Path) -> None:
 
 __all__ = [
     "Batch",
+    "Copies",
     "Example",
     "History",
     "Step",
     "clip_gradients",
+    "copies",
     "cosine_schedule",
     "load_checkpoint",
     "pack",
