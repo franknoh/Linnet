@@ -6,6 +6,7 @@ pipeline over processes train as one process does."""
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import load_file, save_file  # type: ignore[import-untyped]
 
 from linnet.compiler import bind_arguments, run_compiler
 from linnet.torch import LinnetModule, load
@@ -320,7 +321,7 @@ def _other_packs() -> list[list[torch.Tensor]]:
     return [p.inputs(count) for p in packs]
 
 
-def _sharded_rank(rank: int, port: int, weights: str, out: str) -> None:
+def _sharded_rank(rank: int, port: int, weights: str, bindings: str, out: str) -> None:
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.tensor import DTensor
@@ -336,6 +337,7 @@ def _sharded_rank(rank: int, port: int, weights: str, out: str) -> None:
             generics=GENERICS,
             std_root=STDLIB,
             weights=weights,
+            bindings=bindings or None,
             entry="loss_packed",
             microbatches=2,
             stages=["layers.1"],
@@ -370,13 +372,37 @@ def _sharded_rank(rank: int, port: int, weights: str, out: str) -> None:
         dist.destroy_process_group()
 
 
-def test_a_pipeline_of_sharded_stages_trains_as_one_process(weights: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("tied", [False, True])
+def test_a_pipeline_of_sharded_stages_trains_as_one_process(
+    weights: Path, tmp_path: Path, tied: bool
+) -> None:
+    """Two pipelines of two stages, each stage sharded over its two
+    processes. Tied, the output head reads the embedding's tensor: the first
+    stage holds one, the last the other, and their parts' gradients are
+    summed between them."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
+    bindings = ""
+    if tied:
+        tensors = load_file(str(weights / "model.safetensors"))
+        del tensors["lm_head.weight"]
+        weights = tmp_path / "tied"
+        weights.mkdir()
+        save_file(tensors, str(weights / "model.safetensors"))
+        bindings = str(tmp_path / "bindings.json")
+        Path(bindings).write_text(json.dumps({"lm_head.weight": "embedding.weight"}))
     out = str(tmp_path / "rank")
-    torch.multiprocessing.spawn(_sharded_rank, args=(port, str(weights), out), nprocs=4)
-    model = _model(weights)
+    torch.multiprocessing.spawn(_sharded_rank, args=(port, str(weights), bindings, out), nprocs=4)
+    model = load(
+        LLAMA,
+        generics=GENERICS,
+        std_root=STDLIB,
+        weights=weights,
+        bindings=bindings or None,
+        compile=True,
+        trainable=True,
+    )
     first = torch.stack([model.run_entry("loss_packed", i) for i in _packs()]).sum()
     second = torch.stack([model.run_entry("loss_packed", i) for i in _other_packs()]).sum()
     (first + second).backward()
@@ -385,6 +411,9 @@ def test_a_pipeline_of_sharded_stages_trains_as_one_process(weights: Path, tmp_p
         for name, parameter in model.named_parameters()
         if parameter.grad is not None
     }
+    if tied:
+        # One parameter in one process, read by both.
+        expected["lm_head.weight"] = expected["embedding.weight"]
     seen: set[str] = set()
     for rank in range(4):
         saved = torch.load(f"{out}.{rank}")

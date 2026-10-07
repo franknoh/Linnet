@@ -281,7 +281,8 @@ A sharded stage gathers its weights once a step and keeps them whole for
 every micro-batch. As each micro-batch's backward finishes a gradient, it
 is summed into the parts while the rest of the backward runs.
 
-Stages that share a weight cannot be sharded.
+A weight two stages share (an embedding and its output head) is sharded the
+same way on both, and its gradient parts are summed between them.
 
 ## Training
 

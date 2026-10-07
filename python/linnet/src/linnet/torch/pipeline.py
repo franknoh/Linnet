@@ -42,6 +42,7 @@ from typing import Any, Literal
 
 import torch
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 from ..parallel import layout_stages, stage_of_path, stage_starts
 from ..plan import PlanError, compile_plan
@@ -285,7 +286,10 @@ class Pipeline:
                 continue
             if parameter.grad is None:
                 parameter.grad = torch.zeros_like(parameter)
-            dist.all_reduce(parameter.grad, group=group)
+            grad = parameter.grad
+            if isinstance(grad, DTensor):
+                grad = grad.to_local()  # a sharded weight's: this process's part
+            dist.all_reduce(grad, group=group)
 
     def _sum_whole_gradients(self) -> None:
         """Sums, across the processes training this stage, the gradients of
@@ -494,9 +498,9 @@ def pipeline(
     by_tensor = paths_by_tensor(bound)
     ties: list[tuple[list[str], Any]] = []
     # Every process makes every group, in the same order: with the stages
-    # split, each place in the split has a pipeline of its own.
+    # split or sharded, each place in a stage has a pipeline of its own.
     pipelines = [[dist.get_global_rank(group, s) for s in range(size)]]
-    if tensor_parallel is not None:
+    if tensor_parallel is not None or data_parallel is not None:
         everyone: list[Any] = [None] * dist.get_world_size()
         dist.all_gather_object(everyone, pipelines[0])
         pipelines = [list(p) for p in sorted({tuple(p) for p in everyone})]
@@ -533,14 +537,12 @@ def pipeline(
         for name, parameter in module.root.named_parameters(remove_duplicate=False):
             if not mine(name):
                 parameter.requires_grad_(False)
-    # Sharded after what trains is known: those parts are kept in f32.
+    # Sharded after what trains is known: those parts are kept in f32. A
+    # weight two stages share is cut the same way on both, so each place in
+    # a stage sums its part with its own pipeline's.
     if data_parallel is not None:
         from .fsdp import fully_shard
 
-        if ties:
-            raise PlanError(
-                "a pipeline shards its stages only when no weight is shared between them"
-            )
         fully_shard(module, data_parallel, only=mine)
     return Pipeline(
         module,
