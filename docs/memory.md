@@ -156,7 +156,10 @@ listed above it for a pipeline.
 Pipelines combine with tensor parallelism for a model with a `Shards`
 generic (each stage's processes split its weights; no training, as the
 runtime runs it) and with `--shards` (each stage's weights sharded across
-its processes). Each process group holds its own NCCL communicator.
+its processes). A sharded stage gathers its weights once a step and keeps
+them whole for every micro-batch, and the largest gradient being summed
+back is counted during backward. Each process group holds its own NCCL
+communicator.
 
 ## The largest configuration that fits
 
@@ -274,8 +277,9 @@ zero weights), the median of six; rates calibrated on the same pair:
 | TinyLlama 1.1B | training, 8,192 tokens, sharded 2 ways | 372 ms | 353 ms | +5.4% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4, stages split 2 ways | 45.9 ms | 48.0 ms | -4.4% |
 | Llama 3.1 8B | batch 2, 8,192 tokens, pipeline 2 x 2, stages split 2 ways | 251 ms | 219 ms | +14.9% |
+| TinyLlama 1.1B | training, 8,192 tokens, pipeline 2 x 4, stages sharded 2 ways | 151 ms | 159 ms | -5.2% |
 
-The last three rows ran on four other H100s.
+The last four rows ran on four other H100s.
 
 Where it is still short:
 
@@ -284,9 +288,6 @@ Where it is still short:
   one.
 - **Tensor-parallel decoding.** Per-row cache writes and the attention
   helper's calls cost the host more than the kinds measured alone.
-- **Pipelines of sharded stages.** A step measured 793 ms against 184
-  predicted: every micro-batch gathers and reduce-scatters every weight,
-  eagerly, which the runtime does not yet defer to the last micro-batch.
 
 ## JSON and Python
 
@@ -384,7 +385,7 @@ On four H100s, one process of each stage (or of each part) shown:
 | Model | Configuration | Graph and workspaces | Outside the allocator |
 | --- | --- | --- | --- |
 | TinyLlama 1.1B | training, 8,192 tokens, AdamW, sharded 2 ways | +0.0%, +0.0% | -0.2%, -0.2% |
-| TinyLlama 1.1B | the same, pipeline 2 x 4, each stage sharded 2 ways | -16.9%, -1.3% | +12.7%, +12.7% |
+| TinyLlama 1.1B | the same, pipeline 2 x 4, each stage sharded 2 ways | -0.2%, -0.4% | +12.6%, +12.5% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4, each stage split 2 ways | -11.2%, -3.9% | -4.5%, -4.1% |
 | Llama 3.1 8B | batch 2, 8,192 tokens, pipeline 2 x 2, each stage split 2 ways | -4.7%, -2.1% | -4.5%, -4.1% |
 

@@ -48,7 +48,7 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
 - PyTorch across GPUs: block placement and offloading, tensor parallelism,
   and pipelines of stages over processes under GPipe or 1F1B
   (`linnet.torch.pipeline`), each stage split or sharded across processes
-  of its own.
+  of its own; a sharded stage gathers its weights once a step.
 - Under `torch.compile`, each kind of repeated block compiles once: the
   first step compiles in a fraction of the time.
 - Imports from PyTorch, JAX, StableHLO and ONNX; exports to a Triton
