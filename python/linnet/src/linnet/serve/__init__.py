@@ -28,8 +28,17 @@ waiting requests into free rows -- their prompts packed into passes of up to
 lengths -- then takes one step for the whole batch; a request
 leaves when it reaches its token budget, an end-of-sequence token, or the
 cache's length. Rows are fixed slots of a cache sized by the model's `Batch`
-and `MaxSeq` generics -- no paging -- so `Batch` is the most requests in
-flight and `MaxSeq` the longest prompt plus completion.
+and `MaxSeq` generics, so `Batch` is the most requests in flight and `MaxSeq`
+the longest prompt plus completion -- unless the engine serves from pages.
+
+A card with `prefill_paged` and `decode_paged` entries (and `step_paged`,
+which mixes as `step_packed` does) can serve from pages instead (`paged`).
+Loaded with `Batch` 1, its caches' one row is a pool of `MaxSeq` positions
+cut into pages of `PageSize`; each of the engine's `rows` takes pages as it
+grows and gives them back when it ends, so a request holds the cache it
+uses, not a whole row. When the pool runs short, the request admitted last
+goes back to the queue with its tokens so far and passes again as a longer
+prompt once pages are free.
 
 The tokens a step produces stay on the device and feed the next step there:
 the engine queues each step before it reads the previous one's tokens back,
@@ -107,6 +116,7 @@ class Completion:
     finished: float = 0.0
     reason: str = ""  # "length", "eos", "cache", or what `Engine.cancel` gave
     sampling: Sampling = field(default_factory=Sampling)  # its seed chosen
+    preempted: int = 0  # times it gave its pages back and waited again (paged)
     # With `Request.logprobs`: each token's log-probability, and the most
     # likely tokens at its position as (token, log-probability), best first.
     logprobs: list[float] = field(default_factory=list[float])
@@ -135,6 +145,7 @@ class Stats:
     seconds: float
     steps: int
     prefills: int  # prompt passes, each of one or more prompts
+    preempted: int = 0  # requests sent back to wait for pages (paged)
 
     @property
     def tokens_per_second(self) -> float:
@@ -173,6 +184,13 @@ class _Backend(Protocol):
     max_seq: int
     packs: bool  # `prefill_packed` runs
     mixes: bool  # `step_packed` runs
+    paged: bool  # rows take pages of a pool (`prefill_paged`, `decode_paged`)
+    page_size: int
+    pages: int  # the pool's, the first kept for writes nobody reads
+
+    def assign(self, row: int, pages: list[int]) -> None:
+        """Sets the pages a row's positions lie in, in order (paged)."""
+        ...
 
     def prefill(
         self,
@@ -239,6 +257,13 @@ class Engine:
     takes the step of the rows already decoding in the smallest such pass of
     a step, if it fits the second of `pack_sizes` (`mix=False` keeps them
     apart); the rows that pass admits take their first step with the next.
+
+    `paged` serves from pages (see the module docs): by default when the
+    card has the paged entries and the model was loaded with `Batch` 1.
+    `rows` requests are then in flight at most, each `max_len` positions
+    long at most (by default every page of the pool but one, up to 8192). A
+    request is admitted while the pool keeps `reserve` pages free beside its
+    prompt's (by default 1%).
     """
 
     def __init__(
@@ -252,8 +277,17 @@ class Engine:
         pack: int = 4096,
         mix: bool = True,
         share: bool = True,
+        paged: bool | None = None,
+        rows: int = 64,
+        max_len: int | None = None,
+        reserve: int | None = None,
     ) -> None:
-        self.backend: _Backend = _backend_for(model, graphs)
+        self.backend: _Backend = _backend_for(model, graphs, paged, rows, max_len)
+        self.paged = self.backend.paged
+        if self.paged and pack <= 0:
+            raise ValueError("serving from pages packs the prompts: pack must be positive")
+        # Pages kept free for the rows already decoding to grow into.
+        self.reserve = max(1, self.backend.pages // 100) if reserve is None else max(0, reserve)
         limit = self.backend.max_seq
         self.pack = 0
         self.pack_sizes: list[int] = []
@@ -341,6 +375,7 @@ class Engine:
             seconds=seconds,
             steps=self._steps,
             prefills=self._prefills,
+            preempted=self._preempted,
         )
         return order, stats
 
@@ -366,8 +401,19 @@ class Engine:
         self._rows: list[Completion | None] = [None] * self.slots
         self._positions = [0] * self.slots
         self._queued: deque[_Queued] = deque()
-        self._steps = self._prefills = 0
+        self._steps = self._prefills = self._preempted = 0
         self._start = time.perf_counter()
+        # Paged: each row's pages in order, the positions its queued passes
+        # will have written, and when it was admitted (the last goes first).
+        # Page 0 takes the writes nobody reads.
+        self._free_pages = list(range(self.backend.pages - 1, 0, -1)) if self.paged else []
+        self._row_pages: list[list[int]] = [[] for _ in range(self.slots)]
+        self._written = [0] * self.slots
+        self._admission = [0] * self.slots
+        self._admitted = 0
+        if self.paged:
+            for slot in range(self.slots):
+                self.backend.assign(slot, [])
 
     def submit(self, request: Request) -> Completion:
         """Queues a request; the next `step` admits it when a row is free.
@@ -400,6 +446,7 @@ class Engine:
         for slot, row in enumerate(self._rows):
             if row is completion:
                 self._rows[slot] = None
+                self._release(slot)
 
     @property
     def busy(self) -> bool:
@@ -416,12 +463,22 @@ class Engine:
         a power of two, similar lengths together, then queues one decoding
         step for every row and reads what the passes before it produced.
         Returns the requests that finished."""
+        finished: list[Completion] = []
+        if self.paged:
+            # The rows decoding first: a page for each that steps into one.
+            finished += self._grow()
         rows = self._rows
         decoding = any(row is not None for row in rows)
         free = [slot for slot in range(self.slots) if rows[slot] is None]
-        admitted = [self._waiting.popleft() for _ in range(min(len(free), len(self._waiting)))]
-        admitted.sort(key=lambda c: len(c.request.prompt))
+        count = min(len(free), len(self._waiting))
+        if self.paged:
+            count = self._fitting(count, decoding)
+        admitted = [self._waiting.popleft() for _ in range(count)]
+        admitted.sort(key=lambda c: len(_prompt(c)))
         placed = list(zip(free, admitted, strict=False))
+        if self.paged:
+            for slot, completion in placed:
+                self._take_pages(slot, completion)
         # Prompts admitted together that are the same pass once; the rows
         # sharing one copy its cache rows (`share`).
         sharing: dict[int, list[tuple[int, Completion]]] = {}
@@ -429,7 +486,7 @@ class Engine:
             first: dict[tuple[int, ...], int] = {}
             leaders: list[tuple[int, Completion]] = []
             for slot, completion in placed:
-                key = tuple(completion.request.prompt)
+                key = tuple(_prompt(completion))
                 if key in first:
                     sharing.setdefault(first[key], []).append((slot, completion))
                 else:
@@ -441,13 +498,13 @@ class Engine:
         # if it is small enough.
         mixed = None
         if passes and decoding and self.mix:
-            smallest = min(passes, key=lambda batch: sum(len(c.request.prompt) for _, c in batch))
-            if sum(len(c.request.prompt) for _, c in smallest) <= self.mix_size:
+            smallest = min(passes, key=lambda batch: sum(len(_prompt(c)) for _, c in batch))
+            if sum(len(_prompt(c)) for _, c in smallest) <= self.mix_size:
                 passes.remove(smallest)
                 mixed = smallest
         for batch in passes:
             now = time.perf_counter() - self._start
-            prompts = [list(c.request.prompt) for _, c in batch]
+            prompts = [_prompt(c) for _, c in batch]
             size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
             everyone, copies = _shared(batch, sharing)
             tokens = self.backend.prefill_packed(
@@ -473,7 +530,7 @@ class Engine:
                 group *= 2
             batch, placed = placed[:group], placed[group:]
             now = time.perf_counter() - self._start
-            prompts = [list(c.request.prompt) for _, c in batch]
+            prompts = [_prompt(c) for _, c in batch]
             bucket = self._bucket(max(len(p) for p in prompts))
             tokens = self.backend.prefill(
                 [p + [self.pad] * (bucket - len(p)) for p in prompts],
@@ -491,7 +548,7 @@ class Engine:
         ahead = 0
         if mixed is not None:
             now = time.perf_counter() - self._start
-            prompts = [list(c.request.prompt) for _, c in mixed]
+            prompts = [_prompt(c) for _, c in mixed]
             size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
             # Every row in use steps but those this pass fills, which have no
             # token to step from yet.
@@ -516,6 +573,7 @@ class Engine:
             owners = [(i, slot, c) for i, (slot, c) in enumerate(everyone)]
             self._queued.append(_Queued(prompted, owners, prompts=True))
             self._queued.append(_Queued(stepped, stepping, prompts=False))
+            self._stepped(stepping)
             ahead = 2
         elif any(row is not None for row in rows):
             # One step for the whole batch; empty rows compute along. It
@@ -525,11 +583,97 @@ class Engine:
             top = _top(c for _, _, c in owners)
             self._queued.append(_Queued(self.backend.decode(need, top), owners, prompts=False))
             self._steps += 1
+            self._stepped(owners)
             ahead = 1
-        finished: list[Completion] = []
         while len(self._queued) > ahead:
             finished += self._read(self._queued.popleft())
         return finished
+
+    # ---- pages
+
+    def _fitting(self, count: int, decoding: bool) -> int:
+        """How many of the first `count` waiting requests the free pages
+        take, in order, keeping `reserve` free while rows decode."""
+        budget = len(self._free_pages) - (self.reserve if decoding else 0)
+        taken = 0
+        for completion in list(self._waiting)[:count]:
+            need = self._pages_for(len(_prompt(completion)))
+            if need > budget:
+                break
+            budget -= need
+            taken += 1
+        return taken
+
+    def _pages_for(self, length: int) -> int:
+        """The pages a row needs for a prompt of `length` and its first step."""
+        return length // self.backend.page_size + 1
+
+    def _take_pages(self, slot: int, completion: Completion) -> None:
+        length = len(_prompt(completion))
+        pages = [self._free_pages.pop() for _ in range(self._pages_for(length))]
+        self._row_pages[slot] = pages
+        self._written[slot] = length
+        self._admitted += 1
+        self._admission[slot] = self._admitted
+        self.backend.assign(slot, pages)
+
+    def _stepped(self, owners: list[tuple[int, int, Completion]]) -> None:
+        """A queued step writes one position of each of its rows; a row that
+        reached the end, finished but not yet read, writes its last again,
+        as the device keeps it there."""
+        if self.paged:
+            last = self.backend.max_seq - 1
+            for _, slot, _ in owners:
+                self._written[slot] = min(self._written[slot] + 1, last)
+
+    def _grow(self) -> list[Completion]:
+        """A page for every decoding row whose next step starts one. Short of
+        pages, the passes still queued are read first (rows that finished
+        give theirs back), and then the row admitted last waits again."""
+        size = self.backend.page_size
+        finished: list[Completion] = []
+        while True:
+            needy = [
+                slot
+                for slot, row in enumerate(self._rows)
+                if row is not None and self._written[slot] // size >= len(self._row_pages[slot])
+            ]
+            if len(needy) <= len(self._free_pages):
+                break
+            if self._queued:
+                while self._queued:
+                    finished += self._read(self._queued.popleft())
+                continue
+            victim = max(
+                (slot for slot, row in enumerate(self._rows) if row is not None),
+                key=lambda slot: self._admission[slot],
+            )
+            self._preempt(victim)
+        for slot in needy:
+            self._row_pages[slot].append(self._free_pages.pop())
+            self.backend.assign(slot, self._row_pages[slot])
+        return finished
+
+    def _preempt(self, slot: int) -> None:
+        """Sends a row's request back to wait, first in line: its prompt and
+        the tokens it has pass again once pages are free. Nothing queued may
+        still read the row."""
+        completion = self._rows[slot]
+        assert completion is not None and not self._queued
+        self._rows[slot] = None
+        self._release(slot)
+        completion.preempted += 1
+        self._preempted += 1
+        self._waiting.appendleft(completion)
+
+    def _release(self, slot: int) -> None:
+        """Gives a row's pages back; its steps write where nobody reads."""
+        if not self.paged:
+            return
+        self._free_pages.extend(self._row_pages[slot])
+        self._row_pages[slot] = []
+        self._written[slot] = 0
+        self.backend.assign(slot, [])
 
     def _read(self, queued: _Queued) -> list[Completion]:
         produced = queued.tokens.tolist()
@@ -548,13 +692,16 @@ class Engine:
                     list(zip(ids[index][:wanted], values[index][:wanted], strict=True))
                 )
             if queued.prompts:
-                completion.first_token = now
-                self._positions[slot] = len(completion.request.prompt)
+                if len(completion.tokens) == 1:
+                    completion.first_token = now
+                # After a preemption the tokens before passed with the prompt.
+                self._positions[slot] = len(completion.request.prompt) + len(completion.tokens) - 1
             else:
                 self._positions[slot] += 1
             if self._finished(completion, self._positions[slot]):
                 completion.finished = now
                 self._rows[slot] = None
+                self._release(slot)
                 finished.append(completion)
             if completion.request.on_token is not None:
                 completion.request.on_token(completion)
@@ -567,8 +714,8 @@ class Engine:
             return []
         passes: list[list[tuple[int, Completion]]] = []
         room: list[int] = []
-        for slot, completion in sorted(placed, key=lambda sc: -len(sc[1].request.prompt)):
-            length = len(completion.request.prompt)
+        for slot, completion in sorted(placed, key=lambda sc: -len(_prompt(sc[1]))):
+            length = len(_prompt(completion))
             for i, left in enumerate(room):
                 if left >= length and len(passes[i]) < self.slots:
                     passes[i].append((slot, completion))
@@ -596,6 +743,12 @@ class Engine:
         else:
             return False
         return True
+
+
+def _prompt(completion: Completion) -> list[int]:
+    """What a request passes as its prompt: the prompt, and after a
+    preemption the tokens it had."""
+    return [*completion.request.prompt, *completion.tokens]
 
 
 def _shared(
@@ -637,13 +790,24 @@ def _logprobs_numpy(logits: Any, produced: Any, top: int) -> _Logprobs:
     return chosen.tolist(), ids.tolist(), values.tolist()
 
 
-def _backend_for(model: Any, graphs: bool) -> _Backend:
+def _backend_for(
+    model: Any, graphs: bool, paged: bool | None, rows: int, max_len: int | None
+) -> _Backend:
     module = type(model).__module__
-    if module.startswith("linnet.jax"):
-        return _JaxBackend(model)
-    if module.startswith("linnet.onnx"):
-        return _OnnxBackend(model)
-    return _TorchBackend(model, graphs)
+    if module.startswith(("linnet.jax", "linnet.onnx")):
+        if paged:
+            raise ValueError("serving from pages runs with the PyTorch backend")
+        return _JaxBackend(model) if module.startswith("linnet.jax") else _OnnxBackend(model)
+    return _TorchBackend(model, graphs, paged, rows, max_len)
+
+
+def _root_dim(model: Any, name: str) -> int | None:
+    """The value of the root block's dimension generic `name`, its default
+    when the model was loaded without one."""
+    for generic in model.plan.root["generics"]:
+        if generic["name"] == name and generic["kind"] == "dim":
+            return int(model.root.env.dims[int(generic["sym"])])
+    return None
 
 
 def _cache_generics(model: Any) -> tuple[int, int]:
@@ -657,18 +821,54 @@ def _cache_generics(model: Any) -> tuple[int, int]:
 
 
 class _TorchBackend:
-    def __init__(self, model: Any, graphs: bool) -> None:
+    def __init__(
+        self, model: Any, graphs: bool, paged: bool | None, rows: int, max_len: int | None
+    ) -> None:
         import torch
 
-        for entry in ("prefill_slots", "decode_rows"):
-            if entry not in model.entries:
-                raise ValueError(f"the model has no `{entry}` entry, which serving needs")
         self.torch = torch
         self.model = model
-        self.slots, self.max_seq = _cache_generics(model)
+        batch, length = _cache_generics(model)
+        if paged is None:
+            paged = batch == 1 and all(
+                e in model.entries for e in ("prefill_paged", "decode_paged")
+            )
+        self.paged = paged
+        needed = ("prefill_paged", "decode_paged") if paged else ("prefill_slots", "decode_rows")
+        for entry in needed:
+            if entry not in model.entries:
+                raise ValueError(f"the model has no `{entry}` entry, which serving needs")
         self.device = next(iter(model.parameters())).device
-        self.packs = "prefill_packed" in model.entries
-        self.mixes = self.packs and "step_packed" in model.entries
+        self.page_size = 1
+        self.pages = 0
+        if paged:
+            if batch != 1:
+                raise ValueError(
+                    "serving from pages keeps them in the caches' one row: load with Batch 1"
+                )
+            size = _root_dim(model, "PageSize")
+            if size is None or length % size:
+                raise ValueError("serving from pages needs a `PageSize` that divides `MaxSeq`")
+            self.page_size, self.pages = size, length // size
+            # Every page but the first, which takes the writes nobody reads;
+            # by default up to 8192 positions, as one prompt is one pass.
+            widest = (self.pages - 1) * size
+            longest = min(widest, 8192) if max_len is None else max_len
+            if not 0 < longest <= widest:
+                raise ValueError(f"max_len must be between 1 and {widest} for this pool")
+            self.slots = rows
+            self.max_seq = -(-longest // size) * size
+            self.table = torch.zeros(
+                rows, self.max_seq // size, dtype=torch.int32, device=self.device
+            )
+            self._pages: list[list[int]] = [[] for _ in range(rows)]
+            self._changed: set[int] = set()
+            self.packs = True
+            self.mixes = "step_paged" in model.entries
+        else:
+            self.slots, self.max_seq = batch, length
+            self.packs = "prefill_packed" in model.entries
+            self.mixes = self.packs and "step_packed" in model.entries
         self.step_compile: bool | str = "reduce-overhead" if graphs else True
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
@@ -730,7 +930,8 @@ class _TorchBackend:
 
     def _pack(self, prompts: list[list[int]], slots: list[int], size: int, pad: int) -> list[Any]:
         """A packed pass's `tokens`, `rows`, `positions`, `segments` and
-        `last`, on the device."""
+        `last`, on the device; paged, `tokens`, `positions`, `segments`,
+        each token's place in the pool, and `last`."""
         tokens: list[int] = []
         rows: list[int] = []
         positions: list[int] = []
@@ -743,15 +944,44 @@ class _TorchBackend:
             segments += [m] * len(prompt)
             last.append(len(tokens) - 1)
         # Padding after the last prompt: a segment of its own, written at the
-        # cache's last position, which a request stops before it reaches.
+        # cache's last position, which a request stops before it reaches
+        # (paged, at the start of the pool's first page, which nobody reads).
         extra = size - len(tokens)
         tokens += [pad] * extra
         rows += [slots[0]] * extra
         positions += [self.max_seq - 1] * extra
         segments += [-1] * extra
         last += [last[-1]] * (self.slots - len(last))
+        if self.paged:
+            places = [self._place(row, at) for row, at in zip(rows, positions, strict=True)]
+            places[len(places) - extra :] = [0] * extra
+            packed = self._put([tokens, positions, segments, places])
+            return [*packed.unbind(0), self._put(last)]
         packed = self._put([tokens, rows, positions, segments])
         return [packed[0], packed[1], packed[2], packed[3], self._put(last)]
+
+    def _place(self, row: int, at: int) -> int:
+        """Where position `at` of a row lies in the pool (paged)."""
+        size = self.page_size
+        pages = self._pages[row]
+        page = pages[at // size] if at // size < len(pages) else 0
+        return page * size + at % size
+
+    def assign(self, row: int, pages: list[int]) -> None:
+        if self.paged:
+            self._pages[row] = list(pages)
+            self._changed.add(row)
+
+    def _table(self) -> Any:
+        """The page table on the device, its changed rows written first, in
+        the order of the passes queued."""
+        if self._changed:
+            rows = sorted(self._changed)
+            width = self.table.shape[1]
+            values = [self._pages[r] + [0] * (width - len(self._pages[r])) for r in rows]
+            self.table.index_copy_(0, self._put(rows).long(), self._put(values))
+            self._changed.clear()
+        return self.table
 
     def _admit(
         self, logits: Any, prompts: list[list[int]], slots: list[int], sampling: list[Sampling]
@@ -790,7 +1020,9 @@ class _TorchBackend:
         # graph): FlexAttention runs only under `torch.compile`, and a pass
         # of thousands of tokens has as many kernels as the step.
         logits = self.model.run_entry(
-            "prefill_packed", self._pack(prompts, slots, size, pad), compile=self.step_compile
+            "prefill_paged" if self.paged else "prefill_packed",
+            self._pack(prompts, slots, size, pad),
+            compile=self.step_compile,
         )[: len(prompts)]
         logits, prompts, slots, sampling = self._share(logits, prompts, slots, sampling, copies)
         first = self._admit(logits, prompts, slots, sampling)
@@ -815,11 +1047,12 @@ class _TorchBackend:
         index = self._put(slots).long()
         positions = self.positions.clone()
         positions[index] = self.max_seq - 1
-        logits = self.model.run_entry(
-            "step_packed",
-            [*self._pack(prompts, slots, size, pad), self.tokens, positions],
-            compile=self.step_compile,
-        )
+        packed = self._pack(prompts, slots, size, pad)
+        if self.paged:
+            entry, inputs = "step_paged", [*packed, self.tokens, positions, self._table()]
+        else:
+            entry, inputs = "step_packed", [*packed, self.tokens, positions]
+        logits = self.model.run_entry(entry, inputs, compile=self.step_compile)
         stepped = self._advance(logits[self.slots :], need)
         prompted, prompts, slots, sampling = self._share(
             logits[: len(prompts)], prompts, slots, sampling, copies
@@ -861,7 +1094,11 @@ class _TorchBackend:
 
     def _copy_rows(self, sources: list[int], targets: list[int]) -> None:
         """Copies whole rows of every state whose first axis is the row (the
-        KV caches), in place, so captured graphs keep their addresses."""
+        KV caches), in place, so captured graphs keep their addresses; paged,
+        each source row's pages into the target's."""
+        if self.paged:
+            self._copy_pages(sources, targets)
+            return
         if self._row_states is None:
             self._row_states = [
                 (module, leaf)
@@ -876,6 +1113,32 @@ class _TorchBackend:
             state = getattr(module, leaf)
             state.index_copy_(0, target, state.index_select(0, source))
 
+    def _copy_pages(self, sources: list[int], targets: list[int]) -> None:
+        size = self.page_size
+        pool = self.pages * size
+        if self._row_states is None:
+            self._row_states = [
+                (module, leaf)
+                for module in self.model.modules()
+                for leaf in getattr(module, "state_names", ())
+                if isinstance(getattr(module, leaf, None), self.torch.Tensor)
+                and getattr(module, leaf).dim() == 4
+                and getattr(module, leaf).shape[0] == 1
+                and getattr(module, leaf).shape[2] == pool
+            ]
+        source: list[int] = []
+        target: list[int] = []
+        for row, other in zip(sources, targets, strict=True):
+            for page, copy in zip(self._pages[row], self._pages[other], strict=False):
+                source += range(page * size, (page + 1) * size)
+                target += range(copy * size, (copy + 1) * size)
+        if not source:
+            return
+        source_at, target_at = self._put(source).long(), self._put(target).long()
+        for module, leaf in self._row_states:
+            state = getattr(module, leaf)
+            state.index_copy_(2, target_at, state.index_select(2, source_at))
+
     def _advance(self, logits: Any, need: int) -> Any:
         """Draws every row's next token from its step's logits and moves the
         row on to it."""
@@ -889,9 +1152,11 @@ class _TorchBackend:
         return produced
 
     def decode(self, need: int, top: int = -1) -> _Tokens:
-        logits = self.model.run_entry(
-            "decode_rows", [self.tokens, self.positions], compile=self.step_compile
-        )
+        if self.paged:
+            entry, inputs = "decode_paged", [self.tokens, self.positions, self._table()]
+        else:
+            entry, inputs = "decode_rows", [self.tokens, self.positions]
+        logits = self.model.run_entry(entry, inputs, compile=self.step_compile)
         produced = self._advance(logits, need)
         return _TorchTokens(produced, _logprobs_torch(logits, produced, top) if top >= 0 else None)
 
@@ -933,6 +1198,12 @@ class _Grouped:
 
     packs = False
     mixes = False
+    paged = False
+    page_size = 1
+    pages = 0
+
+    def assign(self, row: int, pages: list[int]) -> None:
+        pass
 
     def prefill_packed(
         self,

@@ -135,3 +135,17 @@ where
     let out[b, h, s, d] = select(written[b, s], by_token[source[b, s], 0, h, d], cache[b, h, s, d])
     return out
 }
+
+// Where each row's position lies in a pool of pages (paged serving): row
+// `b`'s positions run through the pages `table[b]` lists, `Size` positions a
+// page, so position `s` is offset `s % Size` of page `table[b, s / Size]`.
+// The pool position is that page's start plus the offset.
+pub fn page_slots<B: Dim, Pages: Dim, Size: Dim>(
+    table: Tensor[B, Pages; i32],
+    positions: Tensor[B; i32],
+) -> Tensor[B; i32]
+where Size > 0 {
+    let page[b] = table[b, cast<i64>(positions[b] / cast<i32>(Size))]
+    let slot[b] = page[b] * cast<i32>(Size) + positions[b] % cast<i32>(Size)
+    return slot
+}

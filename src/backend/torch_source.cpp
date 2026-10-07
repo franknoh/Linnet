@@ -781,6 +781,19 @@ public:
                 " * " + name(1));
             return operands[2] ? define(scaled + " + " + name(2)) : scaled;
         }
+        if (implementation_base == "linnet.paged_attention" && operands.size() == 6 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4]) {
+            // `linnet.torch.paged.attend`: FlexAttention over each row's pages
+            // under `torch.compile` on CUDA, the pages gathered otherwise.
+            const auto size = call_generic("Size");
+            if (!size) {
+                return std::nullopt;
+            }
+            paged_helper_ = true;
+            return define("_paged_attend(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ", " + name(4) + ", " + scalar(5) + ", " +
+                          std::to_string(*size) + ")");
+        }
         if (implementation_base == "linnet.sink_attention" && operands.size() == 6 && operands[0] &&
             operands[1] && operands[5]) {
             // FlexAttention under `torch.compile` where its blocks pay off, as
@@ -989,6 +1002,9 @@ public:
         }
         if (gather_helper_) {
             out += "from linnet.torch.fsdp import gather as _gather\n\n";
+        }
+        if (paged_helper_) {
+            out += "from linnet.torch.paged import attend as _paged_attend\n\n";
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -2120,6 +2136,7 @@ private:
     bool mxfp4_grouped_helper_ = false;              // `_mxfp4_grouped` is used
     bool loss_helper_ = false;                       // `_linear_cross_entropy` is used
     bool gather_helper_ = false;                     // `_gather` joins sharded parameters
+    bool paged_helper_ = false;                      // `_paged_attend` is used
     std::map<std::string, std::string> gathered_;    // a gathered value's parameter argument
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope

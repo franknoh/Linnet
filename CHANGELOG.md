@@ -16,10 +16,10 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   parameters and children, block arrays with `static for`, and runtime
   `while` loops.
 - A standard library written in Linnet: linear layers, embeddings,
-  normalizations, attention (grouped, masked, with sinks), rotary
-  positions, KV caches, convolutions, pooling, losses, mixture of experts,
-  tensor-parallel collectives, counter-based randomness and quantized
-  weights (int8, int4, MXFP4).
+  normalizations, attention (grouped, masked, with sinks, over pages),
+  rotary positions, KV caches, convolutions, pooling, losses, mixture of
+  experts, tensor-parallel collectives, counter-based randomness and
+  quantized weights (int8, int4, MXFP4).
 - The specification in `spec/`, with an executable suite in `spec-tests/`.
 
 ### Compiler and tools
@@ -55,7 +55,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   Inference Server model, a transformers checkpoint for vLLM, SGLang and
   TGI, and GGUF for llama.cpp and Ollama.
 - `linnet.serve`: continuous batching with packed prompts and a CUDA graph
-  per step, and an OpenAI-compatible HTTP server.
+  per step, serving from pages of one cache pool, and an OpenAI-compatible
+  HTTP server.
 - `linnet.train`: supervised fine-tuning, DPO and GRPO in PyTorch and JAX,
   with LoRA, fully sharded data parallelism and checkpoints; the models
   also train under transformers' `Trainer` and TRL.
