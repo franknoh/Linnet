@@ -310,8 +310,8 @@ def test_split_training_matches_one_process(tmp_path: Path) -> None:
             torch.testing.assert_close(got, want, atol=1e-5, rtol=1e-4)
         assert result["losses"] == pytest.approx(history.losses, rel=1e-5)
         assert result["norms"] == pytest.approx([s.grad_norm for s in history.steps], rel=1e-5)
-        for name, want in trained.items():
-            got = result["trained"][name]
+        for name in expected:  # what trains; an absent bias stays as it is
+            want, got = trained[name], result["trained"][name]
             if name in parts:
                 axis, extent = parts[name]
                 want = want.narrow(axis, rank * extent, extent)

@@ -871,6 +871,44 @@ def test_the_planner_ranks_layouts_by_throughput(tmp_path: Path) -> None:
     assert {(1, 1), (1, 2), (2, 1)} <= layouts
 
 
+def test_a_pipeline_of_split_stages_trains(tmp_path: Path) -> None:
+    """Split stages train: each process's part of each stage, the inputs of
+    split computations (`shared`) and the loss over the vocabulary's parts
+    as the runtime runs them."""
+    from linnet.resources.performance import device
+    from tests.torch.test_shards import TRAINING, TRAINING_GENERICS
+
+    model = memory(
+        source(tmp_path, TRAINING),
+        ExecutionConfig(
+            entry="loss_packed",
+            context=64,
+            bindings=TRAINING_GENERICS,
+            tensor_parallel=2,
+            pipeline_parallel=2,
+            microbatches=2,
+            training=TrainingConfig(),
+        ),
+    )
+    result = model.analyze()
+    assert [d.name for d in result.devices] == ["stage 0", "stage 1"]
+    # Half of each split weight on the last stage: the head's rows.
+    whole = memory(
+        source(tmp_path, TRAINING, "whole"),
+        ExecutionConfig(
+            entry="loss_packed",
+            context=64,
+            bindings=TRAINING_GENERICS,
+            pipeline_parallel=2,
+            microbatches=2,
+            training=TrainingConfig(),
+        ),
+    ).analyze()
+    split_weights = result.component("Weights").nbytes or 0
+    assert split_weights < (whole.component("Weights").nbytes or 0)
+    assert model.throughput(device("h100-80gb")).seconds > 0
+
+
 def test_unsupported_parallelism_is_refused(tmp_path: Path) -> None:
     from linnet.resources.trace import TraceError
 
@@ -878,18 +916,6 @@ def test_unsupported_parallelism_is_refused(tmp_path: Path) -> None:
         memory(
             source(tmp_path, CHAIN),
             config(batch=1, bindings={"N": 4}, pipeline_parallel=2, tensor_parallel=2),
-        )
-    with pytest.raises(TraceError, match="without gradients"):
-        memory(
-            source(tmp_path, SPLIT_LAYERS),
-            ExecutionConfig(
-                batch=8,
-                bindings={"H": 16, "Inner": 32, "Layers": 2},
-                tensor_parallel=2,
-                pipeline_parallel=2,
-                microbatches=2,
-                training=TrainingConfig(),
-            ),
         )
     with pytest.raises(TraceError, match="divide"):
         _pipeline(tmp_path, microbatches=5).analyze()
