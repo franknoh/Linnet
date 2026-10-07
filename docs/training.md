@@ -32,7 +32,9 @@ Under `torchrun`, each process trains a copy on its own batches: `train`
 sums the learned-position counts and the gradients across processes, so
 every copy takes the same step. Pass
 `torch.distributed.optim.ZeroRedundancyOptimizer` to split the optimizer
-state. Only the first process saves.
+state: on two H100s, TinyLlama's full fine-tune took the same 12 losses as
+with AdamW whole on each, at 10.7 rather than 12.8 GiB a GPU. Only the
+first process saves.
 
 ## Checkpoints
 
@@ -121,6 +123,14 @@ train(model, pack(examples_of_this_copy, tokens=4096), optimizer=optimizer, step
 - `grpo` and `dpo` do not train split models yet.
 - Pipeline stages train split too (`linnet.torch.pipeline` with
   `tensor_parallel=`).
+
+TinyLlama on two H100s, split two ways, against one H100: the same batches
+of 4096 tokens, AdamW, bf16, `compile="inductor"`.
+
+| | Losses, steps 1 and 8 | Step | Peak per GPU |
+| --- | --- | ---: | ---: |
+| one GPU | 12.1646, 10.7792 | 76 ms | 12.8 GiB |
+| split two ways | 12.1642, 10.7792 | 63 ms | 7.7 GiB |
 
 ## Other trainers
 
@@ -217,9 +227,11 @@ the same collective calls. `linnet.train.reduce_gradients` and
 `clip_gradients` do the same for a loop of your own.
 
 The engine compiles a pass size the first time a step needs one, and the
-other processes wait for it meanwhile (about 100 s, a few times a run).
+other processes wait for it meanwhile (a few seconds, a few times a run).
 `engine.warmup(prompt_lengths)` compiles them up front instead, but holds
-a captured CUDA graph's memory for every size it reaches.
+a captured CUDA graph's memory for every size it reaches. The first step
+of the LoRA run below took 21 s to sample and 12 s to train, compiling
+both.
 
 Llama 3.1 8B with GRPO on H100s: 16 prompts × 8 completions of up to 128
 tokens per GPU per step, after compiling.
