@@ -136,6 +136,13 @@ class Pipeline:
         if built.split.results != 1:
             raise PlanError("a training step needs an entry with one result: the loss")
         losses: list[torch.Tensor] | None = [] if self.is_last else None
+        # The gradients summed with other processes' below hold this step's
+        # alone then; what they held before is added back after.
+        aside: list[tuple[nn.Parameter, torch.Tensor]] = []
+        for parameter in self._summed():
+            if parameter.grad is not None:
+                aside.append((parameter, parameter.grad))
+                parameter.grad = None
         held = self._hold(built, trains=True)
         try:
             built.schedule.step(
@@ -150,6 +157,10 @@ class Pipeline:
             built.module.held = None
         self._sum_tied_gradients()
         self._sum_whole_gradients()
+        for parameter, grad in aside:
+            if parameter.grad is not None:
+                grad.add_(parameter.grad)
+            parameter.grad = grad
         if losses is None:
             return None
         return torch.stack([loss.detach().float() for loss in losses]).sum()
@@ -290,6 +301,24 @@ class Pipeline:
             if isinstance(grad, DTensor):
                 grad = grad.to_local()  # a sharded weight's: this process's part
             dist.all_reduce(grad, group=group)
+
+    def _summed(self) -> list[nn.Parameter]:
+        """This stage's parameters whose gradients a step sums with other
+        processes': those shared with other stages, and those its sharding
+        keeps whole."""
+        found: dict[int, nn.Parameter] = {}
+        for paths, _ in self.ties:
+            mine = [p for p in paths if self.stage_of(p) == self.stage]
+            if mine:
+                owner, leaf = owner_of(self.module, mine[0])
+                parameter = getattr(owner, leaf)
+                if isinstance(parameter, nn.Parameter) and parameter.requires_grad:
+                    found[id(parameter)] = parameter
+        if self.data_parallel is not None:
+            for _, parameter in self.named_parameters():
+                if not sharded(parameter) and parameter.requires_grad:
+                    found[id(parameter)] = parameter
+        return list(found.values())
 
     def _sum_whole_gradients(self) -> None:
         """Sums, across the processes training this stage, the gradients of
