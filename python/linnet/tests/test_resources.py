@@ -650,9 +650,11 @@ def test_sharded_weights_are_kept_as_the_runtime_keeps_them(tmp_path: Path) -> N
     # Each process's part of a trained weight is kept in f32: half the
     # elements at twice the bytes.
     assert sharded.component("Weights").nbytes == whole.component("Weights").nbytes
-    # Stages shard too.
+    # Stages shard too, and keep their weights whole through the step for
+    # every micro-batch: two layers' a stage.
     staged = _pipeline(tmp_path, microbatches=4, training=TrainingConfig(shards=2)).analyze()
     assert [d.name for d in staged.devices] == ["stage 0", "stage 1"]
+    assert (staged.component("Gathered parameters").nbytes or 0) >= 2 * 32 * 32 * 4
 
 
 def test_gpipe_keeps_more_micro_batches_than_1f1b(tmp_path: Path) -> None:
