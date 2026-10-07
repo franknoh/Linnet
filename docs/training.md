@@ -97,6 +97,31 @@ PyTorch's own `fully_shard` cannot shard a Linnet model. It gathers a
 module's parameters in hooks around that module's `forward`, and generated
 code computes every block in one function without calling any of them.
 
+## Split training
+
+A model with a `Shards` generic, such as a zoo decoder, also trains split
+across processes (tensor parallelism):
+
+```python
+mesh = init_device_mesh("cuda", (copies, 2), mesh_dim_names=("copies", "split"))
+model = nest.load(card, backend="torch", device=f"cuda:{rank}", compile="inductor",
+                  trainable=True, tensor_parallel=mesh["split"])
+train(model, pack(examples_of_this_copy, tokens=4096), optimizer=optimizer, steps=1000)
+```
+
+- The processes of a split give it the same batches. `train` sums the
+  gradients across the copies only, and the gradient's norm adds the
+  split parts across the processes of a copy.
+- A split computation reads its input through `std.nn.parallel::shared`,
+  whose gradient is summed across the processes. The output head's losses
+  (`split_cross_entropy`, `split_token_log_probs`) combine each row's
+  maximum, sum and target logit across the vocabulary's parts, never the
+  logits.
+- An output head tied to the embedding trains apart from it when split.
+- `grpo` and `dpo` do not train split models yet.
+- Pipeline stages train split too (`linnet.torch.pipeline` with
+  `tensor_parallel=`).
+
 ## Other trainers
 
 `CausalLM` gives a Linnet decoder the call a transformers-style trainer
