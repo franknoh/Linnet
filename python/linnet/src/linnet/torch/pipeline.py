@@ -35,7 +35,6 @@ so that no sequence spans two. `run` is the forward pass alone.
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +47,7 @@ from ..parallel import layout_stages, stage_of_path, stage_starts
 from ..plan import PlanError, compile_plan
 from ..weights import paths_by_tensor
 from .compiled import CompiledLinnetModule
+from .fsdp import Held, sharded
 from .module import bind_weights, owner_of
 from .placement import units_of
 from .stages import Split, Stage, split
@@ -72,6 +72,7 @@ class Pipeline:
         device: torch.device,
         ties: Sequence[tuple[list[str], Any]],
         compile: str | None,
+        data_parallel: Any = None,
     ) -> None:
         import torch.distributed as dist
 
@@ -92,6 +93,9 @@ class Pipeline:
         # embedding and an output head), with the group of the stages
         # holding them: their gradients are summed after every step.
         self.ties = list(ties)
+        # The processes training this stage on batches of their own, when
+        # its weights are sharded across them.
+        self.data_parallel = data_parallel
         self._built: dict[tuple[Any, ...], _Built] = {}
 
     @property
@@ -131,13 +135,20 @@ class Pipeline:
         if built.split.results != 1:
             raise PlanError("a training step needs an entry with one result: the loss")
         losses: list[torch.Tensor] | None = [] if self.is_last else None
-        built.schedule.step(
-            kwarg_mbs=self._microbatches(built, inputs),
-            target_mbs=self._targets(),
-            losses=losses,
-            return_outputs=False,
-        )
+        held = self._hold(built, trains=True)
+        try:
+            built.schedule.step(
+                kwarg_mbs=self._microbatches(built, inputs),
+                target_mbs=self._targets(),
+                losses=losses,
+                return_outputs=False,
+            )
+            if held is not None:
+                held.finish()
+        finally:
+            built.module.held = None
         self._sum_tied_gradients()
+        self._sum_whole_gradients()
         if losses is None:
             return None
         return torch.stack([loss.detach().float() for loss in losses]).sum()
@@ -152,13 +163,26 @@ class Pipeline:
         built.module.joining = True
         try:
             with torch.no_grad():
+                self._hold(built, trains=False)
                 merged: Any = built.schedule.eval(
                     kwarg_mbs=self._microbatches(built, inputs),
                     target_mbs=self._targets(),
                 )
         finally:
             built.module.joining = False
+            built.module.held = None
         return merged if self.is_last else None
+
+    def _hold(self, built: _Built, trains: bool) -> Held | None:
+        """With the stage's weights sharded, gathers each whole for the
+        step's micro-batches to share (`linnet.torch.fsdp.Held`)."""
+        if not self.module.fully_sharded:
+            return None
+        held = Held(trains)
+        for (owner, leaf), dtype in zip(built.module.locations, built.module.dtypes, strict=True):
+            held.whole(getattr(owner, leaf), dtype)
+        built.module.held = held
+        return held
 
     def _targets(self) -> list[torch.Tensor] | None:
         """What the schedule hands the loss on the last stage: nothing it
@@ -215,18 +239,23 @@ class Pipeline:
             for unit, stage_index in zip(self.units, self.assigned, strict=True)
             if stage_index == self.stage
         ]
+        locations: list[tuple[nn.Module, str]] = []
+        dtypes: list[torch.dtype] = []
+        for index in stage.parameters:
+            path = pieces.parameters[index]
+            owner, leaf = owner_of(self.module, path)
+            locations.append((owner, leaf))
+            parameter: torch.Tensor = getattr(owner, leaf)
+            dtypes.append(self.module.gathered_dtypes.get(path, parameter.dtype))
         wrapped = _StageModule(
             function,
-            [owner_of(self.module, pieces.parameters[i]) for i in stage.parameters],
+            locations,
+            dtypes,
             [constants[name] for name in stage.constants],
             blocks,
             self.device,
             last=self.is_last,
         )
-        if self.module.fully_sharded and self.compile is None:
-            from .fsdp import regathered
-
-            wrapped.regathered = regathered
         from torch.distributed.pipelining import PipelineStage, Schedule1F1B, ScheduleGPipe
 
         stage_runner = PipelineStage(
@@ -258,6 +287,20 @@ class Pipeline:
                 parameter.grad = torch.zeros_like(parameter)
             dist.all_reduce(parameter.grad, group=group)
 
+    def _sum_whole_gradients(self) -> None:
+        """Sums, across the processes training this stage, the gradients of
+        the parameters its sharding keeps whole (adapters)."""
+        import torch.distributed as dist
+
+        if self.data_parallel is None:
+            return
+        for _, parameter in self.named_parameters():
+            if sharded(parameter) or not parameter.requires_grad:
+                continue
+            if parameter.grad is None:
+                parameter.grad = torch.zeros_like(parameter)
+            dist.all_reduce(parameter.grad, group=self.data_parallel)
+
 
 @dataclass
 class _Built:
@@ -275,6 +318,7 @@ class _StageModule(nn.Module):
         self,
         function: Callable[..., Any],
         parameters: list[tuple[nn.Module, str]],
+        dtypes: list[torch.dtype],
         constants: list[torch.Tensor],
         blocks: list[nn.Module],
         device: torch.device,
@@ -286,18 +330,23 @@ class _StageModule(nn.Module):
         self.blocks = nn.ModuleList(blocks)
         self.function = function
         self.locations = parameters
+        # The dtype each parameter is read in: a sharded one's whole.
+        self.dtypes = dtypes
         self.constants = constants
         self.device = device
         self.last = last
         self.joining = False
-        # Sharded weights gathered whole during a call keep only their parts
-        # for backward (`linnet.torch.fsdp`), without `torch.compile`.
-        self.regathered: Callable[[], Any] = contextlib.nullcontext
+        # Sharded weights gathered whole for the current step.
+        self.held: Held | None = None
 
     def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Any:
         weights = [getattr(owner, leaf) for owner, leaf in self.locations]
-        with self.regathered():
-            out = self.function(*received, *weights, *self.constants, _device=self.device, **inputs)
+        if self.held is not None:
+            weights = [
+                self.held.whole(weight, dtype)
+                for weight, dtype in zip(weights, self.dtypes, strict=True)
+            ]
+        out = self.function(*received, *weights, *self.constants, _device=self.device, **inputs)
         if self.last and self.joining:
             out = tuple(value.reshape(1) if value.dim() == 0 else value for value in out)
         return out[0] if self.last and len(out) == 1 else out
@@ -505,6 +554,7 @@ def pipeline(
         device=device,
         ties=ties,
         compile=compile,
+        data_parallel=data_parallel.get_group() if data_parallel is not None else None,
     )
 
 
