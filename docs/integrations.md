@@ -86,6 +86,20 @@ longer prompt and continues, with the same tokens it would have drawn
 (`completion.preempted`, `stats.preempted`). On CUDA, FlexAttention reads each
 row's pages where they lie in the pool.
 
+Llama 3.1 8B on one H100, 256 requests of 128 to 512 prompt tokens and 128
+new tokens each, greedy:
+
+| Cache | Requests in flight | Tokens per second | Median first token |
+| --- | ---: | ---: | ---: |
+| rows of 640 positions | 64 | 5,574 | 2.52 s |
+| pages of one pool, the same 40,960 positions | 64 | 5,565 | 2.52 s |
+| the same pool | 128 | 5,712 | 2.52 s |
+| rows of 8,192 positions, 48 GiB | 48 | 4,198 | 3.03 s |
+| pages, `max_len=8192`, the same 48 GiB | 128 | 7,645 | 1.69 s |
+
+Pages cost nothing when every row fits its requests. They pay off once a
+server allows long requests: rows then hold `max_len` each.
+
 `linnet serve MODEL --pool 131072 --batch 128 --max-seq 8192` serves the same
 way.
 
