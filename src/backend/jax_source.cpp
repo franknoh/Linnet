@@ -641,8 +641,14 @@ public:
         }
         // The output head and its loss a block of rows at a time
         // (`linnet.jax.loss`), never the whole [N, V] logits.
-        const bool cross_entropy = implementation_base == "linnet.linear_cross_entropy";
-        const bool log_probs = implementation_base == "linnet.linear_token_log_probs";
+        // The split forms are the same over one shard.
+        const auto shards = call_generic("Shards");
+        const bool one_shard = !shards || *shards == 1;
+        const bool cross_entropy =
+            implementation_base == "linnet.linear_cross_entropy" ||
+            (implementation_base == "linnet.split_cross_entropy" && one_shard);
+        const bool log_probs = implementation_base == "linnet.linear_token_log_probs" ||
+                               (implementation_base == "linnet.split_token_log_probs" && one_shard);
         if ((cross_entropy || log_probs) && at.size() == (cross_entropy ? 4U : 3U) &&
             std::ranges::none_of(at,
                                  [](const TensorInfo* operand) { return operand == nullptr; })) {

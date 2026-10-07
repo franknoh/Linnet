@@ -19,11 +19,16 @@ through Python, about 100 us a call.
 The buffers are set up once per group by `prepare`, a collective every
 process of the group calls together (`linnet.torch.load` does, when it
 splits a model); without it, every sum goes to NCCL.
+
+In training, a split computation reads its input whole on every process
+(`shared`), and each process's gradient of that input is its part of the
+whole: backward sums them. A sum's gradient is the gradient of the whole sum,
+which every process holds; a gathered slice's is its slice of the gradient.
 """
 
 # PyTorch's symmetric memory, functional collectives, and custom-op registry,
 # and the Triton kernel, carry no complete types.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportIncompatibleMethodOverride=false
 
 from __future__ import annotations
 
@@ -131,6 +136,8 @@ def _eager(x: torch.Tensor) -> bool:
 
 def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
     """The sum of `x` over the processes of `group`."""
+    if x.requires_grad and torch.is_grad_enabled():
+        return _Sum.apply(x, group)  # type: ignore[no-any-return]
     name = str(group.group_name)
     if (
         name in _one_shots
@@ -154,6 +161,8 @@ def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
 
 def all_gather(x: torch.Tensor, group: Any) -> torch.Tensor:
     """The processes' `x` side by side along the last axis, in rank order."""
+    if x.requires_grad and torch.is_grad_enabled():
+        return _Gather.apply(x, group)  # type: ignore[no-any-return]
     if _eager(x):
         import torch.distributed as dist
 
@@ -166,4 +175,46 @@ def all_gather(x: torch.Tensor, group: Any) -> torch.Tensor:
     return funcol.all_gather_tensor(x.contiguous(), x.dim() - 1, group)
 
 
-__all__ = ["ONE_SHOT_BYTES", "all_gather", "all_reduce", "prepare"]
+def shared(x: torch.Tensor, group: Any) -> torch.Tensor:
+    """`x` as every process of `group` reads it whole: itself, and in
+    backward the sum of the processes' gradients of it."""
+    if x.requires_grad and torch.is_grad_enabled():
+        return _Shared.apply(x, group)  # type: ignore[no-any-return]
+    return x
+
+
+class _Sum(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: Any, x: torch.Tensor, group: Any) -> torch.Tensor:
+        return all_reduce(x, group)
+
+    @staticmethod
+    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return grad, None
+
+
+class _Shared(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: Any, x: torch.Tensor, group: Any) -> torch.Tensor:
+        ctx.group = group
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return all_reduce(grad.contiguous(), ctx.group), None
+
+
+class _Gather(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: Any, x: torch.Tensor, group: Any) -> torch.Tensor:
+        import torch.distributed as dist
+
+        ctx.rank, ctx.world = dist.get_rank(group), dist.get_world_size(group)
+        return all_gather(x, group)
+
+    @staticmethod
+    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return grad.chunk(ctx.world, dim=-1)[ctx.rank].contiguous(), None
+
+
+__all__ = ["ONE_SHOT_BYTES", "all_gather", "all_reduce", "prepare", "shared"]

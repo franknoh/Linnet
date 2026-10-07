@@ -561,6 +561,25 @@ public:
             return define("_linear_token_log_probs(" + name(0) + ", " + name(1) + ", " + name(2) +
                           ")");
         }
+        if (implementation_base == "linnet.split_cross_entropy" && operands.size() == 4 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            loss_helper_ = true;
+            shards_helper_ = true;
+            return define("_split_cross_entropy(" + name(0) + ", " + name(1) + ", " + name(2) +
+                          ", " + name(3) + ", _GROUP)");
+        }
+        if (implementation_base == "linnet.split_token_log_probs" && operands.size() == 3 &&
+            operands[0] && operands[1] && operands[2]) {
+            loss_helper_ = true;
+            shards_helper_ = true;
+            return define("_split_token_log_probs(" + name(0) + ", " + name(1) + ", " + name(2) +
+                          ", _GROUP)");
+        }
+        if (implementation_base == "torch.distributed.shared" && operands.size() == 1 &&
+            operands[0]) {
+            shards_helper_ = true;
+            return define("_shared(" + name(0) + ")");
+        }
         if (implementation_base == "torch.distributed.all_reduce" && operands.size() == 1 &&
             operands[0]) {
             shards_helper_ = true;
@@ -1821,6 +1840,9 @@ private:
                "    from linnet.torch.loss import linear_cross_entropy as _linear_cross_entropy\n"
                "    from linnet.torch.loss import linear_token_log_probs as "
                "_linear_token_log_probs\n"
+               "    from linnet.torch.loss import split_cross_entropy as _split_cross_entropy\n"
+               "    from linnet.torch.loss import split_token_log_probs as "
+               "_split_token_log_probs\n"
                "except ImportError:\n"
                "\n"
                "    def _linear_token_log_probs(hidden, weight, targets):\n"
@@ -1831,6 +1853,12 @@ private:
                "    def _linear_cross_entropy(hidden, weight, targets, weights):\n"
                "        return -(weights.float() * _linear_token_log_probs(hidden, weight, "
                "targets)).sum()\n"
+               "\n"
+               "    def _split_cross_entropy(hidden, weight, targets, weights, group):\n"
+               "        return _linear_cross_entropy(hidden, weight, targets, weights)\n"
+               "\n"
+               "    def _split_token_log_probs(hidden, weight, targets, group):\n"
+               "        return _linear_token_log_probs(hidden, weight, targets)\n"
                "\n\n";
     }
 
@@ -1893,6 +1921,16 @@ private:
                "    from linnet.torch.collectives import all_reduce\n"
                "\n"
                "    return all_reduce(x, _GROUP)\n"
+               "\n\n"
+               "def _shared(x):\n"
+               "    \"\"\"`std.nn.parallel::shared`: `x` as every shard reads it; in "
+               "training,\n"
+               "    the sum of the shards' gradients of it.\"\"\"\n"
+               "    if _GROUP is None:\n"
+               "        return x\n"
+               "    from linnet.torch.collectives import shared\n"
+               "\n"
+               "    return shared(x, _GROUP)\n"
                "\n\n"
                "def _all_gather(x):\n"
                "    \"\"\"`std.nn.parallel::all_gather`: the shards' slices side by side "
