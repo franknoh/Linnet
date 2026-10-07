@@ -36,9 +36,14 @@ Every decoder in the zoo has the two required entries.
 | `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]` | one token for every row, each at its own position |
 | `prefill_packed<P>(tokens: [P], rows: [P], positions: [P], segments: [P], last: [Batch]) -> [Batch, Vocab]` | optional: prompts packed end to end into one pass of `P` tokens, each token with its cache row, position, and prompt; returns the logits after each prompt's last token, `last[m]` |
 | `step_packed<P>(tokens, rows, positions, segments, last, step_tokens: [Batch, 1], step_positions: [Batch]) -> [2 * Batch, Vocab]` | optional, with `prefill_packed`: that pass and a `decode_rows` step in one; returns the logits after each prompt, then each row's step |
+| `prefill_paged<P, Rows>(tokens: [P], positions: [P], segments: [P], slots: [P], last: [Rows]) -> [Rows, Vocab]` | for pages: `prefill_packed` with each token's place in the pool instead of its row |
+| `decode_paged<Rows, Pages>(tokens: [Rows, 1], positions: [Rows], table: [Rows, Pages]) -> [Rows, Vocab]` | for pages: one token for every row, its positions in the pages its row of `table` lists |
+| `step_paged<P, Rows, Pages>(tokens, positions, segments, slots, last, step_tokens, step_positions, table) -> [2 * Rows, Vocab]` | for pages: `step_packed` the same way |
 
-Build them from `std.nn.cache::write_slots`, `write_rows`, and
-`write_tokens`, and `std.nn.attention::grouped_attention_rows`.
+Build them from `std.nn.cache::write_slots`, `write_rows`, `write_tokens`,
+and `page_slots`, and `std.nn.attention::grouped_attention_rows` and
+`paged_attention`. Every zoo decoder but Phi-3 and gpt-oss has the paged
+entries.
 
 ### Engine
 
@@ -53,6 +58,36 @@ Build them from `std.nn.cache::write_slots`, `write_rows`, and
 | `engine.busy` | whether anything is left |
 | `engine.cancel(completion)` | ends a request early (at a stop string, or when its client has gone) and frees its row |
 | `engine.load_weights(model)` | copies a PyTorch model's weights (adapters merged in) into the served model, in place, between runs; compiled passes and CUDA graphs stay |
+
+### Pages
+
+```python
+model = nest.load("llama-3.1-8b-instruct", device="cuda",
+                  generics={"Batch": 1, "MaxSeq": 131072})
+engine = Engine(model, rows=128, max_len=8192)
+```
+
+Loaded with `Batch` 1, a card with the paged entries keeps its caches as one
+pool of `MaxSeq` positions, in pages of `PageSize` (64 by default). A request
+takes pages as it grows and gives them back when it ends, so it holds the
+cache it uses, not a whole row. Requests shorter than the longest allowed fit
+more of them in the same memory.
+
+| Option | Does |
+| --- | --- |
+| `rows=64` | the most requests in flight |
+| `max_len` | the longest prompt plus completion; by default every page but one, up to 8192 |
+| `reserve` | pages kept free for the rows already decoding; 1% by default |
+| `paged` | `True` or `False` to choose; by default pages when the card has the entries and `Batch` is 1 |
+
+When the pool runs short, the request admitted last gives its pages back and
+waits. Once pages are free it passes its prompt and its tokens so far as one
+longer prompt and continues, with the same tokens it would have drawn
+(`completion.preempted`, `stats.preempted`). On CUDA, FlexAttention reads each
+row's pages where they lie in the pool.
+
+`linnet serve MODEL --pool 131072 --batch 128 --max-seq 8192` serves the same
+way.
 
 ### Requests
 
