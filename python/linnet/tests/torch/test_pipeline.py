@@ -433,3 +433,91 @@ def test_a_pipeline_of_sharded_stages_trains_as_one_process(
             if not twice:
                 seen.add(name)
     assert seen == set(expected)
+
+
+def _split_training_rank(rank: int, port: int, source: str, weights: str, out: str) -> None:
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from linnet.torch import pipeline
+    from tests.torch.test_shards import TRAINING_GENERICS, training_batches
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    dist.init_process_group("gloo", rank=rank, world_size=4)
+    try:
+        mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names=("pp", "tp"))
+        pipe = pipeline(
+            source,
+            generics=TRAINING_GENERICS,
+            std_root=STDLIB,
+            weights=weights,
+            entry="loss_packed",
+            microbatches=2,
+            stages=["layers.1"],
+            device="cpu",
+            group=mesh["pp"].get_group(),
+            tensor_parallel=mesh["tp"],
+        )
+        # The processes of a stage take the same micro-batches.
+        batches = training_batches()
+        inputs = [
+            torch.cat(parts)
+            for parts in zip(
+                *(b.inputs(sum(x.count for x in batches), "cpu") for b in batches), strict=True
+            )
+        ]
+        loss = pipe.step(*inputs)
+        grads = {name: p.grad for name, p in pipe.named_parameters() if p.grad is not None}
+        torch.save(
+            {"loss": loss, "grads": grads, "parts": dict(pipe.module.shard_parts)},
+            f"{out}.{rank}",
+        )
+    finally:
+        dist.destroy_process_group()
+
+
+def test_a_pipeline_of_split_stages_trains_as_one_process(tmp_path: Path) -> None:
+    """Two stages, each split over two processes: the loss of two
+    micro-batches, and each process's part of its stage's gradients, as one
+    process computes them over both."""
+    from tests.torch.test_shards import TRAINING_GENERICS, training_batches, training_files
+
+    source, weights = training_files(tmp_path)
+    whole = load(
+        source,
+        generics=TRAINING_GENERICS,
+        std_root=STDLIB,
+        weights=weights,
+        compile=True,
+        trainable=True,
+    )
+    batches = training_batches()
+    count = sum(b.count for b in batches)
+    total = torch.stack([whole.run_entry("loss_packed", b.inputs(count, "cpu")) for b in batches])
+    total.sum().backward()
+    expected = {
+        name.removeprefix("root."): p.grad
+        for name, p in whole.named_parameters()
+        if p.grad is not None
+    }
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = str(tmp_path / "rank")
+    torch.multiprocessing.spawn(
+        _split_training_rank, args=(port, str(source), str(weights), out), nprocs=4
+    )
+    seen: set[str] = set()
+    for rank in range(4):
+        saved = torch.load(f"{out}.{rank}")
+        if saved["loss"] is not None:
+            torch.testing.assert_close(saved["loss"], total.sum().detach(), atol=1e-5, rtol=1e-5)
+        parts = saved["parts"]
+        for name, got in saved["grads"].items():
+            want = expected[name]
+            if name in parts:
+                axis, extent = parts[name]
+                want = want.narrow(axis, (rank % 2) * extent, extent)
+            torch.testing.assert_close(got, want, atol=1e-5, rtol=1e-4)
+            seen.add(name)
+    assert seen == set(expected)
