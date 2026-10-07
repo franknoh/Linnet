@@ -28,6 +28,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--max-seq", type=int, default=2048, help="the longest prompt plus completion (`MaxSeq`)"
     )
+    parser.add_argument(
+        "--pool",
+        type=int,
+        metavar="POSITIONS",
+        help="serve from pages of one pool of POSITIONS cached positions (the card's paged "
+        "entries, PyTorch): --batch is then the requests in flight, --max-seq the longest",
+    )
     parser.add_argument("--dtype", help="the `T` generic (default: the card's; f16 on ONNX)")
     parser.add_argument("--weights", help="a checkpoint on disk instead of the card's")
     parser.add_argument(
@@ -52,8 +59,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     from . import Engine
     from .server import Server
 
+    if args.pool and args.backend != "torch":
+        parser.error("--pool serves from pages with the PyTorch backend")
     card = nest.resolve(args.model)
-    generics: dict[str, int | str] = {"Batch": args.batch, "MaxSeq": args.max_seq}
+    generics: dict[str, int | str] = (
+        {"Batch": 1, "MaxSeq": args.pool}
+        if args.pool
+        else {"Batch": args.batch, "MaxSeq": args.max_seq}
+    )
     if args.dtype:
         generics["T"] = args.dtype
     elif args.backend == "onnx":
@@ -93,7 +106,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # A Hub repo keeps its id as the model's name, as other servers name it.
     hub = nest.HUB_REPO.match(args.model)
     name = args.name or (hub["repo"] if hub and not Path(args.model).exists() else card.name)
-    engine = Engine(model)
+    engine = (
+        Engine(model, paged=True, rows=args.batch, max_len=args.max_seq)
+        if args.pool
+        else Engine(model)
+    )
     # The smallest pass by default: a few seconds rather than a minute or more
     # for every pass size.
     engine.warmup(args.warmup if args.warmup else [64])
