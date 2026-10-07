@@ -137,6 +137,11 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.sink_attention",
          fast,
          {"mask is boolean with true meaning attend", "key/value heads divide query heads"}},
+        // FlexAttention over each row's pages where they lie in the pool.
+        {"std.nn.attention::paged_attention",
+         "linnet.paged_attention",
+         fast,
+         {"key/value heads divide query heads", "every page a row reads lies in the pool"}},
         {"std.nn.attention::grouped_attention",
          "torch.nn.functional.scaled_dot_product_attention(enable_gqa)(input dtype)",
          fast,
