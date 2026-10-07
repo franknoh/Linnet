@@ -283,11 +283,6 @@ class MemoryModel:
                 f"a pipeline of {config.pipeline_parallel} stages needs at least as many "
                 f"micro-batches, not {config.microbatches}"
             )
-        if processes > 1 and config.pipeline_parallel > 1 and config.training is not None:
-            raise TraceError(
-                "a pipeline over split stages runs entries without gradients, as "
-                "`linnet.torch.pipeline` does"
-            )
         present = set(self.present) | set(config.optionals)
         options = TraceOptions(
             present=lambda path: path in present or any(p.startswith(f"{path}.") for p in present),

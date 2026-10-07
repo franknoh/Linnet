@@ -416,8 +416,10 @@ def pipeline(
     over its processes, for a model that says how it splits (a `Shards`
     generic): each binds its own part of its stage's weights. `group` then
     names this process's pipeline, one process of each stage, as the
-    `"pp"` dimension of a two-dimensional mesh does. Split stages run
-    entries without gradients (`trainable=False`).
+    `"pp"` dimension of a two-dimensional mesh does. Split stages train when
+    the entry passes each split computation its input through
+    `std.nn.parallel::shared`, as the zoo's decoders do; the processes of a
+    stage then take the same micro-batches.
 
     `data_parallel`, a one-dimensional `DeviceMesh`, shards each stage's
     weights over the processes that train the same stage on batches of
@@ -436,12 +438,6 @@ def pipeline(
         raise PlanError("a pipeline over split or sharded stages needs group=, its own processes")
     if tensor_parallel is not None and data_parallel is not None:
         raise PlanError("a pipeline's stages are split or sharded, not both")
-    if tensor_parallel is not None and trainable:
-        # A split stage's sums carry no gradient back to the inputs every
-        # process holds whole.
-        raise PlanError(
-            "a pipeline over split stages runs entries without gradients: trainable=False"
-        )
     group = group if group is not None else dist.group.WORLD
     rank, size = dist.get_rank(group), dist.get_world_size(group)
     if microbatches < size:
