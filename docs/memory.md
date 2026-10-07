@@ -154,9 +154,8 @@ listed above it for a pipeline.
   stay until the step ends.
 
 Pipelines combine with tensor parallelism for a model with a `Shards`
-generic (each stage's processes split its weights; no training, as the
-runtime runs it) and with `--shards` (each stage's weights sharded across
-its processes). A sharded stage gathers its weights once a step and keeps
+generic (each stage's processes split its weights) and with `--shards`
+(each stage's weights sharded across its processes). A sharded stage gathers its weights once a step and keeps
 them whole for every micro-batch, and the largest gradient being summed
 back is counted during backward. Each process group holds its own NCCL
 communicator.

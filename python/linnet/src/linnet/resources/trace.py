@@ -92,7 +92,7 @@ class Lowering:
     # Collectives over the processes of a tensor-parallel group: on one
     # device the value is its own sum and its own gather, returned as is.
     identities: frozenset[str] = frozenset(
-        {"torch.distributed.all_reduce", "torch.distributed.all_gather"}
+        {"torch.distributed.all_reduce", "torch.distributed.all_gather", "torch.distributed.shared"}
     )
 
     # The memory order of a native result's axes where it is not their own:

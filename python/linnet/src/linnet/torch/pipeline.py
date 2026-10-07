@@ -42,6 +42,7 @@ from typing import Any, Literal
 
 import torch
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 from ..parallel import layout_stages, stage_of_path, stage_starts
 from ..plan import PlanError, compile_plan
@@ -135,6 +136,13 @@ class Pipeline:
         if built.split.results != 1:
             raise PlanError("a training step needs an entry with one result: the loss")
         losses: list[torch.Tensor] | None = [] if self.is_last else None
+        # The gradients summed with other processes' below hold this step's
+        # alone then; what they held before is added back after.
+        aside: list[tuple[nn.Parameter, torch.Tensor]] = []
+        for parameter in self._summed():
+            if parameter.grad is not None:
+                aside.append((parameter, parameter.grad))
+                parameter.grad = None
         held = self._hold(built, trains=True)
         try:
             built.schedule.step(
@@ -149,6 +157,10 @@ class Pipeline:
             built.module.held = None
         self._sum_tied_gradients()
         self._sum_whole_gradients()
+        for parameter, grad in aside:
+            if parameter.grad is not None:
+                grad.add_(parameter.grad)
+            parameter.grad = grad
         if losses is None:
             return None
         return torch.stack([loss.detach().float() for loss in losses]).sum()
@@ -285,7 +297,28 @@ class Pipeline:
                 continue
             if parameter.grad is None:
                 parameter.grad = torch.zeros_like(parameter)
-            dist.all_reduce(parameter.grad, group=group)
+            grad = parameter.grad
+            if isinstance(grad, DTensor):
+                grad = grad.to_local()  # a sharded weight's: this process's part
+            dist.all_reduce(grad, group=group)
+
+    def _summed(self) -> list[nn.Parameter]:
+        """This stage's parameters whose gradients a step sums with other
+        processes': those shared with other stages, and those its sharding
+        keeps whole."""
+        found: dict[int, nn.Parameter] = {}
+        for paths, _ in self.ties:
+            mine = [p for p in paths if self.stage_of(p) == self.stage]
+            if mine:
+                owner, leaf = owner_of(self.module, mine[0])
+                parameter = getattr(owner, leaf)
+                if isinstance(parameter, nn.Parameter) and parameter.requires_grad:
+                    found[id(parameter)] = parameter
+        if self.data_parallel is not None:
+            for _, parameter in self.named_parameters():
+                if not sharded(parameter) and parameter.requires_grad:
+                    found[id(parameter)] = parameter
+        return list(found.values())
 
     def _sum_whole_gradients(self) -> None:
         """Sums, across the processes training this stage, the gradients of
@@ -412,8 +445,10 @@ def pipeline(
     over its processes, for a model that says how it splits (a `Shards`
     generic): each binds its own part of its stage's weights. `group` then
     names this process's pipeline, one process of each stage, as the
-    `"pp"` dimension of a two-dimensional mesh does. Split stages run
-    entries without gradients (`trainable=False`).
+    `"pp"` dimension of a two-dimensional mesh does. Split stages train when
+    the entry passes each split computation its input through
+    `std.nn.parallel::shared`, as the zoo's decoders do; the processes of a
+    stage then take the same micro-batches.
 
     `data_parallel`, a one-dimensional `DeviceMesh`, shards each stage's
     weights over the processes that train the same stage on batches of
@@ -432,12 +467,6 @@ def pipeline(
         raise PlanError("a pipeline over split or sharded stages needs group=, its own processes")
     if tensor_parallel is not None and data_parallel is not None:
         raise PlanError("a pipeline's stages are split or sharded, not both")
-    if tensor_parallel is not None and trainable:
-        # A split stage's sums carry no gradient back to the inputs every
-        # process holds whole.
-        raise PlanError(
-            "a pipeline over split stages runs entries without gradients: trainable=False"
-        )
     group = group if group is not None else dist.group.WORLD
     rank, size = dist.get_rank(group), dist.get_world_size(group)
     if microbatches < size:
@@ -494,9 +523,9 @@ def pipeline(
     by_tensor = paths_by_tensor(bound)
     ties: list[tuple[list[str], Any]] = []
     # Every process makes every group, in the same order: with the stages
-    # split, each place in the split has a pipeline of its own.
+    # split or sharded, each place in a stage has a pipeline of its own.
     pipelines = [[dist.get_global_rank(group, s) for s in range(size)]]
-    if tensor_parallel is not None:
+    if tensor_parallel is not None or data_parallel is not None:
         everyone: list[Any] = [None] * dist.get_world_size()
         dist.all_gather_object(everyone, pipelines[0])
         pipelines = [list(p) for p in sorted({tuple(p) for p in everyone})]
@@ -533,14 +562,12 @@ def pipeline(
         for name, parameter in module.root.named_parameters(remove_duplicate=False):
             if not mine(name):
                 parameter.requires_grad_(False)
-    # Sharded after what trains is known: those parts are kept in f32.
+    # Sharded after what trains is known: those parts are kept in f32. A
+    # weight two stages share is cut the same way on both, so each place in
+    # a stage sums its part with its own pipeline's.
     if data_parallel is not None:
         from .fsdp import fully_shard
 
-        if ties:
-            raise PlanError(
-                "a pipeline shards its stages only when no weight is shared between them"
-            )
         fully_shard(module, data_parallel, only=mine)
     return Pipeline(
         module,

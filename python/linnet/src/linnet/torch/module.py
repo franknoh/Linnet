@@ -177,6 +177,9 @@ class LinnetModule(nn.Module):
         # The checkpoint tensor each parameter path was bound from
         # (`bind_weights`), for writing the weights back under those names.
         self.weight_names: dict[str, str] = {}
+        # The paths bound to one part of their tensor, split across processes
+        # (`bind_weights(shard=...)`): the axis and the part's extent.
+        self.shard_parts: dict[str, tuple[int, int]] = {}
         root = plan.root
         env = Env()
         for generic in root["generics"]:
@@ -638,6 +641,8 @@ def bind_weights(
                     loaded = cast(torch.Tensor, handle.get_tensor(source))
             getattr(owner, leaf).copy_(loaded)
             module.weight_names[path] = source
+    # The paths bound to a part of their tensor: split across processes.
+    module.shard_parts.update(parts)
     if tie:
         _tie(module, [(path, source, parts.get(path)) for path, source, _ in assignments])
     # An optional sub-block is present when every parameter it requires was

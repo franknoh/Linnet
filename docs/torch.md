@@ -203,6 +203,7 @@ An output projection not tied to the embedding splits into
 `Vocab / Shards` rows, joined by `std.nn.parallel::all_gather`. On one
 device both return their input. `tensor_parallel=mesh` binds `Shards` to
 the mesh size, and each process reads only its part of the checkpoint.
+Such a model trains split as well: see [Split training](training.md#split-training).
 
 Other models are split as DTensors by `linnet.parallel.DEFAULT_RULES`:
 
@@ -269,19 +270,20 @@ A stage can span several processes, from a two-dimensional mesh whose
 # torchrun --nproc-per-node 4: 2 stages, each over 2 GPUs
 mesh = init_device_mesh("cuda", (2, 2), mesh_dim_names=("pp", "split"))
 pipe = pipeline("model.linnet", ..., group=mesh["pp"].get_group(),
-                tensor_parallel=mesh["split"], trainable=False)   # or data_parallel=
+                tensor_parallel=mesh["split"])   # or data_parallel=
 ```
 
 | Option | Each stage's processes |
 | --- | --- |
-| `tensor_parallel=` | split its weights, for a model with a `Shards` generic, and run entries without gradients |
+| `tensor_parallel=` | split its weights, for a model with a `Shards` generic; they take the same micro-batches |
 | `data_parallel=` | shard its weights (`linnet.torch.fsdp`) and train on batches of their own; gradients are summed |
 
 A sharded stage gathers its weights once a step and keeps them whole for
 every micro-batch. As each micro-batch's backward finishes a gradient, it
 is summed into the parts while the rest of the backward runs.
 
-Stages that share a weight cannot be sharded.
+A weight two stages share (an embedding and its output head) is sharded the
+same way on both, and its gradient parts are summed between them.
 
 ## Training
 

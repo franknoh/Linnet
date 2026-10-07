@@ -1,6 +1,7 @@
 module std.nn.loss
 
 use std.nn.linear::{linear}
+use std.nn.parallel::{all_gather}
 
 // Losses and log-probabilities over flattened tokens: `logits` is [N, V],
 // one row per token, and every result is f32 whatever the logits' dtype.
@@ -63,6 +64,35 @@ pub op linear_cross_entropy<N: Dim, H: Dim, V: Dim, T: Float>(
     weights: Tensor[N; f32],
 ) -> f32 {
     return cross_entropy(linear(hidden, weight), targets, weights)
+}
+
+// `linear_cross_entropy` over a vocabulary split across the shards of a
+// model split across devices: each holds `V` rows of the output head,
+// `Shards * V` in all, the shards in order, and `targets` index the whole.
+// The body gathers the logits; a backend that runs the shards as processes
+// combines each row's maximum, sum and target logit across them instead.
+// Pass `std.nn.parallel::shared(hidden)`: each shard's gradient of the
+// hidden states is its part of the whole. With one shard,
+// `linear_cross_entropy`.
+pub op split_cross_entropy<N: Dim, H: Dim, V: Dim, Shards: Dim, T: Float>(
+    hidden: Tensor[N, H; T],
+    weight: Tensor[V, H; T],
+    targets: Tensor[N; i64],
+    weights: Tensor[N; f32],
+) -> f32
+where Shards > 0 {
+    return cross_entropy(all_gather<N, V, Shards, T>(linear(hidden, weight)), targets, weights)
+}
+
+// `linear_token_log_probs` over a vocabulary split across the shards, as
+// `split_cross_entropy`.
+pub op split_token_log_probs<N: Dim, H: Dim, V: Dim, Shards: Dim, T: Float>(
+    hidden: Tensor[N, H; T],
+    weight: Tensor[V, H; T],
+    targets: Tensor[N; i64],
+) -> Tensor[N; f32]
+where Shards > 0 {
+    return token_log_probs(all_gather<N, V, Shards, T>(linear(hidden, weight)), targets)
 }
 
 // The entropy of each row's distribution, `-sum_v p(v) log p(v)`.

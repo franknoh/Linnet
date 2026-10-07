@@ -22,3 +22,14 @@ pub op all_gather<R: Dim, N: Dim, Shards: Dim, T: Float>(
 where Shards > 0 {
     return reshape(broadcast_to(reshape(x, [R, 1, N]), [R, Shards, N]), [R, Shards * N])
 }
+
+// `x` as every shard reads it: the input of a split computation (the
+// projections into the heads or the hidden units, an output head split by
+// vocabulary), whole on each device of a model split across devices. The
+// value is `x`. In training, each shard's gradient of it comes from its own
+// part of the weights; a backend that runs the shards as processes sums
+// those parts, as `all_reduce` sums the forward pass's. With one shard, `x`
+// itself.
+pub op shared<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return x
+}

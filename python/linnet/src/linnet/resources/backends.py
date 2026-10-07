@@ -111,10 +111,19 @@ def _element(obj: MemoryObject) -> int:
     return dtypes.dtype(obj.dtype).element_bytes
 
 
+# A vocabulary split across processes: each runs the loss over its part.
+_SPLIT_LOSSES = {
+    "linnet.split_cross_entropy": "linnet.linear_cross_entropy",
+    "linnet.split_token_log_probs": "linnet.linear_token_log_probs",
+}
+
+
 def _base(implementation: str) -> str:
     """`torch.softmax(input dtype)` is `torch.softmax` computed in the input
-    dtype: the same storage."""
-    return implementation.removesuffix("(input dtype)")
+    dtype: the same storage. A loss over a split vocabulary holds what the
+    loss over its part does."""
+    base = implementation.removesuffix("(input dtype)")
+    return _SPLIT_LOSSES.get(base, base)
 
 
 class GenericBackend:
@@ -245,7 +254,11 @@ class CudaTorchBackend:
         if implementation in ("torch.nn.functional.linear", "torch.matmul"):
             # Each operand for the other's gradient.
             return Saved(tuple(inputs[i] for i in (0, 1) if needs(1 - i)))
-        if implementation in ("torch.distributed.all_reduce", "torch.distributed.all_gather"):
+        if implementation in (
+            "torch.distributed.all_reduce",
+            "torch.distributed.all_gather",
+            "torch.distributed.shared",
+        ):
             return Saved(())
         if implementation.startswith("torch.nn.functional.scaled_dot_product_attention"):
             objects = [graph.objects[i] for i in inputs]
@@ -476,6 +489,7 @@ _NO_WORKSPACE = frozenset(
         # processes is the exception, above.
         "torch.distributed.all_reduce",
         "torch.distributed.all_gather",
+        "torch.distributed.shared",
     }
 )
 

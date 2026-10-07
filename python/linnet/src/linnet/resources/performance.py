@@ -379,6 +379,11 @@ _PRODUCTS = ("torch.nn.functional.linear", "torch.matmul")
 _WRITES = ("torch.Tensor.index_copy", "torch.Tensor.index_put", "torch.Tensor.index_put(tokens)")
 _COLLECTIVES = ("torch.distributed.all_reduce", "torch.distributed.all_gather")
 _LOSSES = ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs")
+# A vocabulary split across processes: each runs the loss over its part.
+_SPLIT_LOSSES = {
+    "linnet.split_cross_entropy": "linnet.linear_cross_entropy",
+    "linnet.split_token_log_probs": "linnet.linear_token_log_probs",
+}
 # The chunked loss's passes over its f32 logits, bytes per logit: making
 # them (bf16, then f32) and their log-sum-exp; with gradients also the
 # softmax, its scaling and its cast back.
@@ -529,6 +534,7 @@ def _costs(
         if step.index in hoisted or step.index in joined:
             continue
         implementation = (step.implementation or "").split("(")[0]
+        implementation = _SPLIT_LOSSES.get(implementation, implementation)
         full = step.implementation or ""
         owned = [o for o in step.outputs if graph.objects[o].owns_storage]
         read = sum(_bytes(graph, i, env) for i in dict.fromkeys(step.inputs))
@@ -615,6 +621,13 @@ def _costs(
                     "compute",
                 )
             )
+        elif implementation == "torch.distributed.shared":
+            if processes <= 1 or not training:
+                continue  # its argument, as it is
+            # The shards' parts of its gradient summed, in backward.
+            size = _bytes(graph, step.inputs[0], env)
+            seconds = device.latency + 2 * (processes - 1) / processes * size / device.link
+            backward.append(_Op(host() + node, seconds, "communication"))
         elif implementation in _COLLECTIVES:
             if processes <= 1:
                 continue  # the generated helper returns its argument

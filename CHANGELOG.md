@@ -58,7 +58,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   per step, serving from pages of one cache pool, and an OpenAI-compatible
   HTTP server.
 - `linnet.train`: supervised fine-tuning, DPO and GRPO in PyTorch and JAX,
-  with LoRA, fully sharded data parallelism and checkpoints; the models
+  with LoRA, fully sharded data parallelism, tensor parallelism (with
+  `train`, and in pipelines) and checkpoints; the models
   also train under transformers' `Trainer` and TRL.
 - `linnet.nest`: models by Nest name, from any Hugging Face Hub repo with a
   card, or from a directory; `transformers` checkpoints of the Llama,

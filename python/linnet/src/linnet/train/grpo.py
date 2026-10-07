@@ -189,6 +189,11 @@ def grpo(
             "for them takes temperature 1 and no top_k or top_p"
         )
     device = next(policy.parameters()).device
+    if getattr(policy, "shard_group", None) is not None:
+        raise ValueError(
+            "grpo trains a policy whole on each process or split by `fully_shard`, "
+            "not by `tensor_parallel`"
+        )
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     trained = [p for group_ in optimizer.param_groups for p in group_["params"]]
     draws = random.Random(seed)
