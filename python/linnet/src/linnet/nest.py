@@ -34,10 +34,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 
 from . import diagram, ir
-from .compiler import LinnetError, bind_arguments, run_compiler, std_arguments
+from .compiler import LinnetError, bind_arguments, parse_binding, run_compiler, std_arguments
 from .weights import header_tensors, match_checkpoint, read_bindings, read_header
 
 REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
@@ -549,6 +549,76 @@ def model_source(model: str | Path | Card) -> tuple[Card | None, Path]:
         return None, Path(model)
     card = resolve(model)
     return card, card.source_path
+
+
+@dataclass(frozen=True)
+class ModelSource:
+    """A model argument resolved (`resolve_model`): its card (None for a
+    source file), its source, and the card's generics, root block,
+    checkpoint and bindings, each where the caller gave none."""
+
+    card: Card | None
+    source: Path
+    generics: Mapping[str, int | str]
+    root: str | None
+    weights: str | Path | None
+    bindings: str | Path | None
+
+
+def resolve_model(
+    model: str | Path | Card,
+    *,
+    root: str | None = None,
+    weights: str | Path | None = None,
+    bindings: str | Path | None = None,
+) -> ModelSource:
+    """`model` (a Nest model directory or name, or a `.linnet` file) and what
+    its card supplies under what was given; the checkpoint is downloaded
+    when the card's is on the Hub."""
+    card, source = model_source(model)
+    if card is None:
+        return ModelSource(None, source, {}, root, weights, bindings)
+    return ModelSource(
+        card,
+        source,
+        dict(card.generics),
+        card.root if root is None else root,
+        download_weights(card) if weights is None else weights,
+        card.bindings_path if bindings is None else bindings,
+    )
+
+
+class ModelOptions(TypedDict):
+    """What `add_model_arguments` reads, as an exporter's keywords."""
+
+    generics: dict[str, int | str]
+    weights: str | None
+    bindings: str | None
+    root: str | None
+    std_root: str | None
+
+
+def add_model_arguments(parser: argparse.ArgumentParser) -> None:
+    """The arguments an exporter's command takes to name its model: a Nest
+    card or a source file, its root block and generics, the standard
+    library, and the checkpoint and bindings when no card gives them."""
+    parser.add_argument("model", help="a Nest model directory or name, or a .linnet file")
+    parser.add_argument("--root")
+    parser.add_argument("--std")
+    parser.add_argument("--bind", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--weights", help="a SafeTensors file or directory (when not from a card)")
+    parser.add_argument("--bindings", help="parameter path to tensor name JSON")
+
+
+def model_options(args: argparse.Namespace) -> ModelOptions:
+    """`add_model_arguments`' values, as an exporter takes them."""
+    return {
+        "generics": dict(parse_binding(bind) for bind in args.bind),
+        "weights": args.weights,
+        "bindings": args.bindings,
+        "root": args.root,
+        "std_root": args.std,
+    }
 
 
 def local_weights(card: Card) -> Path | None:

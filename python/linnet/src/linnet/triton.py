@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import ir, nest
-from .compiler import LinnetError, parse_binding
+from .compiler import LinnetError
 
 TRITON_DTYPES = {
     "bool": "TYPE_BOOL",
@@ -225,18 +225,12 @@ def export(
     `generics`, `weights`, and `bindings` given here. `generics` also binds
     the entry's own generics (`B`, `S`); with a card they add to its values.
     """
-    card, source = nest.model_source(model)
-    values: dict[str, int | str] = {}
-    if card is not None:
-        values.update(card.generics)
-        values.update(card.check)
-        root = card.root if root is None else root
-        entry = card.entry if entry is None else entry
-        if weights is None:
-            weights = nest.download_weights(card)
-        if bindings is None:
-            bindings = card.bindings_path
-    values.update(generics or {})
+    resolved = nest.resolve_model(model, root=root, weights=weights, bindings=bindings)
+    card, source, root = resolved.card, resolved.source, resolved.root
+    weights, bindings = resolved.weights, resolved.bindings
+    values = {**resolved.generics, **(card.check if card is not None else {}), **(generics or {})}
+    if card is not None and entry is None:
+        entry = card.entry
 
     program = ir.load_program(source, root=root, std_root=std_root)
     function = program.entry(entry)
@@ -339,34 +333,24 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     exp = commands.add_parser("export", help="write a model directory")
-    exp.add_argument("model", help="a Nest model directory or name, or a .linnet file")
+    nest.add_model_arguments(exp)
     exp.add_argument("-o", "--output", required=True, help="the model repository directory")
     exp.add_argument("--name", help="the model name (the card's or the file's by default)")
     exp.add_argument("--entry")
-    exp.add_argument("--root")
-    exp.add_argument("--std")
-    exp.add_argument("--bind", action="append", default=[], metavar="NAME=VALUE")
-    exp.add_argument("--weights", help="a SafeTensors file or directory (when not from a card)")
-    exp.add_argument("--bindings", help="parameter path to tensor name JSON")
     exp.add_argument("--backend", choices=["onnx", "python"], default="onnx")
     exp.add_argument("--numerics", default="equivalent")
     exp.add_argument("--version", type=int, default=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        generics = dict(parse_binding(bind) for bind in args.bind)
         repository = export(
             args.model,
             args.output,
             name=args.name,
             entry=args.entry,
-            generics=generics,
-            weights=args.weights,
-            bindings=args.bindings,
-            root=args.root,
-            std_root=args.std,
             backend=args.backend,
             numerics=args.numerics,
             version=args.version,
+            **nest.model_options(args),
         )
     except LinnetError as error:
         print(str(error), file=sys.stderr)
