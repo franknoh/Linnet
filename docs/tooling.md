@@ -163,7 +163,7 @@ load a model. A block is named by its path: `layers.3`, `lm_head`.
 | `--fully-shard <block>` | `torch`, `jax` | each process or device holds part of the block's parameters, gathered whole where the block runs (FSDP) |
 | `--remat <block>` | `jax` | the backward pass computes each call of the block again instead of keeping its values (`jax.checkpoint`) |
 | `--lora <pattern>` | `torch`, `jax` | a low-rank adapter beside every weight whose path matches the glob; takes `--lora-rank <r>` and scales by `--lora-alpha <a>` / r |
-| `--absent <path>`, `--absent-file <file>` | all | optional parameters the weights lack, with `--optionals present` |
+| `--absent <path>`, `--absent-file <file>` | all | optional parameters the weights lack, with `--optionals present`; `-` reads the file from stdin |
 
 ### Numerics policy
 

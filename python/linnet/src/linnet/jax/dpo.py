@@ -23,31 +23,15 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..packing import Example, Packed, Pair, empty, pack
+from ..packing import Packed, Pair, empty, pack
+from ..runs import DpoStep, pair_examples, pair_slots
 from .train import Learner, add, prepare_blocks
-
-
-@dataclass
-class DpoStep:
-    """What one step did, over its pairs: `accuracy` is the share whose
-    chosen answer the model now rewards more, `margin` the mean difference of
-    the rewards, `chosen` and `rejected` their means."""
-
-    step: int
-    loss: float
-    accuracy: float
-    margin: float
-    chosen: float
-    rejected: float
-    seconds: float
-    grad_norm: float | None
 
 
 def dpo_loss(
@@ -176,6 +160,7 @@ def dpo(
             chosen=good,
             rejected=bad,
             seconds=time.perf_counter() - begin,
+            learning_rate=None,
             grad_norm=norm,
         )
         history.append(record)
@@ -185,19 +170,13 @@ def dpo(
 
 
 def _batches(chosen_pairs: list[Pair], tokens: int) -> list[Packed]:
-    examples = [
-        Example.prompted(pair.prompt, answer)
-        for pair in chosen_pairs
-        for answer in (pair.chosen, pair.rejected)
-    ]
-    return list(pack(examples, tokens, together=2))
+    return list(pack(pair_examples(chosen_pairs), tokens, together=2))
 
 
 def _paired(batch: Packed, width: int) -> tuple[Any, Any, Any, list[int]]:
     """The batch's chosen and rejected answers' sequences and their pairs,
     `width` long (unused ones marked invalid)."""
-    first = [s for s, item in enumerate(batch.items) if item % 2 == 0]
-    which = [batch.items[s] // 2 for s in first]
+    first, which = pair_slots(batch.items)
     chosen = np.zeros(width, np.int32)
     rejected = np.zeros(width, np.int32)
     valid = np.zeros(width, np.float32)

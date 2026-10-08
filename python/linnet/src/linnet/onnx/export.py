@@ -12,20 +12,21 @@ when it is too large for one protobuf.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
+from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_ONNX, BY_SAFETENSORS
 from ..weights import (
     RawTensor,
+    check_problems,
     decode_floats,
     encode_floats,
     read_bindings,
     safetensors_index,
+    tensor_problem,
 )
 
 
@@ -129,16 +130,14 @@ def export_model(
             if p.key.startswith("linnet.path.") and mapping.get(p.value, p.value) not in available
         )
         if missing:
-            with tempfile.TemporaryDirectory() as work:
-                listing = Path(work) / "absent.txt"
-                listing.write_text("\n".join(missing) + "\n", encoding="utf-8")
-                text = run_compiler(
-                    *arguments,
-                    "--absent-file",
-                    str(listing),
-                    *std_arguments(std_root),
-                    str(source),
-                )
+            text = run_compiler(
+                *arguments,
+                "--absent-file",
+                "-",
+                *std_arguments(std_root),
+                str(source),
+                stdin="".join(f"{path}\n" for path in missing),
+            )
             model = parser.parse_model(text)
 
     paths = {
@@ -178,8 +177,7 @@ def export_model(
         for input_name, path in wanted.get(name, []):
             tensor = RawTensor(name, location.dtype, location.shape, location.read())
             _take(tensor, input_name, path, declared, cast_dtype, found, problems)
-    if problems:
-        raise LinnetError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
+    check_problems(problems)
 
     if not embed:
         onnx.checker.check_model(model)
@@ -251,17 +249,12 @@ def _matches(
     `input_name` (parameter `path`); if not, why is added to `problems`."""
     info = declared[input_name].type.tensor_type
     wanted = tuple(d.dim_value for d in info.shape.dim)
-    if wanted != shape:
-        problems.append(f"`{name}` has shape {list(shape)}, `{path}` needs {list(wanted)}")
-        return False
-    found, needed = BY_SAFETENSORS.get(dtype), BY_ONNX.get(info.elem_type)
-    if found is None or found.onnx != info.elem_type:
-        floats = found is not None and found.is_float and needed is not None and needed.is_float
-        if not (cast_dtype and floats):
-            needs = str(info.elem_type) if needed is None else needed.name
-            problems.append(f"`{name}` is {dtype}, `{path}` needs {needs}")
-            return False
-    return True
+    needed = BY_ONNX.get(info.elem_type)
+    needs = str(info.elem_type) if needed is None else needed.name
+    problem = tensor_problem(name, path, shape, dtype, wanted, needs, cast_dtype)
+    if problem is not None:
+        problems.append(problem)
+    return problem is None
 
 
 def _take(

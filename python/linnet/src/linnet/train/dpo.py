@@ -26,41 +26,22 @@ from __future__ import annotations
 import itertools
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch.nn import functional
 
-from ..packing import Pair
+from ..packing import Pair, empty
+from ..runs import DpoStep, pair_examples, pair_slots, unsaved
 from . import (
     Batch,
-    Example,
     clip_gradients,
     load_checkpoint,
     pack,
     reduce_gradients,
     save_checkpoint,
 )
-
-
-@dataclass
-class DpoStep:
-    """What one step did, over its pairs: `accuracy` is the share whose
-    chosen answer the model now rewards more, `margin` the mean difference of
-    the rewards, `chosen` and `rejected` their means (a reward is `beta`
-    times an answer's log-probability less the reference's)."""
-
-    step: int
-    loss: float
-    accuracy: float
-    margin: float
-    chosen: float
-    rejected: float
-    seconds: float
-    learning_rate: float
-    grad_norm: float | None
 
 
 def dpo_loss(
@@ -207,11 +188,7 @@ def dpo(
             on_step(record)
         if checkpoint is not None and checkpoint_every and step % checkpoint_every == 0:
             save_checkpoint(checkpoint, model, optimizer, step=step, schedule=schedule)
-    if (
-        checkpoint is not None
-        and history
-        and not (checkpoint_every and step % checkpoint_every == 0)
-    ):
+    if checkpoint is not None and history and unsaved(checkpoint_every, step):
         save_checkpoint(checkpoint, model, optimizer, step=step, schedule=schedule)
     return history
 
@@ -250,12 +227,7 @@ def _rounds(
     has run out."""
     import torch.distributed as dist
 
-    examples = [
-        Example.prompted(pair.prompt, answer)
-        for pair in chosen_pairs
-        for answer in (pair.chosen, pair.rejected)
-    ]
-    batches = list(pack(examples, tokens, together=2))
+    batches = list(pack(pair_examples(chosen_pairs), tokens, together=2))
     total = float(len(chosen_pairs))
     if distributed:
         state = torch.tensor([float(bool(chosen_pairs)), total, len(batches)], device=device)
@@ -268,10 +240,7 @@ def _rounds(
         most = state[2:].clone()
         dist.all_reduce(most, op=dist.ReduceOp.MAX)
         total = float(summed.item())
-        empty = torch.zeros(tokens, dtype=torch.int32)
-        batches += [Batch(empty, empty, empty, empty.long(), torch.zeros(tokens))] * (
-            int(most.item()) - len(batches)
-        )
+        batches += [Batch.of(empty(tokens))] * (int(most.item()) - len(batches))
     elif not chosen_pairs:
         return None
     return batches, total
@@ -290,8 +259,7 @@ def _answers(model: Any, entry: str, batch: Batch, device: torch.device) -> torc
 
 def _paired(batch: Batch, sequences: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
     """The batch's chosen and rejected answers, and their pairs' indices."""
-    first = [s for s, item in enumerate(batch.items) if item % 2 == 0]
-    which = [batch.items[s] // 2 for s in first]
+    first, which = pair_slots(batch.items)
     return sequences[first], sequences[[s + 1 for s in first]], which
 
 

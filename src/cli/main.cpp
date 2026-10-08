@@ -91,7 +91,7 @@ void print_usage(std::FILE* out) {
         "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
         "            [--numerics exact|equivalent|fast]\n"
         "            [--optionals present|absent] [--absent <param>]...\n"
-        "            [--absent-file <file>] [--std <dir>] <file>\n"
+        "            [--absent-file <file>|-] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments.\n"
         "                                       --entry names an entry of the root block\n"
@@ -505,11 +505,16 @@ int run_graph_export(std::span<const std::string_view> args,
             } else if (arg == "--absent-file") {
                 // One path per line: a model can have hundreds (every attention
                 // projection without a bias), more than a command line should hold.
-                std::ifstream file{std::string(value)};
-                if (!file) {
-                    return usage_error("cannot read --absent-file " + std::string(value));
+                // `-` reads them from stdin.
+                std::ifstream file;
+                if (value != "-") {
+                    file.open(std::string(value));
+                    if (!file) {
+                        return usage_error("cannot read --absent-file " + std::string(value));
+                    }
                 }
-                for (std::string line; std::getline(file, line);) {
+                std::istream& listing = value == "-" ? std::cin : file;
+                for (std::string line; std::getline(listing, line);) {
                     if (!line.empty()) {
                         export_options.absent.insert(line);
                     }

@@ -24,12 +24,11 @@ import torch
 
 from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
-from ..dtypes import CLASSES
 from ..generated import import_generated
 from ..plan import PlanError, compile_plan
 from .dtypes import torch_dtype
 from .interp import Interpreter
-from .module import bind_generics, bind_input
+from .module import bind_input
 
 
 class Function:
@@ -82,16 +81,16 @@ class Function:
             torch.device("cpu"),
         )
         env = ir.Bindings()
-        bind_generics(env, self.function.generics, generics or {})
+        ir.bind_named(env, self.function.generics, generics or {})
         # Tensors first: they bind the dtype generics a number's type may name.
         for param, value in zip(params, inputs, strict=True):
             if isinstance(value, torch.Tensor):
                 bind_input(env, param, value)
+        ir.require_bound(env, self.function)
         values = [
             value if isinstance(value, torch.Tensor) else self._number(param, value, env, device)
             for param, value in zip(params, inputs, strict=True)
         ]
-        self._check_generics(env)
         mode = self._compile if compile is None else compile
         if mode is None:
             mode = device.type == "cuda"
@@ -117,28 +116,6 @@ class Function:
             raise PlanError(f"input `{param.name}` is a scalar; pass a number or a 0-d tensor")
         return torch.tensor(value, dtype=torch_dtype(env, declared.dtype), device=device)
 
-    def _check_generics(self, env: ir.Bindings) -> None:
-        for generic in self.function.generics:
-            name = generic.name
-            if generic.kind == "dim":
-                bound = generic.id in env.dims
-            elif generic.kind == "shape":
-                bound = generic.id in env.packs
-            else:
-                dtype = env.dtypes.get(generic.id)
-                bound = dtype is not None
-                kind = generic.dtype_class or "any"
-                if dtype is not None and dtype not in CLASSES[kind]:
-                    raise PlanError(f"`{name}` of `{self.name}` is {kind}, not {dtype}")
-            if not bound:
-                raise PlanError(
-                    f"cannot determine `{name}` of `{self.name}` from its inputs; "
-                    f"give it by name, `{self.name}(..., {name}=...)`"
-                )
-        for constraint in self.function.constraints:
-            if not env.holds(constraint):
-                raise PlanError(f"the inputs break the `where` clause of `{self.name}`")
-
     # ---- interpreted
 
     def _interpreter(self, device: torch.device) -> Interpreter:
@@ -155,15 +132,7 @@ class Function:
         device: torch.device,
         backend: str | None,
     ) -> Any:
-        bindings: dict[str, str] = {}
-        for generic in self.function.generics:
-            if generic.kind == "dim":
-                bindings[generic.name] = str(env.dims[generic.id])
-            elif generic.kind == "dtype":
-                bindings[generic.name] = env.dtypes[generic.id]
-            else:
-                # A shape pack's dimensions, as `linnet torch --bind S=2,3` takes them.
-                bindings[generic.name] = ",".join(map(str, env.packs[generic.id]))
+        bindings = ir.bind_names(env, self.function.generics)
         key = (tuple(sorted(bindings.items())), device, backend)
         generated = self._generated.get(key)
         if generated is None:
@@ -233,8 +202,6 @@ def load_function(
     graphs. Unset, it is `True` for inputs on a CUDA device and `False` (the
     interpreter) elsewhere. Either way the function is differentiable.
     """
-    if numerics not in ("exact", "equivalent", "fast"):
-        raise PlanError('numerics must be "exact", "equivalent", or "fast"')
     program = compile_plan(
         source, std_root=std_root, optimize=optimize, numerics=numerics, functions=True
     )

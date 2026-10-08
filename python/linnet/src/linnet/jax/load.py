@@ -16,7 +16,6 @@ from __future__ import annotations
 import dataclasses
 import functools
 import re
-import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -28,8 +27,15 @@ from jax.core import Tracer
 from jax.sharding import SingleDeviceSharding
 
 from .. import ir
-from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
-from ..plan import bind_shape_names, compile_plan
+from ..compiler import (
+    LinnetError,
+    bind_arguments,
+    check_numerics,
+    lora_arguments,
+    run_compiler,
+    std_arguments,
+)
+from ..plan import compile_plan
 from ..weights import apply_bindings, read_arrays
 from .dtypes import MLIR_TYPES
 
@@ -54,7 +60,7 @@ class LinnetFunction:
         self.cast_dtype = cast_dtype
         self.program = program
         self.generics = dict(generics)
-        self._generics = self.generics
+        self._root = ir.bind_generics(program.root.generics, self.generics)
         self.weights = weights
         self._weights = self.weights
         self._std_root = std_root
@@ -97,27 +103,13 @@ class LinnetFunction:
                 arguments += ["--fully-shard", unit]
             for unit in getattr(self, "remat", ()):
                 arguments += ["--remat", unit]
-        lora = getattr(self, "lora", None)
-        if target == "jax" and lora is not None:
-            patterns, rank, alpha = lora
-            for pattern in patterns:
-                arguments += ["--lora", pattern]
-            arguments += ["--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]
+        if target == "jax":
+            arguments += lora_arguments(getattr(self, "lora", None))
         arguments += bind_arguments(bindings)
+        arguments += ["--absent-file", "-", *std_arguments(self._std_root), str(self._source)]
 
         def run(absent: list[str]) -> str:
-            if not absent:
-                return run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
-            with tempfile.TemporaryDirectory() as work:
-                listing = Path(work) / "absent.txt"
-                listing.write_text("\n".join(absent) + "\n", encoding="utf-8")
-                return run_compiler(
-                    *arguments,
-                    "--absent-file",
-                    str(listing),
-                    *std_arguments(self._std_root),
-                    str(self._source),
-                )
+            return run_compiler(*arguments, stdin="".join(f"{path}\n" for path in absent))
 
         if self.absent is None:
             if target != "stablehlo":
@@ -142,14 +134,10 @@ class LinnetFunction:
         return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
     def _check_weights(self, manifest: Sequence[ir.ManifestEntry]) -> None:
-        # Manifest paths spell array elements `[*]`; weights spell them `.0`.
-        def matches(pattern: str, path: str) -> bool:
-            return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
-
         for entry in manifest:
             if entry.optional or entry.kind == "state":  # state is never a weight
                 continue
-            if not any(matches(entry.path, path) for path in self._weights):
+            if not any(self._matches(entry.path, path) for path in self._weights):
                 raise LinnetError(f"missing weights for `{entry.path}`")
         # Which optional parameters are absent is read off the first export
         # (see `_export`): checkpoints mix them, a bias on some projections
@@ -164,14 +152,11 @@ class LinnetFunction:
             raise LinnetError(
                 f"entry `{self.entry}` takes {len(arguments)} inputs, got {len(inputs)}"
             )
-        bindings: dict[str, int | str] = dict(self._generics)
+        env = self._root.copy()
         for argument, value in zip(arguments, inputs, strict=True):
-            declared = argument.type
-            if not isinstance(declared, ir.TensorType):
-                continue
-            actual = [int(d) for d in np.shape(value)]
-            bind_shape_names(declared.shape, actual, argument.name, bindings)
-        return bindings
+            if isinstance(argument.type, ir.TensorType):
+                ir.bind_input(env, argument, [int(d) for d in np.shape(value)], None)
+        return {**self.generics, **ir.bind_names(env, self._signature.generics)}
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
         text = self._export("stablehlo", bindings)
@@ -459,8 +444,7 @@ def load(
     reverse) as the generics ask; an integer where a float is declared is
     still an error.
     """
-    if numerics not in ("exact", "equivalent", "fast"):
-        raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
+    check_numerics(numerics)
     source_path = Path(source)
     program = compile_plan(source_path, root=root, std_root=std_root, optimize=False)
     return function_of(

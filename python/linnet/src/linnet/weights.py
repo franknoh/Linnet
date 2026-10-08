@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import struct
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -16,7 +16,7 @@ import numpy as np
 
 from . import ir
 from .compiler import LinnetError
-from .dtypes import BY_SAFETENSORS, from_safetensors
+from .dtypes import BY_SAFETENSORS, DTYPES
 
 
 def safetensors_files(weights: str | Path) -> list[Path]:
@@ -114,6 +114,42 @@ def paths_by_tensor(mapping: Mapping[str, str]) -> dict[str, list[str]]:
     return paths
 
 
+def tensor_problem(
+    source: str,
+    path: str,
+    shape: Sequence[int],
+    code: str,
+    wanted_shape: Sequence[int],
+    wanted: str,
+    cast_dtype: bool = False,
+) -> str | None:
+    """Why checkpoint tensor `source` (`shape`, SafeTensors dtype `code`)
+    cannot be parameter `path` (`wanted_shape`, Linnet dtype `wanted`), or
+    None when it can. With `cast_dtype`, a float of another width can."""
+    if tuple(shape) != tuple(wanted_shape):
+        return f"`{source}` has shape {list(shape)}, `{path}` needs {list(wanted_shape)}"
+    found = BY_SAFETENSORS.get(code)
+    if found is not None and found.name == wanted:
+        return None
+    needed = DTYPES.get(wanted)
+    if (
+        cast_dtype
+        and found is not None
+        and found.is_float
+        and needed is not None
+        and needed.is_float
+    ):
+        return None
+    return f"`{source}` is {code}, `{path}` needs {wanted}"
+
+
+def check_problems(problems: Sequence[str], error: type[LinnetError] = LinnetError) -> None:
+    """Raises `error` listing how a checkpoint fails to match the model, if
+    it does."""
+    if problems:
+        raise error("checkpoint does not match the model:\n  " + "\n  ".join(problems))
+
+
 def match_checkpoint(
     program: ir.Program,
     bindings: ir.Bindings,
@@ -145,12 +181,9 @@ def match_checkpoint(
                     problems.append(f"missing tensor `{source}` for `{path}`")
                 continue
             found_shape, found_dtype = tensors[source]
-            if found_shape != shape:
-                problems.append(
-                    f"`{source}` has shape {list(found_shape)}, `{path}` needs {list(shape)}"
-                )
-            elif from_safetensors(found_dtype) != dtype:
-                problems.append(f"`{source}` is {found_dtype}, `{path}` needs {dtype}")
+            problem = tensor_problem(source, path, found_shape, found_dtype, shape, dtype)
+            if problem is not None:
+                problems.append(problem)
             else:
                 located.append((path, source))
         found.append((entry, located))

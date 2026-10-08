@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeVar, cast
 
 from .compiler import LinnetError, PlanError
+from .dtypes import CLASSES, DTYPES
 
 T = TypeVar("T")
 
@@ -779,6 +780,142 @@ def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) 
     if unknown:
         raise LinnetError(f"unknown generics: {', '.join(unknown)}")
     return Bindings(dims, packs, dtypes)
+
+
+def bound(env: Bindings, generic: Generic) -> bool:
+    """Whether `env` binds `generic`."""
+    if generic.kind == "dim":
+        return generic.id in env.dims
+    if generic.kind == "shape":
+        return generic.id in env.packs
+    return generic.id in env.dtypes
+
+
+def bind_named(env: Bindings, generics: Sequence[Generic], given: Mapping[str, int | str]) -> None:
+    """Binds an entry's generics given by name: a dimension as an integer, a
+    dtype by its name."""
+    names = {generic.name for generic in generics}
+    for name in given:
+        if name not in names:
+            raise PlanError(f"the entry has no generic parameter `{name}`")
+    for generic in generics:
+        if generic.name not in given:
+            continue
+        value = given[generic.name]
+        if generic.kind == "dim":
+            if not isinstance(value, int):
+                raise PlanError(f"`{generic.name}` is a dimension; give an integer")
+            env.dims[generic.id] = value
+        elif generic.kind == "dtype":
+            env.dtypes[generic.id] = str(value)
+        else:
+            raise PlanError(f"`{generic.name}` is a shape pack and cannot be given by name")
+
+
+def align_shape(
+    units: Sequence[Unit], shape: Sequence[int], name: str
+) -> tuple[list[tuple[Dim, int]], tuple[Pack, list[int]] | None]:
+    """Input `name`'s declared shape (`units`, with at most one shape pack,
+    which covers whatever axes the others leave) lined up with its actual
+    `shape`: each declared dimension with its size, and the pack with the
+    sizes it covers."""
+    packs = [i for i, unit in enumerate(units) if isinstance(unit, Pack)]
+    if len(packs) > 1:
+        raise PlanError(f"input `{name}` has more than one shape pack")
+    fixed = len(units) - len(packs)
+    if (packs and len(shape) < fixed) or (not packs and len(shape) != fixed):
+        expected = f"at least {fixed}" if packs else str(fixed)
+        raise PlanError(f"input `{name}` has rank {len(shape)}, expected {expected}")
+    if not packs:
+        dims = [unit for unit in units if not isinstance(unit, Pack)]
+        return list(zip(dims, shape, strict=True)), None
+    at, width = packs[0], len(shape) - fixed
+    rest = [unit for unit in [*units[:at], *units[at + 1 :]] if not isinstance(unit, Pack)]
+    sizes = [*shape[:at], *shape[at + width :]]
+    pack = units[at]
+    assert isinstance(pack, Pack)
+    return list(zip(rest, sizes, strict=True)), (pack, list(shape[at : at + width]))
+
+
+def bind_input(env: Bindings, param: Value, shape: Sequence[int], dtype: str | None) -> None:
+    """Binds the generics an input of `shape` and `dtype` (its Linnet name;
+    None leaves the dtype unchecked) determines, and checks it against the
+    ones already bound."""
+    declared = param.type
+    name = param.name
+    if not isinstance(declared, ScalarType | TensorType):
+        raise PlanError(f"input `{name}` is neither a tensor nor a scalar")
+    if dtype is not None:
+        if dtype not in DTYPES:
+            raise PlanError(f"input `{name}` has dtype {dtype}, which Linnet lacks")
+        spec = declared.dtype
+        # A dtype generic of the entry's own (a function's `T`) is bound by
+        # the first input that carries it; the rest must agree.
+        wanted = env.dtypes.setdefault(spec.id, dtype) if isinstance(spec, DTypeVar) else spec
+        if dtype != wanted:
+            raise PlanError(f"input `{name}` has dtype {dtype}, expected {wanted}")
+    if isinstance(declared, ScalarType):
+        if len(shape) != 0:
+            raise PlanError(f"input `{name}` must be a scalar")
+        return
+    dims, pack = align_shape(declared.shape, shape, name)
+    if pack is not None:
+        unit, sizes = pack
+        if env.packs.setdefault(unit.id, tuple(sizes)) != tuple(sizes):
+            raise PlanError(f"input `{name}` disagrees on shape pack `{unit.name}`")
+    for dim, size in dims:
+        if isinstance(dim, DimSymbol):
+            if env.dims.setdefault(dim.id, size) != size:
+                raise PlanError(
+                    f"input `{name}` has size {size} where `{dim.name}` is {env.dims[dim.id]}"
+                )
+        elif env.dim(dim) != size:
+            raise PlanError(
+                f"input `{name}` has size {size} on an axis that must be {env.dim(dim)}"
+            )
+
+
+def require_bound(env: Bindings, function: Function) -> None:
+    """Checks that the inputs and names bound every generic of `function`
+    (one left out takes its constant default) and that its `where` clause
+    holds."""
+    name = function.short_name
+    for generic in function.generics:
+        if not bound(env, generic):
+            default = default_of(generic)
+            if default is None:
+                raise PlanError(
+                    f"cannot determine `{generic.name}` of `{name}` from its inputs; "
+                    f"give it by name, `{name}(..., {generic.name}=...)`"
+                )
+            if isinstance(default, int):
+                env.dims[generic.id] = default
+            else:
+                env.dtypes[generic.id] = default
+        if generic.kind == "dtype":
+            kind = generic.dtype_class or "any"
+            if env.dtypes[generic.id] not in CLASSES[kind]:
+                raise PlanError(
+                    f"`{generic.name}` of `{name}` is {kind}, not {env.dtypes[generic.id]}"
+                )
+    for constraint in function.constraints:
+        if not env.holds(constraint):
+            raise PlanError(f"the inputs break the `where` clause of `{name}`")
+
+
+def bind_names(env: Bindings, generics: Sequence[Generic]) -> dict[str, str]:
+    """The generics `env` binds as `--bind` values (a shape pack as `2,3`)."""
+    names: dict[str, str] = {}
+    for generic in generics:
+        if not bound(env, generic):
+            continue
+        if generic.kind == "dim":
+            names[generic.name] = str(env.dims[generic.id])
+        elif generic.kind == "dtype":
+            names[generic.name] = env.dtypes[generic.id]
+        else:
+            names[generic.name] = ",".join(map(str, env.packs[generic.id]))
+    return names
 
 
 class Arithmetic(Protocol[T]):

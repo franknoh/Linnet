@@ -26,34 +26,15 @@ import math
 import random
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..packing import Example, Packed, Prompt, Reward, empty, group_advantages, pack
-from ..serve import Request
+from ..packing import Prompt, Reward, empty, pack
+from ..runs import GrpoStep, as_prompt, check_grpo, learned_positions, sample_requests, score
 from .train import Learner, add, merge_lora, prepare_blocks
-
-
-@dataclass
-class GrpoStep:
-    """What one step did, as `linnet.train.grpo.GrpoStep` reports it."""
-
-    step: int
-    reward: float
-    reward_std: float
-    length: float
-    loss: float
-    clipped: float
-    kl: float | None
-    sample_seconds: float
-    train_seconds: float
-    grad_norm: float | None
-    uniform: float = 0.0
-    mismatch: float | None = None
 
 
 def grpo(
@@ -102,13 +83,7 @@ def grpo(
     `remat` recomputes each layer in the backward pass. The engine takes
     the weights as they are split and places them as its model wants (a
     model split for serving over the same devices, say)."""
-    if beta and reference is None:
-        raise ValueError("a KL penalty (`beta`) needs `reference` parameters")
-    if correction_cap is not None and (temperature != 1.0 or top_k or top_p < 1.0):
-        raise ValueError(
-            "the engine's log-probabilities are of the model's own distribution: correcting "
-            "for them takes temperature 1 and no top_k or top_p"
-        )
+    check_grpo(beta, reference, correction_cap, temperature, top_k, top_p)
     draws = random.Random(seed)
     stop = frozenset(eos)
     source = iter(prompts)
@@ -147,43 +122,38 @@ def grpo(
     gradient: Any = None
     history: list[GrpoStep] = []
     for step in range(1, steps + 1):
-        chosen = [_prompt(p) for p in itertools.islice(source, prompts_per_step)]
+        chosen = [as_prompt(p) for p in itertools.islice(source, prompts_per_step)]
         if not chosen:
             break
         begin = time.perf_counter()
         if learner is not None:
             # Copies: the engine keeps them past the next step's donation.
             engine.load_weights(merge_lora(policy, learner.parameters(copy=True)))
-        requests = [
-            Request(
-                prompt=list(prompt.tokens),
-                max_new_tokens=max_new_tokens,
-                eos=stop,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                seed=draws.getrandbits(32),
-                logprobs=0 if correction_cap is not None else None,
-            )
-            for prompt in chosen
-            for _ in range(group)
-        ]
+        requests = sample_requests(
+            chosen,
+            group,
+            draws,
+            max_new_tokens=max_new_tokens,
+            eos=stop,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            logprobs=correction_cap is not None,
+        )
         completions, _ = engine.run(requests)
         sampled_seconds = time.perf_counter() - begin
 
         begin = time.perf_counter()
-        rewards = [
-            float(reward(chosen[index // group], list(completion.tokens)))
-            for index, completion in enumerate(completions)
-        ]
-        advantages = group_advantages(rewards, group, scale=scale_rewards)
-        groups = [rewards[i : i + group] for i in range(0, len(rewards), group)]
-        uniform = [max(g) == min(g) for g in groups]
-        kept = [i for i in range(len(completions)) if not (drop_uniform and uniform[i // group])]
-        examples = [
-            Example.prompted(completions[i].request.prompt, completions[i].tokens) for i in kept
-        ]
-        batches = list(pack(examples, tokens))
+        scored = score(
+            chosen, completions, reward, group, scale=scale_rewards, drop_uniform=drop_uniform
+        )
+        rewards, uniform = scored.rewards, scored.uniform
+        sampled_by = (
+            [(len(completions[i].request.prompt), completions[i].logprobs) for i in scored.kept]
+            if correction_cap is not None
+            else None
+        )
+        batches = list(pack(scored.examples, tokens))
         count = max(1.0, float(sum(batch.count for batch in batches)))
         if learner is None:
             # The loaded weights, once the entry has compiled for the shape.
@@ -200,8 +170,17 @@ def grpo(
         width = learner.width
         padded = batches + [empty(tokens) for _ in range(-len(batches) % width)]
         prepared = [
-            _prepared(
-                batch, [advantages[i] for i in kept], count, kept, completions, correction_cap
+            (
+                batch.arrays(1.0)[:4],
+                *learned_positions(
+                    batch.items,
+                    batch.segments,
+                    batch.positions,
+                    batch.mask,
+                    scored.advantages,
+                    count,
+                    sampled_by,
+                ),
             )
             for batch in padded
         ]
@@ -255,6 +234,7 @@ def grpo(
             kl=float(moments[1]) if beta else None,
             sample_seconds=sampled_seconds,
             train_seconds=time.perf_counter() - begin,
+            learning_rate=None,
             grad_norm=norm,
             uniform=sum(uniform) / len(uniform),
             mismatch=float(moments[2]) if correction_cap is not None else None,
@@ -270,42 +250,6 @@ def _per_device(learner: Learner, function: Callable[..., Any], call: list[Any])
     `call`, one row per device."""
     out = np.asarray(function(*learner.stack([(item[0],) for item in call])))
     return list(out.reshape(len(call), *out.shape[-1:]))
-
-
-def _prompt(value: Prompt | Sequence[int]) -> Prompt:
-    return value if isinstance(value, Prompt) else Prompt(value)
-
-
-def _prepared(
-    batch: Packed,
-    advantages: list[float],
-    count: float,
-    kept: list[int],
-    completions: list[Any],
-    cap: float | None,
-) -> tuple[list[Any], Any, Any, Any]:
-    """A batch's inputs, weights (its learned positions over the step's
-    count), each position's advantage, and with `cap` the engine's
-    log-probability of each position's target."""
-    inputs = batch.arrays(1.0)[:4]
-    weights = (batch.mask / count).astype(np.float32)
-    per_sequence = np.asarray([advantages[i] for i in batch.items] + [0.0], dtype=np.float32)
-    advantage = per_sequence[batch.segments]
-    sampled = None
-    if cap is not None:
-        # Completion token k is the target of the position before it.
-        rows = [
-            (len(completions[kept[i]].request.prompt), completions[kept[i]].logprobs)
-            for i in batch.items
-        ]
-        width = max([len(values) for _, values in rows] + [1])
-        table = np.zeros((len(rows) + 1, width), np.float32)
-        for s, (_, values) in enumerate(rows):
-            table[s, : len(values)] = values
-        lengths = np.asarray([length for length, _ in rows] + [1])
-        k = np.clip(batch.positions - (lengths[batch.segments] - 1), 0, width - 1)
-        sampled = np.where(batch.mask > 0, table[batch.segments, k], 0.0).astype(np.float32)
-    return inputs, weights, advantage, sampled
 
 
 __all__ = ["GrpoStep", "grpo"]
