@@ -15,7 +15,7 @@ over as two products around a softmax.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 import torch
 
@@ -135,23 +135,19 @@ def prefill(
     positions: torch.Tensor,
     scale: float,
     size: int,
+    blocks: PrefillBlocks | None = None,
 ) -> torch.Tensor:
     """`query` [1, heads, tokens, width] over the pool `key`/`value` [1,
     kv_heads, positions, width]: token `p` sees row `rows[p]`'s positions up
     to `positions[p]`, position `s` at offset `s % size` of page
-    `table[rows[p], s // size]`."""
+    `table[rows[p], s // size]`. `blocks` is `prefill_blocks` of the same
+    pass, made once for all its layers (made here without)."""
     width = query.shape[3]
-    pool = key.shape[2]
-    if (
-        torch.compiler.is_compiling()
-        and query.is_cuda
-        and not _split(query)
-        and pool % size == 0
-        and size >= 16
-        and size & (size - 1) == 0
-        and 16 <= width <= 256
-    ):
-        return _flex_prefill(query, key, value, table, rows, positions, scale, size)
+    if torch.compiler.is_compiling() and not _split(query) and 16 <= width <= 256:
+        if blocks is None:
+            blocks = prefill_blocks(table, rows, positions, key.shape[2], size)
+        if blocks is not None and query.is_cuda:
+            return _flex_prefill(query, key, value, blocks, scale, size)
     each = query.permute(2, 1, 0, 3)  # a token a row
     seen = _gathered(each, key, value, table[rows.long()], positions, scale, size)
     return seen.permute(2, 1, 0, 3)
@@ -161,101 +157,174 @@ def prefill(
 # its tokens' rows see.
 _TOKEN_BLOCK = 128
 
+# What a pass's FlexAttention reads, the same for every layer: for each block
+# of tokens, which of its rows read each page of the pool (two words of bits,
+# a bit a row), each token's bit and position, each page's place in the rows
+# that list it, and the pages each block reads in part and whole, as
+# FlexAttention lists them.
+PrefillBlocks: TypeAlias = tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]
+
+
+def prefill_blocks(
+    table: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor, pool: int, size: int
+) -> PrefillBlocks | None:
+    """`prefill`'s FlexAttention inputs for a pass's tokens over a pool of
+    `pool` positions, or None where FlexAttention does not run (off CUDA, a
+    pass that is not whole blocks, or pages it cannot take whole)."""
+    if (
+        not table.is_cuda
+        or rows.shape[0] % _TOKEN_BLOCK
+        or pool % size
+        or size < 16
+        or size & (size - 1)
+    ):
+        return None
+    return _blocks(table, rows, positions, pool, size)
+
 
 def _flex_prefill(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    table: torch.Tensor,
-    rows: torch.Tensor,
-    positions: torch.Tensor,
+    blocks: PrefillBlocks,
     scale: float,
     size: int,
 ) -> torch.Tensor:
+    """FlexAttention with each block of tokens a sequence of the batch: the
+    mask then reads what it needs of a block by the block's number, which is
+    the same for a whole tile, rather than by each token's row."""
     from torch.nn.attention.flex_attention import flex_attention
 
     from .flex import fresh_copy
 
-    mask = _prefill_mask(table, rows, positions, query.shape[2], key.shape[2], size)
+    _, heads, tokens, width = query.shape
+    count = tokens // _TOKEN_BLOCK
+    grouped = fresh_copy(query.reshape(heads, count, _TOKEN_BLOCK, width).transpose(0, 1))
     out = flex_attention(
-        fresh_copy(query), key, value, block_mask=mask, scale=scale, enable_gqa=True
+        grouped,
+        key.expand(count, -1, -1, -1),
+        value.expand(count, -1, -1, -1),
+        block_mask=_mask(blocks, key.shape[2], size),
+        scale=scale,
+        enable_gqa=True,
     )
     assert isinstance(out, torch.Tensor)
-    return out
+    return out.transpose(0, 1).reshape(1, heads, tokens, width)
 
 
-def _prefill_mask(
-    table: torch.Tensor,
-    rows: torch.Tensor,
-    positions: torch.Tensor,
-    tokens: int,
-    pool: int,
-    size: int,
-) -> BlockMask:
-    """Which pool positions each token sees, block by block. Every layer of
-    a pass makes the same mask from the same inputs; the compiled graph
-    keeps one (common subexpressions are merged)."""
-    from torch.nn.attention.flex_attention import BlockMask
-
+def _blocks(
+    table: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor, pool: int, size: int
+) -> PrefillBlocks:
     from .flex import fresh_copy
 
     device = table.device
     count, pages = table.shape
+    tokens = rows.shape[0]
     pool_pages = pool // size
+    blocks = tokens // _TOKEN_BLOCK
     owner = rows.long()
     at = positions.long()
-    # Each row's place for every page of the pool (`pages` where the row
-    # does not list it; unused places list page 0, past every position the
-    # row has): a token sees a pool position when its page comes early
-    # enough in its row.
-    places = torch.arange(pages, dtype=torch.int32, device=device).expand(count, pages)
-    first = torch.full((count, pool_pages), pages, dtype=torch.int32, device=device)
-    first = first.scatter_reduce(1, table.long(), places, reduce="amin", include_self=True)
-    # The pages each block of tokens reads: its rows' up to the latest
-    # position of each in the block. A block of one row's tokens reads the
-    # pages wholly before its first token whole, with no mask to apply.
-    blocks = -(-tokens // _TOKEN_BLOCK)
-    block = torch.arange(tokens, device=device) // _TOKEN_BLOCK
-    key = block * count + owner
+    key = torch.arange(tokens, device=device) // _TOKEN_BLOCK * count + owner
     latest = torch.full((blocks * count,), -1, dtype=torch.int64, device=device)
     latest = latest.scatter_reduce(0, key, at, reduce="amax", include_self=True)
     earliest = torch.full((blocks * count,), pages * size, dtype=torch.int64, device=device)
     earliest = earliest.scatter_reduce(0, key, at, reduce="amin", include_self=True)
     latest, earliest = latest.reshape(blocks, count, 1), earliest.reshape(blocks, count, 1)
-    alone = ((latest >= 0).sum(1, keepdim=True) == 1).reshape(blocks, 1, 1)
+    present = latest >= 0
+    # Each block's rows numbered in row order, each its bit in one of two
+    # words: a block of 128 tokens has 128 rows at most.
+    numbers = present.long().cumsum(1) - 1
+    ordinal = numbers.reshape(-1)[key]
+    one = torch.ones((), dtype=torch.int64, device=device)
+    low = torch.where(numbers < 64, one << numbers.clamp(0, 63), 0)
+    high = torch.where(numbers >= 64, one << (numbers - 64).clamp(0, 63), 0)
+    # A page holds the same positions in every row that lists it (rows share
+    # the pages of a common start): its place, where page 0's is moot.
+    places = torch.arange(pages, device=device).expand(count, pages).reshape(-1)
+    logical = torch.full((pool_pages,), pages, dtype=torch.int64, device=device)
+    logical = logical.scatter_reduce(0, table.long().reshape(-1), places, reduce="amin")
     starts = torch.arange(pages, device=device) * size
     listed = table.long().expand(blocks, count, pages).reshape(blocks, count * pages)
+    seen = starts <= latest  # [blocks, rows, places]: the row reads the place's page
 
-    def pool_pages_of(seen: torch.Tensor) -> torch.Tensor:
-        reads = torch.zeros(blocks, pool_pages, dtype=torch.int32, device=device)
-        flat = seen.to(torch.int32).reshape(blocks, count * pages)
-        return reads.scatter_reduce(1, listed, flat, reduce="amax", include_self=True)
+    def words(bits: torch.Tensor) -> torch.Tensor:
+        """Each block's bits of the rows reading each page: distinct bits
+        summed, which is their union."""
+        each = torch.where(seen, bits, 0).reshape(blocks, count * pages)
+        out = torch.zeros(blocks, pool_pages, dtype=torch.int64, device=device)
+        return out.scatter_add(1, listed, each)
 
-    reads = pool_pages_of(starts <= latest)
-    whole = pool_pages_of((starts + size <= earliest) & (latest >= 0) & alone)
-    partial = reads - whole
+    low_words, high_words = words(low), words(high)
+    reads = (low_words != 0) | (high_words != 0)
+    # A block of one row's tokens reads the pages wholly before its first
+    # token whole, with no mask to apply.
+    alone = (present.sum(1, keepdim=True) == 1).reshape(blocks, 1, 1)
+    before = (starts + size <= earliest) & present & alone
+    whole = torch.zeros(blocks, pool_pages, dtype=torch.int32, device=device)
+    whole = whole.scatter_reduce(
+        1,
+        listed,
+        before.to(torch.int32).reshape(blocks, count * pages),
+        reduce="amax",
+        include_self=True,
+    )
+    partial = reads.to(torch.int32) - whole
 
     def lists(live: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        number = live.sum(-1).to(torch.int32).reshape(1, 1, blocks)
+        number = live.sum(-1).to(torch.int32).reshape(blocks, 1, 1)
         order = torch.argsort(live, dim=-1, descending=True, stable=True).to(torch.int32)
-        return number, order.reshape(1, 1, blocks, pool_pages)
+        return number, order.reshape(blocks, 1, 1, pool_pages)
 
-    # Inductor misreads a tensor the mask reads when the same graph computes
-    # it (PyTorch 2.14: wrong numbers, or a lowering error): each goes
-    # through a copy it cannot see into.
-    first, owner, at = fresh_copy(first), fresh_copy(owner), fresh_copy(at)
+    # Inductor misreads a tensor a mask reads when the same graph computes it
+    # (PyTorch 2.14: wrong numbers, or a lowering error): each goes through a
+    # copy it cannot see into.
+    return (
+        fresh_copy(low_words),
+        fresh_copy(high_words),
+        fresh_copy(ordinal),
+        fresh_copy(logical),
+        fresh_copy(at),
+        *lists(partial),
+        *lists(whole),
+    )
+
+
+def _mask(blocks: PrefillBlocks, pool: int, size: int) -> BlockMask:
+    """The block mask of `blocks`, a block of tokens a sequence: which pool
+    positions each token sees."""
+    from torch.nn.attention.flex_attention import BlockMask
+
+    low, high, ordinal, logical, at, count, order, whole_count, whole_order = blocks
 
     def mask_mod(
         b: torch.Tensor, h: torch.Tensor, q: torch.Tensor, kv: torch.Tensor
     ) -> torch.Tensor:
-        return first[owner[q], kv // size] * size + kv % size <= at[q]
+        token = b * _TOKEN_BLOCK + q
+        page = kv // size
+        number = ordinal[token]
+        word = torch.where(number < 64, low[b, page], high[b, page])
+        reads = ((word >> (number % 64)) & 1) == 1
+        return reads & (logical[page] * size + kv % size <= at[token])
 
     return BlockMask.from_kv_blocks(
-        *lists(partial),
-        *lists(whole),
+        count,
+        order,
+        whole_count,
+        whole_order,
         BLOCK_SIZE=(_TOKEN_BLOCK, size),
         mask_mod=mask_mod,
-        seq_lengths=(tokens, pool),
+        seq_lengths=(_TOKEN_BLOCK, pool),
+        compute_q_blocks=False,
     )
 
 
@@ -267,4 +336,4 @@ def _split(value: torch.Tensor) -> bool:
     return isinstance(value, DTensor)
 
 
-__all__ = ["attend", "prefill"]
+__all__ = ["PrefillBlocks", "attend", "prefill", "prefill_blocks"]

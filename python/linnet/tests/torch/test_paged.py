@@ -49,19 +49,22 @@ def _seen(table: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor) -> t
 def test_blocks_list_what_each_token_sees() -> None:
     table, rows, positions = _pool()
     seen = _seen(table, rows, positions)
-    mask = paged._prefill_mask(table, rows, positions, 256, 32 * SIZE, SIZE)
+    blocks = paged._blocks(table, rows, positions, 32 * SIZE, SIZE)
+    mask = paged._mask(blocks, 32 * SIZE, SIZE)
     partial_count, partial = mask.kv_num_blocks, mask.kv_indices
     whole_count, whole = mask.full_kv_num_blocks, mask.full_kv_indices
     assert whole_count is not None and whole is not None
-    queries = torch.arange(256)
+    assert mask.mask_mod is not None
+    queries = torch.arange(128)
     keys = torch.arange(32 * SIZE)
     zero = torch.zeros((), dtype=torch.int64)
-    assert mask.mask_mod is not None
-    modded = mask.mask_mod(zero, zero, queries[:, None], keys[None, :])
     for block in range(2):
+        # A block of tokens is a sequence of the batch.
+        number = torch.tensor(block)
+        modded = mask.mask_mod(number, zero, queries[:, None], keys[None, :])
         tokens = slice(block * 128, (block + 1) * 128)
-        parts = set(partial[0, 0, block, : int(partial_count[0, 0, block])].tolist())
-        wholes = set(whole[0, 0, block, : int(whole_count[0, 0, block])].tolist())
+        parts = set(partial[block, 0, 0, : int(partial_count[block, 0, 0])].tolist())
+        wholes = set(whole[block, 0, 0, : int(whole_count[block, 0, 0])].tolist())
         assert not parts & wholes
         reached = {int(k) // SIZE for k in seen[tokens].any(0).nonzero().flatten()}
         assert reached == parts | wholes
@@ -69,11 +72,11 @@ def test_blocks_list_what_each_token_sees() -> None:
             assert bool(seen[tokens, page * SIZE : (page + 1) * SIZE].all())
         for page in parts:
             keys_of = slice(page * SIZE, (page + 1) * SIZE)
-            assert torch.equal(modded[tokens, keys_of], seen[tokens, keys_of])
+            assert torch.equal(modded[:, keys_of], seen[tokens, keys_of])
     # The first block, row 0's alone, reads the two pages before position 40
     # whole; the second has three rows' tokens and reads nothing whole.
     assert set(whole[0, 0, 0, :2].tolist()) == {5, 9}
-    assert int(whole_count[0, 0, 0]) == 2 and int(whole_count[0, 0, 1]) == 0
+    assert int(whole_count[0, 0, 0]) == 2 and int(whole_count[1, 0, 0]) == 0
 
 
 def test_flex_attention_gives_the_gathered_numbers() -> None:
@@ -82,7 +85,8 @@ def test_flex_attention_gives_the_gathered_numbers() -> None:
     query = torch.randn(1, 4, 256, 16, generator=generator)
     key = torch.randn(1, 2, 32 * SIZE, 16, generator=generator)
     value = torch.randn(1, 2, 32 * SIZE, 16, generator=generator)
-    flexed = paged._flex_prefill(query, key, value, table, rows, positions, 0.25, SIZE)
+    blocks = paged._blocks(table, rows, positions, 32 * SIZE, SIZE)
+    flexed = paged._flex_prefill(query, key, value, blocks, 0.25, SIZE)
     gathered = paged.prefill(query, key, value, table, rows, positions, 0.25, SIZE)
     torch.testing.assert_close(flexed, gathered, atol=1e-5, rtol=1e-5)
 
@@ -95,7 +99,8 @@ def test_compiled_flex_attention_gives_the_gathered_numbers(
     """Compiled for CUDA, the block lists and what the mask reads are built in
     the pass's own graph: still the gathered path's numbers."""
     rng = random.Random(0)
-    pool_pages, rows, pages, tokens = 4096 // size, 16, 512 // size, 512
+    rows, pages, tokens = 16, 512 // size, 512
+    pool_pages = rows * pages + 1
     free = list(range(1, pool_pages))
     rng.shuffle(free)
     table = torch.zeros(rows, pages, dtype=torch.int32)
