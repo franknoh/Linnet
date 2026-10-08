@@ -675,17 +675,25 @@ class Engine:
         finished = self._grow()  # a page for each decoding row stepping into one
         decoding = self._decoding()
         left = self.chunk if decoding else None
-        chunks: list[tuple[int, int, int]] = []  # (row, start, end)
-        for slot in self._filling:
+        chunks: list[_Chunk] = []
+        for fill in self._filling.values():
             if left is not None and left <= 0:
                 break
-            left = self._chunk(slot, left, chunks)
+            left = self._chunk(fill, left, chunks)
         free = [slot for slot in range(self.slots) if self._rows[slot] is None]
-        while self._waiting and free and (left is None or left > 0):
-            if not self._place(free[0], self._waiting[0], self.reserve if decoding else 0):
+        placed: list[_Filling] = []
+        while self._waiting and len(placed) < len(free) and (left is None or left > 0):
+            fill = self._place(self._waiting[0], self.reserve if decoding else 0)
+            if fill is None:
                 break
             self._waiting.popleft()
-            left = self._chunk(free.pop(0), left, chunks)
+            placed.append(fill)
+            left = self._chunk(fill, left, chunks)
+        # Requests admitted together take the free rows shortest prompt
+        # first: a decoding step's attention runs faster over rows in order
+        # of length.
+        for slot, fill in zip(free, sorted(placed, key=lambda f: len(f.prompt)), strict=False):
+            self._bind(slot, fill)
         ahead = 0
         if chunks and decoding and self.mix:
             # One pass of `chunk` tokens at most, carrying the rows' step.
@@ -698,10 +706,9 @@ class Engine:
                 ahead = self._decode()
         return finished + self._read_behind(ahead)
 
-    def _place(self, slot: int, completion: Completion, keep: int) -> bool:
-        """Puts a waiting request in a free row if the pool has the pages its
-        prompt needs beside the cached ones it starts with, keeping `keep`
-        free; whether it did."""
+    def _place(self, completion: Completion, keep: int) -> _Filling | None:
+        """Takes the pages a waiting request's prompt needs beside the cached
+        ones it starts with, if the pool has them keeping `keep` free."""
         prompt = _prompt(completion)
         size = self.backend.page_size
         pool = self._pool
@@ -711,73 +718,72 @@ class Engine:
         found = pool.cached(digests[: (len(prompt) - 1) // size])
         need = self._pages_for(len(prompt)) - len(found)
         if need > pool.available - sum(pool.refs[p] == 0 for p in found) - keep:
-            return False
+            return None
         for page in found:
             pool.share(page)
         pages = found + [pool.take() for _ in range(need)]
-        self._rows[slot] = completion
-        self._filling[slot] = _Filling(completion, prompt, len(found) * size)
-        self._row_pages[slot] = pages
-        self._row_digests[slot] = digests
-        self._written[slot] = 0
         self._admitted += 1
-        self._admission[slot] = self._admitted
         self._cached += len(found) * size
         if not completion.preempted:
             completion.cached = len(found) * size
         completion.admitted = time.perf_counter() - self._start
-        self.backend.assign(slot, pages)
-        return True
+        return _Filling(completion, prompt, len(found) * size, pages, digests, self._admitted)
 
-    def _chunk(self, slot: int, left: int | None, chunks: list[tuple[int, int, int]]) -> int | None:
+    def _bind(self, slot: int, fill: _Filling) -> None:
+        """Gives a placed request its row."""
+        fill.slot = slot
+        self._rows[slot] = fill.completion
+        self._filling[slot] = fill
+        self._row_pages[slot] = fill.pages
+        self._row_digests[slot] = fill.digests
+        self._written[slot] = 0
+        self._admission[slot] = fill.admitted
+        self.backend.assign(slot, fill.pages)
+
+    def _chunk(self, fill: _Filling, left: int | None, chunks: list[_Chunk]) -> int | None:
         """Takes a passing prompt's next chunk, `left` tokens at most (all
         without); returns what is left. The full pages it writes are kept
         from here on: a prompt after it reads them in its pass or a later
         one, after this chunk wrote them."""
-        fill = self._filling[slot]
         end = len(fill.prompt) if left is None else min(len(fill.prompt), fill.done + left)
-        chunks.append((slot, fill.done, end))
+        chunks.append((fill, fill.done, end))
         size = self.backend.page_size
-        pages, digests = self._row_pages[slot], self._row_digests[slot]
-        for page in range(fill.done // size, min(end // size, len(digests))):
-            self._pool.keep(pages[page], digests[page])
+        for page in range(fill.done // size, min(end // size, len(fill.digests))):
+            self._pool.keep(fill.pages[page], fill.digests[page])
         taken = end - fill.done
         fill.done = end
         return None if left is None else left - taken
 
-    def _cut(self, chunks: list[tuple[int, int, int]]) -> list[list[tuple[int, int, int]]]:
+    def _cut(self, chunks: list[_Chunk]) -> list[list[_Chunk]]:
         """The chunks in passes of `pack` tokens, each chunk cut where its
         pass is full and continued in the next."""
-        passes: list[list[tuple[int, int, int]]] = [[]]
+        passes: list[list[_Chunk]] = [[]]
         room = self.pack
-        for slot, start, end in chunks:
+        for fill, start, end in chunks:
             while start < end:
                 if room == 0:
                     passes.append([])
                     room = self.pack
                 cut = min(end, start + room)
-                passes[-1].append((slot, start, cut))
+                passes[-1].append((fill, start, cut))
                 room -= cut - start
                 start = cut
         return [batch for batch in passes if batch]
 
-    def _pass(
-        self, batch: list[tuple[int, int, int]], stepping: list[tuple[int, Completion]]
-    ) -> None:
+    def _pass(self, batch: list[_Chunk], stepping: list[tuple[int, Completion]]) -> None:
         """Queues a pass of prompt chunks, with the step of the rows
         `stepping` if any. A chunk that ends its prompt sets its row to the
         first token; the others' rows wait for the rest."""
-        prompts = [self._filling[slot].prompt[start:end] for slot, start, end in batch]
-        slots = [slot for slot, _, _ in batch]
-        final = [end == len(self._filling[slot].prompt) for slot, _, end in batch]
-        completions = [self._filling[slot].completion for slot in slots]
+        prompts = [fill.prompt[start:end] for fill, start, end in batch]
+        slots = [fill.slot for fill, _, _ in batch]
+        final = [end == len(fill.prompt) for fill, _, end in batch]
         size = next(s for s in self.pack_sizes if s >= sum(len(p) for p in prompts))
         ending = [
-            (i, slot, c)
-            for i, (slot, c, done) in enumerate(zip(slots, completions, final, strict=True))
+            (i, fill.slot, fill.completion)
+            for i, ((fill, _, _), done) in enumerate(zip(batch, final, strict=True))
             if done
         ]
-        sampling = [c.sampling for c in completions]
+        sampling = [fill.completion.sampling for fill, _, _ in batch]
         starts = [start for _, start, _ in batch]
         top = _top(c for _, _, c in ending)
         if stepping:
@@ -800,9 +806,10 @@ class Engine:
             )
             stepped = None
         self._prefills += 1
-        for _, slot, completion in ending:
-            del self._filling[slot]
-            self._written[slot] = len(_prompt(completion))
+        for (fill, _, _), done in zip(batch, final, strict=True):
+            if done:
+                del self._filling[fill.slot]
+                self._written[fill.slot] = len(fill.prompt)
         self._queued.append(_Queued(prompted, ending, prompts=True))
         if stepped is not None:
             owners = [(slot, slot, c) for slot, c in stepping]
@@ -975,12 +982,21 @@ def _shared(
 
 @dataclass
 class _Filling:
-    """A row whose prompt is passing (paged): how far its passes queued so
-    far, or the pages it shares, go."""
+    """A request whose prompt is passing (paged): how far its passes queued
+    so far, or the pages it shares, go; its pages and their digests; when it
+    was admitted; and its row, once it has one."""
 
     completion: Completion
     prompt: list[int]
     done: int
+    pages: list[int]
+    digests: list[bytes]
+    admitted: int
+    slot: int = -1
+
+
+# A prompt's tokens from `start` to `end` in a pass.
+_Chunk: TypeAlias = tuple[_Filling, int, int]
 
 
 class _Pages:
@@ -1310,7 +1326,7 @@ class _TorchBackend:
 
     def park(self, slots: list[int]) -> None:
         if self.paged and slots:
-            self.positions[self._put(slots).long()] = self.max_seq - 1
+            self.positions.index_fill_(0, self._put(slots).long(), self.max_seq - 1)
 
     def _table(self) -> torch.Tensor:
         """The page table on the device, its changed rows written first, in
@@ -1412,7 +1428,10 @@ class _TorchBackend:
         and the prompts' tokens then set them."""
         index = self._put(slots).long()
         positions = self.positions.clone()
-        positions[index] = self.max_seq - 1
+        # A Python number assigned through an index crosses as a tensor from
+        # pageable memory, which waits for every pass queued before it;
+        # `index_fill_` takes it as an argument.
+        positions.index_fill_(0, index, self.max_seq - 1)
         packed = self._pack(prompts, slots, size, pad, starts)
         if self.paged:
             *passed, table = packed

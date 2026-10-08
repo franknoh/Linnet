@@ -202,14 +202,15 @@ def _flex_prefill(
 ) -> torch.Tensor:
     """FlexAttention with each block of tokens a sequence of the batch: the
     mask then reads what it needs of a block by the block's number, which is
-    the same for a whole tile, rather than by each token's row."""
+    the same for a whole tile, rather than by each token's row. The blocks
+    are a view of the query, which starts where its storage does (a pass's
+    prompts come before its steps), so Inductor reads it right uncopied."""
     from torch.nn.attention.flex_attention import flex_attention
-
-    from .flex import fresh_copy
 
     _, heads, tokens, width = query.shape
     count = tokens // _TOKEN_BLOCK
-    grouped = fresh_copy(query.reshape(heads, count, _TOKEN_BLOCK, width).transpose(0, 1))
+    by_token = query.transpose(1, 2).reshape(count, _TOKEN_BLOCK, heads, width)
+    grouped = by_token.transpose(1, 2)
     out = flex_attention(
         grouped,
         key.expand(count, -1, -1, -1),
@@ -219,7 +220,7 @@ def _flex_prefill(
         enable_gqa=True,
     )
     assert isinstance(out, torch.Tensor)
-    return out.transpose(0, 1).reshape(1, heads, tokens, width)
+    return out.transpose(1, 2).reshape(1, tokens, heads, width).transpose(1, 2)
 
 
 def _blocks(
@@ -280,14 +281,14 @@ def _blocks(
     )
     partial = reads.to(torch.int32) - whole
 
+    # Inductor misreads what FlexAttention reads when the same graph computes
+    # it (PyTorch 2.14: wrong numbers, or a lowering error): each goes
+    # through a copy it cannot see into.
     def lists(live: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         number = live.sum(-1).to(torch.int32).reshape(blocks, 1, 1)
         order = torch.argsort(live, dim=-1, descending=True, stable=True).to(torch.int32)
-        return number, order.reshape(blocks, 1, 1, pool_pages)
+        return fresh_copy(number), fresh_copy(order.reshape(blocks, 1, 1, pool_pages))
 
-    # Inductor misreads a tensor a mask reads when the same graph computes it
-    # (PyTorch 2.14: wrong numbers, or a lowering error): each goes through a
-    # copy it cannot see into.
     return (
         fresh_copy(low_words),
         fresh_copy(high_words),
