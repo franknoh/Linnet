@@ -815,7 +815,7 @@ def _logprobs_numpy(logits: NDArray[np.generic], produced: ArrayLike, top: int) 
     scores: np.ndarray[tuple[int, int], np.dtype[np.floating]] = logits.astype(np.float32)
     peak = scores.max(-1, keepdims=True)
     scores = scores - peak - np.log(np.exp(scores - peak).sum(-1, keepdims=True))
-    rows = np.arange(scores.shape[0])
+    rows = np.arange(scores.shape[0], dtype=np.intp)
     chosen = scores[rows, np.asarray(produced).reshape(-1)]
     ids = np.argsort(-scores, axis=-1, kind="stable")[:, :top]
     values = np.take_along_axis(scores, ids, -1)

@@ -119,7 +119,8 @@ torch = { index = "pytorch-cpu" }
 [tool.pyright]
 include = ["src", "tests"]
 strict = ["src", "tests"]
-pythonVersion = "3.11"
+# NumPy 2.5 types arrays with 3.12's `collections.abc.Buffer`.
+pythonVersion = "3.12"
 reportMissingTypeStubs = false
 
 [tool.ruff]
