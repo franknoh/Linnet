@@ -1182,16 +1182,8 @@ private:
             std::get<ast::FunctionDecl>(modules_[target.module]->item(target.item).data);
 
         // Generic bindings of this call, on top of the frame's own.
-        Substitution substitution = call_facts.substitution;
-        for (auto& [symbol, dim] : substitution.dims) {
-            dim = types().substitute(dim, frame_->substitution);
-        }
-        for (auto& [symbol, shape] : substitution.packs) {
-            shape = types().substitute(shape, frame_->substitution);
-        }
-        for (auto& [var, dtype] : substitution.dtypes) {
-            dtype = types().substitute(dtype, frame_->substitution);
-        }
+        Substitution substitution =
+            types().substitute(call_facts.substitution, frame_->substitution);
 
         std::vector<ValueId> operands;
         if (target.parent != no_entity) {

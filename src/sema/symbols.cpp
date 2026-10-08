@@ -20,6 +20,28 @@ std::string_view keyword_of(const ast::FunctionDecl& decl) {
 
 } // namespace
 
+void bind(Substitution& substitution, const GenericInfo& generic, const GenericValue& value) {
+    switch (generic.kind) {
+    case GenericKind::Dim:
+        substitution.dims[generic.symbol] = value.dim;
+        break;
+    case GenericKind::Pack:
+        substitution.packs[generic.symbol] = value.shape;
+        break;
+    case GenericKind::DType:
+        substitution.dtypes[generic.dtype_var] = value.dtype;
+        break;
+    }
+}
+
+Substitution substitution_of(const DeclInfo& decl, const TypeData& nominal) {
+    Substitution substitution;
+    for (std::size_t i = 0; i < decl.generics.size() && i < nominal.args.size(); ++i) {
+        bind(substitution, decl.generics[i], nominal.args[i]);
+    }
+    return substitution;
+}
+
 std::string Checker::describe(EntityId id) {
     const Entity& entity = entities_[id];
     std::string name(entity.name);

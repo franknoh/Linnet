@@ -116,6 +116,12 @@ struct DeclInfo {
     TypeId aliased = no_type;
 };
 
+// Binds `generic` to `value` in `substitution`.
+void bind(Substitution& substitution, const GenericInfo& generic, const GenericValue& value);
+// What a nominal type's arguments (a block's `<...>`) bind its
+// declaration's generics to.
+Substitution substitution_of(const DeclInfo& decl, const TypeData& nominal);
+
 // An index variable of tensor index notation. A plain index ranges over one
 // dimension; a pack index over a run of shape units.
 struct IndexVar {

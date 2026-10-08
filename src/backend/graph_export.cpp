@@ -719,23 +719,7 @@ private:
     }
 
     Substitution block_substitution(const TypeData& block_type) const {
-        Substitution subst;
-        const DeclInfo& decl = model_.decls.at(block_type.decl);
-        for (std::size_t i = 0; i < decl.generics.size() && i < block_type.args.size(); ++i) {
-            const GenericInfo& generic = decl.generics[i];
-            switch (generic.kind) {
-            case GenericKind::Dim:
-                subst.dims[generic.symbol] = block_type.args[i].dim;
-                break;
-            case GenericKind::Pack:
-                subst.packs[generic.symbol] = block_type.args[i].shape;
-                break;
-            case GenericKind::DType:
-                subst.dtypes[generic.dtype_var] = block_type.args[i].dtype;
-                break;
-            }
-        }
-        return subst;
+        return sema::substitution_of(model_.decls.at(block_type.decl), block_type);
     }
 
     // ------------------------------------------------------------ types
@@ -1569,16 +1553,7 @@ private:
         }
         const ir::Function& callee = *found->second;
         Frame inner;
-        inner.subst = op.attributes.substitution;
-        for (auto& [symbol, dim] : inner.subst.dims) {
-            dim = types_.substitute(dim, frame().subst);
-        }
-        for (auto& [symbol, shape] : inner.subst.packs) {
-            shape = types_.substitute(shape, frame().subst);
-        }
-        for (auto& [var, dtype] : inner.subst.dtypes) {
-            dtype = types_.substitute(dtype, frame().subst);
-        }
+        inner.subst = types_.substitute(op.attributes.substitution, frame().subst);
         std::vector<Val> arguments;
         arguments.reserve(op.operands.size());
         for (const ir::ValueId id : op.operands) {

@@ -436,26 +436,8 @@ private:
                     element = &model_.types.get(data.elements.front());
                 }
                 if (element->kind == TypeKind::Block) {
-                    Substitution inner;
-                    const DeclInfo& inner_info = model_.decls.at(element->decl);
-                    for (std::size_t i = 0;
-                         i < inner_info.generics.size() && i < element->args.size();
-                         ++i) {
-                        const GenericInfo& generic = inner_info.generics[i];
-                        switch (generic.kind) {
-                        case GenericKind::Dim:
-                            inner.dims[generic.symbol] = element->args[i].dim;
-                            break;
-                        case GenericKind::Pack:
-                            inner.packs[generic.symbol] = element->args[i].shape;
-                            break;
-                        case GenericKind::DType:
-                            inner.dtypes[generic.dtype_var] = element->args[i].dtype;
-                            break;
-                        }
-                    }
                     walk_block(element->decl,
-                               inner,
+                               sema::substitution_of(model_.decls.at(element->decl), *element),
                                inner_prefix + ".",
                                repeat,
                                active,
