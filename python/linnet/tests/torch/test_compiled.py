@@ -5,13 +5,19 @@ under `torch.compile`."""
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
 
 from linnet.torch import CompiledLinnetModule, load
+
+if TYPE_CHECKING:
+    from torch.fx import GraphModule
+
+    from linnet.torch.compiled import _Graph, _Prepared  # pyright: ignore[reportPrivateUsage]
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
@@ -137,7 +143,7 @@ def test_a_compile_under_capture_defers_the_capture(monkeypatch: pytest.MonkeyPa
     capture = graphed._capture  # pyright: ignore[reportPrivateUsage]
     attempts: list[int] = []
 
-    def compiles_once(prepared: Any, static: list[torch.Tensor]) -> Any:
+    def compiles_once(prepared: _Prepared, static: list[torch.Tensor]) -> _Graph:
         attempts.append(len(attempts))
         if len(attempts) == 1:
             raise TorchRuntimeError("torch.compile cannot JIT compile during CUDA graph capture.")
@@ -300,7 +306,9 @@ def test_torch_compile_compiles_each_kind_of_layer_once() -> None:
     graphs: list[str] = []
 
     @register_backend(name="linnet_counted")  # pyright: ignore[reportUntypedFunctionDecorator]
-    def counted(graph: Any, inputs: Any) -> Any:  # pyright: ignore[reportUnusedFunction]
+    def counted(  # pyright: ignore[reportUnusedFunction]
+        graph: GraphModule, inputs: list[torch.Tensor]
+    ) -> Callable[..., object]:
         graphs.append(str(graph.code))
         return graph.forward
 

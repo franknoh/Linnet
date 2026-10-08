@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, cast
+from typing import TypedDict, cast
 
 from .. import ir
 from ..compiler import LinnetError
@@ -490,7 +490,7 @@ class _Tracer:
 
         if kind in CONSTANTS:
             if kind == "const.int":
-                return [ScalarValue(ex.const(int(op.attrs.get("value", 0))))]
+                return [ScalarValue(ex.const(_int_attr(op, "value")))]
             if kind == "const.dim":
                 return [ScalarValue(env.dim(ir.parse_dim(op.attrs["value"])))]
             return [ScalarValue()]
@@ -533,7 +533,7 @@ class _Tracer:
             return [TupleValue(tuple(operands))]
         if kind in ("tuple.get", "struct.get"):
             whole = operands[0]
-            index = int(op.attrs.get("value", op.attrs.get("index", 0)))
+            index = _int_attr(op, "value", _int_attr(op, "index"))
             if isinstance(whole, TupleValue):
                 return [whole.items[index]]
             return [ScalarValue()]
@@ -551,7 +551,7 @@ class _Tracer:
             return self.region(none, env, dict(values))
         if kind == "enum.match":
             scrutinee = operands[0]
-            variants = [str(v) for v in cast(list[Any], op.attrs.get("variants", []))]
+            variants = [str(v) for v in cast(list[str], op.attrs.get("variants", []))]
             for variant, region in zip(variants, op.regions, strict=True):
                 if (
                     isinstance(scrutinee, EnumValue) and variant == scrutinee.variant
@@ -655,7 +655,7 @@ class _Tracer:
         self.finish(step, [out])
         order = base.order
         if op.kind == "permute":
-            axes = [int(a) for a in cast(list[Any], op.attrs.get("shape", []))]
+            axes = [int(a) for a in cast(list[int], op.attrs.get("shape", []))]
             # The memory order in the permuted tensor's own axes.
             before = base.order or tuple(range(len(axes))) if base.order is not None else None
             order = None if before is None else tuple(axes.index(a) for a in before)
@@ -855,8 +855,8 @@ def _outer_reads(region: ir.Region) -> list[int]:
 
 def _domain(op: ir.Op, env: SymEnv) -> ex.Expr:
     sizes: list[ex.Expr] = []
-    for index in cast(list[dict[str, Any]], op.attrs.get("indices", [])):
-        sizes.extend(env.shape(ir.parse_shape(cast(list[Any], index.get("domain", [])))))
+    for index in cast(list[dict[str, ir.JsonValue]], op.attrs.get("indices", [])):
+        sizes.extend(env.shape(ir.parse_shape(cast(list[ir.JsonValue], index.get("domain", [])))))
     return ex.product(sizes)
 
 
@@ -883,10 +883,21 @@ def _region_flops(region: ir.Region, env: SymEnv, program: ir.Program, depth: in
     return ex.total(count)
 
 
+class _SliceAxis(TypedDict, total=False):
+    """One axis of a `slice` op's `axes` attribute: kept `whole`, or cut
+    from `start` to `stop` by `step` (and `squeeze`d out when indexed)."""
+
+    whole: ir.JsonValue
+    start: ir.JsonValue
+    stop: ir.JsonValue
+    step: int
+    squeeze: bool
+
+
 def _slice_contiguous(op: ir.Op, env: SymEnv, shape: tuple[ex.Expr, ...]) -> bool:
     """A slice keeps storage contiguous when it narrows at most one axis by
     a unit step and every axis after that one is kept whole."""
-    axes = cast(list[dict[str, Any]], op.attrs.get("axes", []))
+    axes = cast(list[_SliceAxis], op.attrs.get("axes", []))
     narrowed = False
     position = 0
     for axis in axes:
@@ -991,3 +1002,11 @@ def entry_env(function: ir.Function, root: SymEnv, inputs: Mapping[str, int | ex
             f"bind the generics of `{function.short_name}`: " + ", ".join(f"`{m}`" for m in missing)
         )
     return SymEnv(dims, packs, dtypes)
+
+
+def _int_attr(op: ir.Op, key: str, default: int = 0) -> int:
+    """An integer attribute of `op`, `default` when it has none."""
+    value = op.attrs.get(key, default)
+    if not isinstance(value, int):
+        raise LinnetError(f"`{op.kind}` has a non-integer `{key}`")
+    return value

@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from linnet import convert, nest
+from linnet.weights import TensorHeader
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
 
-CONFIG: dict[str, Any] = {
+CONFIG: dict[str, object] = {
     "model_type": "llama",
     "vocab_size": 32,
     "hidden_size": 16,
@@ -71,10 +72,17 @@ LAYER = {
 }
 
 
-def checkpoint(config: dict[str, Any]) -> dict[str, list[int]]:
+def size(config: Mapping[str, object], key: str) -> int:
+    value = config[key]
+    assert isinstance(value, int)
+    return value
+
+
+def checkpoint(config: Mapping[str, object]) -> dict[str, list[int]]:
     """The tensor shapes a `transformers` Llama checkpoint of `config` holds."""
-    h, inner, vocab = config["hidden_size"], config["intermediate_size"], config["vocab_size"]
-    kv = config["num_key_value_heads"] * h // config["num_attention_heads"]
+    h, inner = size(config, "hidden_size"), size(config, "intermediate_size")
+    vocab = size(config, "vocab_size")
+    kv = size(config, "num_key_value_heads") * h // size(config, "num_attention_heads")
     shapes = {"model.embed_tokens.weight": [vocab, h], "model.norm.weight": [h]}
     if not config["tie_word_embeddings"]:
         shapes["lm_head.weight"] = [vocab, h]
@@ -89,7 +97,7 @@ def checkpoint(config: dict[str, Any]) -> dict[str, list[int]]:
         "mlp.up_proj.weight": [inner, h],
         "mlp.down_proj.weight": [h, inner],
     }
-    for i in range(config["num_hidden_layers"]):
+    for i in range(size(config, "num_hidden_layers")):
         shapes |= {f"model.layers.{i}.{name}": shape for name, shape in per_layer.items()}
     return shapes
 
@@ -99,10 +107,10 @@ class Hub:
     """A Hub holding one `transformers` repo, `org/tiny`."""
 
     root: Path
-    config: dict[str, Any]
+    config: dict[str, object]
     extra: dict[str, list[int]] = field(default_factory=lambda: dict[str, list[int]]())
 
-    def headers(self) -> dict[str, Any]:
+    def headers(self) -> dict[str, TensorHeader]:
         tensors = checkpoint(self.config) | self.extra
         return {
             k: {"dtype": "BF16", "shape": v, "data_offsets": [0, 0]} for k, v in tensors.items()
@@ -156,11 +164,11 @@ def hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Hub:
         path.write_text(json.dumps(fake.config), encoding="utf-8")
         return str(path)
 
-    def header(repo: str, filename: str, revision: str | None = None) -> dict[str, Any]:
+    def header(repo: str, filename: str, revision: str | None = None) -> dict[str, TensorHeader]:
         assert (repo, filename, revision) == ("org/tiny", "model.safetensors", "0123abc")
         return fake.headers()
 
-    def fetch(name: str, **options: Any) -> Path:
+    def fetch(name: str, **options: object) -> Path:
         assert name == "tinyllama-1.1b-chat"
         return base
 

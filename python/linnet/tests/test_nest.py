@@ -7,9 +7,9 @@ import json
 import shutil
 import struct
 from pathlib import Path
-from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
@@ -229,7 +229,7 @@ def write_checkpoint(directory: Path, card: nest.Card) -> dict[str, tuple[int, .
     program = card.program(STDLIB)
     bindings = ir.bind_generics(program.root.generics, card.generics)
     mapping: dict[str, str] = json.loads((directory / "bindings.json").read_text("utf-8"))
-    arrays: dict[str, np.ndarray[Any, Any]] = {}
+    arrays: dict[str, npt.NDArray[np.float32]] = {}
     for entry in program.manifest:
         if entry.kind != "param":
             continue

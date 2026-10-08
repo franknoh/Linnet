@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import os
 import socket
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import pytest
 import torch
@@ -79,6 +80,11 @@ def _stage(path: str, starts: list[str]) -> int:
     return sum(1 for start in starts if UNITS.index(start) <= UNITS.index(unit))
 
 
+# A function of the generated source (`main`, a stage, `constants`): tensors in,
+# tensors out.
+_Generated = Callable[..., tuple[torch.Tensor, ...]]
+
+
 @pytest.mark.parametrize("starts", [["layers.1"], ["layers.0", "norm"]])
 def test_split_stages_compute_what_main_computes(weights: Path, starts: list[str]) -> None:
     source = run_compiler(
@@ -91,15 +97,15 @@ def test_split_stages_compute_what_main_computes(weights: Path, starts: list[str
         str(LLAMA),
     )
     pieces = split(source, lambda path: _stage(path, starts), len(starts) + 1)
-    whole: dict[str, Any] = {}
+    whole: dict[str, object] = {}
     exec(compile(source, "<main>", "exec"), whole)
-    staged: dict[str, Any] = {}
+    staged: dict[str, object] = {}
     exec(compile(pieces.source, "<stages>", "exec"), staged)
 
     model = _model(weights)
     inputs = _packs()[0]
     device = torch.device("cpu")
-    constants = list(whole["constants"](device)) if pieces.constants else []
+    constants = list(cast(_Generated, whole["constants"])(device)) if pieces.constants else []
     by_name = dict(zip(pieces.constants, constants, strict=True))
 
     def parameters() -> list[torch.Tensor]:
@@ -109,21 +115,21 @@ def test_split_stages_compute_what_main_computes(weights: Path, starts: list[str
         ]
 
     reference = parameters()
-    (expected,) = whole["main"](*inputs, *reference, *constants)
+    (expected,) = cast(_Generated, whole["main"])(*inputs, *reference, *constants)
     expected.backward()
 
     mine = parameters()
-    received: Any = ()
+    received: tuple[torch.Tensor, ...] = ()
     named = dict(zip(pieces.inputs, inputs, strict=True))
     for stage in pieces.stages:
-        received = staged[stage.name](
+        received = cast(_Generated, staged[stage.name])(
             *received,
             *[mine[i] for i in stage.parameters],
             *[by_name[name] for name in stage.constants],
             _device=device,
             **{name: named[name] for name in stage.inputs},
         )
-    (loss,) = received
+    (loss,) = cast(tuple[torch.Tensor], received)  # the last stage returns the loss
     loss.backward()
 
     # Only hidden states cross: masks and positions are computed per stage.
@@ -349,7 +355,7 @@ def _sharded_rank(rank: int, port: int, weights: str, bindings: str, out: str) -
         # Each data-parallel process trains its pipeline on its own batch.
         packs = _packs() if mesh["dp"].get_local_rank() == 0 else _other_packs()
         inputs = [torch.cat(parts) for parts in zip(*packs, strict=True)]
-        result: dict[str, Any] = {}
+        result: dict[str, object] = {}
 
         def gradients(prefix: str) -> None:
             for name, parameter in pipe.named_parameters():

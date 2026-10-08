@@ -69,12 +69,12 @@ class Function:
         """The names of the function's inputs, in order."""
         return [argument.name for argument in self.function.params]
 
-    def __call__(self, *inputs: Input, **generics: int | str) -> Result:
+    def __call__(self, *inputs: Input, **generics: int | str) -> Result:  # pyright: ignore[reportExplicitAny]
         return self.run(list(inputs), generics)
 
     def run(
         self, inputs: Sequence[Input], generics: Mapping[str, int | str] | None = None
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         """Calls the function on arrays (or Python numbers for scalar inputs);
         `generics` binds by name what the inputs do not determine. A single
         result is returned as it is, several as a tuple."""

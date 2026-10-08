@@ -7,13 +7,16 @@ and its token accuracy and entropy, over the Llama example on the CPU."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
 from linnet.torch import CausalLM, LinnetModule, load
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerFast
 
 transformers = pytest.importorskip("transformers")
 trl = pytest.importorskip("trl")
@@ -60,7 +63,7 @@ def _rows() -> list[dict[str, list[int]]]:
     return rows
 
 
-def _args(tmp_path: Path) -> dict[str, Any]:
+def _args(tmp_path: Path) -> dict[str, object]:
     return {
         "output_dir": str(tmp_path / "out"),
         "per_device_train_batch_size": 2,
@@ -107,7 +110,7 @@ def test_transformers_trainer(model: LinnetModule, tmp_path: Path) -> None:
     assert any(not torch.equal(before[name], after[name]) for name in before)
 
 
-def _tokenizer() -> Any:
+def _tokenizer() -> PreTrainedTokenizerFast:
     from tokenizers import Tokenizer, models, pre_tokenizers  # type: ignore[import-untyped]
 
     vocab = {f"t{i}": i for i in range(11)}

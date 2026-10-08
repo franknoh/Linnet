@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Literal
 
 from .kvcache import ContiguousLayout, KVLayout
 from .training import TrainingConfig
@@ -62,9 +62,9 @@ class ExecutionConfig:
     context_bytes: int | None = None
     compiled: bool = False
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self) -> dict[str, object]:
         """The configuration as plain values, for reports."""
-        out: dict[str, Any] = {
+        out: dict[str, object] = {
             "backend": self.backend,
             "entry": self.entry,
             "numerics": self.numerics,

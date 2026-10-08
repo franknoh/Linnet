@@ -13,7 +13,6 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 import torch
@@ -170,7 +169,10 @@ def test_split_attention_gives_the_mask_the_heads(monkeypatch: pytest.MonkeyPatc
     seen: list[tuple[int, ...]] = []
     real = functional.scaled_dot_product_attention
 
-    def spy(*args: Any, attn_mask: Any = None, **options: Any) -> Any:
+    def spy(
+        *args: torch.Tensor, attn_mask: torch.Tensor | None = None, **options: float | bool | None
+    ) -> torch.Tensor:
+        assert attn_mask is not None
         seen.append(tuple(attn_mask.shape))
         return real(*args, attn_mask=attn_mask, **options)
 

@@ -6,17 +6,20 @@ differentiates under `jax.grad`."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from linnet.compiler import run_compiler, std_arguments
-from linnet.jax import export_linnet, load, load_source
+from linnet.jax import LinnetFunction, export_linnet, load, load_source
 
 from .test_round_trip import REPO, STDLIB, forward, init_params
+
+_Function = TypeVar("_Function", bound=LinnetFunction)
 
 MLP = """\
 module regression
@@ -155,7 +158,7 @@ def test_fast_numerics_skips_f32_accumulation() -> None:
     }
     tokens = jnp.array([[1, 4, 7, 2, 9], [3, 3, 0, 10, 5]], dtype=jnp.int32)
 
-    def make(loader: Any, numerics: str) -> Any:
+    def make(loader: Callable[..., _Function], numerics: str) -> _Function:
         return loader(
             llama,
             generics=generics,

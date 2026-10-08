@@ -248,8 +248,8 @@ class LinnetModule(nn.Module):
         for name in self.entries:
             setattr(self, name, self._entry_callable(name))
 
-    def _entry_callable(self, name: str) -> Callable[..., Result]:
-        def run(*inputs: torch.Tensor) -> Result:
+    def _entry_callable(self, name: str) -> Callable[..., Result]:  # pyright: ignore[reportExplicitAny]
+        def run(*inputs: torch.Tensor) -> Result:  # pyright: ignore[reportExplicitAny]
             return self.run_entry(name, list(inputs))
 
         run.__name__ = name
@@ -261,7 +261,7 @@ class LinnetModule(nn.Module):
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
         **options: bool | str | None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         """Runs the entry `name`. Its generic parameters are bound from the
         input shapes, or from `generics` by name for those the inputs do not
         determine (an output length such as `Steps`). With `amp` set (see
@@ -283,7 +283,7 @@ class LinnetModule(nn.Module):
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None,
         **options: bool | str | None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         if self.amp is None:
             return self._run_entry(name, inputs, generics, **options)
         with torch.autocast(self.interpreter.device.type, dtype=self.amp):
@@ -294,7 +294,7 @@ class LinnetModule(nn.Module):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         function = self.entries[name]
         params = function.params  # after `self`
         if len(params) != len(inputs):
@@ -308,7 +308,7 @@ class LinnetModule(nn.Module):
         # (blocks, indices, strings).
         return self.interpreter.call(function, env, [self.root.instance(), *inputs])
 
-    def forward(self, *inputs: torch.Tensor) -> Result:
+    def forward(self, *inputs: torch.Tensor) -> Result:  # pyright: ignore[reportExplicitAny]
         name = "forward" if "forward" in self.entries else next(iter(self.entries))
         return self.run_entry(name, list(inputs))
 

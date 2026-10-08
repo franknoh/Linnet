@@ -15,10 +15,10 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generic, Literal, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypedDict, TypeVar
 
 from .compiler import LinnetError, run_compiler, std_arguments
 
@@ -56,7 +56,7 @@ class Block:
     """A Linnet block synthesized from a subtree."""
 
     name: str
-    members: list[dict[str, Any]] = field(default_factory=lambda: [])
+    members: list[dict[str, object]] = field(default_factory=lambda: [])
 
 
 @dataclass
@@ -69,7 +69,25 @@ class Member:
     length: int | None = None  # sub: array length when the children are uniform
     element: Block | None = None  # sub: the array element block
     children: dict[str, Member] = field(default_factory=lambda: {})  # sub: by foreign name
-    leaf: Any = None  # param: the importer's own description of its tensor
+    leaf: object = None  # param: the importer's own description of its tensor
+
+
+class ValueJson(TypedDict):
+    """A value as the plan writes it."""
+
+    id: int
+    name: str
+    type: dict[str, object]
+
+
+class OpJson(TypedDict):
+    """An operation as the plan writes it."""
+
+    kind: str
+    operands: list[int]
+    results: list[ValueJson]
+    attrs: dict[str, object]
+    regions: list[dict[str, object]]
 
 
 class Hierarchy:
@@ -83,7 +101,7 @@ class Hierarchy:
         # Linnet path -> the foreign name, where they differ (`bindings.json`).
         self.renamed: dict[str, str] = {}
 
-    def leaf_type(self, member: Member) -> dict[str, Any] | None:
+    def leaf_type(self, member: Member) -> dict[str, object] | None:
         """A parameter's plan type; None for one the importer fills in later."""
         return None
 
@@ -107,10 +125,10 @@ class Hierarchy:
             block.members.append({"name": child.name, "kind": child.kind, "type": kind_type})
         return block
 
-    def block_type(self, block: Block) -> dict[str, Any]:
+    def block_type(self, block: Block) -> dict[str, object]:
         return {"kind": "block", "name": block.name, "module": self.module, "args": []}
 
-    def member_type(self, member: Member) -> dict[str, Any]:
+    def member_type(self, member: Member) -> dict[str, object]:
         """The plan type of a `sub` member: a block, or an array of one."""
         if member.length is not None:
             assert member.element is not None
@@ -125,12 +143,12 @@ class Hierarchy:
     def plan(
         self,
         root: str,
-        args: list[dict[str, Any]],
-        ops: list[dict[str, Any]],
-        result: dict[str, Any],
-        generics: Sequence[dict[str, Any]] = (),
-        constraints: Sequence[dict[str, Any]] = (),
-    ) -> dict[str, Any]:
+        args: list[ValueJson],
+        ops: list[OpJson],
+        result: dict[str, object],
+        generics: Sequence[Mapping[str, object]] = (),
+        constraints: Sequence[Mapping[str, object]] = (),
+    ) -> dict[str, object]:
         """The imported model's plan: every block, and the root's `forward`
         entry over `args` (`self` first), running `ops` and returning a
         value of type `result`."""
@@ -207,7 +225,7 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
 
     def __init__(self) -> None:
         self.next_id = 0
-        self.regions: list[list[dict[str, Any]]] = [[]]
+        self.regions: list[list[OpJson]] = [[]]
 
     # ---- what each importer says
 
@@ -217,12 +235,12 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
         without one."""
 
     @abstractmethod
-    def make(self, id: int, kind: K, type_json: dict[str, Any] | None) -> V:
+    def make(self, id: int, kind: K, type_json: dict[str, object] | None) -> V:
         """A value of the plan; `type_json` is its plan type when `kind`
         cannot say it (a block, a tuple)."""
 
     @abstractmethod
-    def kind_json(self, kind: K) -> dict[str, Any]:
+    def kind_json(self, kind: K) -> dict[str, object]:
         """A type as the plan writes it."""
 
     @abstractmethod
@@ -236,7 +254,7 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
         """Which constant a value of `dtype` is written as."""
 
     @abstractmethod
-    def dim_json(self, dim: D) -> int | dict[str, Any]:
+    def dim_json(self, dim: D) -> int | Mapping[str, object]:
         """A size, or a symbolic dimension as the plan writes it."""
 
     @property
@@ -246,16 +264,16 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
 
     # ---- values and operations
 
-    def type_of(self, value: V) -> dict[str, Any]:
+    def type_of(self, value: V) -> dict[str, object]:
         return self.kind_json(self.kind_of(value))
 
-    def fresh(self, kind: K, type_json: dict[str, Any] | None = None) -> V:
+    def fresh(self, kind: K, type_json: dict[str, object] | None = None) -> V:
         self.next_id += 1
         return self.make(self.next_id - 1, kind, type_json)
 
     def value_json(
-        self, value: V, name: str = "", type_json: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, value: V, name: str = "", type_json: dict[str, object] | None = None
+    ) -> ValueJson:
         return {"id": value.id, "name": name, "type": type_json or self.type_of(value)}
 
     def op(
@@ -263,10 +281,10 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
         kind: str,
         operands: Sequence[V],
         result: K | None,
-        attrs: dict[str, Any] | None = None,
-        regions: Sequence[dict[str, Any]] = (),
+        attrs: dict[str, object] | None = None,
+        regions: Sequence[dict[str, object]] = (),
         name: str = "",
-        type_json: dict[str, Any] | None = None,
+        type_json: dict[str, object] | None = None,
     ) -> V:
         results = [self.fresh(result, type_json)] if result is not None else []
         self.regions[-1].append(
@@ -295,7 +313,7 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
 
     def region(
         self, arguments: Sequence[tuple[str, K]], body: Callable[[list[V]], V]
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Runs `body` in a new region of `arguments`; the value it returns
         is yielded."""
         values = [self.fresh(kind) for _, kind in arguments]
@@ -308,7 +326,7 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
             "ops": ops,
         }
 
-    def _indices(self, indices: Sequence[tuple[str, D]]) -> list[dict[str, Any]]:
+    def _indices(self, indices: Sequence[tuple[str, D]]) -> list[dict[str, object]]:
         return [{"name": n, "domain": [self.dim_json(d)]} for n, d in indices]
 
     def comprehension(
@@ -444,7 +462,7 @@ class PlanBuilder(ABC, Generic[V, K, T, D]):
 
 
 def write_source(
-    plan: dict[str, Any],
+    plan: Mapping[str, object],
     output: Path,
     std_root: str | Path | None,
     error: type[LinnetError],
@@ -471,7 +489,9 @@ __all__ = [
     "Block",
     "Hierarchy",
     "Member",
+    "OpJson",
     "PlanBuilder",
+    "ValueJson",
     "identifier",
     "refuse_unsupported",
     "write_source",

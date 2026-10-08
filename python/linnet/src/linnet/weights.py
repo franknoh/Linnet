@@ -10,13 +10,30 @@ import struct
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 import numpy as np
 
 from . import ir
 from .compiler import LinnetError
 from .dtypes import BY_SAFETENSORS, DTYPES
+
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike as JaxArrayLike
+    from numpy.typing import ArrayLike
+
+
+class TensorHeader(TypedDict):
+    """One tensor's entry in a SafeTensors header."""
+
+    dtype: str
+    shape: list[int]
+    data_offsets: list[int]
+
+
+# A SafeTensors header: each tensor's entry by name, and `__metadata__`'s
+# strings.
+SafeTensorsHeader: TypeAlias = "dict[str, TensorHeader | dict[str, str]]"
 
 
 def safetensors_files(weights: str | Path) -> list[Path]:
@@ -28,7 +45,7 @@ def safetensors_files(weights: str | Path) -> list[Path]:
     return files
 
 
-def read_arrays(weights: str | Path | Mapping[str, Any]) -> dict[str, Any]:
+def read_arrays(weights: str | Path | Mapping[str, ArrayLike]) -> dict[str, np.ndarray]:
     """Loads a checkpoint as NumPy arrays by tensor name.
 
     `weights` is a mapping (returned as arrays), a `.safetensors` file, or a
@@ -94,7 +111,7 @@ def read_bindings(bindings: str | Path) -> dict[str, str]:
     loaded: object = json.loads(Path(bindings).read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         raise LinnetError("bindings must be a JSON object mapping parameter paths to tensor names")
-    return {str(path): str(name) for path, name in cast(dict[Any, Any], loaded).items()}
+    return {str(path): str(name) for path, name in cast(dict[object, object], loaded).items()}
 
 
 def write_bindings(path: str | Path, mapping: Mapping[str, str]) -> Path:
@@ -190,7 +207,9 @@ def match_checkpoint(
     return found, problems
 
 
-def apply_bindings(loaded: Mapping[str, Any], bindings: str | Path | None) -> dict[str, Any]:
+def apply_bindings(
+    loaded: Mapping[str, JaxArrayLike], bindings: str | Path | None
+) -> dict[str, JaxArrayLike]:
     """Adds every bound Linnet path to a checkpoint mapping, keeping the original names."""
     if bindings is None:
         return dict(loaded)
@@ -231,26 +250,28 @@ class TensorLocation:
             return handle.read(self.nbytes)
 
 
-def read_header(file: str | Path) -> dict[str, Any]:
+def read_header(file: str | Path) -> SafeTensorsHeader:
     """The JSON header of a SafeTensors file on disk."""
     return _header(Path(file))[0]
 
 
-def _header(file: Path) -> tuple[dict[str, Any], int]:
+def _header(file: Path) -> tuple[SafeTensorsHeader, int]:
     """A file's header and where its tensor data starts."""
     with file.open("rb") as handle:
         (size,) = struct.unpack("<Q", handle.read(8))
-        return cast(dict[str, Any], json.loads(handle.read(size).decode("utf-8"))), 8 + size
+        return cast("SafeTensorsHeader", json.loads(handle.read(size).decode("utf-8"))), 8 + size
 
 
-def header_tensors(header: Mapping[str, Any]) -> dict[str, tuple[tuple[int, ...], str]]:
+def header_tensors(
+    header: Mapping[str, TensorHeader | dict[str, str]],
+) -> dict[str, tuple[tuple[int, ...], str]]:
     """Each tensor of a SafeTensors header as its shape and dtype name."""
     tensors: dict[str, tuple[tuple[int, ...], str]] = {}
     for name, info in header.items():
         if name == "__metadata__":
             continue
-        entry = cast(dict[str, Any], info)
-        shape = tuple(int(d) for d in cast(list[Any], entry["shape"]))
+        entry = cast(TensorHeader, info)
+        shape = tuple(int(d) for d in entry["shape"])
         tensors[str(name)] = (shape, str(entry["dtype"]))
     return tensors
 
@@ -263,12 +284,12 @@ def safetensors_index(weights: str | Path) -> dict[str, TensorLocation]:
         for name, info in header.items():
             if name == "__metadata__":
                 continue
-            entry = cast(dict[str, Any], info)
-            start, end = (int(o) for o in cast(list[Any], entry["data_offsets"]))
+            entry = cast(TensorHeader, info)
+            start, end = (int(o) for o in entry["data_offsets"])
             index[str(name)] = TensorLocation(
                 file=file,
                 dtype=str(entry["dtype"]),
-                shape=tuple(int(d) for d in cast(list[Any], entry["shape"])),
+                shape=tuple(int(d) for d in entry["shape"]),
                 start=base + start,
                 end=base + end,
             )
@@ -306,7 +327,7 @@ def write_safetensors(
     memory copies without loading it whole.
     """
     entries = list(tensors)
-    header: dict[str, Any] = {}
+    header: SafeTensorsHeader = {}
     if metadata:
         header["__metadata__"] = dict(metadata)
     offset = 0

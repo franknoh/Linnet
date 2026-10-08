@@ -12,23 +12,39 @@ low-precision inputs may round differently.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import TypedDict, cast
 
 import torch
 import torch.nn.functional as functional
 
-Native = Callable[[list[Any], torch.dtype | None], Any]
+# An implementation's arguments: the operation's, in declaration order, as
+# tensors (scalars as 0-d ones). An optional one left out (a bias, a mask) is
+# `None`, which only the implementations of operations that have one see:
+# they take `OptionalArgs`.
+Args = Sequence[torch.Tensor]
+OptionalArgs = Sequence[torch.Tensor | None]
+# An implementation: the arguments and the result's dtype to the result.
+Native = Callable[[Args, torch.dtype | None], torch.Tensor]
 
 
-def _index_copy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+# The arguments of the operations that take an optional one, by position.
+_Biased = tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]  # x, weight, bias
+_Norm = tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]  # x, w, b, eps
+# query, key, value, scale, mask
+_Masked = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]
+# x, packed, scale, zero, bias
+_Int4Linear = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]
+
+
+def _index_copy(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     cache, value, at = args
     # One position when decoding, a span of them when prefilling.
     positions = at.reshape(1).long() + torch.arange(value.shape[2], device=cache.device)
     return cache.index_copy(2, positions, value)
 
 
-def _index_put(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _index_put(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """The cache writes, heads as a full slice as the generated code writes
     them (see `linnet torch`)."""
     cache, value = args[0], args[1]
@@ -43,7 +59,7 @@ def _index_put(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
     return torch.ops.aten.index_put(cache, [rows, None, span], value.permute(0, 2, 1, 3))
 
 
-def _write_tokens(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _write_tokens(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """`write_tokens`: token p at (rows[p], positions[p]), every head."""
     cache, value, rows, positions = args
     return torch.ops.aten.index_put(
@@ -76,12 +92,12 @@ def mxfp4_experts(
     return torch.einsum("rki,rkoi->rko", x.float(), weight).to(x.dtype)
 
 
-def _mxfp4_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, blocks, scales, experts = args
     return mxfp4_experts(x, blocks, scales, experts)
 
 
-def _mxfp4_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_experts_shared(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, blocks, scales, experts = args
     return mxfp4_experts(x.expand(-1, experts.shape[1], -1), blocks, scales, experts)
 
@@ -124,131 +140,131 @@ def mxfp4_grouped(
     return functional.linear(placed.reshape(rows, count * width), joined)
 
 
-def _mxfp4_grouped_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_grouped_shared(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, blocks, scales, experts = args
     return mxfp4_grouped(x, blocks, scales, experts)
 
 
-def _mxfp4_grouped_combine(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_grouped_combine(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, blocks, scales, experts, weights = args
     return mxfp4_grouped(x, blocks, scales, experts, weights)
 
 
-def _linear_cross_entropy(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _linear_cross_entropy(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     from .loss import linear_cross_entropy
 
     hidden, weight, targets, weights = args
     return linear_cross_entropy(hidden, weight, targets, weights)
 
 
-def _linear_token_log_probs(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _linear_token_log_probs(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     from .loss import linear_token_log_probs
 
     hidden, weight, targets = args
     return linear_token_log_probs(hidden, weight, targets)
 
 
-def _one_shard(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _one_shard(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.parallel::all_reduce` and `all_gather` in one process, which
     holds the whole model: one shard's sum, or its slices side by side, is the
     value itself."""
     return args[0]
 
 
-def _matmul(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _matmul(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
 
-def _linear(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    x, weight, bias = args
+def _linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    x, weight, bias = cast(_Biased, args)
     return functional.linear(x, weight, bias)
 
 
 # `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and bf16
 # inputs themselves, so these results are bit-identical to the canonical
 # body's explicit casts (`tests/torch/test_native.py` checks it).
-def _softmax(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _softmax(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.softmax(args[0], dim=-1)
 
 
-def _relu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _relu(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.relu(args[0])
 
 
-def _sigmoid(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _sigmoid(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.sigmoid(args[0])
 
 
-def _silu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _silu(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return functional.silu(args[0])
 
 
-def _gelu(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _gelu(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return functional.gelu(args[0], approximate="tanh")
 
 
-def _gelu_erf(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _gelu_erf(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return functional.gelu(args[0], approximate="none")
 
 
-def _rms_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _rms_norm(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, weight, eps = args
     return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
 
 
-def _layer_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    x, weight, bias, eps = args
+def _layer_norm(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    x, weight, bias, eps = cast(_Norm, args)
     normalized = functional.layer_norm(x.float(), [x.shape[-1]], eps=float(eps.item()))
     scaled = normalized.to(x.dtype) * weight
     return scaled if bias is None else scaled + bias
 
 
-def convolution(args: list[Any], strides: list[int], pads: list[int]) -> torch.Tensor:
+def convolution(args: OptionalArgs, strides: list[int], pads: list[int]) -> torch.Tensor:
     """`std.nn.conv::conv1d`, `conv2d`, and `conv2d_rect` as `F.conv1d` and
     `F.conv2d`, with the call's own strides and padding, one per spatial
     axis. They are not recovered from the shapes: a 3x3 window taking 4
     positions to 2 fits both stride 1 without padding and stride 2 with one."""
-    x, weight, bias = args
+    x, weight, bias = cast(_Biased, args)
     convolve = functional.conv1d if len(strides) == 1 else functional.conv2d
     return convolve(x, weight, bias, stride=tuple(strides), padding=tuple(pads))
 
 
-def group_norm(args: list[Any], groups: int) -> torch.Tensor:
+def group_norm(args: Args, groups: int) -> torch.Tensor:
     """`std.nn.norm::group_norm` as `F.group_norm`, with the call's own
     `Groups`: statistics in f32, as the body computes them."""
     x, weight, bias, eps = args
     return functional.group_norm(x, groups, weight, bias, float(eps.item()))
 
 
-def max_pool2d(args: list[Any], window: int, stride: int, pad: int) -> torch.Tensor:
+def max_pool2d(args: Args, window: int, stride: int, pad: int) -> torch.Tensor:
     """`std.nn.pool::max_pool2d` as `F.max_pool2d`, with the call's own
     geometry, as for the convolution."""
     return functional.max_pool2d(args[0], window, stride=stride, padding=pad)
 
 
-def upsample_nearest2d(args: list[Any], shape: list[int]) -> torch.Tensor:
+def upsample_nearest2d(args: Args, shape: list[int]) -> torch.Tensor:
     """`std.nn.resize::upsample_nearest2d` as `F.interpolate`; the scale is
     the ratio of the shapes, as the exporters recover it."""
     x = args[0]
     return functional.interpolate(x, scale_factor=shape[2] // int(x.shape[2]), mode="nearest")
 
 
-def _batch_norm(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _batch_norm(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, mean, variance, weight, bias, eps = args
     return functional.batch_norm(x, mean, variance, weight, bias, False, 0.0, float(eps.item()))
 
 
-def _spatial_mean(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _spatial_mean(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x = args[0]
     return x.mean(dim=(2, 3), dtype=torch.float32).to(x.dtype)
 
 
-def _embedding(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _embedding(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     ids, table = args
     return functional.embedding(ids.long(), table)
 
 
-def _index_select(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _index_select(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, order = args
     return x.index_select(-1, order.long())
 
@@ -260,6 +276,15 @@ def causal_mask(shape: list[int], device: torch.device) -> torch.Tensor:
     mask = torch.ones(rows, columns, dtype=torch.bool, device=device).tril(columns - rows)
     mask._linnet_causal = rows == columns  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
     return mask
+
+
+class _SdpaOptions(TypedDict, total=False):
+    """The keywords `_sdpa` passes `F.scaled_dot_product_attention`."""
+
+    scale: float
+    is_causal: bool
+    attn_mask: torch.Tensor
+    enable_gqa: bool
 
 
 def _sdpa(
@@ -275,7 +300,7 @@ def _sdpa(
     # lets PyTorch use its fused causal kernels; grouped key/value heads are
     # read once through `enable_gqa`.
     causal = mask is not None and bool(getattr(mask, "_linnet_causal", False))
-    options: dict[str, Any] = {"scale": float(scale.item())}
+    options: _SdpaOptions = {"scale": float(scale.item())}
     if causal:
         options["is_causal"] = True
     elif mask is not None:
@@ -293,12 +318,12 @@ def _sdpa(
     return out.to(query.dtype)
 
 
-def _attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    query, key, value, scale, mask = args
+def _attention(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    query, key, value, scale, mask = cast(_Masked, args)
     return _sdpa(query, key, value, scale, mask, fast=False)
 
 
-def _sink_attention(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _sink_attention(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.attention::sink_attention`: two products around a softmax that
     also counts each query head's sink logit, whose share is then dropped."""
     query, key, value, sinks, scale, mask = args
@@ -318,29 +343,29 @@ def _sink_attention(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
     return torch.matmul(weights, value).reshape(batch, heads, queries, width)
 
 
-def _softmax_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _softmax_fast(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.softmax(args[0], dim=-1)
 
 
-def _rms_norm_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _rms_norm_fast(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     x, weight, eps = args
     return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
 
 
-def _layer_norm_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    x, weight, bias, eps = args
+def _layer_norm_fast(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    x, weight, bias, eps = cast(_Norm, args)
     scaled = functional.layer_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
     return scaled if bias is None else scaled + bias
 
 
-def _attention_fast(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
-    query, key, value, scale, mask = args
+def _attention_fast(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    query, key, value, scale, mask = cast(_Masked, args)
     return _sdpa(query, key, value, scale, mask, fast=True)
 
 
-def _int4_groups_linear(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _int4_groups_linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
     """`std.quant::linear_int4_groups`: dequantized, then `F.linear`."""
-    x, packed, scale, zero, bias = args
+    x, packed, scale, zero, bias = cast(_Int4Linear, args)
     out_features, groups, half = packed.shape
     q = torch.stack([packed & 15, packed >> 4], dim=-1).reshape(out_features, groups, 2 * half)
     weight = (q.float() - zero.float()[..., None]) * scale.float()[..., None]
@@ -360,7 +385,7 @@ def _grouped(x: torch.Tensor, weight: torch.Tensor) -> bool:
     )
 
 
-def _linear_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _linear_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.moe::linear_experts`: one grouped product over the rows sorted
     by expert on CUDA in bf16, each chosen expert's weight gathered elsewhere."""
     x, weight, experts = args
@@ -379,7 +404,7 @@ def _linear_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tenso
     return torch.einsum("rki,rkoi->rko", x.float(), taken.float()).to(x.dtype)
 
 
-def _linear_experts_shared(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _linear_experts_shared(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.moe::linear_experts_shared`: the grouped product over the row
     repeated for each chosen expert, or every expert and the chosen kept."""
     x, weight, experts = args
@@ -392,7 +417,7 @@ def _linear_experts_shared(args: list[Any], _result: torch.dtype | None) -> torc
     return every.gather(1, experts.long()[..., None].expand(rows, chosen, out_features))
 
 
-def _combine_experts(args: list[Any], _result: torch.dtype | None) -> torch.Tensor:
+def _combine_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     """`std.nn.moe::combine_experts`: the grouped product weighed and summed,
     or the weighed inputs placed by expert and multiplied by every expert."""
     x, weight, experts, weights = args

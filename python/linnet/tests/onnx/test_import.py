@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import onnx  # type: ignore[import-untyped]
 import pytest
 import torch
@@ -41,22 +42,22 @@ def _compiler_ok(*args: str) -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def _tensor(name: str, array: np.ndarray[Any, Any]) -> Any:
+def _tensor(name: str, array: npt.NDArray[np.generic]) -> TensorProto:
     return numpy_helper.from_array(array, name=name)
 
 
 def _transformer_graph(
     vocab: int, width: int, heads: int, layers: int
-) -> tuple[Any, dict[str, Any]]:
+) -> tuple[onnx.ModelProto, dict[str, npt.NDArray[np.float32]]]:
     """A GPT-style block built by hand: embeddings, layer norm, attention
     with a constant causal mask, a tanh GELU MLP, and a tied output head.
     The batch and sequence dimensions are symbolic."""
     rng = np.random.default_rng(0)
-    w: dict[str, np.ndarray[Any, Any]] = {
+    w: dict[str, npt.NDArray[np.float32]] = {
         "wte": rng.normal(0, 0.3, (vocab, width)).astype(np.float32)
     }
-    nodes: list[Any] = []
-    inits: list[Any] = [_tensor("wte", w["wte"])]
+    nodes: list[onnx.NodeProto] = []
+    inits: list[TensorProto] = [_tensor("wte", w["wte"])]
     for i in range(layers):
         p = f"blocks.{i}."
         for name, shape in (
@@ -191,7 +192,11 @@ def _transformer_graph(
 
 
 def _reference(
-    w: dict[str, Any], tokens: torch.Tensor, mask: torch.Tensor, heads: int, layers: int
+    w: Mapping[str, npt.NDArray[np.float32]],
+    tokens: torch.Tensor,
+    mask: torch.Tensor,
+    heads: int,
+    layers: int,
 ) -> torch.Tensor:
     t = {k: torch.from_numpy(v) for k, v in w.items()}
     B, S = tokens.shape  # noqa: N806

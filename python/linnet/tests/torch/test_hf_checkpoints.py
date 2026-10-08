@@ -8,12 +8,15 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 import torch
 
 from linnet.torch import bind_weights, load
+
+if TYPE_CHECKING:
+    from transformers import ResNetForImageClassification
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
@@ -194,7 +197,7 @@ def test_resnet18_logits_match_transformers(tmp_path: Path) -> None:
         weights=checkpoint,
     )
     reference = cast(
-        Any,
+        "ResNetForImageClassification",
         AutoModelForImageClassification.from_pretrained(  # pyright: ignore[reportUnknownMemberType]
             repo, torch_dtype=torch.float32
         ),

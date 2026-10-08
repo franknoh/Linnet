@@ -12,7 +12,6 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
-from typing import Any
 
 from .. import sizes
 from ..compiler import NUMERICS, LinnetError, parse_binding
@@ -23,7 +22,7 @@ from .kvcache import ContiguousLayout, KVLayout, PagedLayout
 from .performance import DEVICES
 from .performance import device as find_device
 from .planner import ExecutionPlanner, ResourceConstraint, Target, ThroughputPlan
-from .result import format_result
+from .result import ResultJson, format_result
 from .training import OPTIMIZERS, CheckpointPolicy, TrainingConfig
 
 
@@ -199,7 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         policies: list[CheckpointPolicy] = args.checkpoint or [CheckpointPolicy()]
         if args.command == "memory":
-            results: list[dict[str, Any]] = []
+            results: list[ResultJson] = []
             texts: list[str] = []
             for policy in policies:
                 result = MemoryModel(
@@ -317,7 +316,7 @@ def _plan_text(plan: ThroughputPlan) -> str:
     return "\n".join(lines)
 
 
-def _plan_json(plan: ThroughputPlan) -> dict[str, Any]:
+def _plan_json(plan: ThroughputPlan) -> dict[str, object]:
     return {
         "device": plan.device.name,
         "devices": plan.devices,

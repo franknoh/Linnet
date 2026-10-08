@@ -28,7 +28,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from .. import ir
 from ..compiler import LinnetError
@@ -41,6 +41,8 @@ from .training import CheckpointPolicy
 
 if TYPE_CHECKING:
     import torch
+    from torch.distributed import ProcessGroup
+    from torch.distributed.device_mesh import DeviceMesh
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +81,7 @@ def root_values(model: MemoryModel, env: Mapping[str, int]) -> dict[str, int | s
     return values
 
 
-def _inputs(model: MemoryModel, env: Mapping[str, int], device: torch.device) -> list[Any]:
+def _inputs(model: MemoryModel, env: Mapping[str, int], device: torch.device) -> list[torch.Tensor]:
     import torch
 
     program = model.program
@@ -96,7 +98,7 @@ def _inputs(model: MemoryModel, env: Mapping[str, int], device: torch.device) ->
         elif isinstance(model.config.bindings.get(generic.name), int):
             inputs[generic.name] = int(model.config.bindings[generic.name])
     bound = entry_env(function, root, inputs)
-    values: list[Any] = []
+    values: list[torch.Tensor] = []
     for param in function.params:
         if isinstance(param.type, ir.TensorType):
             shape = [ex.evaluate(d, {}) for d in bound.shape(param.type.shape)]
@@ -113,6 +115,18 @@ def _inputs(model: MemoryModel, env: Mapping[str, int], device: torch.device) ->
         else:
             raise LinnetError(f"cannot make an input of `{param.name}`'s type")
     return values
+
+
+def _optimizer(name: str, parameters: list[torch.nn.Parameter]) -> torch.optim.Optimizer:
+    import torch
+
+    if name == "sgd":
+        return torch.optim.SGD(parameters, lr=1e-6)
+    if name == "sgd-momentum":
+        return torch.optim.SGD(parameters, lr=1e-6, momentum=0.9)
+    if name == "adam":
+        return torch.optim.Adam(parameters, lr=1e-6, fused=True)
+    return torch.optim.AdamW(parameters, lr=1e-6, fused=True)
 
 
 def measure(
@@ -144,9 +158,9 @@ def measure(
     generics = root_values(model, env)
     inputs = _inputs(model, env, device)
     if config.pipeline_parallel > 1:
-        group: Any = None
-        split: Any = None
-        sharded: Any = None
+        group: ProcessGroup | None = None
+        split: DeviceMesh | None = None
+        sharded: DeviceMesh | None = None
         if config.tensor_parallel > 1 or shards > 1:
             from torch.distributed.device_mesh import init_device_mesh
 
@@ -186,7 +200,7 @@ def measure(
                 pipe.step(*inputs)
 
     else:
-        mesh: Any = None
+        mesh: DeviceMesh | None = None
         if config.tensor_parallel > 1:
             from torch.distributed.device_mesh import init_device_mesh
 
@@ -219,17 +233,7 @@ def measure(
             else:
                 entry(*inputs).backward()
 
-    optimizer: Any = None
-    if training is not None:
-        name = training.optimizer.name
-        if name == "sgd":
-            optimizer = torch.optim.SGD(parameters, lr=1e-6)
-        elif name == "sgd-momentum":
-            optimizer = torch.optim.SGD(parameters, lr=1e-6, momentum=0.9)
-        elif name == "adam":
-            optimizer = torch.optim.Adam(parameters, lr=1e-6, fused=True)
-        else:
-            optimizer = torch.optim.AdamW(parameters, lr=1e-6, fused=True)
+    optimizer = None if training is None else _optimizer(training.optimizer.name, parameters)
     # The second step is measured: by then the optimizer has its states.
     for repeat in range(2):
         if repeat == 1:
@@ -298,7 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LinnetError as error:
         print(f"linnet: {error}", file=sys.stderr)
         return 1
-    report: dict[str, Any] = {
+    report: dict[str, object] = {
         "prediction": prediction.to_dict(),
         "comparisons": [
             {
@@ -318,8 +322,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{c.name:<40} predicted {format_bytes(c.predicted):>12}  measured "
             f"{format_bytes(c.measured):>12}{relative}"
         )
-    reports: list[Any] = [report]
-    texts: list[Any] = [lines]
+    reports: list[dict[str, object]] = [report]
+    texts: list[list[str]] = [lines]
     if distributed:
         import torch.distributed as dist
 
@@ -338,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for rank, text in enumerate(texts):
         if len(texts) > 1:
             print(f"rank {rank}")
-        print("\n".join(cast(list[str], text)))
+        print("\n".join(text))
     return 0
 
 

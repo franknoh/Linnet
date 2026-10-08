@@ -60,8 +60,6 @@ if TYPE_CHECKING:
     from torch.distributed import ProcessGroup
     from torch.distributed.device_mesh import DeviceMesh
 
-    # What the entry returns on the last stage: one tensor, or a tuple of them
-    # when it has several results.
     # A stage function of the generated source: its results as a tuple.
     StageFunction: TypeAlias = Callable[..., tuple[torch.Tensor, ...]]
 
@@ -85,7 +83,7 @@ class _Runner(Protocol):
         *,
         kwarg_mbs: list[dict[str, torch.Tensor]],
         target_mbs: list[torch.Tensor] | None,
-    ) -> Result | None: ...
+    ) -> Result | None: ...  # pyright: ignore[reportExplicitAny]
 
 
 class Pipeline:
@@ -193,7 +191,7 @@ class Pipeline:
             return None
         return torch.stack([loss.detach().float() for loss in losses]).sum()
 
-    def run(self, *inputs: torch.Tensor) -> Result | None:
+    def run(self, *inputs: torch.Tensor) -> Result | None:  # pyright: ignore[reportExplicitAny]
         """The entry's forward pass over the micro-batches, without
         gradients. On the last stage, each result joined along its first
         axis (a scalar result: one value per micro-batch); None elsewhere."""
@@ -204,7 +202,7 @@ class Pipeline:
         try:
             with torch.no_grad():
                 self._hold(built, trains=False)
-                merged: Result | None = built.schedule.eval(
+                merged: Result | None = built.schedule.eval(  # pyright: ignore[reportExplicitAny]
                     kwarg_mbs=self._microbatches(built, inputs),
                     target_mbs=self._targets(),
                 )
@@ -400,7 +398,7 @@ class _StageModule(nn.Module):
         # Sharded weights gathered whole for the current step.
         self.held: Held | None = None
 
-    def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Result:
+    def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Result:  # pyright: ignore[reportExplicitAny]
         weights = [getattr(owner, leaf) for owner, leaf in self.locations]
         if self.held is not None:
             weights = [

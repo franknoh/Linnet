@@ -9,9 +9,9 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import onnx  # type: ignore[import-untyped]
 import pytest
 import torch
@@ -36,7 +36,9 @@ def _compiler() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 
-def _export_onnx(source: Path, bindings: dict[str, int | str], entry: str | None = None) -> Any:
+def _export_onnx(
+    source: Path, bindings: dict[str, int | str], entry: str | None = None
+) -> onnx.ModelProto:
     command = [find_compiler(), "onnx", "--std", str(STDLIB)]
     if entry is not None:
         command += ["--entry", entry]
@@ -80,7 +82,7 @@ def test_tiny_transformer_runs_under_onnxruntime(tmp_path: Path) -> None:
 
     model = _export_onnx(source, {**generics, "B": 2, "S": seq})
     paths = {p.key.removeprefix("linnet.path."): p.value for p in model.metadata_props}
-    feeds: dict[str, Any] = {
+    feeds: dict[str, npt.NDArray[np.generic]] = {
         "tokens": tokens.numpy(),
         "cos_table": cos_table.numpy(),
         "sin_table": sin_table.numpy(),

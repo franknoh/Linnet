@@ -5,17 +5,16 @@ weight, by the Pallas kernel on a GPU and `ragged_dot` elsewhere."""
 
 from __future__ import annotations
 
-from typing import Any
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.typing import DTypeLike
 
 from linnet.jax import moe
 
 
-def _case(counts: list[int], out: int, width: int, dtype: Any) -> tuple[jax.Array, ...]:
+def _case(counts: list[int], out: int, width: int, dtype: DTypeLike) -> tuple[jax.Array, ...]:
     rng = np.random.default_rng(0)
     rows = sum(counts)
     x = jnp.asarray(rng.standard_normal((rows, width)), dtype=dtype)

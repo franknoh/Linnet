@@ -39,12 +39,35 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, NotRequired, TypedDict
 
 from . import expr as ex
 from .graph import Category, TensorGraph
 
 MIB = 1 << 20
+
+
+class _Profile(TypedDict):
+    """A profile as `python -m linnet.resources.calibrate` writes it."""
+
+    name: str
+    memory: int
+    flops: dict[str, float]
+    bandwidth: float
+    link: NotRequired[float | None]
+    latency: NotRequired[float | None]
+    attention: NotRequired[dict[str, float]]
+    decode: NotRequired[float]
+    elementwise: NotRequired[float]
+    broadcast: NotRequired[float]
+    products: NotRequired[dict[str, list[list[float]]]]  # [n, k, FLOP/s] each
+    skinny: NotRequired[float]
+    host: NotRequired[dict[str, float]]
+    dispatch: NotRequired[float]
+    kernel: NotRequired[float]
+    strided_kernel: NotRequired[float]
+    reduce: NotRequired[float | None]
+    source: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +177,7 @@ class DeviceSpec:
     @classmethod
     def load(cls, path: str | Path) -> DeviceSpec:
         """A profile `python -m linnet.resources.calibrate` wrote."""
-        data: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
+        data: _Profile = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             name=str(data["name"]),
             memory=int(data["memory"]),
