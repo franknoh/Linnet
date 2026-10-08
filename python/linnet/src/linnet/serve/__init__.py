@@ -804,9 +804,9 @@ def _backend_for(
 def _root_dim(model: Any, name: str) -> int | None:
     """The value of the root block's dimension generic `name`, its default
     when the model was loaded without one."""
-    for generic in model.plan.root["generics"]:
-        if generic["name"] == name and generic["kind"] == "dim":
-            return int(model.root.env.dims[int(generic["sym"])])
+    for generic in model.program.root.generics:
+        if generic.name == name and generic.kind == "dim":
+            return int(model.root.env.dims[generic.id])
     return None
 
 
