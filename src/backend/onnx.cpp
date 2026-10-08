@@ -260,23 +260,21 @@ public:
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             at[0] != nullptr) {
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad || 2 * *pad > *window) {
+            const auto pool = pool_window();
+            if (!pool || 2 * pool->pad > pool->size) {
                 return std::nullopt;
             }
+            const auto [window, stride, pad] = *pool;
             // No bf16 pooling in ONNX Runtime either: pool in f32.
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
             const TensorInfo x = cast_to(*at[0], kind);
-            const std::string out =
-                node("MaxPool",
-                     {x},
-                     "kernel_shape = [" + int_list({*window, *window}) + "], strides = [" +
-                         int_list({*stride, *stride}) + "], pads = [" +
-                         int_list({*pad, *pad, *pad, *pad}) + "]",
-                     shape,
-                     kind);
+            const std::string out = node("MaxPool",
+                                         {x},
+                                         "kernel_shape = [" + int_list({window, window}) +
+                                             "], strides = [" + int_list({stride, stride}) +
+                                             "], pads = [" + int_list({pad, pad, pad, pad}) + "]",
+                                         shape,
+                                         kind);
             return kind == dtype ? out : convert({out, shape, kind}, dtype);
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3 &&

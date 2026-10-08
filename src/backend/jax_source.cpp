@@ -300,17 +300,16 @@ public:
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && at.size() == 1 &&
             at[0] != nullptr) {
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad) {
+            const auto pool = pool_window();
+            if (!pool) {
                 return std::nullopt;
             }
+            const auto [window, stride, pad] = *pool;
             // Padding takes the initial value, minus infinity, which no
             // window's maximum is.
-            const std::string k = std::to_string(*window);
-            const std::string s = std::to_string(*stride);
-            const std::string p = std::to_string(*pad);
+            const std::string k = std::to_string(window);
+            const std::string s = std::to_string(stride);
+            const std::string p = std::to_string(pad);
             return define("jax.lax.reduce_window(" + name(0) + ", jnp.array(-jnp.inf, " + name(0) +
                           ".dtype), jax.lax.max, (1, 1, " + k + ", " + k + "), (1, 1, " + s + ", " +
                           s + "), ((0, 0), (0, 0), (" + p + ", " + p + "), (" + p + ", " + p +

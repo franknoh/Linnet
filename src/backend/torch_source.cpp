@@ -389,14 +389,13 @@ public:
             // The geometry is the call's own, as for the convolution;
             // `F.max_pool2d` pads with minus infinity and takes at most half
             // a window of it.
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad || 2 * *pad > *window) {
+            const auto pool = pool_window();
+            if (!pool || 2 * pool->pad > pool->size) {
                 return std::nullopt;
             }
-            return define("F.max_pool2d(" + name(0) + ", " + std::to_string(*window) + ", stride=" +
-                          std::to_string(*stride) + ", padding=" + std::to_string(*pad) + ")");
+            const auto [window, stride, pad] = *pool;
+            return define("F.max_pool2d(" + name(0) + ", " + std::to_string(window) + ", stride=" +
+                          std::to_string(stride) + ", padding=" + std::to_string(pad) + ")");
         }
         if (implementation_base == "torch.nn.functional.interpolate(nearest)" &&
             operands.size() == 1 && shape.size() == 4) {

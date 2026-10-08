@@ -477,21 +477,19 @@ public:
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             at[0] != nullptr) {
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad) {
+            const auto pool = pool_window();
+            if (!pool) {
                 return std::nullopt;
             }
+            const auto [window, stride, pad] = *pool;
             // The padding holds the initial value, the lowest there is, so
             // it never wins a window.
             const TensorInfo initial = scalar_constant(Literal::of(Literal::Kind::Lowest), dtype);
-            const std::string p = std::to_string(*pad);
+            const std::string p = std::to_string(pad);
             const std::string attributes =
                 "padding = dense<[[0, 0], [0, 0], [" + p + ", " + p + "], [" + p + ", " + p +
-                "]]> : tensor<4x2xi64>, window_dimensions = " +
-                i64_array({1, 1, *window, *window}) +
-                ", window_strides = " + i64_array({1, 1, *stride, *stride});
+                "]]> : tensor<4x2xi64>, window_dimensions = " + i64_array({1, 1, window, window}) +
+                ", window_strides = " + i64_array({1, 1, stride, stride});
             return emit("reduce_window",
                         {*at[0], initial},
                         attributes,

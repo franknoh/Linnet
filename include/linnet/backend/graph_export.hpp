@@ -187,10 +187,6 @@ public:
     // Reduces `body` over `dims` (trailing axes) to `shape`.
     virtual std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) = 0;
-    // A semantic call whose selected candidate (`opt::select_candidates`) is
-    // `implementation`, with its tensor operands (absent optionals as
-    // nullopt). A target that has the implementation returns the result's
-    // name; otherwise the call's canonical body is exported instead.
     // The dimension generics of the semantic call being lowered, by name
     // (`Stride`, `Pad`), set before each `native_call`. A kernel whose
     // arguments are not tensors reads them here instead of inferring them
@@ -233,12 +229,33 @@ public:
                           std::vector<std::int64_t>(spatial, *pad)};
     }
 
+    // A max pool's window from the call's own generics (`K`, `Stride`, `Pad`);
+    // without them, nothing.
+    struct PoolWindow {
+        std::int64_t size = 0;
+        std::int64_t stride = 0;
+        std::int64_t pad = 0;
+    };
+    std::optional<PoolWindow> pool_window() const {
+        const auto size = call_generic("K");
+        const auto stride = call_generic("Stride");
+        const auto pad = call_generic("Pad");
+        if (!size || !stride || !pad) {
+            return std::nullopt;
+        }
+        return PoolWindow{*size, *stride, *pad};
+    }
+
     static bool is_convolution(const std::string& implementation) {
         return implementation == "torch.nn.functional.conv2d" ||
                implementation == "torch.nn.functional.conv2d(rect)" ||
                implementation == "torch.nn.functional.conv1d";
     }
 
+    // A semantic call whose selected candidate (`opt::select_candidates`) is
+    // `implementation`, with its tensor operands (absent optionals as
+    // nullopt). A target that has the implementation returns the result's
+    // name; otherwise the call's canonical body is exported instead.
     virtual std::optional<std::string>
     native_call(const std::string& implementation,
                 const std::vector<std::optional<TensorInfo>>& operands,
