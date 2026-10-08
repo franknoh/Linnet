@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Hashable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,7 @@ class Hierarchy:
     def __init__(self, module: str) -> None:
         self.module = module
         self.blocks: dict[str, Block] = {}
-        self._by_signature: dict[Any, Block] = {}
+        self._by_signature: dict[tuple[str, Hashable], Block] = {}
         # Linnet path -> the foreign name, where they differ (`bindings.json`).
         self.renamed: dict[str, str] = {}
 
@@ -83,7 +84,7 @@ class Hierarchy:
         """A parameter's plan type; None for one the importer fills in later."""
         return None
 
-    def block_for(self, class_name: str, signature: Any, member: Member) -> Block:
+    def block_for(self, class_name: str, signature: Hashable, member: Member) -> Block:
         """The block for `member`'s subtree: the same one for every subtree of
         the same class name and signature."""
         key = (class_name, signature)
