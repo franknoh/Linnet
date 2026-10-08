@@ -210,23 +210,33 @@ def _prefill_mask(
     first = torch.full((count, pool_pages), pages, dtype=torch.int32, device=device)
     first = first.scatter_reduce(1, table.long(), places, reduce="amin", include_self=True)
     # The pages each block of tokens reads: its rows' up to the latest
-    # position of each in the block.
+    # position of each in the block. A block of one row's tokens reads the
+    # pages wholly before its first token whole, with no mask to apply.
     blocks = -(-tokens // _TOKEN_BLOCK)
     block = torch.arange(tokens, device=device) // _TOKEN_BLOCK
+    key = block * count + owner
     latest = torch.full((blocks * count,), -1, dtype=torch.int64, device=device)
-    latest = latest.scatter_reduce(0, block * count + owner, at, reduce="amax", include_self=True)
+    latest = latest.scatter_reduce(0, key, at, reduce="amax", include_self=True)
+    earliest = torch.full((blocks * count,), pages * size, dtype=torch.int64, device=device)
+    earliest = earliest.scatter_reduce(0, key, at, reduce="amin", include_self=True)
+    latest, earliest = latest.reshape(blocks, count, 1), earliest.reshape(blocks, count, 1)
+    alone = ((latest >= 0).sum(1, keepdim=True) == 1).reshape(blocks, 1, 1)
     starts = torch.arange(pages, device=device) * size
-    seen = (starts[None, None, :] <= latest.reshape(blocks, count, 1)).to(torch.int32)
-    reads = torch.zeros(blocks, pool_pages, dtype=torch.int32, device=device)
-    reads = reads.scatter_reduce(
-        1,
-        table.long().expand(blocks, count, pages).reshape(blocks, count * pages),
-        seen.reshape(blocks, count * pages),
-        reduce="amax",
-        include_self=True,
-    )
-    counts = reads.sum(-1).to(torch.int32).reshape(1, 1, blocks)
-    indices = torch.argsort(reads, dim=-1, descending=True, stable=True).to(torch.int32)
+    listed = table.long().expand(blocks, count, pages).reshape(blocks, count * pages)
+
+    def pool_pages_of(seen: torch.Tensor) -> torch.Tensor:
+        reads = torch.zeros(blocks, pool_pages, dtype=torch.int32, device=device)
+        flat = seen.to(torch.int32).reshape(blocks, count * pages)
+        return reads.scatter_reduce(1, listed, flat, reduce="amax", include_self=True)
+
+    reads = pool_pages_of(starts <= latest)
+    whole = pool_pages_of((starts + size <= earliest) & (latest >= 0) & alone)
+    partial = reads - whole
+
+    def lists(live: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        number = live.sum(-1).to(torch.int32).reshape(1, 1, blocks)
+        order = torch.argsort(live, dim=-1, descending=True, stable=True).to(torch.int32)
+        return number, order.reshape(1, 1, blocks, pool_pages)
 
     def mask_mod(
         b: torch.Tensor, h: torch.Tensor, q: torch.Tensor, kv: torch.Tensor
@@ -234,8 +244,8 @@ def _prefill_mask(
         return first[owner[q], kv // size] * size + kv % size <= at[q]
 
     return BlockMask.from_kv_blocks(
-        counts,
-        indices.reshape(1, 1, blocks, pool_pages),
+        *lists(partial),
+        *lists(whole),
         BLOCK_SIZE=(_TOKEN_BLOCK, size),
         mask_mod=mask_mod,
         seq_lengths=(tokens, pool),
