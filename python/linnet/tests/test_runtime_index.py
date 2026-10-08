@@ -8,7 +8,7 @@ it), generated JAX, ONNX Runtime, and StableHLO through JAX."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 import numpy as np
 import pytest
@@ -51,8 +51,10 @@ pub block Table<N: Dim, M: Dim> {
 
 X2 = np.arange(20, dtype=np.float32).reshape(4, 5) / 7
 X3 = np.arange(24, dtype=np.float32).reshape(2, 3, 4) / 5
+# A case's inputs: the array, then the integer positions.
+Inputs: TypeAlias = "tuple[np.ndarray, *tuple[int, ...]]"
 # Each case: the function, its inputs, and what it must return.
-CASES: list[tuple[str, tuple[Any, ...], np.ndarray]] = [
+CASES: list[tuple[str, Inputs, np.ndarray]] = [
     ("element", (X2[1], 3), X2[1][3]),
     ("row", (X2, 2), X2[2]),
     ("column", (X2, 4), X2[:, 4]),
@@ -71,7 +73,7 @@ def source(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("compile", [False, True])
 @pytest.mark.parametrize(("name", "inputs", "expected"), CASES)
 def test_pytorch_reads_the_position(
-    source: Path, compile: bool, name: str, inputs: tuple[Any, ...], expected: np.ndarray
+    source: Path, compile: bool, name: str, inputs: Inputs, expected: np.ndarray
 ) -> None:
     function = load_function(source, name, compile=compile)
     x = torch.tensor(inputs[0], requires_grad=True)
@@ -87,7 +89,7 @@ def test_pytorch_reads_the_position(
 
 @pytest.mark.parametrize(("name", "inputs", "expected"), CASES)
 def test_jax_reads_the_position(
-    source: Path, name: str, inputs: tuple[Any, ...], expected: np.ndarray
+    source: Path, name: str, inputs: Inputs, expected: np.ndarray
 ) -> None:
     pytest.importorskip("jax")
     from linnet.jax import load_function as load_jax_function
@@ -98,7 +100,7 @@ def test_jax_reads_the_position(
 
 @pytest.mark.parametrize(("name", "inputs", "expected"), CASES)
 def test_onnx_runtime_reads_the_position(
-    source: Path, name: str, inputs: tuple[Any, ...], expected: np.ndarray
+    source: Path, name: str, inputs: Inputs, expected: np.ndarray
 ) -> None:
     onnxruntime = pytest.importorskip("onnxruntime")
     from linnet.onnx import export_function
@@ -109,7 +111,7 @@ def test_onnx_runtime_reads_the_position(
     session = onnxruntime.InferenceSession(
         exported.model.SerializeToString(), providers=["CPUExecutionProvider"]
     )
-    feeds: dict[str, Any] = {"x": inputs[0]}
+    feeds: dict[str, np.ndarray] = {"x": inputs[0]}
     for port, value in zip(exported.inputs[1:], inputs[1:], strict=True):
         feeds[port.name] = np.array(value, dtype=np.int32 if port.dtype == "i32" else np.int64)
     (got,) = session.run(None, feeds)

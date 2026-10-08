@@ -6,7 +6,7 @@ state under the parameter paths, and calls read the module's arrays."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, cast
 
 import jax
 import jax.numpy as jnp
@@ -17,7 +17,31 @@ from linnet.jax import export_linnet, load, load_nnx
 
 from .test_round_trip import STDLIB, forward, init_params
 
+if TYPE_CHECKING:
+    from flax import nnx as flax_nnx
+
 nnx = pytest.importorskip("flax.nnx")
+
+
+# What the tests read of the modules, whose members are made when they load.
+class _Layer(Protocol):
+    q: flax_nnx.Param[jax.Array]
+
+
+class _Model(Protocol):
+    layers: flax_nnx.List[_Layer]
+    head: flax_nnx.Param[jax.Array]
+
+    def __call__(self, tokens: jax.Array, /) -> jax.Array: ...
+
+
+class _Linear(Protocol):
+    weight: flax_nnx.Param[jax.Array]
+    bias: flax_nnx.Param[jax.Array]
+
+
+class _Mlp(Protocol):
+    layer: _Linear
 
 
 def test_exported_model_as_nnx_module(tmp_path: Path) -> None:
@@ -32,7 +56,10 @@ def test_exported_model_as_nnx_module(tmp_path: Path) -> None:
         std_root=STDLIB,
     )
     # Its attributes are the model's members, made when it loads.
-    model: Any = load_nnx(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
+    model = cast(
+        _Model,
+        load_nnx(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB),
+    )
 
     # The hierarchy: a sub array of layers, parameters at their paths.
     assert type(model).__name__ == "Model"
@@ -66,12 +93,14 @@ def test_apply_with_new_parameters(tmp_path: Path) -> None:
     result = export_linnet(
         forward, params, (tokens,), output=tmp_path / "model.linnet", std_root=STDLIB
     )
+    layers = params["layers"]
+    assert isinstance(layers, list)
     weights = {
         "embedding": params["embedding"],
         "head": params["head"],
         **{
             f"layers.{i}.{name}": array
-            for i, layer in enumerate(params["layers"])
+            for i, layer in enumerate(layers)
             for name, array in layer.items()
         },
     }
@@ -102,8 +131,9 @@ def test_nnx_module_trains_over_generated_source(tmp_path: Path) -> None:
         "layer.weight": jnp.zeros((1, 3), jnp.float32),
         "layer.bias": jnp.zeros((1,), jnp.float32),
     }
-    model: Any = to_nnx(
-        load_source(source, generics={"In": 3, "Out": 1}, weights=weights, std_root=STDLIB)
+    model = cast(
+        _Mlp,
+        to_nnx(load_source(source, generics={"In": 3, "Out": 1}, weights=weights, std_root=STDLIB)),
     )
     x = jax.random.normal(jax.random.PRNGKey(1), (128, 3), jnp.float32)
     y = x @ jnp.array([[1.0, -2.0, 0.5]], jnp.float32).T

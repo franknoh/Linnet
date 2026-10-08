@@ -20,14 +20,16 @@ compiled step fuses, and multiplies them in the custom op
 from __future__ import annotations
 
 import importlib.util
-from typing import Any
+from typing import Protocol
 
 import torch
 
 _FP4 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0)
 
-# The weights' storage -> (their versions, the copy made from them).
-_swizzled: dict[int, tuple[tuple[int, int], Any, Any]] = {}
+# The weights' storage -> (their versions, the copy made from them). The
+# swizzled copy is `triton_kernels`' own weight and precision config, which
+# are only passed back to its `matmul`.
+_swizzled: dict[int, tuple[tuple[int, int], object, object]] = {}
 _dequantized: dict[int, tuple[tuple[int, int], torch.Tensor]] = {}
 _kernels: list[bool] = []
 
@@ -55,7 +57,7 @@ def _versions(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[int, int]:
     return (blocks._version, scales._version)  # pyright: ignore[reportPrivateUsage]
 
 
-def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[Any, Any]:
+def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[object, object]:
     """The experts as `triton_kernels` reads them: the bytes `[E, In / 2,
     Out]` and the scales `[E, In / 32, Out]`, each in its Hopper layout, and
     the precision config that pairs them."""
@@ -126,6 +128,14 @@ def routes(experts: torch.Tensor, count: int, shared: bool) -> tuple[torch.Tenso
     return order.to(torch.int32), sources.to(torch.int32), counts
 
 
+class _GroupedMM(Protocol):
+    """`torch._grouped_mm`, which older PyTorch lacks."""
+
+    def __call__(
+        self, input: torch.Tensor, mat2: torch.Tensor, *, offs: torch.Tensor
+    ) -> torch.Tensor: ...
+
+
 @torch.library.custom_op("linnet::mxfp4_grouped", mutates_args=())
 def mxfp4_grouped_routed(
     x: torch.Tensor,
@@ -155,7 +165,7 @@ def mxfp4_grouped_routed(
             precision_config=precision,
         )
     weight = dequantized(blocks, scales)
-    grouped_mm: Any = getattr(torch, "_grouped_mm")  # noqa: B009 - private, checked by `available`
+    grouped_mm: _GroupedMM = getattr(torch, "_grouped_mm")  # noqa: B009 - private, checked by `available`
     y = grouped_mm(x[sources], weight.transpose(-2, -1), offs=counts.cumsum(0, dtype=torch.int32))
     return torch.empty_like(y).index_copy_(0, order.long(), y)
 

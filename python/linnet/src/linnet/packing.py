@@ -13,7 +13,6 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 
@@ -170,7 +169,7 @@ class Prompt:
     (the answer, say)."""
 
     tokens: Sequence[int]
-    data: Any = None
+    data: object = None
 
 
 Reward = Callable[[Prompt, list[int]], float]

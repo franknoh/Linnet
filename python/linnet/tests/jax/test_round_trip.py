@@ -8,18 +8,28 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias, TypedDict
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 import pytest
+from jax.typing import ArrayLike
 
 from linnet.jax import ExportError, export_linnet, find_compiler, import_stablehlo, load
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
 FIXTURES = REPO / "tests" / "fixtures"
+
+Layer: TypeAlias = dict[str, jax.Array]
+
+
+class Params(TypedDict):
+    embedding: jax.Array
+    layers: list[Layer] | dict[str, Layer]  # a list, or a stack keyed "0", "1", ...
+    head: jax.Array
 
 
 def _compiler_ok(*args: str) -> None:
@@ -29,11 +39,11 @@ def _compiler_ok(*args: str) -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def rms_norm(x: Any, weight: Any) -> Any:
+def rms_norm(x: jax.Array, weight: ArrayLike) -> jax.Array:
     return x * jax.lax.rsqrt(jnp.mean(x * x, axis=-1, keepdims=True) + 1e-5) * weight
 
 
-def layer(params: dict[str, Any], x: Any) -> Any:
+def layer(params: Layer, x: jax.Array) -> jax.Array:
     batch, seq, width = x.shape
     heads = 2
     h = rms_norm(x, params["norm"])
@@ -47,7 +57,7 @@ def layer(params: dict[str, Any], x: Any) -> Any:
     return x + mixed.transpose(0, 2, 1, 3).reshape(batch, seq, width) @ params["o"] + params["ob"]
 
 
-def forward(params: dict[str, Any], tokens: Any) -> Any:
+def forward(params: Params, tokens: jax.Array) -> jax.Array:
     x = jnp.take(params["embedding"], tokens, axis=0)
     layers = params["layers"]
     if isinstance(layers, dict):  # a stack keyed "0", "1", ...
@@ -57,11 +67,11 @@ def forward(params: dict[str, Any], tokens: Any) -> Any:
     return jax.nn.silu(x @ params["head"])
 
 
-def init_params(key: Any) -> dict[str, Any]:
+def init_params(key: jax.Array) -> Params:
     keys = jax.random.split(key, 8)
     scale = 0.3
 
-    def dense(k: Any, shape: tuple[int, ...]) -> Any:
+    def dense(k: jax.Array, shape: tuple[int, ...]) -> jax.Array:
         return jax.random.normal(k, shape, dtype=jnp.float32) * scale
 
     return {
@@ -127,7 +137,9 @@ def test_import_stablehlo_text(tmp_path: Path) -> None:
     shapes, imports to the same source `export_linnet` writes; a layer stack
     keyed 0..n-1 is a sub array like a list."""
     params = init_params(jax.random.PRNGKey(0))
-    params["layers"] = {str(i): layer for i, layer in enumerate(params["layers"])}
+    layers = params["layers"]
+    assert isinstance(layers, list)
+    params["layers"] = {str(i): layer for i, layer in enumerate(layers)}
     tokens = jnp.array([[1, 4, 7, 2, 9]], dtype=jnp.int32)
     text = jax.export.export(jax.jit(forward))(params, tokens).mlir_module()
 
@@ -152,7 +164,7 @@ def test_activation_recovery(tmp_path: Path) -> None:
     """Decomposed activations come back as the library operations, and only
     when the decomposition is exact."""
 
-    def mlp(params: dict[str, Any], x: Any) -> Any:
+    def mlp(params: dict[str, jax.Array], x: jax.Array) -> jax.Array:
         h = jax.nn.gelu(x @ params["up"])
         g = jax.nn.sigmoid(x @ params["gate"])
         # Not gelu: a different constant, so it must stay spelled out.
@@ -205,7 +217,7 @@ def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:
         shapes[f"layers.{i}.mlp.gate.weight"] = (16, 8)
         shapes[f"layers.{i}.mlp.up.weight"] = (16, 8)
         shapes[f"layers.{i}.mlp.down.weight"] = (8, 16)
-    weights: dict[str, Any] = {}
+    weights: dict[str, npt.NDArray[np.float32]] = {}
     for name, shape in shapes.items():
         key, sub = jax.random.split(key)
         weights[name] = np.asarray(jax.random.normal(sub, shape, dtype=jnp.float32) * 0.3)
@@ -221,11 +233,11 @@ def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:
     out = model(tokens, cos_table, sin_table)
     assert out.shape == (2, seq, 11)
 
-    def rope(x: Any) -> Any:
+    def rope(x: jax.Array) -> jax.Array:
         first, second = x[..., : head // 2], x[..., head // 2 :]
         return x * cos_table + jnp.concatenate([-second, first], axis=-1) * sin_table
 
-    def split(x: Any) -> Any:
+    def split(x: jax.Array) -> jax.Array:
         return x.reshape(2, seq, 2, head).transpose(0, 2, 1, 3)
 
     x = weights["embedding.weight"][tokens]
@@ -247,7 +259,7 @@ def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:
 
 
 def test_unsupported_operations_are_named(tmp_path: Path) -> None:
-    def odd(params: dict[str, Any], x: Any) -> Any:
+    def odd(params: dict[str, jax.Array], x: jax.Array) -> jax.Array:
         return jax.lax.erf(x * params["w"])
 
     with pytest.raises(ExportError, match="erf"):

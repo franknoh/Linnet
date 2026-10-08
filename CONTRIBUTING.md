@@ -30,7 +30,7 @@ request.
 | Change | Check |
 | --- | --- |
 | C++ | `scripts/check.sh [preset...]` (format, build, tests); `scripts/check-format.sh --fix` reformats; the `tidy` preset runs clang-tidy |
-| Python | `uv run ruff check src tests`, `uv run ruff format --check src tests`, `uv run pyright`, `uv run pytest` |
+| Python | `uv run ruff check src tests`, `uv run ruff format --check src tests`, `uv run basedpyright`, `uv run pytest` |
 | `.linnet` | `linnet fmt --check` and `linnet lint` |
 | Docs and site | `npm run build` in `site/` fails on a dead link |
 | VS Code extension | `npm run check` in `editors/vscode/` |

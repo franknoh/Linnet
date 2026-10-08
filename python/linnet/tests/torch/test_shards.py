@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import socket
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
@@ -20,6 +20,9 @@ from safetensors.torch import save_file  # type: ignore[import-untyped]
 from torch.multiprocessing.spawn import spawn
 
 from linnet.torch import load
+
+if TYPE_CHECKING:
+    from linnet.train import Batch
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
@@ -204,7 +207,7 @@ def training_files(directory: Path) -> tuple[Path, Path]:
     return source, weights
 
 
-def training_batches() -> list[Any]:
+def training_batches() -> list[Batch]:
     """Two packed batches of 16 positions."""
     from linnet.train import Example, pack
 

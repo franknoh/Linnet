@@ -133,7 +133,7 @@ class CompiledLinnetModule(LinnetModule):
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
         compile: bool | str | None = None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         """Runs entry `name`. `compile` overrides the module's own setting for
         this entry (`True`: the generated source as it is; a backend or mode
         name: through `torch.compile`), so a server can replay its decoding
@@ -295,7 +295,7 @@ class CompiledLinnetModule(LinnetModule):
         group joined into one buffer)."""
         self._parameter_list = None
 
-    def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Result:
+    def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Result:  # pyright: ignore[reportExplicitAny]
         generated = prepared.generated
         if self.placement is not None:
             # Inputs enter where the first unit runs.
@@ -358,7 +358,7 @@ class CompiledLinnetModule(LinnetModule):
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
 
-    def _replay(self, prepared: _Prepared, inputs: list[torch.Tensor]) -> Result:
+    def _replay(self, prepared: _Prepared, inputs: list[torch.Tensor]) -> Result:  # pyright: ignore[reportExplicitAny]
         """A call of an entry replayed as one CUDA graph captured by hand: the
         first call runs as it is (compiling what it needs), the second
         captures the step and replays it, and every later one copies its

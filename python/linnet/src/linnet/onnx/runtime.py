@@ -245,7 +245,7 @@ class OnnxModel:
         keep_on_device: bool = False,
         argmax: bool = False,
         cuda_graph: bool = False,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         """Runs entry `name`: its results as NumPy arrays, or with
         `keep_on_device` as `OrtValue`s on the device."""
         if name not in self._signatures:

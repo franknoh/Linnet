@@ -18,7 +18,7 @@ import functools
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import jax
 import jax.numpy as jnp
@@ -261,7 +261,7 @@ class LinnetFunction:
         parameters: Mapping[str, ArrayLike],
         *inputs: ArrayLike,
         state: Mapping[str, jax.Array] | None = None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         """Runs the entry with `parameters` (path -> array) in place of the
         loaded weights, so a framework module can own the arrays. An entry
         that touches `state` members takes their values before the call in
@@ -333,7 +333,7 @@ class LinnetFunction:
         new_state.update(zip(compiled.state_outputs, new_states, strict=True))
         return result, new_state
 
-    def __call__(self, *inputs: ArrayLike, state: Mapping[str, jax.Array] | None = None) -> Result:
+    def __call__(self, *inputs: ArrayLike, state: Mapping[str, jax.Array] | None = None) -> Result:  # pyright: ignore[reportExplicitAny]
         return self.apply(self._weights, *inputs, state=state)
 
 
@@ -354,7 +354,8 @@ class CompiledEntry:
     state_outputs: list[str]  # state paths assigned, as results after the entry's own
     state_avals: dict[str, ShapedArray]
     exported: jax.export.Exported
-    call: Callable[..., Result]  # `exported.call` under `jax.jit`
+    # `exported.call` under `jax.jit`.
+    call: Callable[..., Result]  # pyright: ignore[reportExplicitAny]
     arrays: list[jax.Array]  # the loaded weights as device arrays, in `parameters` order
     source_path: Path | None = None  # generated JAX source, when the entry runs as code
     dtypes: list[np.dtype[np.generic]] = dataclasses.field(  # declared, each
@@ -383,6 +384,12 @@ def _device_array(value: ArrayLike) -> jax.Array:
     return value if isinstance(value, jax.Array) else jnp.asarray(value)
 
 
+class _ExportedFields(Protocol):
+    """`jax.export.Exported`'s constructor, given its fields by name."""
+
+    def __call__(self, **fields: object) -> jax.export.Exported: ...
+
+
 def _wrap_module(text: str) -> jax.export.Exported:
     """A `jax.export.Exported` around a StableHLO module whose function is
     `@main`, so JAX can call it like one of its own exports."""
@@ -391,15 +398,16 @@ def _wrap_module(text: str) -> jax.export.Exported:
     from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateUsage]
     from jax.tree_util import tree_flatten
 
-    mlir: Any = jax_mlir
-    with mlir.make_ir_context():
-        module = cast(Any, ir.Module).parse(text)
+    with jax_mlir.make_ir_context():
+        module = ir.Module.parse(text)
         function = module.body.operations[0]
         block = function.regions[0].blocks[0]
-        in_types = [cast(Any, ir.RankedTensorType)(a.type) for a in block.arguments]
-        signature = cast(Any, ir.FunctionType)(function.attributes["function_type"].value)
-        out_types = [cast(Any, ir.RankedTensorType)(r) for r in signature.results]
-        serialized = mlir.module_to_bytecode(module)
+        in_types = [ir.RankedTensorType(a.type) for a in block.arguments]
+        # The bindings hand back the attribute as the `TypeAttr` it is.
+        function_type = cast("mlir_ir.TypeAttr", function.attributes["function_type"])
+        signature = ir.FunctionType(function_type.value)
+        out_types = [ir.RankedTensorType(r) for r in signature.results]
+        serialized = jax_mlir.module_to_bytecode(module)
 
     from jax import core as jax_core
 
@@ -413,8 +421,7 @@ def _wrap_module(text: str) -> jax.export.Exported:
     out_avals = tuple(aval(t) for t in out_types)
     in_tree = tree_flatten((tuple(0 for _ in in_avals), {}))[1]
     out_tree = tree_flatten(0 if len(out_avals) == 1 else tuple(0 for _ in out_avals))[1]
-    exported_type: Any = export.Exported
-    fields = {
+    fields: dict[str, object] = {
         "fun_name": "main",
         "in_tree": in_tree,
         "in_avals": in_avals,
@@ -431,15 +438,15 @@ def _wrap_module(text: str) -> jax.export.Exported:
         "unordered_effects": (),
         "disabled_safety_checks": (),
         "mlir_module_serialized": serialized,
-        "calling_convention_version": cast(
-            Any, export
-        ).maximum_supported_calling_convention_version,
+        "calling_convention_version": export.maximum_supported_calling_convention_version,
         "module_kept_var_idx": tuple(range(len(in_avals))),
         "uses_global_constants": False,
         "_get_vjp": None,
     }
-    # The dataclass gained and lost private fields across jax releases.
-    names = {f.name for f in dataclasses.fields(exported_type)}
+    # The dataclass gained and lost private fields across jax releases, so
+    # it is built from whichever of these it has.
+    names = {f.name for f in dataclasses.fields(export.Exported)}
+    exported_type = cast(_ExportedFields, export.Exported)
     return exported_type(**{k: v for k, v in fields.items() if k in names})
 
 

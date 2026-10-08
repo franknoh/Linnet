@@ -10,8 +10,8 @@ import itertools
 import random
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import optax  # type: ignore[import-untyped]
@@ -19,7 +19,7 @@ import pytest
 import torch
 from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
-from linnet.jax import load_source
+from linnet.jax import SourceFunction, load_source
 from linnet.jax.dpo import dpo
 from linnet.jax.grpo import grpo
 from linnet.packing import Pair, Prompt
@@ -58,7 +58,7 @@ def weights(tmp_path: Path) -> Path:
     return directory
 
 
-def _entry(weights: Path, entry: str) -> Any:
+def _entry(weights: Path, entry: str) -> SourceFunction:
     return load_source(LLAMA, generics=GENERICS, weights=weights, entry=entry, std_root=STDLIB)
 
 
@@ -126,11 +126,11 @@ class _Sampler:
     `Engine` would: every request's prompt the same length, each drawn with
     its own seed, its log-probabilities before temperature reported."""
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: SourceFunction) -> None:
         self.model = model
-        self.parameters: dict[str, Any] | None = None
+        self.parameters: dict[str, jax.Array] | None = None
 
-    def load_weights(self, parameters: dict[str, Any]) -> None:
+    def load_weights(self, parameters: dict[str, jax.Array]) -> None:
         self.parameters = dict(parameters)
 
     def run(self, requests: Sequence[Request]) -> tuple[list[Completion], None]:

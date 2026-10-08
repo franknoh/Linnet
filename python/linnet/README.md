@@ -23,5 +23,5 @@ library; otherwise the compiler comes from `LINNET_BIN` or `PATH`.
 Documentation:
 [linnet.franknoh.dev/docs/python](https://linnet.franknoh.dev/docs/python).
 
-Development: `uv sync --all-extras`, then `uv run pytest`, `uv run pyright`
+Development: `uv sync --all-extras`, then `uv run pytest`, `uv run basedpyright`
 and `uv run ruff check src tests`.

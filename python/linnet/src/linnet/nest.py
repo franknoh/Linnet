@@ -47,7 +47,13 @@ from typing import (
 
 from . import diagram, ir
 from .compiler import LinnetError, bind_arguments, parse_binding, run_compiler, std_arguments
-from .weights import header_tensors, match_checkpoint, read_bindings, read_header
+from .weights import (
+    SafeTensorsHeader,
+    header_tensors,
+    match_checkpoint,
+    read_bindings,
+    read_header,
+)
 
 if TYPE_CHECKING:
     from datetime import date, datetime, time
@@ -280,19 +286,6 @@ def check(
     if exports:
         problems += _check_exports(card, program, entry, std_root)
     return problems
-
-
-class TensorHeader(TypedDict):
-    """One tensor's entry in a SafeTensors header."""
-
-    dtype: str
-    shape: list[int]
-    data_offsets: list[int]
-
-
-# A SafeTensors header: each tensor's entry by name, and `__metadata__`'s
-# strings.
-SafeTensorsHeader: TypeAlias = "dict[str, TensorHeader | dict[str, str]]"
 
 
 def hub_safetensors_header(

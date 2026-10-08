@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..compiler import LinnetError, check_numerics
 from ..plan import compile_plan
@@ -49,7 +49,7 @@ class LinnetModel:
         self.state: State = {}
         # Weight-only values (`prepare`), shared by every entry by key.
         self._prepared: dict[str, jax.Array] = {}
-        self.mesh: Any = None  # set by `shard`
+        self.mesh: Mesh | None = None  # set by `shard`
         self._split_shardings: dict[int, Sharding] = {}  # id -> a state sharding known split right
 
     def _function(self, name: str) -> LinnetFunction:
@@ -82,18 +82,19 @@ class LinnetModel:
             self._functions[name] = function
         return self._functions[name]
 
-    def run_entry(self, name: str, inputs: Sequence[ArrayLike]) -> Result:
+    def run_entry(self, name: str, inputs: Sequence[ArrayLike]) -> Result:  # pyright: ignore[reportExplicitAny]
         function = self._function(name)
         outcome = function.apply(function.weights, *inputs, state=self.state)
         if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):
             return outcome
         result, state = outcome
-        if self.mesh is not None:
-            state = {path: self._shard_state(value) for path, value in state.items()}
+        mesh = self.mesh
+        if mesh is not None:
+            state = {path: self._shard_state(value, mesh) for path, value in state.items()}
         self.state = state
         return result
 
-    def _shard_state(self, value: jax.Array) -> jax.Array:
+    def _shard_state(self, value: jax.Array, mesh: Mesh) -> jax.Array:
         """A state array split by heads over the mesh, as the key and value
         projections that fill a KV cache are; others stay as XLA left them."""
         import jax
@@ -101,7 +102,7 @@ class LinnetModel:
 
         from ..parallel import state_axis
 
-        axis = state_axis(value.shape, self.mesh.devices.size)
+        axis = state_axis(value.shape, mesh.devices.size)
         if axis is None:
             return value
         # XLA hands the same sharding back call after call, spelled
@@ -111,8 +112,8 @@ class LinnetModel:
         if id(given) in self._split_shardings:
             return value
         spec = [None] * value.ndim
-        spec[axis] = self.mesh.axis_names[0]
-        wanted = NamedSharding(self.mesh, PartitionSpec(*spec))
+        spec[axis] = mesh.axis_names[0]
+        wanted = NamedSharding(mesh, PartitionSpec(*spec))
         if given.is_equivalent_to(wanted, value.ndim):
             self._split_shardings[id(given)] = given
             return value

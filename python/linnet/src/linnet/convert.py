@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from . import ir, nest
 from .compiler import LinnetError
@@ -36,9 +36,8 @@ from .weights import header_tensors, read_bindings, write_bindings
 if TYPE_CHECKING:
     from huggingface_hub.hf_api import ModelInfo, RepoSibling
 
-# A `config.json`. Its values are `Any` because every read converts one
-# (`int(...)`, `float(...)`), which a JSON type would need a cast for.
-Config = Mapping[str, Any]
+# A `config.json`, whose numbers `_int` and `_float` read.
+Config = Mapping[str, ir.JsonValue]
 
 # The cache length a converted card asks for when the checkpoint allows
 # longer: caches are allocated whole, so 128K positions would cost gigabytes
@@ -64,6 +63,31 @@ class Family:
     embedding: str | None = "model.embed_tokens.weight"
 
 
+def _number(config: Config, key: str, default: float | None) -> int | float | str:
+    """`config[key]`, or `default` when it is missing, as `int` and `float` read it."""
+    if key not in config:
+        if default is None:
+            raise nest.NestError(f"the config has no `{key}`")
+        return default
+    value = config[key]
+    if value is None or isinstance(value, list | dict):
+        raise nest.NestError(f"`{key}` is {value!r}, not a number")
+    return value
+
+
+def _int(config: Config, key: str, default: int | None = None) -> int:
+    return int(_number(config, key, default))
+
+
+def _float(config: Config, key: str, default: float | None = None) -> float:
+    return float(_number(config, key, default))
+
+
+def _optional_int(config: Config, key: str) -> int | None:
+    """`config[key]` as an integer; None when it is missing or null."""
+    return None if config.get(key) is None else _int(config, key)
+
+
 def _expect(
     config: Config, key: str, expected: str | float, default: str | float | None = None
 ) -> list[str]:
@@ -76,29 +100,38 @@ def _expect(
 
 
 def _decoder(config: Config) -> dict[str, int]:
-    heads = int(config["num_attention_heads"])
+    heads = _int(config, "num_attention_heads")
     defaults = {"KvHeads": heads, "MaxSeq": MAX_SEQ}
     generics = {
-        name: int(config.get(key) or defaults[name]) if name in defaults else int(config[key])
+        name: (_optional_int(config, key) or defaults[name])
+        if name in defaults
+        else _int(config, key)
         for name, key in DECODER_KEYS.items()
     }
     return generics | {"Batch": 1, "MaxSeq": min(generics["MaxSeq"], MAX_SEQ)}
 
 
 def _head_dim(config: Config) -> list[str]:
-    head_dim = config.get("head_dim")
-    width = int(config["hidden_size"]) // int(config["num_attention_heads"])
-    if head_dim is None or int(head_dim) == width:
+    head_dim = _optional_int(config, "head_dim")
+    width = _int(config, "hidden_size") // _int(config, "num_attention_heads")
+    if head_dim is None or head_dim == width:
         return []
     return [f"`head_dim` is {head_dim}, not hidden_size / num_attention_heads ({width})"]
 
 
+def _rope_scaling(config: Config) -> Config:
+    """`rope_scaling`: empty when it is missing or null."""
+    scaling = config.get("rope_scaling") or {}
+    if not isinstance(scaling, dict):
+        raise nest.NestError(f"`rope_scaling` is {scaling!r}, not an object")
+    return scaling
+
+
 def _rope_type(config: Config) -> str | None:
-    scaling = config.get("rope_scaling")
+    scaling = _rope_scaling(config)
     if not scaling:
         return None
-    table = cast(Mapping[str, object], scaling)
-    return str(table.get("rope_type", table.get("type")))
+    return str(scaling.get("rope_type", scaling.get("type")))
 
 
 def _rope_problems(config: Config, *computed: str) -> list[str]:
@@ -109,7 +142,7 @@ def _rope_problems(config: Config, *computed: str) -> list[str]:
 
 
 def _theta(config: Config) -> float:
-    return float(config.get("rope_theta", 10000.0))
+    return _float(config, "rope_theta", 10000.0)
 
 
 def _llama_card(config: Config) -> str:
@@ -119,8 +152,8 @@ def _llama_card(config: Config) -> str:
 def _llama_constants(config: Config) -> dict[str, dict[str, float]]:
     rope: dict[str, float] = {"THETA": _theta(config)}
     if _rope_type(config) == "llama3":
-        scaling = cast(Mapping[str, float | str], config["rope_scaling"])
-        rope |= {name: float(scaling[key]) for key, name in LLAMA3_SCALING.items()}
+        scaling = _rope_scaling(config)
+        rope |= {name: _float(scaling, key) for key, name in LLAMA3_SCALING.items()}
     return {"src/rope.linnet": rope}
 
 
@@ -132,8 +165,8 @@ def _llama_problems(config: Config) -> list[str]:
         + _head_dim(config)
         + _rope_problems(config, "llama3")
     )
-    window = config.get("sliding_window")
-    if window is not None and int(window) < int(config.get("max_position_embeddings", 0)):
+    window = _optional_int(config, "sliding_window")
+    if window is not None and window < _int(config, "max_position_embeddings", 0):
         problems.append(f"`sliding_window` is {window}; the source attends to every position")
     return problems
 
@@ -152,8 +185,8 @@ def _qwen2_problems(config: Config) -> list[str]:
 
 
 def _qwen3_generics(config: Config) -> dict[str, int]:
-    width = int(config["hidden_size"]) // int(config["num_attention_heads"])
-    return _decoder(config) | {"HeadDim": int(config.get("head_dim") or width)}
+    width = _int(config, "hidden_size") // _int(config, "num_attention_heads")
+    return _decoder(config) | {"HeadDim": _optional_int(config, "head_dim") or width}
 
 
 def _phi3_generics(config: Config) -> dict[str, int]:
@@ -163,7 +196,9 @@ def _phi3_generics(config: Config) -> dict[str, int]:
 
 
 def _phi3_constants(config: Config) -> dict[str, dict[str, float]]:
-    window = config.get("sliding_window") or config.get("max_position_embeddings", MAX_SEQ)
+    window = _optional_int(config, "sliding_window") or _int(
+        config, "max_position_embeddings", MAX_SEQ
+    )
     return {
         "src/rope.linnet": {"THETA": _theta(config)},
         "src/attention.linnet": {"WINDOW": float(window)},
@@ -178,20 +213,20 @@ def _phi3_problems(config: Config) -> list[str]:
         + _head_dim(config)
         + _rope_problems(config)
     )
-    heads = config["num_attention_heads"]
-    if int(config.get("num_key_value_heads") or heads) != int(heads):
+    heads = _int(config, "num_attention_heads")
+    if (_optional_int(config, "num_key_value_heads") or heads) != heads:
         problems.append("the source has as many key/value heads as query heads")
     return problems
 
 
 def _gpt2_generics(config: Config) -> dict[str, int]:
-    positions = int(config.get("n_positions", 1024))
+    positions = _int(config, "n_positions", 1024)
     return {
-        "Vocab": int(config["vocab_size"]),
+        "Vocab": _int(config, "vocab_size"),
         "MaxPositions": positions,
-        "H": int(config["n_embd"]),
-        "Heads": int(config["n_head"]),
-        "Layers": int(config["n_layer"]),
+        "H": _int(config, "n_embd"),
+        "Heads": _int(config, "n_head"),
+        "Layers": _int(config, "n_layer"),
         "Batch": 1,
         "MaxSeq": min(positions, MAX_SEQ),
     }
@@ -205,8 +240,8 @@ def _gpt2_problems(config: Config) -> list[str]:
         + _expect(config, "scale_attn_by_inverse_layer_idx", False, False)
         + _expect(config, "reorder_and_upcast_attn", False, False)
     )
-    inner = config.get("n_inner")
-    if inner is not None and int(inner) != 4 * int(config["n_embd"]):
+    inner = _optional_int(config, "n_inner")
+    if inner is not None and inner != 4 * _int(config, "n_embd"):
         problems.append(f"`n_inner` is {inner}; the source's MLP is 4 * n_embd wide")
     return problems
 
@@ -268,10 +303,11 @@ def convert(
     files = {str(sibling.rfilename) for sibling in siblings}
     if "config.json" not in files:
         raise nest.NestError(f"`{repo}` has neither a nest.toml nor a transformers config.json")
-    config = cast(
-        dict[str, Any],
-        json.loads(Path(hub.hf_hub_download(repo, "config.json", revision=sha)).read_text("utf-8")),
+    config: ir.JsonValue = json.loads(
+        Path(hub.hf_hub_download(repo, "config.json", revision=sha)).read_text("utf-8")
     )
+    if not isinstance(config, dict):
+        raise nest.NestError(f"`{repo}`'s config.json is not a JSON object")
     model_type = str(config.get("model_type"))
     family = FAMILIES.get(model_type)
     if family is None:
@@ -290,7 +326,7 @@ def convert(
         _copy_source(base, directory)
         for relative, constants in family.constants(config).items():
             _rewrite_constants(directory / relative, constants)
-        bindings = _bindings(base, int(config.get("num_hidden_layers", config.get("n_layer", 0))))
+        bindings = _bindings(base, _int(config, "num_hidden_layers", _int(config, "n_layer", 0)))
         if family.embedding is not None:
             # A tied head reads the embedding, unless the checkpoint stores
             # the head anyway (Qwen3's small models do).

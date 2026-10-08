@@ -419,7 +419,10 @@ class _Exporter:
         if len(outputs) == 1:
             result = outputs[0]
         else:
-            tuple_type = {"kind": "tuple", "elements": [self.builder.type_of(v) for v in outputs]}
+            tuple_type: dict[str, object] = {
+                "kind": "tuple",
+                "elements": [self.builder.type_of(v) for v in outputs],
+            }
             result = self.builder.op(
                 "tuple.make", outputs, (torch.float32, None), type_json=tuple_type
             )
@@ -1197,7 +1200,10 @@ def _linear(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     weight = exporter.tensor_arg(node, 1)
     out, inner = cast(tuple[Dim, Dim], weight.shape)
     leading = list(x.shape or ())[:-1]
-    optional_type = {"kind": "optional", "inner": exporter.builder.tensor_type((out,), x.dtype)}
+    optional_type: dict[str, object] = {
+        "kind": "optional",
+        "inner": exporter.builder.tensor_type((out,), x.dtype),
+    }
     if len(node.args) > 2 and node.args[2] is not None:
         bias = exporter.builder.op(
             "option.some",
@@ -1462,7 +1468,7 @@ def _layer_norm(exporter: _Exporter, node: torch.fx.Node) -> _Value | None:
     if weight_node is None:
         raise ExportError("layer_norm without an affine weight is not supported")
     weight = exporter.value_of(weight_node)
-    optional_type = {
+    optional_type: dict[str, object] = {
         "kind": "optional",
         "inner": exporter.builder.tensor_type((shape[-1],), x.dtype),
     }

@@ -107,7 +107,7 @@ jobs:
         working-directory: python/linnet
       - run: uv run ruff check src tests && uv run ruff format --check src tests
         working-directory: python/linnet
-      - run: uv run pyright
+      - run: uv run basedpyright
         working-directory: python/linnet
       - run: uv run pytest -q
         working-directory: python/linnet

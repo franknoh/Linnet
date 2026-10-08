@@ -342,12 +342,12 @@ class _Hierarchy(Hierarchy):
             block = self.block_for(
                 name_hint.rstrip("s").capitalize(), signature, cast(Member, described[0][1])
             )
-            children: dict[str, Member] = {}
+            elements: dict[str, Member] = {}
             for i, (_, child) in enumerate(described):
                 cast(Member, child).block = block
-                children[str(i)] = cast(Member, child)
+                elements[str(i)] = cast(Member, child)
             return ("array", len(described), signature), Member(
-                "sub", "", length=len(described), element=block, children=children
+                "sub", "", length=len(described), element=block, children=elements
             )
         leaf = _leaf_type(node)
         return ("param", leaf.dtype, leaf.shape), Member("param", "", leaf=leaf)

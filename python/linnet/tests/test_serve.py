@@ -10,9 +10,9 @@ import random
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, ParamSpec, TypeAlias, TypedDict, TypeVar, cast
 
 import numpy as np
 import pytest
@@ -21,6 +21,10 @@ from safetensors.torch import save_file  # type: ignore[import-untyped]
 
 from linnet.serve import Completion, Engine, Request
 from linnet.torch import LinnetModule, load
+
+if TYPE_CHECKING:
+    from linnet.jax import LinnetModel
+    from linnet.onnx import OnnxModel
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
@@ -371,6 +375,20 @@ def _requests() -> list[Request]:
     ]
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _spied(method: Callable[_P, _R], spy: Callable[_P, object]) -> Callable[_P, _R]:
+    """`method`, calling `spy` with its arguments first."""
+
+    def spied(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        spy(*args, **kwargs)
+        return method(*args, **kwargs)
+
+    return spied
+
+
 def _greedy(model: torch.nn.Module, request: Request) -> list[int]:
     """Greedy decoding without a cache: the whole sequence every token."""
     ids = list(request.prompt)
@@ -424,11 +442,10 @@ def test_identical_prompts_share_one_pass(model_files: tuple[Path, Path]) -> Non
         passed: list[int] = []
         prefill = engine.backend.prefill_packed
 
-        def counting(prompts: list[list[int]], *args: Any, **kwargs: Any) -> Any:
+        def counting(prompts: list[list[int]], *args: object, **kwargs: object) -> None:
             passed.append(sum(len(p) for p in prompts))
-            return prefill(prompts, *args, **kwargs)
 
-        engine.backend.prefill_packed = counting  # type: ignore[method-assign]
+        engine.backend.prefill_packed = _spied(prefill, counting)  # type: ignore[method-assign]
         done, _ = engine.run(requests)
         return [c.tokens for c in done], passed
 
@@ -515,11 +532,10 @@ def test_mixed_passes_on_flex_attention(tmp_path: Path, monkeypatch: pytest.Monk
     passes: list[int] = []
     step_packed = engine.backend.step_packed
 
-    def counted(*args: Any, **kwargs: Any) -> Any:
-        passes.append(len(args[0]))
-        return step_packed(*args, **kwargs)
+    def counted(prompts: list[list[int]], *args: object, **kwargs: object) -> None:
+        passes.append(len(prompts))
 
-    monkeypatch.setattr(engine.backend, "step_packed", counted)
+    monkeypatch.setattr(engine.backend, "step_packed", _spied(step_packed, counted))
     done, _ = engine.run(requests)
     assert passes
     for completion in done:
@@ -631,11 +647,10 @@ def test_paged_rows_on_flex_attention(tmp_path: Path, monkeypatch: pytest.Monkey
     flexed: list[int] = []
     flex = paged._flex  # pyright: ignore[reportPrivateUsage]
 
-    def counted(*args: Any) -> Any:
+    def counted(*args: object, **kwargs: object) -> None:
         flexed.append(1)
-        return flex(*args)
 
-    monkeypatch.setattr(paged, "_flex", counted)
+    monkeypatch.setattr(paged, "_flex", _spied(flex, counted))
     rng = random.Random(0)
     requests = [
         Request(
@@ -837,11 +852,10 @@ def test_steps_ride_along_with_prompts(
     passes: list[int] = []
     step_packed = engine.backend.step_packed
 
-    def counted(*args: Any, **kwargs: Any) -> Any:
-        passes.append(len(args[0]))
-        return step_packed(*args, **kwargs)
+    def counted(prompts: list[list[int]], *args: object, **kwargs: object) -> None:
+        passes.append(len(prompts))
 
-    monkeypatch.setattr(engine.backend, "step_packed", counted)
+    monkeypatch.setattr(engine.backend, "step_packed", _spied(step_packed, counted))
     together, _ = engine.run(requests)
     # Rows freed one by one while others decoded, so prompts went in with
     # their steps.
@@ -968,6 +982,13 @@ def _reference_logprobs(
     return chosen, alternatives
 
 
+class _TorchOptions(TypedDict, total=False):
+    """The `Engine` options only PyTorch takes."""
+
+    graphs: bool
+    pack: int
+
+
 @pytest.mark.parametrize(
     ("backend", "pack"), [("torch", 48), ("torch", 0), ("jax", 0), ("onnx", 0)]
 )
@@ -977,7 +998,7 @@ def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, p
     sequence -- greedy or drawn, beside a request that asked for none."""
     source, weights = model_files
     reference = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
-    model: Any = reference
+    model: LinnetModule | LinnetModel | OnnxModel = reference
     if backend == "jax":
         pytest.importorskip("jax")
         from linnet.jax import load_model
@@ -993,7 +1014,7 @@ def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, p
         Request(prompt=[7, 1], max_new_tokens=4, id=1),
         Request(prompt=[2, 2, 8, 5], max_new_tokens=6, id=2, logprobs=0, temperature=1.0, seed=3),
     ]
-    options: dict[str, Any] = {"graphs": False, "pack": pack} if backend == "torch" else {}
+    options: _TorchOptions = {"graphs": False, "pack": pack} if backend == "torch" else {}
     done, _ = Engine(model, buckets=[8, 16, 32], **options).run(requests)
     assert done[1].logprobs == [] and done[1].top_logprobs == []
     # JAX and ONNX Runtime on a GPU multiply f32 in TF32: about 1e-3 from the
@@ -1067,12 +1088,17 @@ class _Letters:
     def decode(self, token_ids: Sequence[int], skip_special_tokens: bool = False) -> str:
         return "".join(ALPHABET[i] for i in token_ids)
 
-    def apply_chat_template(self, conversation: Any, **options: Any) -> str:
-        turns = "".join(f"{m['role'][0].upper()} {m['content']}." for m in conversation)
+    def apply_chat_template(self, conversation: Sequence[object], **options: bool) -> str:
+        messages = [cast("Mapping[str, str]", m) for m in conversation]
+        turns = "".join(f"{m['role'][0].upper()} {m['content']}." for m in messages)
         return turns + "A "
 
 
-def _post(url: str, body: dict[str, Any]) -> tuple[int, str]:
+# A JSON value as a request body holds it.
+_Json: TypeAlias = "bool | int | float | str | Sequence[_Json] | Mapping[str, _Json] | None"
+
+
+def _post(url: str, body: Mapping[str, _Json]) -> tuple[int, str]:
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
     )
@@ -1083,7 +1109,43 @@ def _post(url: str, body: dict[str, Any]) -> tuple[int, str]:
         return error.code, error.read().decode()
 
 
-def _events(text: str) -> list[Any]:
+class _Usage(TypedDict):
+    completion_tokens: int
+
+
+class _Delta(TypedDict, total=False):
+    role: str
+    content: str
+
+
+class _TokenLogprob(TypedDict):
+    token: str
+
+
+class _ChatLogprobs(TypedDict):
+    content: list[_TokenLogprob]
+
+
+class _Choice(TypedDict):
+    """A streamed choice, as these tests read one: `text` is a
+    completion's, `delta` a chat completion's."""
+
+    index: int
+    finish_reason: str | None
+    text: str
+    delta: _Delta
+    logprobs: _ChatLogprobs | None
+
+
+class _Event(TypedDict):
+    """A streamed chunk, as these tests read one: `usage` is the last's,
+    when the request asks for it."""
+
+    choices: list[_Choice]
+    usage: _Usage
+
+
+def _events(text: str) -> list[_Event]:
     lines = [part.removeprefix("data: ") for part in text.split("\n\n") if part]
     assert lines[-1] == "[DONE]"
     return [json.loads(line) for line in lines[:-1]]

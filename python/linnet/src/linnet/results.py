@@ -5,10 +5,13 @@ results, and, under JAX, the state beside them when it touches `state`.
 Which a call gets is settled when the entry compiles, so no static type can
 follow it: a call that runs an entry returns `Result`, unchecked, and the
 caller types it by what its own entry returns, as it would any value its
-program computes. Everything else in `linnet` is typed exactly."""
+program computes. Everything else in `linnet` is typed exactly: every
+place that names `Result` says so with `# pyright: ignore[reportExplicitAny]`,
+the only exceptions to the package's ban on `Any`."""
 
 from typing import Any, TypeAlias
 
-Result: TypeAlias = Any
+# The package's one explicit `Any`: see above.
+Result: TypeAlias = Any  # pyright: ignore[reportExplicitAny]
 
 __all__ = ["Result"]

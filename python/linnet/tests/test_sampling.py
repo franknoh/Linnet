@@ -4,11 +4,13 @@ and NumPy draw the same tokens from the same logits."""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 import pytest
 import torch
+from numpy.typing import ArrayLike
 
 from linnet.serve.sampling import (
     FILTERED,
@@ -19,6 +21,17 @@ from linnet.serve.sampling import (
     draw_torch,
     mode,
 )
+
+if TYPE_CHECKING:
+    import jax
+    from jax.typing import DTypeLike
+
+    class _JaxNumPy(Protocol):
+        """`jax.numpy`, for `asarray`: JAX's stubs leave one of its
+        parameters (`device`) partially unknown."""
+
+        def asarray(self, a: ArrayLike, /, dtype: DTypeLike | None = ...) -> jax.Array: ...
+
 
 PROBABILITIES = np.array([0.5, 0.25, 0.15, 0.1], dtype=np.float32)
 
@@ -41,18 +54,18 @@ def _numpy(logits: np.ndarray, rows: list[Sampling], at: np.ndarray) -> np.ndarr
 
 
 def _jax(logits: np.ndarray, rows: list[Sampling], at: np.ndarray) -> np.ndarray:
-    import jax.numpy as jnp_module
+    import jax.numpy as jnp
 
     from linnet.serve.sampling import draw_jax
 
-    jnp: Any = jnp_module
+    typed = cast("_JaxNumPy", jnp)
     drawn = draw_jax(
-        jnp.asarray(logits),
-        jnp.asarray([r.temperature for r in rows], dtype=jnp.float32),
-        jnp.asarray([r.top_k for r in rows], dtype=jnp.int32),
-        jnp.asarray([r.top_p for r in rows], dtype=jnp.float32),
-        jnp.asarray(np.array([r.key for r in rows], dtype=np.uint32)),
-        jnp.asarray(at.astype(np.int32)),
+        typed.asarray(logits),
+        typed.asarray([r.temperature for r in rows], dtype=jnp.float32),
+        typed.asarray([r.top_k for r in rows], dtype=jnp.int32),
+        typed.asarray([r.top_p for r in rows], dtype=jnp.float32),
+        typed.asarray(np.array([r.key for r in rows], dtype=np.uint32)),
+        typed.asarray(at.astype(np.int32)),
         mode(rows),
     )
     return np.asarray(drawn)
@@ -71,7 +84,11 @@ def _jax(logits: np.ndarray, rows: list[Sampling], at: np.ndarray) -> np.ndarray
         (Sampling(temperature=1.0, top_k=3, top_p=0.5), [1, 0, 0, 0]),
     ],
 )
-def test_draws_follow_the_softmax(draw: Any, sampling: Sampling, expected: Any) -> None:
+def test_draws_follow_the_softmax(
+    draw: Callable[[np.ndarray, list[Sampling], np.ndarray], np.ndarray],
+    sampling: Sampling,
+    expected: np.ndarray | Sequence[float],
+) -> None:
     count = 20000
     rows = [
         Sampling(sampling.temperature, sampling.top_k, sampling.top_p, seed)

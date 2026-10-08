@@ -40,7 +40,7 @@ import fnmatch
 import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import SupportsInt
 
 import numpy as np
 
@@ -170,13 +170,21 @@ def pack_int4_groups(q: np.ndarray, group: int) -> np.ndarray:
     return (grouped[..., 0::2] | (grouped[..., 1::2] << 4)).astype(np.uint8)
 
 
+def _setting(config: Mapping[str, object], key: str, alias: str, default: int) -> int:
+    """`config[key]` (or `config[alias]`, its AWQ name, or `default`) as an integer."""
+    value = config.get(key, config.get(alias, default))
+    if not isinstance(value, str | SupportsInt):
+        raise LinnetError(f"the quantization_config's `{key}` is {value!r}, not a number")
+    return int(value)
+
+
 def import_quantized(
     weights: str | Path,
     output: str | Path,
     *,
     bindings: str | Path | Mapping[str, str] | None = None,
     dtype: str = "bf16",
-    config: Mapping[str, Any] | None = None,
+    config: Mapping[str, object] | None = None,
 ) -> list[str]:
     """Writes `output` with a 4-bit GPTQ or AWQ checkpoint's quantized linear
     layers repacked for `Int4GroupLinear` (`.weight`, `.scale` in `dtype`,
@@ -198,11 +206,11 @@ def import_quantized(
     method = str(config.get("quant_method", "")).lower()
     if method not in ("gptq", "awq"):
         raise LinnetError(f"a {method or 'unnamed'} checkpoint is not GPTQ or AWQ")
-    if int(config.get("bits", config.get("w_bit", 4))) != 4:
+    if _setting(config, "bits", "w_bit", 4) != 4:
         raise LinnetError("only 4-bit GPTQ and AWQ checkpoints repack into Int4GroupLinear")
     if method == "awq" and str(config.get("version", "gemm")).lower() != "gemm":
         raise LinnetError(f"AWQ's {config.get('version')} packing is not read; GEMM's is")
-    group = int(config.get("group_size", config.get("q_group_size", 128)))
+    group = _setting(config, "group_size", "q_group_size", 128)
     # GPTQ's first checkpoint format stores each zero point less one.
     zero_offset = 1 if method == "gptq" and config.get("checkpoint_format", "gptq") == "gptq" else 0
     tensors: dict[str, RawTensor] = {tensor.name: tensor for tensor in iter_safetensors(weights)}

@@ -15,7 +15,7 @@ import socket
 import subprocess
 import weakref
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
@@ -24,6 +24,9 @@ from safetensors.torch import load_file, save_file  # type: ignore[import-untype
 from linnet.compiler import find_compiler
 from linnet.torch import LinnetModule, fully_shard, load
 from linnet.train import Example, pack, train
+
+if TYPE_CHECKING:
+    from torch.distributed.tensor import DTensor
 
 REPO = Path(__file__).resolve().parents[4]
 STDLIB = REPO / "stdlib"
@@ -124,10 +127,10 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
 
         # Backward keeps the parts: no whole weight outlives the forward.
         mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
-        wholes: list[Any] = []
+        wholes: list[weakref.ref[torch.Tensor]] = []
         gathered = fsdp._whole
 
-        def recording(part: Any, dtype: torch.dtype) -> torch.Tensor:
+        def recording(part: DTensor, dtype: torch.dtype) -> torch.Tensor:
             whole = gathered(part, dtype)
             if torch.is_grad_enabled():
                 wholes.append(weakref.ref(whole))

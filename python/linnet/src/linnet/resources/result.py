@@ -7,10 +7,61 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import TypedDict
 
 from ..sizes import format_bytes
 from .graph import Category, Confidence, weakest
+
+
+class ComponentJson(TypedDict):
+    """`MemoryComponent.to_dict`."""
+
+    name: str
+    category: str
+    bytes: int | None
+    confidence: str
+    formula: str | None
+    note: str
+    device: str
+
+
+class PeakJson(TypedDict):
+    graph: int
+    expected: int
+    at: str
+    confidence: str
+
+
+class AllocationJson(TypedDict):
+    naive: int
+    planned: int
+    lower_bound: int
+
+
+class DeviceJson(TypedDict):
+    name: str
+    holds: str
+    graph_peak: int
+    expected_peak: int
+    runtime: int
+
+
+class ResultJson(TypedDict):
+    """`MemoryAnalysisResult.to_dict`: the document `linnet memory --json`
+    prints."""
+
+    version: int
+    configuration: dict[str, object]
+    symbols: dict[str, int]
+    components: list[ComponentJson]
+    peak: PeakJson
+    allocation: AllocationJson | None
+    recompute: float | None
+    devices: list[DeviceJson]
+    formulas: dict[str, str]
+    unknown: list[str]
+    warnings: list[str]
+    assumptions: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +77,7 @@ class MemoryComponent:
     note: str = ""
     device: str = "device:0"
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> ComponentJson:
         return {
             "name": self.name,
             "category": self.category.value,
@@ -72,7 +123,7 @@ class MemoryAnalysisResult:
     estimates account for. Components whose size is unknown are listed in
     `unknown` and counted in neither."""
 
-    configuration: Mapping[str, Any]
+    configuration: Mapping[str, object]
     components: tuple[MemoryComponent, ...]
     graph_peak: int
     expected_peak: int
@@ -106,7 +157,7 @@ class MemoryAnalysisResult:
     def total(self, category: Category) -> int:
         return sum(c.nbytes or 0 for c in self.components if c.category == category)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> ResultJson:
         return {
             "version": 1,
             "configuration": dict(self.configuration),

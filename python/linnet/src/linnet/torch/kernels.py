@@ -12,8 +12,6 @@ generated code falls back to plain PyTorch arithmetic without it.
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 import triton  # type: ignore[import-untyped]
 import triton.language as tl  # type: ignore[import-untyped]
@@ -140,7 +138,7 @@ def mxfp4_experts(
     # each nibble on its own.
     block_o = 16
 
-    def grid(_meta: dict[str, Any]) -> tuple[int, int]:
+    def grid(_meta: dict[str, object]) -> tuple[int, int]:
         return (rows * chosen, triton.cdiv(out_features, block_o))
 
     wrap_triton(_mxfp4_experts_kernel)[grid](
@@ -254,7 +252,7 @@ def int4_linear(
     else:
         y = torch.empty(split, rows, width, dtype=torch.float32, device=x.device)
 
-    def grid(_meta: dict[str, Any]) -> tuple[int, int, int]:
+    def grid(_meta: dict[str, object]) -> tuple[int, int, int]:
         return (triton.cdiv(rows, block_m), triton.cdiv(width, block_n), split)
 
     wrap_triton(_int4_linear_kernel)[grid](

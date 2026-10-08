@@ -8,7 +8,6 @@ and `jax.vmap`."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +21,7 @@ from .test_round_trip import REPO, STDLIB
 EXAMPLE = REPO / "tests" / "fixtures" / "functions" / "functions.linnet"
 
 
-def _cross_entropy(logits: Any, labels: Any) -> Any:
+def _cross_entropy(logits: jax.Array, labels: jax.Array) -> jax.Array:
     log_probs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
     return -jnp.mean(jnp.take_along_axis(log_probs, labels[:, None], axis=-1)[:, 0])
 
@@ -57,10 +56,10 @@ def test_functions_compose_with_jit_and_vmap() -> None:
     batched = jax.jit(jax.vmap(log_probs))(logits, tokens)
     np.testing.assert_allclose(batched, expected, rtol=1e-5, atol=1e-6)
 
-    def objective(values: Any) -> Any:
+    def objective(values: jax.Array) -> jax.Array:
         return -jnp.sum(log_probs(values, tokens[0]))
 
-    def reference(values: Any) -> Any:
+    def reference(values: jax.Array) -> jax.Array:
         chosen = jnp.take_along_axis(jax.nn.log_softmax(values, -1), tokens[0][..., None], -1)
         return -jnp.sum(chosen)
 

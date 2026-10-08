@@ -1107,7 +1107,7 @@ def _layer_norm(t: _Translator, node: onnx.NodeProto) -> None:
         raise OnnxImportError("LayerNormalization over more than the last axis is not supported")
     weight = t.operand(node, 1)
     width = x.type.shape[-1]
-    optional_type = {
+    optional_type: dict[str, object] = {
         "kind": "optional",
         "inner": t.builder.kind_json(_Type((width,), x.type.dtype)),
     }

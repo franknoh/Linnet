@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, TypeAlias, TypeVar, cast
+from typing import TypeAlias, TypedDict, TypeVar, cast
 
 import torch
 
@@ -185,7 +185,7 @@ class Interpreter:
     ) -> list[Value]:
         kind = op.kind
         attrs = op.attrs
-        operands: list[Any] = [values[operand] for operand in op.operands]
+        operands: list[Value] = [values[operand] for operand in op.operands]
         result_type = op.results[0].type if op.results else None
 
         def tensor(i: int) -> torch.Tensor:
@@ -200,16 +200,24 @@ class Interpreter:
             return env.shape(result_type.shape)
 
         if kind == "const.int":
-            return [torch.tensor(int(attrs["value"]), dtype=result_dtype(), device=self.device)]
+            return [
+                torch.tensor(
+                    int(cast(int, attrs["value"])), dtype=result_dtype(), device=self.device
+                )
+            ]
         if kind == "const.float":
-            return [torch.tensor(float(attrs["value"]), dtype=result_dtype(), device=self.device)]
+            return [
+                torch.tensor(
+                    float(cast(float, attrs["value"])), dtype=result_dtype(), device=self.device
+                )
+            ]
         if kind == "const.bool":
             return [torch.tensor(bool(attrs["value"]), device=self.device)]
         if kind == "const.dim":
             value = env.dim(self._attr(op, "value", ir.parse_dim))
             return [torch.tensor(value, dtype=torch.int64, device=self.device)]
         if kind == "enum.const":
-            return [attrs["name"]]
+            return [cast(str, attrs["name"])]
 
         binary: dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
             "add": torch.add,
@@ -241,7 +249,7 @@ class Interpreter:
             if isinstance(operands[0], str):  # enum values compare by variant
                 is_equal = operands[0] == operands[1]
                 return [torch.tensor(is_equal if attrs["compare"] == "eq" else not is_equal)]
-            return [comparisons[attrs["compare"]](tensor(0), tensor(1))]
+            return [comparisons[cast(str, attrs["compare"])](tensor(0), tensor(1))]
         unary: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
             "not": torch.logical_not,
             "neg": torch.neg,
@@ -257,25 +265,27 @@ class Interpreter:
         if kind in unary:
             return [unary[kind](tensor(0))]
         if kind == "cast":
-            return [operands[0].to(result_dtype())]
+            return [tensor(0).to(result_dtype())]
         if kind == "select":
-            return [torch.where(operands[0], operands[1], operands[2])]
+            return [torch.where(tensor(0), tensor(1), tensor(2))]
 
         if kind == "reshape":
-            return [operands[0].reshape(env.shape(self._shape_attr(op)))]
+            return [tensor(0).reshape(env.shape(self._shape_attr(op)))]
         if kind == "permute":
-            return [operands[0].permute(env.shape(self._shape_attr(op)))]
+            return [tensor(0).permute(env.shape(self._shape_attr(op)))]
         if kind == "broadcast":
-            return [operands[0].expand(env.shape(self._shape_attr(op)))]
+            return [tensor(0).expand(env.shape(self._shape_attr(op)))]
         if kind == "slice":
-            return [self._slice(operands[0], self._attr(op, "axes", _slice_axes), env)]
+            return [self._slice(tensor(0), self._attr(op, "axes", _slice_axes), env)]
         if kind == "concat":
-            return [torch.cat(operands, dim=int(attrs["axis"]))]
+            return [
+                torch.cat(cast(list[torch.Tensor], operands), dim=int(cast(int, attrs["axis"])))
+            ]
         if kind == "fill":
             return [
                 torch.full(
                     env.shape(self._shape_attr(op)),
-                    operands[0].item(),
+                    tensor(0).item(),
                     dtype=result_dtype(),
                     device=self.device,
                 )
@@ -288,7 +298,7 @@ class Interpreter:
             ]
 
         if kind == "tensor.element":
-            return [self._element(operands[0], operands[1:], grid)]
+            return [self._element(tensor(0), operands[1:], grid)]
         if kind == "comprehension":
             return [self._comprehension(op, env, values, grid)]
         if kind == "reduce":
@@ -297,7 +307,7 @@ class Interpreter:
         if kind == "tuple.make":
             return [tuple(operands)]
         if kind == "tuple.get" or kind == "struct.get":
-            return [operands[0][int(attrs["value"])]]
+            return [cast(tuple[Value, ...], operands[0])[int(cast(int, attrs["value"]))]]
         if kind == "option.some":
             return [operands[0]]
         if kind == "option.none":
@@ -310,7 +320,7 @@ class Interpreter:
                 return self.run_region(some_region, env, inner, grid)
             return self.run_region(none_region, env, dict(values), grid)
         if kind == "enum.match":
-            for variant, region in zip(attrs["variants"], op.regions, strict=True):
+            for variant, region in zip(cast(list[str], attrs["variants"]), op.regions, strict=True):
                 if variant == operands[0] or variant == "_":
                     return self.run_region(region, env, dict(values), grid)
             raise PlanError(f"no arm matches enum value `{operands[0]}`")
@@ -319,7 +329,7 @@ class Interpreter:
             return self.run_region(chosen, env, dict(values), grid)
 
         if kind in ("call", "semantic.call"):
-            selected = attrs.get("selected", "canonical decomposition")
+            selected = cast(str, attrs.get("selected", "canonical decomposition"))
             if selected == "torch.tril":
                 return [causal_mask(list(result_shape()), self.device)]
             if selected in (
@@ -327,7 +337,7 @@ class Interpreter:
                 "torch.nn.functional.conv2d",
                 "torch.nn.functional.conv2d(rect)",
             ):
-                callee = self.program.functions[attrs["callee"]]
+                callee = self.program.functions[cast(str, attrs["callee"])]
                 callee_env = self._callee_env(callee, self._substitution(op), env, operands)
 
                 def dim(name: str) -> int:
@@ -338,43 +348,51 @@ class Interpreter:
                 else:
                     axes = 1 if selected.endswith("conv1d") else 2
                     strides, pads = [dim("Stride")] * axes, [dim("Pad")] * axes
-                return [convolution(operands, strides, pads)]
+                return [convolution(cast(list[torch.Tensor | None], operands), strides, pads)]
             if selected == "torch.nn.functional.group_norm":
-                callee = self.program.functions[attrs["callee"]]
+                callee = self.program.functions[cast(str, attrs["callee"])]
                 callee_env = self._callee_env(callee, self._substitution(op), env, operands)
                 groups = self._generic_dim(callee, callee_env, "Groups")
-                return [group_norm(operands, groups)]
+                return [group_norm(cast(list[torch.Tensor], operands), groups)]
             if selected == "torch.nn.functional.max_pool2d":
-                callee = self.program.functions[attrs["callee"]]
+                callee = self.program.functions[cast(str, attrs["callee"])]
                 callee_env = self._callee_env(callee, self._substitution(op), env, operands)
                 window = self._generic_dim(callee, callee_env, "K")
                 stride = self._generic_dim(callee, callee_env, "Stride")
                 pad = self._generic_dim(callee, callee_env, "Pad")
                 if 2 * pad <= window:
-                    return [max_pool2d(operands, window, stride, pad)]
+                    return [max_pool2d(cast(list[torch.Tensor], operands), window, stride, pad)]
                 return [self.call(callee, callee_env, operands)]
             if selected == "torch.nn.functional.interpolate(nearest)":
-                return [upsample_nearest2d(operands, list(result_shape()))]
+                return [
+                    upsample_nearest2d(cast(list[torch.Tensor], operands), list(result_shape()))
+                ]
             if selected != "canonical decomposition":
                 if selected not in NATIVE:
                     raise PlanError(
                         f"the plan selected `{selected}`, which this materializer lacks"
                     )
-                return [NATIVE[selected](operands, result_dtype() if result_type else None)]
-            callee = self.program.functions[attrs["callee"]]
+                # An optional argument left out is `None`, which only the
+                # implementations that take one see (`native.OptionalArgs`).
+                return [
+                    NATIVE[selected](
+                        cast(list[torch.Tensor], operands), result_dtype() if result_type else None
+                    )
+                ]
+            callee = self.program.functions[cast(str, attrs["callee"])]
             callee_env = self._callee_env(callee, self._substitution(op), env, operands)
             return [self.call(callee, callee_env, operands)]
         if kind == "block.param":
-            return [cast(BlockInstance, operands[0]).params[attrs["name"]]]
+            return [cast(BlockInstance, operands[0]).params[cast(str, attrs["name"])]]
         if kind == "block.sub":
-            return [cast(BlockInstance, operands[0]).subs[attrs["name"]]]
+            return [cast(BlockInstance, operands[0]).subs[cast(str, attrs["name"])]]
         if kind == "state.read":
-            return [cast(BlockInstance, operands[0]).states[attrs["name"]]]
+            return [cast(BlockInstance, operands[0]).states[cast(str, attrs["name"])]]
         if kind == "state.write":
             instance = cast(BlockInstance, operands[0])
-            instance.states[attrs["name"]] = tensor(1)
+            instance.states[cast(str, attrs["name"])] = tensor(1)
             if instance.on_write is not None:
-                instance.on_write(attrs["name"], tensor(1))
+                instance.on_write(cast(str, attrs["name"]), tensor(1))
             return []
         if kind == "array.get":
             return [cast(list[BlockInstance], operands[0])[int(tensor(1).item())]]
@@ -480,7 +498,7 @@ class Interpreter:
             cast(torch.Tensor, self.run_region(region, env, inner, inner_grid)[0])
         )
         dims = tuple(range(first_new_axis, inner_grid.rank()))
-        return REDUCTIONS[op.attrs["reduce"]](body, dims)
+        return REDUCTIONS[cast(str, op.attrs["reduce"])](body, dims)
 
     @staticmethod
     def _generic_dim(callee: ir.Function, env: ir.Bindings, name: str) -> int:
@@ -523,9 +541,26 @@ class _Axis:
     step: int = 1
 
 
+class _WholeAxis(TypedDict):
+    whole: list[ir.JsonValue]
+
+
+class _RangeAxis(TypedDict):
+    start: ir.JsonValue
+    stop: ir.JsonValue
+    step: int
+    squeeze: bool
+
+
+class _Index(TypedDict):
+    name: str
+    domain: list[ir.JsonValue]
+
+
 def _slice_axes(data: object) -> tuple[_Axis, ...]:
     axes: list[_Axis] = []
-    for axis in cast(list[dict[str, Any]], data):
+    # The `axes` attribute of a `slice`.
+    for axis in cast(list[_WholeAxis | _RangeAxis], data):
         if "whole" in axis:
             axes.append(_Axis(whole=ir.parse_shape(axis["whole"])))
         elif axis["squeeze"]:
@@ -542,4 +577,5 @@ def _slice_axes(data: object) -> tuple[_Axis, ...]:
 
 
 def _domains(data: object) -> tuple[ir.Shape, ...]:
-    return tuple(ir.parse_shape(index["domain"]) for index in cast(list[dict[str, Any]], data))
+    # The `indices` attribute of a comprehension or a reduction.
+    return tuple(ir.parse_shape(index["domain"]) for index in cast(list[_Index], data))

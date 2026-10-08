@@ -6,12 +6,14 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Protocol, cast
 
 import numpy as np
 import pytest
 import torch
+from numpy.typing import NDArray
 from safetensors.torch import save_file  # type: ignore[import-untyped]
 
 from linnet import find_compiler
@@ -47,21 +49,43 @@ def _export(source: Path, bindings: dict[str, str | int], entry: str | None = No
     return completed.stdout
 
 
-def _run_xla(text: str, arguments: list[Any]) -> Any:
+class _Executable(Protocol):
+    def execute(self, buffers: list[object]) -> list[object]: ...
+
+
+class _Client(Protocol):
+    """The calls this test makes of XLA's client, whose jaxlib binding has
+    no type information."""
+
+    def local_devices(self) -> list[object]: ...
+
+    def compile_and_load(self, text: str, devices: object, options: object) -> _Executable: ...
+
+
+class _Backends(Protocol):
+    """`jax.extend.backend`, whose client is typed as unknown."""
+
+    def get_backend(self) -> _Client: ...
+
+
+def _run_xla(
+    text: str, arguments: Sequence[NDArray[np.generic] | np.generic]
+) -> NDArray[np.generic]:
     """Compiles the MLIR text with XLA's CPU client and runs it once."""
     import importlib
 
     import jax.extend as jex
 
-    # jaxlib's client binding has no type information; it is used as Any.
-    options: Any = importlib.import_module("jaxlib._jax")
-    backend: Any = cast(Any, jex.backend).get_backend()
-    device: Any = backend.local_devices()[0]
-    executable: Any = backend.compile_and_load(
+    # jaxlib's client binding has no type information: the module's members
+    # are read by name, the client through `_Client`.
+    options = importlib.import_module("jaxlib._jax")
+    backend = cast(_Backends, jex.backend).get_backend()
+    device = backend.local_devices()[0]
+    executable = backend.compile_and_load(
         text, options.DeviceList((device,)), options.CompileOptions()
     )
     buffers = [jax.device_put(argument, device) for argument in arguments]
-    outputs: Any = executable.execute(buffers)
+    outputs = executable.execute(buffers)
     return np.asarray(outputs[0])
 
 

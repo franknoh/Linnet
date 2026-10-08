@@ -8,8 +8,9 @@ accumulated batches, trains tied paths as one, and leaves frozen ones."""
 from __future__ import annotations
 
 import itertools
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, Unpack
 
 import jax
 import jax.numpy as jnp
@@ -17,9 +18,10 @@ import numpy as np
 import optax  # type: ignore[import-untyped]
 import pytest
 import torch
+from jax.typing import ArrayLike
 from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
-from linnet.jax import load_source
+from linnet.jax import SourceFunction, load_source
 from linnet.jax import loss as blockwise
 from linnet.jax.train import train
 from linnet.packing import Example, Packed, pack
@@ -40,7 +42,7 @@ GENERICS: dict[str, int | str] = {
 }
 
 
-def _dense_log_probs(hidden: Any, weight: Any, targets: Any) -> Any:
+def _dense_log_probs(hidden: jax.Array, weight: jax.Array, targets: jax.Array) -> jax.Array:
     logits = (hidden @ weight.T).astype(jnp.float32)
     picked = jnp.take_along_axis(logits, targets[:, None], axis=1)[:, 0]
     return picked - jax.nn.logsumexp(logits, axis=-1)
@@ -56,10 +58,10 @@ def test_blockwise_losses_match_dense(monkeypatch: pytest.MonkeyPatch) -> None:
     targets = jax.random.randint(keys[2], (10,), 0, 7, dtype=jnp.int32)
     weights = jax.random.uniform(keys[3], (10,), dtype=jnp.float32)
 
-    def dense(h: Any, w: Any, m: Any) -> Any:
+    def dense(h: jax.Array, w: jax.Array, m: jax.Array) -> jax.Array:
         return -jnp.sum(m * _dense_log_probs(h, w, targets))
 
-    def mine(h: Any, w: Any, m: Any) -> Any:
+    def mine(h: jax.Array, w: jax.Array, m: jax.Array) -> jax.Array:
         return blockwise.linear_cross_entropy(h, w, targets, m)
 
     for got, want in zip(
@@ -97,7 +99,7 @@ def weights(tmp_path: Path) -> Path:
     return directory
 
 
-def _model(weights: Path | dict[str, Any]) -> Any:
+def _model(weights: Path | Mapping[str, ArrayLike]) -> SourceFunction:
     return load_source(
         LLAMA, generics=GENERICS, weights=weights, entry="loss_packed", std_root=STDLIB
     )
@@ -153,7 +155,14 @@ def test_training_lowers_the_loss(weights: Path) -> None:
     assert params["embedding.weight"].dtype == jnp.float32
 
 
-def _one_step(model: Any, batches: list[Packed], **options: Any) -> dict[str, Any]:
+class _Options(TypedDict, total=False):
+    accumulate: int
+    trainable: Sequence[str]
+
+
+def _one_step(
+    model: SourceFunction, batches: list[Packed], **options: Unpack[_Options]
+) -> dict[str, jax.Array]:
     params, _ = train(model, iter(batches), optimizer=optax.sgd(0.1), steps=1, clip=None, **options)
     return params
 
@@ -199,7 +208,7 @@ def _four_batches() -> list[Packed]:
 
 
 def test_a_resumed_run_ends_where_an_unbroken_one_does(weights: Path, tmp_path: Path) -> None:
-    def run(steps: int, checkpoint: Path | None) -> tuple[dict[str, Any], list[int]]:
+    def run(steps: int, checkpoint: Path | None) -> tuple[dict[str, jax.Array], list[int]]:
         params, history = train(
             _model(weights),
             iter(_four_batches()),

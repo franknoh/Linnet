@@ -15,12 +15,13 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     import jax
     import numpy as np
     import torch
+    from jax.typing import DTypeLike
     from numpy.typing import ArrayLike, NDArray
 
 GREEDY, SAMPLED, FILTERED = 0, 1, 2  # what a pass has to compute, by `mode`
@@ -135,6 +136,13 @@ class _JaxNumPy(Protocol):
     def uint32(self, value: int, /) -> jax.Array: ...
 
 
+class _JaxArange(Protocol):
+    """`jax.numpy`, for `arange`: JAX's stubs leave one of its parameters
+    (`device`) partially unknown, which strict checking refuses."""
+
+    def arange(self, stop: int, /, *, dtype: DTypeLike | None = ...) -> jax.Array: ...
+
+
 def _mix_jax(jnp: _JaxNumPy, x: jax.Array) -> jax.Array:
     x = x ^ (x >> 16)
     x = x * jnp.uint32(_FIRST)
@@ -154,10 +162,9 @@ def draw_jax(
 ) -> jax.Array:
     """`draw_torch` for JAX, with `keys` as uint32; `need` is static."""
     import jax
-    import jax.numpy as jnp_module
+    import jax.numpy as jnp
 
-    # JAX's stubs leave `jnp.arange` partially unknown, which strict checking refuses.
-    jnp: Any = jnp_module
+    typed = cast("_JaxArange", jnp)
     greedy = jnp.argmax(logits, -1).astype(jnp.int32)
     if need == GREEDY:
         return greedy
@@ -166,7 +173,7 @@ def draw_jax(
     vocab = scores.shape[-1]
     if need == FILTERED:
         ordered = -jnp.sort(-scores, axis=-1)
-        rank = jnp.arange(vocab)
+        rank = typed.arange(vocab)
         kept = rank[None, :] < jnp.where(top_k > 0, top_k, vocab)[:, None]
         probabilities = jax.nn.softmax(jnp.where(kept, ordered, -jnp.inf), axis=-1)
         kept &= (jnp.cumsum(probabilities, -1) - probabilities) < top_p[:, None]
@@ -174,7 +181,7 @@ def draw_jax(
         floor = jnp.take_along_axis(ordered, (count - 1)[:, None], -1)
         scores = jnp.where(scores < floor, -jnp.inf, scores)
     rows = _mix_jax(jnp, keys ^ at.astype(jnp.uint32))
-    ids = jnp.arange(vocab, dtype=jnp.uint32)
+    ids = typed.arange(vocab, dtype=jnp.uint32)
     bits = _mix_jax(jnp, rows[:, None] ^ ids[None, :])
     uniform = ((bits >> 9).astype(jnp.float32) + 0.5) * _STEP
     drawn = jnp.argmax(scores - jnp.log(-jnp.log(uniform)), -1).astype(jnp.int32)

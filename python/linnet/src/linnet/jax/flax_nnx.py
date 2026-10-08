@@ -106,7 +106,7 @@ def to_nnx(function: LinnetFunction) -> flax_nnx.Module:
 
         def __call__(
             self, *inputs: ArrayLike, state: Mapping[str, jax.Array] | None = None
-        ) -> Result:
+        ) -> Result:  # pyright: ignore[reportExplicitAny]
             return function.apply(_collect(self, ""), *inputs, state=state)
 
     LinnetModule.__name__ = LinnetModule.__qualname__ = root_name

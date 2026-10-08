@@ -24,7 +24,6 @@ import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from . import ir, nest
 from .compiler import LinnetError
@@ -73,7 +72,9 @@ class Family:
     names: tuple[tuple[str, str], ...]
     optional: frozenset[str]
     generics: frozenset[str]
-    config: Callable[[Mapping[str, int | str], Mapping[str, float], Traits], dict[str, Any]]
+    config: Callable[
+        [Mapping[str, int | str], Mapping[str, float], Traits], dict[str, ir.JsonValue]
+    ]
     # Optional paths one Transformers flag switches on together: a
     # checkpoint has all of them or none.
     together: tuple[frozenset[str], ...] = ()
@@ -129,7 +130,7 @@ DECODER_KEYS = {
 
 def _decoder_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
-) -> dict[str, Any]:
+) -> dict[str, ir.JsonValue]:
     """What the Llama-shaped families' configs share."""
     dtype = str(generics.get("T", "bf16"))
     # Without `KvHeads` (Phi-3), every query head has its own.
@@ -147,7 +148,7 @@ def _decoder_config(
 
 def _llama_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
-) -> dict[str, Any]:
+) -> dict[str, ir.JsonValue]:
     return {
         "architectures": ["LlamaForCausalLM"],
         "model_type": "llama",
@@ -170,10 +171,10 @@ LLAMA3_SCALING = {
 }
 
 
-def _rope_scaling(constants: Mapping[str, float]) -> dict[str, Any]:
+def _rope_scaling(constants: Mapping[str, float]) -> dict[str, ir.JsonValue]:
     if not all(name in constants for name in LLAMA3_SCALING.values()):
         return {}
-    scaling: dict[str, Any] = {"rope_type": "llama3"}
+    scaling: dict[str, ir.JsonValue] = {"rope_type": "llama3"}
     for key, name in LLAMA3_SCALING.items():
         value = constants[name]
         scaling[key] = int(value) if key == "original_max_position_embeddings" else value
@@ -182,7 +183,7 @@ def _rope_scaling(constants: Mapping[str, float]) -> dict[str, Any]:
 
 def _qwen2_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
-) -> dict[str, Any]:
+) -> dict[str, ir.JsonValue]:
     return {
         "architectures": ["Qwen2ForCausalLM"],
         "model_type": "qwen2",
@@ -196,7 +197,7 @@ def _qwen2_config(
 
 def _qwen3_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
-) -> dict[str, Any]:
+) -> dict[str, ir.JsonValue]:
     return {
         "architectures": ["Qwen3ForCausalLM"],
         "model_type": "qwen3",
@@ -211,7 +212,7 @@ def _qwen3_config(
 
 def _phi3_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
-) -> dict[str, Any]:
+) -> dict[str, ir.JsonValue]:
     return {
         "architectures": ["Phi3ForCausalLM"],
         "model_type": "phi3",
@@ -231,7 +232,7 @@ def _phi3_config(
 
 def _gpt2_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
-) -> dict[str, Any]:
+) -> dict[str, ir.JsonValue]:
     dtype = str(generics.get("T", "f32"))
     return {
         "architectures": ["GPT2LMHeadModel"],
@@ -479,7 +480,7 @@ def norm_epsilon(program: ir.Program, op: str, operand: int) -> float:
 class Exported:
     directory: Path
     family: Family
-    config: Mapping[str, Any]
+    config: Mapping[str, ir.JsonValue]
     tensors: int
     tokenizer_files: tuple[str, ...]
 
@@ -594,14 +595,14 @@ def _copy_tokenizer(repo: str, directory: Path) -> tuple[str, ...]:
     return tuple(copied)
 
 
-def _special_tokens(directory: Path) -> dict[str, Any]:
+def _special_tokens(directory: Path) -> dict[str, ir.JsonValue]:
     """The copied tokenizer's `bos_token_id` and `eos_token_id`, from its
     `generation_config.json`: servers and converters read them from
     `config.json`."""
     path = directory / "generation_config.json"
     if not path.exists():
         return {}
-    generation: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    generation: dict[str, ir.JsonValue] = json.loads(path.read_text(encoding="utf-8"))
     return {
         key: generation[key]
         for key in ("bos_token_id", "eos_token_id")

@@ -11,7 +11,35 @@ import contextlib
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+
+if TYPE_CHECKING:
+    from .server import Tokenizer
+
+    class _Common(TypedDict):
+        """The keywords every backend's `nest.load` takes here."""
+
+        generics: dict[str, int | str]
+        weights: str | None
+        cast_dtype: bool
+
+    # The part of Transformers `main` uses, typed: its own stubs leave
+    # `from_pretrained` partially unknown.
+    class _HfTokenizer(Tokenizer, Protocol):
+        eos_token_id: int | None
+
+    class _AutoTokenizer(Protocol):
+        def from_pretrained(self, source: str, /, *, revision: str | None) -> _HfTokenizer: ...
+
+    class _Generation(Protocol):
+        eos_token_id: int | list[int] | None
+
+    class _GenerationConfig(Protocol):
+        def from_pretrained(self, source: str, /, *, revision: str | None) -> _Generation: ...
+
+    class _Transformers(Protocol):
+        AutoTokenizer: _AutoTokenizer
+        GenerationConfig: _GenerationConfig
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -71,7 +99,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         generics["T"] = args.dtype
     elif args.backend == "onnx":
         generics["T"] = "f16"
-    common: dict[str, Any] = {"generics": generics, "weights": args.weights, "cast_dtype": True}
+    common: _Common = {"generics": generics, "weights": args.weights, "cast_dtype": True}
     if args.backend == "torch":
         import torch
 
@@ -86,7 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import transformers as transformers_module
 
-    transformers: Any = transformers_module
+    transformers = cast("_Transformers", transformers_module)
     source = args.tokenizer or (card.weights.repo if card.weights else None)
     if source is None:
         parser.error("the card names no weights repository: pass --tokenizer")
@@ -94,10 +122,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     tokenizer = transformers.AutoTokenizer.from_pretrained(source, revision=revision)
     # The end-of-sequence tokens: the tokenizer's, and the generation config's
     # (Llama 3's instruct models end a turn with one of their own).
-    ids: list[Any] = [tokenizer.eos_token_id]
+    ids: list[int | None] = [tokenizer.eos_token_id]
     try:
         generation = transformers.GenerationConfig.from_pretrained(source, revision=revision)
-        more: Any = generation.eos_token_id
+        more = generation.eos_token_id
         ids += more if isinstance(more, list) else [more]
     except OSError:
         pass  # no generation config

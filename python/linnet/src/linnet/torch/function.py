@@ -68,7 +68,7 @@ class Function:
         """The names of the function's inputs, in order."""
         return [argument.name for argument in self.function.params]
 
-    def __call__(self, *inputs: torch.Tensor | float, **generics: int | str) -> Result:
+    def __call__(self, *inputs: torch.Tensor | float, **generics: int | str) -> Result:  # pyright: ignore[reportExplicitAny]
         return self.run(list(inputs), generics)
 
     def run(
@@ -76,7 +76,7 @@ class Function:
         inputs: Sequence[torch.Tensor | float],
         generics: Mapping[str, int | str] | None = None,
         compile: bool | str | None = None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         """Calls the function. `inputs` are tensors, or Python numbers for
         scalar inputs; `generics` binds by name what the inputs do not
         determine; `compile` overrides `load_function`'s for this call. A
@@ -140,7 +140,7 @@ class Function:
         values: list[torch.Tensor],
         device: torch.device,
         backend: str | None,
-    ) -> Result:
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
         bindings = ir.bind_names(env, self.function.generics)
         key = (tuple(sorted(bindings.items())), device, backend)
         generated = self._generated.get(key)
