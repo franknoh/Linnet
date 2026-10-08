@@ -32,7 +32,13 @@ STDLIB = REPO / "stdlib"
 SOURCE = """\
 module tests.serve
 
-use std.nn.attention::{causal_mask, grouped_attention, grouped_attention_rows, paged_attention}
+use std.nn.attention::{
+    causal_mask,
+    grouped_attention,
+    grouped_attention_rows,
+    paged_attention,
+    paged_prefill_attention,
+}
 use std.nn.cache::{page_slots, write_rows, write_slots, write_tokens}
 use std.nn.embedding::{Embedding}
 use std.nn.linear::{Linear}
@@ -204,31 +210,34 @@ where
 
     // Paged serving: the caches' first row is a pool of pages, `PageSize`
     // positions each, and a row's positions lie in the pages its row of
-    // `table` lists. `prefill_paged` is `prefill_packed` with each token's
-    // pool position given (`slots`); `decode_paged` steps every row, each
-    // over its own pages.
-    pub entry prefill_paged<P: Dim, Rows: Dim>(
+    // `table` lists. `prefill_paged` passes prompts packed end to end over
+    // the pool: token `p`, at position `at[p]` of row `rows[p]`, is written
+    // at pool position `slots[p]` and sees its row's positions up to its
+    // own, so a prompt may pass in chunks or start after pages it shares.
+    // `decode_paged` steps every row, each over its own pages.
+    pub entry prefill_paged<P: Dim, Rows: Dim, Pages: Dim>(
         tokens: Tensor[P; i32],
         at: Tensor[P; i32],
-        segments: Tensor[P; i32],
+        rows: Tensor[P; i32],
         slots: Tensor[P; i32],
         last: Tensor[Rows; i32],
+        table: Tensor[Rows, Pages; i32],
     ) -> Tensor[Rows, Vocab; T]
     where P > 0 {
         let placed = reshape(positions.forward(at), [1, P, H])
         let x = embedding.forward(reshape(tokens, [1, P])) + placed
-        let k = heads<1, P>(k_proj.forward(x))
-        let v = heads<1, P>(v_proj.forward(x))
         let pool = fill<i32>([P], 0)
-        cache_k = write_tokens(cache_k, k, pool, slots)
-        cache_v = write_tokens(cache_v, v, pool, slots)
-        let own[i, j] = segments[i] == segments[j] && at[j] <= at[i]
-        let mixed = grouped_attention(
+        cache_k = write_tokens(cache_k, heads<1, P>(k_proj.forward(x)), pool, slots)
+        cache_v = write_tokens(cache_v, heads<1, P>(v_proj.forward(x)), pool, slots)
+        let mixed = paged_prefill_attention<P, Heads, Heads, MaxSeq, Rows, Pages, PageSize, H /
+            Heads, T>(
             heads<1, P>(q_proj.forward(x)),
-            k,
-            v,
+            cache_k[0:1, :, :, :],
+            cache_v[0:1, :, :, :],
+            table,
+            rows,
+            at,
             rsqrt(cast<f32>(H / Heads)),
-            some(own),
         )
         let out = x + merge<1, P>(mixed)
         let ends[m, h] = out[0, cast<i64>(last[m]), h]
@@ -263,7 +272,7 @@ where
     pub entry step_paged<P: Dim, Rows: Dim, Pages: Dim>(
         tokens: Tensor[P; i32],
         at: Tensor[P; i32],
-        segments: Tensor[P; i32],
+        rows: Tensor[P; i32],
         slots: Tensor[P; i32],
         last: Tensor[Rows; i32],
         step_tokens: Tensor[Rows, 1; i32],
@@ -283,13 +292,15 @@ where
         cache_k = write_tokens(cache_k, k, pool, every_slot)
         cache_v = write_tokens(cache_v, v, pool, every_slot)
         let q = heads<1, P + Rows>(q_proj.forward(x))
-        let own[i, j] = segments[i] == segments[j] && at[j] <= at[i]
-        let prompts = grouped_attention(
+        let prompts = paged_prefill_attention<P, Heads, Heads, MaxSeq, Rows, Pages, PageSize, H /
+            Heads, T>(
             q[:, :, 0:P, :],
-            k[:, :, 0:P, :],
-            v[:, :, 0:P, :],
+            cache_k[0:1, :, :, :],
+            cache_v[0:1, :, :, :],
+            table,
+            rows,
+            at,
             rsqrt(cast<f32>(H / Heads)),
-            some(own),
         )
         let steps = paged_attention<Rows, Heads, Heads, MaxSeq, Pages, PageSize, H / Heads, T>(
             permute(q[:, :, P:P + Rows, :], [2, 1, 0, 3]),
@@ -589,12 +600,15 @@ def test_paged_rows_wait_again_when_the_pool_runs_short(model_files: tuple[Path,
             assert completion.tokens == _greedy(model, completion.request)
 
 
-def test_paged_identical_prompts_copy_pages(paged_files: tuple[Path, Path]) -> None:
-    """Rows sharing a prompt's pass copy its pages into their own."""
+def test_paged_rows_share_the_pages_of_a_common_start(paged_files: tuple[Path, Path]) -> None:
+    """Prompts that start alike read the first one's full pages, written in
+    the same pass, and pass only the rest: each row draws as it would with
+    pages of its own."""
     source, weights = paged_files
+    start = [9, 2, 7, 3, 1, 4, 4, 8, 6, 5, 3, 3, 1, 7, 2, 2, 9]
     requests = [
         Request(
-            prompt=[5 + i, 9, 2, 7, 3, 1, 4, 4, 8, 6],
+            prompt=[*start, 5 + i, 1, 1],
             max_new_tokens=6,
             temperature=1.0,
             seed=100 * i + k,
@@ -603,9 +617,88 @@ def test_paged_identical_prompts_copy_pages(paged_files: tuple[Path, Path]) -> N
         for k in range(3)
     ]
     model = load(source, generics=PAGED, std_root=STDLIB, weights=weights, compile=True)
-    shared, _ = Engine(model, graphs=False, pack=48, rows=6, share=True).run(requests)
-    alone, _ = Engine(model, graphs=False, pack=48, rows=6, share=False).run(requests)
+    shared, stats = Engine(model, graphs=False, pack=48, rows=6, share=True).run(requests)
+    alone, alone_stats = Engine(model, graphs=False, pack=48, rows=6, share=False).run(requests)
     assert [c.tokens for c in shared] == [c.tokens for c in alone]
+    # Pages of 8: every prompt but the first finds the two full pages of the
+    # common start.
+    assert [c.cached for c in shared] == [0] + [16] * 5
+    assert stats.cached == 80 and alone_stats.cached == 0
+
+
+def test_paged_rows_keep_their_pages_for_later_prompts(paged_files: tuple[Path, Path]) -> None:
+    """A finished request's pages keep its prompt and what it generated: a
+    later prompt that goes on from them (a conversation's next turn) passes
+    only what is new, and gets greedy decoding's tokens."""
+    source, weights = paged_files
+    model = load(source, generics=PAGED, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, pack=48, rows=2)
+    first = engine.submit(Request(prompt=list(range(3, 23)), max_new_tokens=13))
+    while engine.busy:
+        engine.step()
+    assert first.cached == 0 and len(first.tokens) == 13
+    turn = Request(prompt=[*first.request.prompt, *first.tokens, 4, 4, 2], max_new_tokens=8)
+    second = engine.submit(turn)
+    while engine.busy:
+        engine.step()
+    # Of the 32 positions the first wrote all of (its last token was never
+    # passed), the four full pages.
+    assert second.cached == 32
+    assert second.tokens == _greedy(model, turn)
+    # New weights make the pages kept stale.
+    engine.load_weights(model)
+    again = engine.submit(turn)
+    while engine.busy:
+        engine.step()
+    assert again.cached == 0 and again.tokens == second.tokens
+
+
+@pytest.mark.parametrize(
+    ("mix", "numerics"), [(True, "fast"), (False, "fast"), (True, "equivalent")]
+)
+def test_paged_prompts_pass_in_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mix: bool, numerics: str
+) -> None:
+    """Prompts longer than a pass, and prompts arriving while rows decode,
+    pass in chunks, each over the pages the ones before wrote: every request
+    still gets greedy decoding's tokens, with `paged_prefill_attention`'s
+    kernel or its body."""
+    source, weights = _files(tmp_path, 512)
+    generics = {**PAGED, "MaxSeq": 512}
+    model = load(
+        source,
+        generics=generics,
+        std_root=STDLIB,
+        weights=weights,
+        compile=True,
+        numerics=numerics,
+    )
+    engine = Engine(model, graphs=False, pack=48, mix=mix, rows=6, chunk=12)
+    assert engine.pack == 128 and engine.chunk == 12
+    passes: list[tuple[list[int], list[bool]]] = []
+    backend = engine.backend
+
+    def counted(prompts: list[list[int]], *args: object, **kwargs: object) -> None:
+        starts = cast("list[int]", kwargs["starts"])
+        final = cast("list[bool]", kwargs["final"])
+        passes.append((starts, final))
+
+    monkeypatch.setattr(backend, "prefill_packed", _spied(backend.prefill_packed, counted))
+    monkeypatch.setattr(backend, "step_packed", _spied(backend.step_packed, counted))
+    rng = random.Random(3)
+    requests = [
+        Request(
+            prompt=[rng.randrange(64) for _ in range(rng.randrange(30, 100))],
+            max_new_tokens=rng.randrange(2, 16),
+        )
+        for _ in range(10)
+    ]
+    done, _ = engine.run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
+    # Some prompt went on from where a pass before left it.
+    assert any(start > 0 for starts, _ in passes for start in starts)
+    assert any(not ended for _, final in passes for ended in final)
 
 
 def test_paged_rows_stop_at_their_longest(paged_files: tuple[Path, Path]) -> None:
@@ -624,9 +717,11 @@ def test_paged_rows_stop_at_their_longest(paged_files: tuple[Path, Path]) -> Non
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_paged_rows_on_flex_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pages of 16 positions read by FlexAttention, the step replayed as a
-    CUDA graph: more rows than the pool holds at their longest, so some wait
-    again, and every request gets greedy decoding's tokens."""
+    """Pages of 16 positions read by FlexAttention, the passes replayed as
+    CUDA graphs: more rows than the pool holds at their longest, so some
+    wait again, prompts arriving while rows decode pass in chunks, and half
+    of them start alike and share pages. Every request gets greedy
+    decoding's tokens."""
     import linnet.torch.paged as paged
 
     source = tmp_path / "serve.linnet"
@@ -644,24 +739,34 @@ def test_paged_rows_on_flex_attention(tmp_path: Path, monkeypatch: pytest.Monkey
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.copy_(torch.randn(parameter.shape, device="cuda", generator=generator) * 0.02)
-    flexed: list[int] = []
+    flexed: list[str] = []
     flex = paged._flex  # pyright: ignore[reportPrivateUsage]
+    flex_prefill = paged._flex_prefill  # pyright: ignore[reportPrivateUsage]
 
-    def counted(*args: object, **kwargs: object) -> None:
-        flexed.append(1)
+    def stepped(*args: object, **kwargs: object) -> None:
+        flexed.append("step")
 
-    monkeypatch.setattr(paged, "_flex", _spied(flex, counted))
+    def prompted(*args: object, **kwargs: object) -> None:
+        flexed.append("prompt")
+
+    monkeypatch.setattr(paged, "_flex", _spied(flex, stepped))
+    monkeypatch.setattr(paged, "_flex_prefill", _spied(flex_prefill, prompted))
     rng = random.Random(0)
+    start = [rng.randrange(64) for _ in range(48)]
     requests = [
         Request(
-            prompt=[rng.randrange(64) for _ in range(rng.randrange(20, 120))],
+            prompt=[
+                *(start if i % 2 else []),
+                *(rng.randrange(64) for _ in range(rng.randrange(20, 120))),
+            ],
             max_new_tokens=rng.randrange(4, 40),
         )
-        for _ in range(16)
+        for i in range(16)
     ]
-    engine = Engine(model, pack=1024, rows=8)
-    done, _ = engine.run(requests)
-    assert flexed
+    engine = Engine(model, pack=1024, rows=8, chunk=64)
+    done, stats = engine.run(requests)
+    assert {"step", "prompt"} <= set(flexed)
+    assert stats.cached > 0
     for completion in done:
         assert completion.tokens == _greedy(model, completion.request)
 

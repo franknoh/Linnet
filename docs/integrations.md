@@ -36,14 +36,14 @@ Every decoder in the zoo has the two required entries.
 | `decode_rows(tokens: [Batch, 1], positions: [Batch]) -> [Batch, Vocab]` | one token for every row, each at its own position |
 | `prefill_packed<P>(tokens: [P], rows: [P], positions: [P], segments: [P], last: [Batch]) -> [Batch, Vocab]` | optional: prompts packed end to end into one pass of `P` tokens, each token with its cache row, position, and prompt; returns the logits after each prompt's last token, `last[m]` |
 | `step_packed<P>(tokens, rows, positions, segments, last, step_tokens: [Batch, 1], step_positions: [Batch]) -> [2 * Batch, Vocab]` | optional, with `prefill_packed`: that pass and a `decode_rows` step in one; returns the logits after each prompt, then each row's step |
-| `prefill_paged<P, Rows>(tokens: [P], positions: [P], segments: [P], slots: [P], last: [Rows]) -> [Rows, Vocab]` | for pages: `prefill_packed` with each token's place in the pool instead of its row |
+| `prefill_paged<P, Rows, Pages>(tokens: [P], positions: [P], rows: [P], slots: [P], last: [Rows], table: [Rows, Pages]) -> [Rows, Vocab]` | for pages: prompts packed end to end, each token written at its place in the pool (`slots`) and attending over its row's pages up to its position |
 | `decode_paged<Rows, Pages>(tokens: [Rows, 1], positions: [Rows], table: [Rows, Pages]) -> [Rows, Vocab]` | for pages: one token for every row, its positions in the pages its row of `table` lists |
-| `step_paged<P, Rows, Pages>(tokens, positions, segments, slots, last, step_tokens, step_positions, table) -> [2 * Rows, Vocab]` | for pages: `step_packed` the same way |
+| `step_paged<P, Rows, Pages>(tokens, positions, rows, slots, last, step_tokens, step_positions, table) -> [2 * Rows, Vocab]` | for pages: `prefill_paged` and `decode_paged` in one pass |
 
 Build them from `std.nn.cache::write_slots`, `write_rows`, `write_tokens`,
-and `page_slots`, and `std.nn.attention::grouped_attention_rows` and
-`paged_attention`. Every zoo decoder but Phi-3 and gpt-oss has the paged
-entries.
+and `page_slots`, and `std.nn.attention::grouped_attention_rows`,
+`paged_attention`, and `paged_prefill_attention`. Every zoo decoder but
+Phi-3 and gpt-oss has the paged entries.
 
 ### Engine
 
@@ -51,7 +51,7 @@ entries.
 | --- | --- |
 | `Engine(model, pack=4096)` | with `prefill_packed`, packs waiting prompts into passes of up to `pack` tokens; otherwise prompts go in passes of up to 8, each padded to its longest |
 | `Engine(model, mix=True)` | with `step_packed`, runs the decoding rows' step inside a prompt pass that fits the second compiled size (1024 tokens by default); `mix=False` keeps them apart |
-| `Engine(model, share=True)` | with packed passes, identical prompts admitted together pass once: the rest copy its cache rows and draw their own tokens; `share=False` passes each |
+| `Engine(model, share=True)` | with packed passes, identical prompts admitted together pass once: the rest copy its cache rows and draw their own tokens; with pages, prompts share the pages of a common start instead (see below); `share=False` passes each |
 | `engine.run(requests)` | `submit` for every request, then `step` until nothing is left |
 | `engine.submit(request)` | queues a request; returns its `Completion`, which fills in as it runs |
 | `engine.step()` | admits waiting requests into free rows, runs one decoding step, and returns the requests that finished, one step after they do |
@@ -78,13 +78,27 @@ more of them in the same memory.
 | `rows=64` | the most requests in flight |
 | `max_len` | the longest prompt plus completion; by default every page but one, up to 8192 |
 | `reserve` | pages kept free for the rows already decoding; 1% by default |
+| `chunk` | the most prompt tokens a step passes while rows decode; by default the second compiled size |
 | `paged` | `True` or `False` to choose; by default pages when the card has the entries and `Batch` is 1 |
+
+Prompts pass in chunks. They fill passes in the order they arrive, and a
+prompt that does not fit goes on in the next pass, so a pass is full whatever
+the lengths and a prompt can be longer than `pack`. While rows decode, a step
+passes `chunk` prompt tokens at most, so a long prompt does not stall them.
+
+Full pages are kept by the tokens in them and before them. A prompt that
+starts like an earlier one (the same system prompt, a conversation's next
+turn, `n` samples of one prompt) reads those pages instead of passing them
+again, up to its last page (`completion.cached`, `stats.cached`). Pages
+nobody uses stay kept until the pool needs them, the oldest first.
+`load_weights` drops them.
 
 When the pool runs short, the request admitted last gives its pages back and
 waits. Once pages are free it passes its prompt and its tokens so far as one
-longer prompt and continues, with the same tokens it would have drawn
-(`completion.preempted`, `stats.preempted`). On CUDA, FlexAttention reads each
-row's pages where they lie in the pool.
+longer prompt, most of it found among the pages it gave back, and continues
+with the same tokens it would have drawn (`completion.preempted`,
+`stats.preempted`). On CUDA, FlexAttention reads the pages where they lie in
+the pool, a prompt's tokens 128 at a time.
 
 Llama 3.1 8B on one H100, 256 requests of 128 to 512 prompt tokens and 128
 new tokens each, greedy:

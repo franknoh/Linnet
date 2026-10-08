@@ -168,3 +168,49 @@ where
     let seen[b, s] = logical[s] <= positions[b]
     return grouped_attention_rows(query, keys, values, scale, reshape(seen, [B, 1, Pages * Size]))
 }
+
+// Prompt tokens packed end to end over the same pool (paged serving): token
+// `p`, at position `positions[p]` of row `rows[p]`, sees that row's
+// positions up to its own, in the pages `table[rows[p]]` lists. The pass's
+// own tokens are expected in the pool already, beside what earlier passes
+// wrote there: the start of a prompt passed in chunks, or pages a row shares
+// with another (a common prefix).
+//
+// The canonical body is `paged_attention` with each token a row of its own;
+// a backend with a paged kernel reads each page once for the tokens that see
+// it.
+pub op paged_prefill_attention<
+    P: Dim,
+    Hq: Dim,
+    Hk: Dim,
+    N: Dim,
+    Rows: Dim,
+    Pages: Dim,
+    Size: Dim,
+    D: Dim,
+    T: Float,
+>(
+    query: Tensor[1, Hq, P, D; T],
+    key: Tensor[1, Hk, N, D; T],
+    value: Tensor[1, Hk, N, D; T],
+    table: Tensor[Rows, Pages; i32],
+    rows: Tensor[P; i32],
+    positions: Tensor[P; i32],
+    scale: f32,
+) -> Tensor[1, Hq, P, D; T]
+where
+    Hk > 0,
+    Hq % Hk == 0,
+    Size > 0
+{
+    let tables[p, j] = table[cast<i64>(rows[p]), j]
+    let each = paged_attention<P, Hq, Hk, N, Pages, Size, D, T>(
+        permute(query, [2, 1, 0, 3]),
+        key,
+        value,
+        tables,
+        positions,
+        scale,
+    )
+    return permute(each, [2, 1, 0, 3])
+}

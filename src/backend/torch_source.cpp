@@ -487,6 +487,20 @@ public:
                           name(3) + ", " + name(4) + ", " + scalar(5) + ", " +
                           std::to_string(*size) + ")");
         }
+        if (implementation_base == "linnet.paged_prefill_attention" && operands.size() == 7 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4] &&
+            operands[5]) {
+            // `linnet.torch.paged.prefill`: FlexAttention over the pool, each
+            // block of tokens over the pages its rows see.
+            const auto size = call_generic("Size");
+            if (!size) {
+                return std::nullopt;
+            }
+            paged_helper_ = true;
+            return define("_paged_prefill(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ", " +
+                          std::to_string(*size) + ")");
+        }
         if (implementation_base == "linnet.sink_attention" && operands.size() == 6 && operands[0] &&
             operands[1] && operands[5]) {
             // FlexAttention under `torch.compile` where its blocks pay off, as
@@ -692,7 +706,8 @@ public:
             out += "from linnet.torch.fsdp import gather as _gather\n\n";
         }
         if (paged_helper_) {
-            out += "from linnet.torch.paged import attend as _paged_attend\n\n";
+            out += "from linnet.torch.paged import attend as _paged_attend\n";
+            out += "from linnet.torch.paged import prefill as _paged_prefill\n\n";
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
