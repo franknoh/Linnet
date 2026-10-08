@@ -58,7 +58,6 @@ public:
     // Reads a file from disk as raw bytes; no encoding validation is performed.
     std::expected<FileId, std::string> load_file(const std::filesystem::path& path);
 
-    std::size_t file_count() const { return files_.size(); }
     std::string_view path(FileId file) const;
     std::string_view contents(FileId file) const;
     std::uint32_t size(FileId file) const;

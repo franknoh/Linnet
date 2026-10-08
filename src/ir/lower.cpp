@@ -128,12 +128,6 @@ private:
         return results.empty() ? no_id : module_.op(op).results.front();
     }
 
-    ValueId const_int(std::int64_t value, TypeId type) {
-        Attributes attributes;
-        attributes.integer = value;
-        return emit(OpKind::ConstInt, {}, type, attributes);
-    }
-
     ValueId const_dim(const shape::Poly& value) {
         Attributes attributes;
         attributes.dim = types().substitute(value, frame_->substitution);

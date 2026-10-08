@@ -24,11 +24,6 @@ struct Pass {
     std::function<bool(ir::Module&)> run;
 };
 
-struct PassResult {
-    std::string name;
-    bool has_changed = false;
-};
-
 struct PipelineOptions {
     Legality allowed = Legality::Exact; // passes above this strength are skipped
     bool verify = true;                 // run the IR verifier after each pass
@@ -38,9 +33,9 @@ struct PipelineOptions {
 // Runs the passes repeatedly, in order, until a full round changes nothing.
 // A verifier failure throws std::logic_error naming the pass: a miscompiled
 // module must never be used.
-std::vector<PassResult> run_pipeline(ir::Module& module,
-                                     const std::vector<Pass>& passes,
-                                     const PipelineOptions& options = {});
+void run_pipeline(ir::Module& module,
+                  const std::vector<Pass>& passes,
+                  const PipelineOptions& options = {});
 
 // The canonical pipeline: canonicalization, common-subexpression
 // elimination, and dead-code elimination. All are Exact.

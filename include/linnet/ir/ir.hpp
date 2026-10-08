@@ -76,7 +76,6 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(Reduce, "reduce", 0, 1)                                                                      \
     X(TupleMake, "tuple.make", -1, 0)                                                              \
     X(TupleGet, "tuple.get", 1, 0)                                                                 \
-    X(StructMake, "struct.make", -1, 0)                                                            \
     X(StructGet, "struct.get", 1, 0)                                                               \
     X(OptionSome, "option.some", 1, 0)                                                             \
     X(OptionNone, "option.none", 0, 0)                                                             \
@@ -207,7 +206,6 @@ public:
     Block& block(BlockId id) { return blocks_[id]; }
     const Region& region(RegionId id) const { return regions_[id]; }
     Region& region(RegionId id) { return regions_[id]; }
-    std::size_t value_count() const { return values_.size(); }
 
     FunctionId add_function(Function function);
     void add_constant(Constant constant);
