@@ -23,7 +23,8 @@ from typing import Any, cast
 
 import torch
 
-from ..plan import Env, Plan, PlanError
+from .. import ir
+from ..plan import PlanError
 from .dtypes import torch_dtype
 from .native import NATIVE, causal_mask, convolution, group_norm, max_pool2d, upsample_nearest2d
 
@@ -35,7 +36,7 @@ class BlockInstance:
     """One instantiated block: its bindings, tensors, and sub-blocks."""
 
     name: str
-    env: Env
+    env: ir.Bindings
     params: dict[str, torch.Tensor | None] = field(default_factory=dict)  # type: ignore[arg-type]
     # None for an optional sub-block left out.
     subs: dict[str, BlockInstance | list[BlockInstance] | None] = field(default_factory=dict)  # type: ignore[arg-type]
@@ -113,55 +114,75 @@ REDUCTIONS: dict[str, Reduction] = {
 
 
 class Interpreter:
-    def __init__(self, plan: Plan, device: torch.device) -> None:
-        self.plan = plan
+    def __init__(self, program: ir.Program, device: torch.device) -> None:
+        self.program = program
         self.device = device
+        # What an operation's attributes say, read once: a shape, a slice's
+        # axes, the domains of index notation, a call's substitution.
+        self._read: dict[tuple[int, str], Any] = {}
 
     # ------------------------------------------------------------ functions
 
-    def call(self, function: dict[str, Any], env: Env, arguments: list[Value]) -> Value:
-        for constraint in function["constraints"]:
-            if not env.relation_holds(constraint):
-                raise PlanError(f"constraint of `{function['name']}` does not hold at runtime")
-        body = function["body"]
-        if len(body["args"]) != len(arguments):
+    def call(self, function: ir.Function, env: ir.Bindings, arguments: list[Value]) -> Value:
+        for constraint in function.constraints:
+            if not env.holds(constraint):
+                raise PlanError(f"constraint of `{function.name}` does not hold at runtime")
+        body = function.body
+        if len(body.args) != len(arguments):
             raise PlanError(
-                f"`{function['name']}` takes {len(body['args'])} arguments, got {len(arguments)}"
+                f"`{function.name}` takes {len(body.args)} arguments, got {len(arguments)}"
             )
         values: dict[int, Value] = {}
-        for arg, value in zip(body["args"], arguments, strict=True):
-            values[arg["id"]] = value
+        for arg, value in zip(body.args, arguments, strict=True):
+            values[arg.id] = value
         result = self.run_region(body, env, values, Grid())
         return result[0] if len(result) == 1 else tuple(result)
 
     def run_region(
-        self, region: dict[str, Any], env: Env, values: dict[int, Value], grid: Grid
+        self, region: ir.Region, env: ir.Bindings, values: dict[int, Value], grid: Grid
     ) -> list[Value]:
-        for op in region["ops"]:
-            kind = op["kind"]
-            if kind in ("return", "yield"):
-                return [values[operand] for operand in op["operands"]]
+        for op in region.ops:
+            if op.kind in ("return", "yield"):
+                return [values[operand] for operand in op.operands]
             results = self.run_op(op, env, values, grid)
-            for result, value in zip(op["results"], results, strict=True):
-                values[result["id"]] = value
+            for result, value in zip(op.results, results, strict=True):
+                values[result.id] = value
         raise PlanError("region without a terminator")
+
+    # ------------------------------------------------------------ attributes
+
+    def _attr(self, op: ir.Op, key: str, read: Callable[[Any], Any]) -> Any:
+        found = self._read.get((id(op), key))
+        if found is None:
+            found = self._read[(id(op), key)] = read(op.attrs[key])
+        return found
+
+    def _shape_attr(self, op: ir.Op, key: str = "shape") -> ir.Shape:
+        return cast(ir.Shape, self._attr(op, key, ir.parse_shape))
+
+    def _substitution(self, op: ir.Op) -> ir.Substitution:
+        return cast(ir.Substitution, self._attr(op, "substitution", ir.parse_substitution))
 
     # ------------------------------------------------------------ operations
 
     def run_op(
-        self, op: dict[str, Any], env: Env, values: dict[int, Value], grid: Grid
+        self, op: ir.Op, env: ir.Bindings, values: dict[int, Value], grid: Grid
     ) -> list[Value]:
-        kind: str = op["kind"]
-        attrs: dict[str, Any] = op["attrs"]
-        operands: list[Any] = [values[operand] for operand in op["operands"]]
-        result_type: dict[str, Any] | None = op["results"][0]["type"] if op["results"] else None
+        kind = op.kind
+        attrs = op.attrs
+        operands: list[Any] = [values[operand] for operand in op.operands]
+        result_type = op.results[0].type if op.results else None
 
         def tensor(i: int) -> torch.Tensor:
             return cast(torch.Tensor, operands[i])
 
         def result_dtype() -> torch.dtype:
-            assert result_type is not None
-            return torch_dtype(env, result_type["dtype"])
+            assert isinstance(result_type, ir.TensorType | ir.ScalarType)
+            return torch_dtype(env, result_type.dtype)
+
+        def result_shape() -> tuple[int, ...]:
+            assert isinstance(result_type, ir.TensorType)
+            return env.shape(result_type.shape)
 
         if kind == "const.int":
             return [torch.tensor(int(attrs["value"]), dtype=result_dtype(), device=self.device)]
@@ -170,7 +191,8 @@ class Interpreter:
         if kind == "const.bool":
             return [torch.tensor(bool(attrs["value"]), device=self.device)]
         if kind == "const.dim":
-            return [torch.tensor(env.dim(attrs["value"]), dtype=torch.int64, device=self.device)]
+            value = env.dim(cast(ir.Dim, self._attr(op, "value", ir.parse_dim)))
+            return [torch.tensor(value, dtype=torch.int64, device=self.device)]
         if kind == "enum.const":
             return [attrs["name"]]
 
@@ -225,19 +247,19 @@ class Interpreter:
             return [torch.where(operands[0], operands[1], operands[2])]
 
         if kind == "reshape":
-            return [operands[0].reshape(env.shape(attrs["shape"]))]
+            return [operands[0].reshape(env.shape(self._shape_attr(op)))]
         if kind == "permute":
-            return [operands[0].permute(env.shape(attrs["shape"]))]
+            return [operands[0].permute(env.shape(self._shape_attr(op)))]
         if kind == "broadcast":
-            return [operands[0].expand(env.shape(attrs["shape"]))]
+            return [operands[0].expand(env.shape(self._shape_attr(op)))]
         if kind == "slice":
-            return [self._slice(operands[0], attrs["axes"], env)]
+            return [self._slice(operands[0], self._attr(op, "axes", _slice_axes), env)]
         if kind == "concat":
             return [torch.cat(operands, dim=int(attrs["axis"]))]
         if kind == "fill":
             return [
                 torch.full(
-                    env.shape(attrs["shape"]),
+                    env.shape(self._shape_attr(op)),
                     operands[0].item(),
                     dtype=result_dtype(),
                     device=self.device,
@@ -245,7 +267,9 @@ class Interpreter:
             ]
         if kind == "iota":
             return [
-                torch.arange(env.shape(attrs["shape"])[0], dtype=result_dtype(), device=self.device)
+                torch.arange(
+                    env.shape(self._shape_attr(op))[0], dtype=result_dtype(), device=self.device
+                )
             ]
 
         if kind == "tensor.element":
@@ -264,33 +288,32 @@ class Interpreter:
         if kind == "option.none":
             return [None]
         if kind == "option.match":
-            some_region, none_region = op["regions"]
+            some_region, none_region = op.regions
             if operands[0] is not None:
                 inner = dict(values)
-                inner[some_region["args"][0]["id"]] = operands[0]
+                inner[some_region.args[0].id] = operands[0]
                 return self.run_region(some_region, env, inner, grid)
             return self.run_region(none_region, env, dict(values), grid)
         if kind == "enum.match":
-            for variant, region in zip(attrs["variants"], op["regions"], strict=True):
+            for variant, region in zip(attrs["variants"], op.regions, strict=True):
                 if variant == operands[0] or variant == "_":
                     return self.run_region(region, env, dict(values), grid)
             raise PlanError(f"no arm matches enum value `{operands[0]}`")
         if kind == "if":
-            chosen = op["regions"][0] if bool(tensor(0).item()) else op["regions"][1]
+            chosen = op.regions[0] if bool(tensor(0).item()) else op.regions[1]
             return self.run_region(chosen, env, dict(values), grid)
 
         if kind in ("call", "semantic.call"):
             selected = attrs.get("selected", "canonical decomposition")
             if selected == "torch.tril":
-                assert result_type is not None
-                return [causal_mask(env.shape(result_type["shape"]), self.device)]
+                return [causal_mask(list(result_shape()), self.device)]
             if selected in (
                 "torch.nn.functional.conv1d",
                 "torch.nn.functional.conv2d",
                 "torch.nn.functional.conv2d(rect)",
             ):
-                callee = self.plan.functions[attrs["callee"]]
-                callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
+                callee = self.program.functions[attrs["callee"]]
+                callee_env = self._callee_env(callee, self._substitution(op), env, operands)
 
                 def dim(name: str) -> int:
                     return self._generic_dim(callee, callee_env, name)
@@ -302,13 +325,13 @@ class Interpreter:
                     strides, pads = [dim("Stride")] * axes, [dim("Pad")] * axes
                 return [convolution(operands, strides, pads)]
             if selected == "torch.nn.functional.group_norm":
-                callee = self.plan.functions[attrs["callee"]]
-                callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
+                callee = self.program.functions[attrs["callee"]]
+                callee_env = self._callee_env(callee, self._substitution(op), env, operands)
                 groups = self._generic_dim(callee, callee_env, "Groups")
                 return [group_norm(operands, groups)]
             if selected == "torch.nn.functional.max_pool2d":
-                callee = self.plan.functions[attrs["callee"]]
-                callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
+                callee = self.program.functions[attrs["callee"]]
+                callee_env = self._callee_env(callee, self._substitution(op), env, operands)
                 window = self._generic_dim(callee, callee_env, "K")
                 stride = self._generic_dim(callee, callee_env, "Stride")
                 pad = self._generic_dim(callee, callee_env, "Pad")
@@ -316,16 +339,15 @@ class Interpreter:
                     return [max_pool2d(operands, window, stride, pad)]
                 return [self.call(callee, callee_env, operands)]
             if selected == "torch.nn.functional.interpolate(nearest)":
-                assert result_type is not None
-                return [upsample_nearest2d(operands, env.shape(result_type["shape"]))]
+                return [upsample_nearest2d(operands, list(result_shape()))]
             if selected != "canonical decomposition":
                 if selected not in NATIVE:
                     raise PlanError(
                         f"the plan selected `{selected}`, which this materializer lacks"
                     )
                 return [NATIVE[selected](operands, result_dtype() if result_type else None)]
-            callee = self.plan.functions[attrs["callee"]]
-            callee_env = self._callee_env(callee, attrs["substitution"], env, operands)
+            callee = self.program.functions[attrs["callee"]]
+            callee_env = self._callee_env(callee, self._substitution(op), env, operands)
             return [self.call(callee, callee_env, operands)]
         if kind == "block.param":
             return [cast(BlockInstance, operands[0]).params[attrs["name"]]]
@@ -343,39 +365,39 @@ class Interpreter:
             return [cast(list[BlockInstance], operands[0])[int(tensor(1).item())]]
         if kind == "static_for":
             carried: list[Any] = list(operands[1:])
-            region = op["regions"][0]
+            region = op.regions[0]
             for element in cast(list[BlockInstance], operands[0]):
                 inner = dict(values)
-                inner[region["args"][0]["id"]] = element
-                for arg, value in zip(region["args"][1:], carried, strict=True):
-                    inner[arg["id"]] = value
+                inner[region.args[0].id] = element
+                for arg, value in zip(region.args[1:], carried, strict=True):
+                    inner[arg.id] = value
                 carried = self.run_region(region, env, inner, grid)
             return carried
         if kind == "while":
             carried = list(operands)
-            condition, body = op["regions"]
+            condition, body = op.regions
             while True:
                 inner = dict(values)
-                for arg, value in zip(condition["args"], carried, strict=True):
-                    inner[arg["id"]] = value
+                for arg, value in zip(condition.args, carried, strict=True):
+                    inner[arg.id] = value
                 if not bool(self.run_region(condition, env, inner, grid)[0].item()):
                     break
                 inner = dict(values)
-                for arg, value in zip(body["args"], carried, strict=True):
-                    inner[arg["id"]] = value
+                for arg, value in zip(body.args, carried, strict=True):
+                    inner[arg.id] = value
                 carried = self.run_region(body, env, inner, grid)
             return carried
         if kind == "static_range":
             start, stop = int(tensor(0).item()), int(tensor(1).item())
             carried = list(operands[2:])
-            region = op["regions"][0]
+            region = op.regions[0]
             for position in range(start, stop):
                 inner = dict(values)
-                inner[region["args"][0]["id"]] = torch.tensor(
+                inner[region.args[0].id] = torch.tensor(
                     position, dtype=torch.int64, device=self.device
                 )
-                for arg, value in zip(region["args"][1:], carried, strict=True):
-                    inner[arg["id"]] = value
+                for arg, value in zip(region.args[1:], carried, strict=True):
+                    inner[arg.id] = value
                 carried = self.run_region(region, env, inner, grid)
             return carried
 
@@ -390,18 +412,16 @@ class Interpreter:
         return torch.div(a, b, rounding_mode="floor")
 
     @staticmethod
-    def _slice(base: torch.Tensor, axes: list[dict[str, Any]], env: Env) -> torch.Tensor:
+    def _slice(base: torch.Tensor, axes: tuple[_Axis, ...], env: ir.Bindings) -> torch.Tensor:
         index: list[Any] = []
         for axis in axes:
-            if "whole" in axis:
+            if axis.whole is not None:
                 # A whole axis stands for every axis of a shape pack.
-                index.extend([slice(None)] * len(env.shape(axis["whole"])))
-            elif axis["squeeze"]:
-                index.append(env.dim(axis["start"]))
+                index.extend([slice(None)] * len(env.shape(axis.whole)))
+            elif axis.squeeze:
+                index.append(env.dim(axis.start))
             else:
-                index.append(
-                    slice(env.dim(axis["start"]), env.dim(axis["stop"]), int(axis["step"]))
-                )
+                index.append(slice(env.dim(axis.start), env.dim(axis.stop), axis.step))
         return base[tuple(index)]
 
     def _element(self, base: torch.Tensor, indices: list[Value], grid: Grid) -> torch.Tensor:
@@ -415,61 +435,94 @@ class Interpreter:
                 positions.append(grid.pad(index.to(torch.int64)))
         return grid.pad(base[tuple(positions)])
 
-    def _index_sizes(self, indices: list[dict[str, Any]], env: Env) -> list[list[int]]:
-        return [env.shape(index["domain"]) for index in indices]
+    def _index_sizes(self, op: ir.Op, env: ir.Bindings) -> list[list[int]]:
+        domains = cast(tuple[ir.Shape, ...], self._attr(op, "indices", _domains))
+        return [list(env.shape(domain)) for domain in domains]
 
     def _comprehension(
-        self, op: dict[str, Any], env: Env, values: dict[int, Value], grid: Grid
+        self, op: ir.Op, env: ir.Bindings, values: dict[int, Value], grid: Grid
     ) -> torch.Tensor:
-        region = op["regions"][0]
+        region = op.regions[0]
         inner_grid = Grid(list(grid.sizes))
         inner = dict(values)
-        for arg, sizes in zip(
-            region["args"], self._index_sizes(op["attrs"]["indices"], env), strict=True
-        ):
-            inner[arg["id"]] = inner_grid.add_axes(sizes)
+        for arg, sizes in zip(region.args, self._index_sizes(op, env), strict=True):
+            inner[arg.id] = inner_grid.add_axes(sizes)
         body = cast(torch.Tensor, self.run_region(region, env, inner, inner_grid)[0])
         return inner_grid.expand(body).contiguous()
 
     def _reduce(
-        self, op: dict[str, Any], env: Env, values: dict[int, Value], grid: Grid
+        self, op: ir.Op, env: ir.Bindings, values: dict[int, Value], grid: Grid
     ) -> torch.Tensor:
-        region = op["regions"][0]
+        region = op.regions[0]
         inner_grid = Grid(list(grid.sizes))
         first_new_axis = grid.rank()
         inner = dict(values)
-        for arg, sizes in zip(
-            region["args"], self._index_sizes(op["attrs"]["indices"], env), strict=True
-        ):
-            inner[arg["id"]] = inner_grid.add_axes(sizes)
+        for arg, sizes in zip(region.args, self._index_sizes(op, env), strict=True):
+            inner[arg.id] = inner_grid.add_axes(sizes)
         body = inner_grid.expand(
             cast(torch.Tensor, self.run_region(region, env, inner, inner_grid)[0])
         )
         dims = tuple(range(first_new_axis, inner_grid.rank()))
-        return REDUCTIONS[op["attrs"]["reduce"]](body, dims)
+        return REDUCTIONS[op.attrs["reduce"]](body, dims)
 
     @staticmethod
-    def _generic_dim(callee: dict[str, Any], env: Env, name: str) -> int:
+    def _generic_dim(callee: ir.Function, env: ir.Bindings, name: str) -> int:
         """A dimension generic of the callee, by name, as bound for this call."""
-        for generic in callee["generics"]:
-            if generic["name"] == name and generic["kind"] == "dim":
-                return int(env.dims[int(generic["sym"])])
-        raise PlanError(f"`{callee['name']}` has no dimension generic `{name}`")
+        for generic in callee.generics:
+            if generic.name == name and generic.kind == "dim":
+                return int(env.dims[generic.id])
+        raise PlanError(f"`{callee.name}` has no dimension generic `{name}`")
 
     def _callee_env(
-        self, callee: dict[str, Any], substitution: dict[str, Any], env: Env, operands: list[Value]
-    ) -> Env:
-        callee_env = Env()
-        for symbol, expr in substitution["dims"].items():
-            callee_env.dims[int(symbol)] = env.dim(expr)
-        for symbol, units in substitution["packs"].items():
-            callee_env.packs[int(symbol)] = env.shape(units)
-        for var, spec in substitution["dtypes"].items():
-            callee_env.dtypes[int(var)] = env.dtype_name(spec)
+        self,
+        callee: ir.Function,
+        substitution: ir.Substitution,
+        env: ir.Bindings,
+        operands: list[Value],
+    ) -> ir.Bindings:
+        callee_env = ir.Bindings(
+            {symbol: env.dim(dim) for symbol, dim in substitution.dims.items()},
+            {symbol: env.shape(shape) for symbol, shape in substitution.packs.items()},
+            {var: env.dtype(dtype) for var, dtype in substitution.dtypes.items()},
+        )
         # A method sees its block's bindings through the receiver.
-        if callee["block"] is not None and operands and isinstance(operands[0], BlockInstance):
+        if callee.block is not None and operands and isinstance(operands[0], BlockInstance):
             receiver = operands[0]
             callee_env.dims = {**receiver.env.dims, **callee_env.dims}
             callee_env.packs = {**receiver.env.packs, **callee_env.packs}
             callee_env.dtypes = {**receiver.env.dtypes, **callee_env.dtypes}
         return callee_env
+
+
+@dataclass(frozen=True)
+class _Axis:
+    """One axis of a `slice` operation: a pack taken whole, one position
+    (`squeeze`), or a range."""
+
+    whole: ir.Shape | None = None
+    squeeze: bool = False
+    start: ir.Dim = 0
+    stop: ir.Dim = 0
+    step: int = 1
+
+
+def _slice_axes(data: Any) -> tuple[_Axis, ...]:
+    axes: list[_Axis] = []
+    for axis in cast(list[dict[str, Any]], data):
+        if "whole" in axis:
+            axes.append(_Axis(whole=ir.parse_shape(axis["whole"])))
+        elif axis["squeeze"]:
+            axes.append(_Axis(squeeze=True, start=ir.parse_dim(axis["start"])))
+        else:
+            axes.append(
+                _Axis(
+                    start=ir.parse_dim(axis["start"]),
+                    stop=ir.parse_dim(axis["stop"]),
+                    step=int(axis["step"]),
+                )
+            )
+    return tuple(axes)
+
+
+def _domains(data: Any) -> tuple[ir.Shape, ...]:
+    return tuple(ir.parse_shape(index["domain"]) for index in cast(list[dict[str, Any]], data))

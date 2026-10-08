@@ -24,9 +24,10 @@ from typing import Any
 
 import torch
 
+from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..dtypes import CLASSES
-from ..plan import Env, Plan, PlanError, compile_plan
+from ..plan import PlanError, compile_plan
 from .dtypes import torch_dtype
 from .interp import Interpreter
 from .module import bind_generics, bind_input
@@ -37,7 +38,7 @@ class Function:
 
     def __init__(
         self,
-        plan: Plan,
+        program: ir.Program,
         name: str | None,
         *,
         source: Path,
@@ -45,9 +46,9 @@ class Function:
         numerics: str,
         compile: bool | str | None,
     ) -> None:
-        self.plan = plan
-        self.function = plan.module_entry(name)
-        self.name: str = self.function["name"].rsplit("::", 1)[1]
+        self.program = program
+        self.function = program.module_entry(name)
+        self.name: str = self.function.name.rsplit("::", 1)[1]
         self._source = source
         self._std_root = std_root
         self._numerics = numerics
@@ -59,7 +60,7 @@ class Function:
     @property
     def inputs(self) -> list[str]:
         """The names of the function's inputs, in order."""
-        return [str(argument["name"]) for argument in self.function["body"]["args"]]
+        return [argument.name for argument in self.function.params]
 
     def __call__(self, *inputs: Any, **generics: int | str) -> Any:
         return self.run(list(inputs), generics)
@@ -74,15 +75,15 @@ class Function:
         scalar inputs; `generics` binds by name what the inputs do not
         determine; `compile` overrides `load_function`'s for this call. A
         single result is returned as it is, several as a tuple."""
-        params: list[dict[str, Any]] = self.function["body"]["args"]
+        params = self.function.params
         if len(params) != len(inputs):
             raise PlanError(f"`{self.name}` takes {len(params)} inputs, got {len(inputs)}")
         device = next(
             (value.device for value in inputs if isinstance(value, torch.Tensor)),
             torch.device("cpu"),
         )
-        env = Env()
-        bind_generics(env, self.function["generics"], generics or {})
+        env = ir.Bindings()
+        bind_generics(env, self.function.generics, generics or {})
         # Tensors first: they bind the dtype generics a number's type may name.
         for param, value in zip(params, inputs, strict=True):
             if isinstance(value, torch.Tensor):
@@ -108,57 +109,62 @@ class Function:
     # ---- inputs and generics
 
     def _number(
-        self, param: dict[str, Any], value: Any, env: Env, device: torch.device
+        self, param: ir.Value, value: Any, env: ir.Bindings, device: torch.device
     ) -> torch.Tensor:
-        declared = param["type"]
-        if declared["kind"] != "scalar":
-            raise PlanError(f"input `{param['name']}` is a tensor; pass a torch.Tensor")
+        declared = param.type
+        if not isinstance(declared, ir.ScalarType):
+            raise PlanError(f"input `{param.name}` is a tensor; pass a torch.Tensor")
         if not isinstance(value, bool | int | float):
-            raise PlanError(f"input `{param['name']}` is a scalar; pass a number or a 0-d tensor")
-        return torch.tensor(value, dtype=torch_dtype(env, declared["dtype"]), device=device)
+            raise PlanError(f"input `{param.name}` is a scalar; pass a number or a 0-d tensor")
+        return torch.tensor(value, dtype=torch_dtype(env, declared.dtype), device=device)
 
-    def _check_generics(self, env: Env) -> None:
-        for generic in self.function["generics"]:
-            name = generic["name"]
-            if generic["kind"] == "dim":
-                bound = int(generic["sym"]) in env.dims
-            elif generic["kind"] == "shape":
-                bound = int(generic["sym"]) in env.packs
+    def _check_generics(self, env: ir.Bindings) -> None:
+        for generic in self.function.generics:
+            name = generic.name
+            if generic.kind == "dim":
+                bound = generic.id in env.dims
+            elif generic.kind == "shape":
+                bound = generic.id in env.packs
             else:
-                dtype = env.dtypes.get(int(generic["var"]))
+                dtype = env.dtypes.get(generic.id)
                 bound = dtype is not None
-                if dtype is not None and dtype not in CLASSES[generic.get("class", "any")]:
-                    raise PlanError(f"`{name}` of `{self.name}` is {generic['class']}, not {dtype}")
+                kind = generic.dtype_class or "any"
+                if dtype is not None and dtype not in CLASSES[kind]:
+                    raise PlanError(f"`{name}` of `{self.name}` is {kind}, not {dtype}")
             if not bound:
                 raise PlanError(
                     f"cannot determine `{name}` of `{self.name}` from its inputs; "
                     f"give it by name, `{self.name}(..., {name}=...)`"
                 )
-        for constraint in self.function["constraints"]:
-            if not env.relation_holds(constraint):
+        for constraint in self.function.constraints:
+            if not env.holds(constraint):
                 raise PlanError(f"the inputs break the `where` clause of `{self.name}`")
 
     # ---- interpreted
 
     def _interpreter(self, device: torch.device) -> Interpreter:
         if device not in self._interpreters:
-            self._interpreters[device] = Interpreter(self.plan, device)
+            self._interpreters[device] = Interpreter(self.program, device)
         return self._interpreters[device]
 
     # ---- generated
 
     def _call_generated(
-        self, env: Env, values: list[torch.Tensor], device: torch.device, backend: str | None
+        self,
+        env: ir.Bindings,
+        values: list[torch.Tensor],
+        device: torch.device,
+        backend: str | None,
     ) -> Any:
         bindings: dict[str, str] = {}
-        for generic in self.function["generics"]:
-            if generic["kind"] == "dim":
-                bindings[generic["name"]] = str(env.dims[int(generic["sym"])])
-            elif generic["kind"] == "dtype":
-                bindings[generic["name"]] = env.dtypes[int(generic["var"])]
+        for generic in self.function.generics:
+            if generic.kind == "dim":
+                bindings[generic.name] = str(env.dims[generic.id])
+            elif generic.kind == "dtype":
+                bindings[generic.name] = env.dtypes[generic.id]
             else:
                 # A shape pack's dimensions, as `linnet torch --bind S=2,3` takes them.
-                bindings[generic["name"]] = ",".join(map(str, env.packs[int(generic["sym"])]))
+                bindings[generic.name] = ",".join(map(str, env.packs[generic.id]))
         key = (tuple(sorted(bindings.items())), device, backend)
         generated = self._generated.get(key)
         if generated is None:
@@ -236,11 +242,11 @@ def load_function(
     """
     if numerics not in ("exact", "equivalent", "fast"):
         raise PlanError('numerics must be "exact", "equivalent", or "fast"')
-    plan = compile_plan(
+    program = compile_plan(
         source, std_root=std_root, optimize=optimize, numerics=numerics, functions=True
     )
     return Function(
-        plan,
+        program,
         name,
         source=Path(source),
         std_root=std_root,

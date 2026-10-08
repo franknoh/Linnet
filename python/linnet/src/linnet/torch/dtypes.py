@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 
+from .. import ir
 from ..dtypes import BY_SAFETENSORS, DTYPES
-from ..plan import Env
 
 TORCH_DTYPES: dict[str, torch.dtype] = {
     name: getattr(torch, info.torch) for name, info in DTYPES.items()
@@ -25,6 +23,6 @@ FROM_SAFETENSORS: dict[str, torch.dtype] = {
 }
 
 
-def torch_dtype(env: Env, spec: str | dict[str, Any]) -> torch.dtype:
-    """The PyTorch dtype of a plan dtype, with dtype generics resolved by `env`."""
-    return TORCH_DTYPES[env.dtype_name(spec)]
+def torch_dtype(bindings: ir.Bindings, dtype: ir.DType) -> torch.dtype:
+    """The PyTorch dtype of a plan dtype, its generics resolved by `bindings`."""
+    return TORCH_DTYPES[bindings.dtype(dtype)]

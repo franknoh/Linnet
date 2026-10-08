@@ -9,7 +9,8 @@ from typing import Any
 
 import torch
 
-from ..plan import Plan, PlanError, compile_plan
+from .. import ir
+from ..plan import PlanError, compile_plan
 from .causal_lm import CausalLM
 from .compiled import CompiledLinnetModule
 from .export import ExportError, ExportResult, export_linnet
@@ -41,7 +42,6 @@ __all__ = [
     "LinnetModule",
     "Pipeline",
     "Placement",
-    "Plan",
     "PlanError",
     "bind_weights",
     "compile_plan",
@@ -174,8 +174,7 @@ def load(
     # process; any other is split from the outside, as DTensors.
     mesh: Any = (
         tensor_parallel
-        if tensor_parallel is not None
-        and any(g["name"] == "Shards" for g in plan.root.get("generics", []))
+        if tensor_parallel is not None and any(g.name == "Shards" for g in plan.root.generics)
         else None
     )
     if mesh is not None:
@@ -219,7 +218,7 @@ def load(
 
 
 def _load_placed(
-    plan: Plan,
+    plan: ir.Program,
     source: str | Path,
     generics: Mapping[str, int | str],
     *,
