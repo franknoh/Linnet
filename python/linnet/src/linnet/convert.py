@@ -30,6 +30,7 @@ from typing import Any, cast
 from . import ir, nest
 from .compiler import LinnetError
 from .dtypes import from_safetensors
+from .hf import DECODER_KEYS, LLAMA3_SCALING
 from .weights import header_tensors, read_bindings, write_bindings
 
 Config = Mapping[str, Any]
@@ -69,16 +70,12 @@ def _expect(config: Config, key: str, expected: Any, default: Any = None) -> lis
 
 def _decoder(config: Config) -> dict[str, int]:
     heads = int(config["num_attention_heads"])
-    return {
-        "Vocab": int(config["vocab_size"]),
-        "H": int(config["hidden_size"]),
-        "Heads": heads,
-        "KvHeads": int(config.get("num_key_value_heads") or heads),
-        "Inner": int(config["intermediate_size"]),
-        "Layers": int(config["num_hidden_layers"]),
-        "Batch": 1,
-        "MaxSeq": min(int(config.get("max_position_embeddings", MAX_SEQ)), MAX_SEQ),
+    defaults = {"KvHeads": heads, "MaxSeq": MAX_SEQ}
+    generics = {
+        name: int(config.get(key) or defaults[name]) if name in defaults else int(config[key])
+        for name, key in DECODER_KEYS.items()
     }
+    return generics | {"Batch": 1, "MaxSeq": min(generics["MaxSeq"], MAX_SEQ)}
 
 
 def _head_dim(config: Config) -> list[str]:
@@ -97,6 +94,13 @@ def _rope_type(config: Config) -> str | None:
     return str(table.get("rope_type", table.get("type")))
 
 
+def _rope_problems(config: Config, *computed: str) -> list[str]:
+    """A rope scaling other than none and the `computed` ones."""
+    if _rope_type(config) in (None, "default", *computed):
+        return []
+    return [f"rope scaling `{_rope_type(config)}` is not one the source computes"]
+
+
 def _theta(config: Config) -> float:
     return float(config.get("rope_theta", 10000.0))
 
@@ -109,12 +113,7 @@ def _llama_constants(config: Config) -> dict[str, dict[str, float]]:
     rope: dict[str, float] = {"THETA": _theta(config)}
     if _rope_type(config) == "llama3":
         scaling = cast(Mapping[str, Any], config["rope_scaling"])
-        rope |= {
-            "FACTOR": float(scaling["factor"]),
-            "LOW_FREQ_FACTOR": float(scaling["low_freq_factor"]),
-            "HIGH_FREQ_FACTOR": float(scaling["high_freq_factor"]),
-            "ORIGINAL_MAX_POSITION_EMBEDDINGS": float(scaling["original_max_position_embeddings"]),
-        }
+        rope |= {name: float(scaling[key]) for key, name in LLAMA3_SCALING.items()}
     return {"src/rope.linnet": rope}
 
 
@@ -124,41 +123,30 @@ def _llama_problems(config: Config) -> list[str]:
         + _expect(config, "rms_norm_eps", 1e-5)
         + _expect(config, "pretraining_tp", 1, 1)
         + _head_dim(config)
+        + _rope_problems(config, "llama3")
     )
-    if _rope_type(config) not in (None, "llama3", "default"):
-        problems.append(f"rope scaling `{_rope_type(config)}` is not one the source computes")
     window = config.get("sliding_window")
     if window is not None and int(window) < int(config.get("max_position_embeddings", 0)):
         problems.append(f"`sliding_window` is {window}; the source attends to every position")
     return problems
 
 
-def _qwen2_problems(config: Config) -> list[str]:
-    problems = (
+def _qwen_problems(config: Config) -> list[str]:
+    return (
         _expect(config, "hidden_act", "silu")
         + _expect(config, "rms_norm_eps", 1e-6)
         + _expect(config, "use_sliding_window", False, False)
-        + _head_dim(config)
+        + _rope_problems(config)
     )
-    if _rope_type(config) not in (None, "default"):
-        problems.append(f"rope scaling `{_rope_type(config)}` is not one the source computes")
-    return problems
+
+
+def _qwen2_problems(config: Config) -> list[str]:
+    return _qwen_problems(config) + _head_dim(config)
 
 
 def _qwen3_generics(config: Config) -> dict[str, int]:
     width = int(config["hidden_size"]) // int(config["num_attention_heads"])
     return _decoder(config) | {"HeadDim": int(config.get("head_dim") or width)}
-
-
-def _qwen3_problems(config: Config) -> list[str]:
-    problems = (
-        _expect(config, "hidden_act", "silu")
-        + _expect(config, "rms_norm_eps", 1e-6)
-        + _expect(config, "use_sliding_window", False, False)
-    )
-    if _rope_type(config) not in (None, "default"):
-        problems.append(f"rope scaling `{_rope_type(config)}` is not one the source computes")
-    return problems
 
 
 def _phi3_generics(config: Config) -> dict[str, int]:
@@ -181,12 +169,11 @@ def _phi3_problems(config: Config) -> list[str]:
         + _expect(config, "rms_norm_eps", 1e-5)
         + _expect(config, "partial_rotary_factor", 1.0, 1.0)
         + _head_dim(config)
+        + _rope_problems(config)
     )
     heads = config["num_attention_heads"]
     if int(config.get("num_key_value_heads") or heads) != int(heads):
         problems.append("the source has as many key/value heads as query heads")
-    if _rope_type(config) not in (None, "default"):
-        problems.append(f"rope scaling `{_rope_type(config)}` is not one the source computes")
     return problems
 
 
@@ -234,7 +221,7 @@ FAMILIES: dict[str, Family] = {
         lambda _: "qwen3-8b",
         _qwen3_generics,
         lambda config: {"src/rope.linnet": {"THETA": _theta(config)}},
-        _qwen3_problems,
+        _qwen_problems,
     ),
     "phi3": Family(
         lambda _: "phi-3-mini-4k-instruct", _phi3_generics, _phi3_constants, _phi3_problems

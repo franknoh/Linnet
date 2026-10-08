@@ -114,19 +114,28 @@ class Family:
         return detail
 
 
+# The Llama-shaped families' generics and the config keys that hold them
+# (`linnet.convert` reads them back).
+DECODER_KEYS = {
+    "Vocab": "vocab_size",
+    "H": "hidden_size",
+    "Heads": "num_attention_heads",
+    "KvHeads": "num_key_value_heads",
+    "Inner": "intermediate_size",
+    "Layers": "num_hidden_layers",
+    "MaxSeq": "max_position_embeddings",
+}
+
+
 def _decoder_config(
     generics: Mapping[str, int | str], constants: Mapping[str, float], traits: Traits
 ) -> dict[str, Any]:
     """What the Llama-shaped families' configs share."""
     dtype = str(generics.get("T", "bf16"))
+    # Without `KvHeads` (Phi-3), every query head has its own.
+    sizes = {**generics, "KvHeads": generics.get("KvHeads", generics["Heads"])}
     return {
-        "vocab_size": generics["Vocab"],
-        "hidden_size": generics["H"],
-        "intermediate_size": generics["Inner"],
-        "num_hidden_layers": generics["Layers"],
-        "num_attention_heads": generics["Heads"],
-        "num_key_value_heads": generics.get("KvHeads", generics["Heads"]),
-        "max_position_embeddings": generics["MaxSeq"],
+        **{key: sizes[name] for name, key in DECODER_KEYS.items()},
         "rope_theta": constants.get("THETA", 10000.0),
         "rms_norm_eps": traits.eps,
         "hidden_act": "silu",
@@ -153,7 +162,7 @@ def _llama_config(
 # Llama 3.1's `llama3` rope scaling, when the program defines all four of
 # its constants (the Nest card's `crate.rope` does); without it a server
 # would rotate with the base frequency alone and drift past 8192 positions.
-_LLAMA3_SCALING = {
+LLAMA3_SCALING = {
     "factor": "FACTOR",
     "low_freq_factor": "LOW_FREQ_FACTOR",
     "high_freq_factor": "HIGH_FREQ_FACTOR",
@@ -162,10 +171,10 @@ _LLAMA3_SCALING = {
 
 
 def _rope_scaling(constants: Mapping[str, float]) -> dict[str, Any]:
-    if not all(name in constants for name in _LLAMA3_SCALING.values()):
+    if not all(name in constants for name in LLAMA3_SCALING.values()):
         return {}
     scaling: dict[str, Any] = {"rope_type": "llama3"}
-    for key, name in _LLAMA3_SCALING.items():
+    for key, name in LLAMA3_SCALING.items():
         value = constants[name]
         scaling[key] = int(value) if key == "original_max_position_embeddings" else value
     return {"rope_scaling": scaling}
