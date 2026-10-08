@@ -63,9 +63,7 @@ public:
     std::string zero_name(ScalarKind dtype) {
         auto& cached = zeros_[dtype];
         if (cached.empty()) {
-            Literal zero;
-            zero.kind = Literal::Kind::Real;
-            cached = constant(zero, dtype);
+            cached = constant(Literal::of_real(0.0), dtype);
         }
         return cached;
     }

@@ -341,10 +341,7 @@ public:
                 at[0]->dtype == ScalarKind::F32
                     ? *at[0]
                     : TensorInfo{convert(*at[0], ScalarKind::F32), full, ScalarKind::F32};
-            Literal two;
-            two.kind = Literal::Kind::Real;
-            two.real = 2.0;
-            const TensorInfo exponent{constant(two, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo exponent = scalar_constant(Literal::of_real(2.0), ScalarKind::F32);
             const TensorInfo squares{
                 node("Pow", {x, exponent}, "", full, ScalarKind::F32), full, ScalarKind::F32};
             const TensorInfo mean{node("ReduceMean",
@@ -354,10 +351,8 @@ public:
                                        ScalarKind::F32),
                                   reduced,
                                   ScalarKind::F32};
-            Literal small;
-            small.kind = Literal::Kind::Real;
-            small.real = std::stod(epsilon);
-            const TensorInfo eps{constant(small, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo eps =
+                scalar_constant(Literal::of_real(std::stod(epsilon)), ScalarKind::F32);
             const TensorInfo shifted{
                 node("Add", {mean, eps}, "", reduced, ScalarKind::F32), reduced, ScalarKind::F32};
             const TensorInfo root{
@@ -391,26 +386,22 @@ public:
             const TensorInfo x =
                 at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), full, kind};
             const TensorInfo grouped{reshape(x, rows), rows, kind};
-            Literal one;
-            one.kind = Literal::Kind::Real;
-            one.real = 1.0;
-            const Literal zero_value;
             const Dims per_group{*groups};
-            const TensorInfo ones{node("Expand",
-                                       {{constant(one, kind), {}, kind}, int64_vector(per_group)},
-                                       "",
-                                       per_group,
-                                       kind),
-                                  per_group,
-                                  kind};
-            const TensorInfo zeros{
+            const TensorInfo ones{
                 node("Expand",
-                     {{constant(zero_value, kind), {}, kind}, int64_vector(per_group)},
+                     {scalar_constant(Literal::of_real(1.0), kind), int64_vector(per_group)},
                      "",
                      per_group,
                      kind),
                 per_group,
                 kind};
+            const TensorInfo zeros{node("Expand",
+                                        {scalar_constant(Literal{}, kind), int64_vector(per_group)},
+                                        "",
+                                        per_group,
+                                        kind),
+                                   per_group,
+                                   kind};
             const TensorInfo normalized{node("InstanceNormalization",
                                              {grouped, ones, zeros},
                                              "epsilon = " + epsilon,
@@ -529,10 +520,7 @@ public:
                 const Dims flat{mask_batch, 1, rows, keys};
                 m = {reshape(m, flat), flat, mask->dtype};
             }
-            Literal lowest;
-            lowest.kind = Literal::Kind::Real;
-            lowest.real = -1e30;
-            const TensorInfo fill{constant(lowest, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo fill = scalar_constant(Literal::of_real(-1e30), ScalarKind::F32);
             scores = {node("Where", {m, scores, fill}, "", scores_shape, ScalarKind::F32),
                       scores_shape,
                       ScalarKind::F32};
@@ -797,14 +785,9 @@ public:
     }
 
     std::string iota(std::int64_t length) override {
-        const Literal zero;
-        Literal limit;
-        limit.integer = length;
-        Literal one;
-        one.integer = 1;
-        const TensorInfo start{constant(zero, ScalarKind::I64), {}, ScalarKind::I64};
-        const TensorInfo stop{constant(limit, ScalarKind::I64), {}, ScalarKind::I64};
-        const TensorInfo delta{constant(one, ScalarKind::I64), {}, ScalarKind::I64};
+        const TensorInfo start = scalar_constant(Literal::of_integer(0), ScalarKind::I64);
+        const TensorInfo stop = scalar_constant(Literal::of_integer(length), ScalarKind::I64);
+        const TensorInfo delta = scalar_constant(Literal::of_integer(1), ScalarKind::I64);
         return node("Range", {start, stop, delta}, "", {length}, ScalarKind::I64);
     }
 
@@ -831,9 +814,8 @@ public:
         TensorInfo position = column(0);
         std::int64_t flat = source.shape.front();
         for (std::size_t j = 1; j < depth; ++j) {
-            Literal extent;
-            extent.integer = source.shape[j];
-            const TensorInfo size{constant(extent, ScalarKind::I64), {}, ScalarKind::I64};
+            const TensorInfo size =
+                scalar_constant(Literal::of_integer(source.shape[j]), ScalarKind::I64);
             const TensorInfo scaled{
                 node("Mul", {position, size}, "", rows, ScalarKind::I64), rows, ScalarKind::I64};
             position = {

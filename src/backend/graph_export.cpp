@@ -743,15 +743,11 @@ private:
     }
 
     Val constant_int(std::int64_t value, ScalarKind dtype) {
-        Literal literal;
+        Literal literal = Literal::of_integer(value);
         if (dtype == ScalarKind::Bool) {
-            literal.kind = Literal::Kind::Boolean;
-            literal.integer = value != 0 ? 1 : 0;
+            literal = {Literal::Kind::Boolean, value != 0 ? 1 : 0, 0.0};
         } else if (is_float(dtype)) {
-            literal.kind = Literal::Kind::Real;
-            literal.real = static_cast<double>(value);
-        } else {
-            literal.integer = value;
+            literal = Literal::of_real(static_cast<double>(value));
         }
         return constant_scalar(literal, dtype);
     }
@@ -1122,10 +1118,7 @@ private:
             define(op, constant_int(a.integer, ScalarKind::Bool));
             return;
         case ir::OpKind::ConstFloat: {
-            Literal literal;
-            literal.kind = Literal::Kind::Real;
-            literal.real = a.number;
-            define(op, constant_scalar(literal, result_dtype(op)));
+            define(op, constant_scalar(Literal::of_real(a.number), result_dtype(op)));
             return;
         }
         case ir::OpKind::ConstDim:

@@ -357,7 +357,7 @@ public:
             init.integer = 1;
             break;
         }
-        const TensorInfo initial{constant(init, body.dtype), {}, body.dtype};
+        const TensorInfo initial = scalar_constant(init, body.dtype);
         return emit("reduce",
                     {body, initial},
                     "dimensions = " + i64_array(dims),
@@ -412,10 +412,7 @@ public:
         if (implementation == "torch.Tensor.index_copy" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {
             // `dynamic_update_slice` takes one start index per dimension.
-            Literal zero;
-            zero.kind = Literal::Kind::Integer;
-            zero.integer = 0;
-            const TensorInfo origin{constant(zero, ScalarKind::I32), {}, ScalarKind::I32};
+            const TensorInfo origin = scalar_constant(Literal::of_integer(0), ScalarKind::I32);
             const std::vector<TensorInfo> arguments{*at[0], *at[1], origin, origin, *at[2], origin};
             return emit("dynamic_update_slice", arguments, "", shape, dtype);
         }
@@ -424,10 +421,7 @@ public:
             at[2]->shape.empty()) {
             // `write_slot`: one row's span as a `dynamic_update_slice`.
             // (`write_rows` would be a scatter; its canonical select stands.)
-            Literal zero;
-            zero.kind = Literal::Kind::Integer;
-            zero.integer = 0;
-            const TensorInfo origin{constant(zero, ScalarKind::I32), {}, ScalarKind::I32};
+            const TensorInfo origin = scalar_constant(Literal::of_integer(0), ScalarKind::I32);
             const std::vector<TensorInfo> arguments{*at[0], *at[1], *at[2], origin, *at[3], origin};
             return emit("dynamic_update_slice", arguments, "", shape, dtype);
         }
@@ -491,9 +485,7 @@ public:
             }
             // The padding holds the initial value, the lowest there is, so
             // it never wins a window.
-            Literal lowest;
-            lowest.kind = Literal::Kind::Lowest;
-            const TensorInfo initial{constant(lowest, dtype), {}, dtype};
+            const TensorInfo initial = scalar_constant(Literal::of(Literal::Kind::Lowest), dtype);
             const std::string p = std::to_string(*pad);
             const std::string attributes =
                 "padding = dense<[[0, 0], [0, 0], [" + p + ", " + p + "], [" + p + ", " + p +
@@ -817,10 +809,7 @@ private:
                   scores_shape,
                   f32};
         if (mask != nullptr) {
-            Literal lowest;
-            lowest.kind = Literal::Kind::Real;
-            lowest.real = -1e30;
-            const TensorInfo fill{constant(lowest, f32), {}, f32};
+            const TensorInfo fill = scalar_constant(Literal::of_real(-1e30), f32);
             // A shared [Q, K] mask, or one per sequence ([B, Q, K]).
             const Dims mask_axes = mask->shape.size() == 3 ? Dims{0, 2, 3} : Dims{2, 3};
             const TensorInfo spread_mask{

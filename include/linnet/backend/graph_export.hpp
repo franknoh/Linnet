@@ -80,6 +80,10 @@ struct Literal {
     Kind kind = Kind::Integer;
     std::int64_t integer = 0;
     double real = 0.0;
+
+    static Literal of_integer(std::int64_t value) { return {Kind::Integer, value, 0.0}; }
+    static Literal of_real(double value) { return {Kind::Real, 0, value}; }
+    static Literal of(Kind kind) { return {kind, 0, 0.0}; }
 };
 
 // One graph format. Each method appends an operation and returns the name
@@ -99,6 +103,10 @@ public:
     state(const std::string& path, const Dims& shape, sema::ScalarKind dtype) = 0;
 
     virtual std::string constant(const Literal& literal, sema::ScalarKind dtype) = 0;
+    // A scalar `constant`, as an operand.
+    TensorInfo scalar_constant(const Literal& literal, sema::ScalarKind dtype) {
+        return {constant(literal, dtype), {}, dtype};
+    }
     virtual std::string elementwise(Elementwise kind,
                                     const std::vector<TensorInfo>& operands,
                                     const Dims& shape,
