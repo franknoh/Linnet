@@ -1,6 +1,8 @@
 #include "linnet/sema/types.hpp"
 
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace linnet::sema {
@@ -32,6 +34,36 @@ std::optional<DTypeClass> parse_dtype_class_key(std::string_view key) {
         }
     }
     return std::nullopt;
+}
+
+IntegerLimits integer_limits(ScalarKind kind) {
+    const auto of = [](auto type) {
+        using T = decltype(type);
+        return IntegerLimits{static_cast<std::int64_t>(std::numeric_limits<T>::min()),
+                             static_cast<std::uint64_t>(std::numeric_limits<T>::max())};
+    };
+    switch (kind) {
+    case ScalarKind::Bool:
+        return {0, 1};
+    case ScalarKind::I8:
+        return of(std::int8_t{});
+    case ScalarKind::I16:
+        return of(std::int16_t{});
+    case ScalarKind::I32:
+        return of(std::int32_t{});
+    case ScalarKind::I64:
+        return of(std::int64_t{});
+    case ScalarKind::U8:
+        return of(std::uint8_t{});
+    case ScalarKind::U16:
+        return of(std::uint16_t{});
+    case ScalarKind::U32:
+        return of(std::uint32_t{});
+    case ScalarKind::U64:
+        return of(std::uint64_t{});
+    default:
+        return {};
+    }
 }
 
 std::string_view scalar_name(ScalarKind kind) {

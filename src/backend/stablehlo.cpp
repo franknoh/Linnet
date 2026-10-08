@@ -66,16 +66,8 @@ std::string lowest(ScalarKind dtype) {
         return "0xFFF0000000000000";
     case ScalarKind::Bool:
         return "false";
-    case ScalarKind::I8:
-        return "-128";
-    case ScalarKind::I16:
-        return "-32768";
-    case ScalarKind::I32:
-        return "-2147483648";
-    case ScalarKind::I64:
-        return "-9223372036854775808";
     default:
-        return "0";
+        return std::to_string(sema::integer_limits(dtype).lowest);
     }
 }
 
@@ -91,24 +83,9 @@ std::string highest(ScalarKind dtype) {
         return "0x7FF0000000000000";
     case ScalarKind::Bool:
         return "true";
-    case ScalarKind::I8:
-        return "127";
-    case ScalarKind::I16:
-        return "32767";
-    case ScalarKind::I32:
-        return "2147483647";
-    case ScalarKind::I64:
-        return "9223372036854775807";
-    case ScalarKind::U8:
-        return "255";
-    case ScalarKind::U16:
-        return "65535";
-    case ScalarKind::U32:
-        return "4294967295";
-    case ScalarKind::U64:
-        return "18446744073709551615";
+    default:
+        return std::to_string(sema::integer_limits(dtype).highest);
     }
-    return "0";
 }
 
 const char* elementwise_name(Elementwise kind) {

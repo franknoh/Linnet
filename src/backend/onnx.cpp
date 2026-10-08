@@ -993,37 +993,13 @@ private:
     }
 
     static std::int64_t lowest_integer(ScalarKind dtype) {
-        switch (dtype) {
-        case ScalarKind::I8:
-            return std::numeric_limits<std::int8_t>::min();
-        case ScalarKind::I16:
-            return std::numeric_limits<std::int16_t>::min();
-        case ScalarKind::I32:
-            return std::numeric_limits<std::int32_t>::min();
-        case ScalarKind::I64:
-            return std::numeric_limits<std::int64_t>::min();
-        default:
-            return 0;
-        }
+        return sema::integer_limits(dtype).lowest;
     }
 
+    // ONNX's text holds an int64: u64's largest is cut to int64's.
     static std::int64_t highest_integer(ScalarKind dtype) {
-        switch (dtype) {
-        case ScalarKind::I8:
-            return std::numeric_limits<std::int8_t>::max();
-        case ScalarKind::I16:
-            return std::numeric_limits<std::int16_t>::max();
-        case ScalarKind::I32:
-            return std::numeric_limits<std::int32_t>::max();
-        case ScalarKind::U8:
-            return std::numeric_limits<std::uint8_t>::max();
-        case ScalarKind::U16:
-            return std::numeric_limits<std::uint16_t>::max();
-        case ScalarKind::U32:
-            return std::numeric_limits<std::uint32_t>::max();
-        default:
-            return std::numeric_limits<std::int64_t>::max();
-        }
+        constexpr auto most = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        return static_cast<std::int64_t>(std::min(sema::integer_limits(dtype).highest, most));
     }
 
     // `Constant <value = float[2] {1.0, 2.0}> ()`; a 0-d tensor omits the
