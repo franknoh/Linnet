@@ -156,6 +156,14 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.paged_attention",
          fast,
          {"key/value heads divide query heads", "every page a row reads lies in the pool"}},
+        // The same over the pool for prompt tokens, each page read once for
+        // the tokens that see it.
+        {"std.nn.attention::paged_prefill_attention",
+         "linnet.paged_prefill_attention",
+         fast,
+         {"key/value heads divide query heads",
+          "every page a row reads lies in the pool",
+          "a page holds the same positions in every row that lists it"}},
         {"std.nn.attention::grouped_attention",
          "torch.nn.functional.scaled_dot_product_attention(enable_gqa)(input dtype)",
          fast,

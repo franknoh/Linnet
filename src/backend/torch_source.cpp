@@ -487,6 +487,32 @@ public:
                           name(3) + ", " + name(4) + ", " + scalar(5) + ", " +
                           std::to_string(*size) + ")");
         }
+        if (implementation_base == "linnet.paged_prefill_attention" && operands.size() == 7 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4] &&
+            operands[5]) {
+            // `linnet.torch.paged.prefill`: FlexAttention over the pool, each
+            // block of tokens over the pages its rows see. Which pages those
+            // are is the same for every layer of the pass: listed once.
+            const auto size = call_generic("Size");
+            const auto pool = call_generic("N");
+            if (!size || !pool) {
+                return std::nullopt;
+            }
+            paged_helper_ = true;
+            const std::string sizes = std::to_string(*pool) + ", " + std::to_string(*size);
+            const std::string key_of = name(3) + "/" + name(4) + "/" + name(5) + "/" + sizes;
+            auto found = paged_blocks_.find(key_of);
+            if (found == paged_blocks_.end()) {
+                found = paged_blocks_
+                            .emplace(key_of,
+                                     define("_paged_prefill_blocks(" + name(3) + ", " + name(4) +
+                                            ", " + name(5) + ", " + sizes + ")"))
+                            .first;
+            }
+            return define("_paged_prefill(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ", " +
+                          std::to_string(*size) + ", " + found->second + ")");
+        }
         if (implementation_base == "linnet.sink_attention" && operands.size() == 6 && operands[0] &&
             operands[1] && operands[5]) {
             // FlexAttention under `torch.compile` where its blocks pay off, as
@@ -692,7 +718,9 @@ public:
             out += "from linnet.torch.fsdp import gather as _gather\n\n";
         }
         if (paged_helper_) {
-            out += "from linnet.torch.paged import attend as _paged_attend\n\n";
+            out += "from linnet.torch.paged import attend as _paged_attend\n";
+            out += "from linnet.torch.paged import prefill as _paged_prefill\n";
+            out += "from linnet.torch.paged import prefill_blocks as _paged_prefill_blocks\n\n";
         }
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1685,18 +1713,19 @@ private:
     bool fuse_ = true;    // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
-    bool int4_helpers_ = false;                      // `_int4_pack` and `_int4_linear` are used
-    bool experts_helper_ = false;                    // `_linear_experts` is used
-    bool flex_helpers_ = false;                      // `_flex_blocks` and `_attend` are used
-    bool sink_helper_ = false;                       // `_sink_attend` is used
-    bool shards_helper_ = false;                     // `_all_reduce` is used
-    bool mxfp4_helper_ = false;                      // `_mxfp4_experts` is used
-    bool mxfp4_grouped_helper_ = false;              // `_mxfp4_grouped` is used
-    bool loss_helper_ = false;                       // `_linear_cross_entropy` is used
-    bool gather_helper_ = false;                     // `_gather` joins sharded parameters
-    bool paged_helper_ = false;                      // `_paged_attend` is used
-    std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
-    std::map<ScalarKind, std::string> zeros_;        // per-dtype zero constants
+    bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
+    bool experts_helper_ = false;                     // `_linear_experts` is used
+    bool flex_helpers_ = false;                       // `_flex_blocks` and `_attend` are used
+    bool sink_helper_ = false;                        // `_sink_attend` is used
+    bool shards_helper_ = false;                      // `_all_reduce` is used
+    bool mxfp4_helper_ = false;                       // `_mxfp4_experts` is used
+    bool mxfp4_grouped_helper_ = false;               // `_mxfp4_grouped` is used
+    bool loss_helper_ = false;                        // `_linear_cross_entropy` is used
+    bool gather_helper_ = false;                      // `_gather` joins sharded parameters
+    bool paged_helper_ = false;                       // `_paged_attend` is used
+    std::map<std::string, std::string> flex_blocks_;  // mask and sizes -> its `_flex_blocks`
+    std::map<std::string, std::string> paged_blocks_; // table, rows, positions, sizes -> blocks
+    std::map<ScalarKind, std::string> zeros_;         // per-dtype zero constants
     std::vector<std::vector<std::string>> loop_names_;
     std::size_t loops_ = 0;
 };
