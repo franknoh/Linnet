@@ -32,7 +32,7 @@ from .. import ir
 from ..compiler import LinnetError
 from ..dtypes import BY_ONNX, DTYPES
 from ..dtypes import dtype as dtype_info
-from ..plan import bind_shape_names, compile_plan
+from ..plan import compile_plan
 from ..weights import from_bf16_bits, to_bf16_bits
 from .export import export_model
 
@@ -83,6 +83,7 @@ class OnnxModel:
         self._signatures = {f.short_name: f for f in program.entries()}
         self.entries = list(self._signatures)
         self.generics = dict(options["generics"])
+        self._root = ir.bind_generics(program.root.generics, self.generics)
         self._sessions: dict[tuple[Any, ...], _Session] = {}
         self._weights: dict[str, Any] = {}  # path -> OrtValue on the device
         self._host: dict[str, tuple[np.ndarray, Any]] = {}  # path -> (bytes, CPU OrtValue)
@@ -521,14 +522,12 @@ class OnnxModel:
             raise LinnetError(f"entry `{name}` takes {len(arguments)} inputs, got {len(inputs)}")
         # The root's generics are bound already: inputs are checked against
         # them, and only the entry's own are returned.
-        bindings: dict[str, Any] = dict(self.generics)
+        env = self._root.copy()
         for argument, value in zip(arguments, inputs, strict=True):
-            declared = argument.type
-            if not isinstance(declared, ir.TensorType):
-                continue
-            shape = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
-            bind_shape_names(declared.shape, [int(d) for d in shape], argument.name, bindings)
-        return {name: size for name, size in bindings.items() if name not in self.generics}
+            if isinstance(argument.type, ir.TensorType):
+                shape = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
+                ir.bind_input(env, argument, [int(d) for d in shape], None)
+        return dict(ir.bind_names(env, self._signatures[name].generics))
 
 
 class _Session:

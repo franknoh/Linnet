@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 
@@ -84,6 +84,27 @@ def bind_arguments(bindings: Mapping[str, object]) -> list[str]:
     return [part for name, value in bindings.items() for part in ("--bind", f"{name}={value}")]
 
 
+# How exactly compiled kernels follow the canonical decompositions (`linnet
+# plan --numerics`).
+NUMERICS = ("exact", "equivalent", "fast")
+
+
+def check_numerics(numerics: str) -> None:
+    """Raises a `PlanError` unless `numerics` is one of `NUMERICS`."""
+    if numerics not in NUMERICS:
+        raise PlanError('numerics must be "exact", "equivalent", or "fast"')
+
+
 def std_arguments(std_root: str | Path | None) -> list[str]:
     """`--std <dir>` when a standard library directory is given."""
     return [] if std_root is None else ["--std", str(std_root)]
+
+
+def lora_arguments(lora: tuple[Sequence[str], int, float] | None) -> list[str]:
+    """`--lora` for each pattern of `(patterns, rank, alpha)`, with its rank
+    and alpha; none without adapters."""
+    if lora is None:
+        return []
+    patterns, rank, alpha = lora
+    arguments = [part for pattern in patterns for part in ("--lora", pattern)]
+    return [*arguments, "--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]

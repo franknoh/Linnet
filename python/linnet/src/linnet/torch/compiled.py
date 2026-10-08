@@ -23,10 +23,10 @@ from typing import Any, cast
 import torch
 
 from .. import ir
-from ..compiler import bind_arguments, run_compiler, std_arguments
+from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import import_generated
 from ..plan import PlanError
-from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
+from .module import BlockModule, LinnetModule, bind_input, owner_of
 from .placement import Placement
 from .regions import regional
 
@@ -479,25 +479,13 @@ class CompiledLinnetModule(LinnetModule):
     ) -> dict[str, str]:
         """Every generic the export needs: the root's, then the entry's from
         `given` and the input shapes, by name."""
-        bindings = {name: str(value) for name, value in self._generic_arguments.items()}
         env = self.root.env.copy()
-        bind_generics(env, function.generics, given)
+        ir.bind_named(env, function.generics, given)
         for param, value in zip(function.params, inputs, strict=True):
             bind_input(env, param, value)
-        for generic in function.generics:
-            if generic.kind == "dim":
-                if generic.id not in env.dims:
-                    raise PlanError(f"cannot determine `{generic.name}` from the inputs")
-                bindings[generic.name] = str(env.dims[generic.id])
-            elif generic.kind == "dtype":
-                if generic.id in env.dtypes:
-                    bindings[generic.name] = env.dtypes[generic.id]
-            else:
-                if generic.id not in env.packs:
-                    raise PlanError(f"cannot determine `{generic.name}` from the inputs")
-                # A shape pack's dimensions, as `linnet torch --bind S=2,3` takes them.
-                bindings[generic.name] = ",".join(map(str, env.packs[generic.id]))
-        return bindings
+        ir.require_bound(env, function)
+        root = {name: str(value) for name, value in self._generic_arguments.items()}
+        return {**root, **ir.bind_names(env, function.generics)}
 
     def _absent_optionals(self) -> tuple[str, ...]:
         """Every optional parameter the bound weights leave out, by path.
@@ -539,18 +527,10 @@ class CompiledLinnetModule(LinnetModule):
         command = ["torch", "--root", self.program.root.name, "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
-        absent = self._absent_optionals()
-        if absent:
-            listing = self._work / "absent.txt"
-            listing.write_text("\n".join(absent) + "\n", encoding="utf-8")
-            command += ["--absent-file", str(listing)]
+        command += ["--absent-file", "-"]
         command += std_arguments(self._std_root)
         command += bind_arguments(bindings)
-        if self.lora is not None:
-            patterns, rank, alpha = self.lora
-            for pattern in patterns:
-                command += ["--lora", pattern]
-            command += ["--lora-rank", str(rank), "--lora-alpha", repr(float(alpha))]
+        command += lora_arguments(self.lora)
         for unit in self.fully_sharded:
             command += ["--fully-shard", unit]
         if self.placement is not None and not self.placement.trivial:
@@ -562,7 +542,8 @@ class CompiledLinnetModule(LinnetModule):
             if self.tensor_parallel is not None:
                 # Joining split weights would gather them onto every process.
                 command.append("--no-fuse")
-        return run_compiler(*command, str(self._source), error=PlanError)
+        absent = "".join(f"{path}\n" for path in self._absent_optionals())
+        return run_compiler(*command, str(self._source), stdin=absent, error=PlanError)
 
     def import_source(self, source: str, name: str) -> Any:
         """Writes generated `source` into this module's work directory and

@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from .. import sizes
-from ..compiler import LinnetError, parse_binding
+from ..compiler import NUMERICS, LinnetError, parse_binding
 from ..sizes import format_bytes
 from .analysis import MemoryModel
 from .config import ExecutionConfig, Numerics
@@ -58,7 +58,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", help="the root block of a .linnet file with several")
     parser.add_argument("--std", help="the standard library directory")
     parser.add_argument("--backend", choices=("cuda", "generic"), default="cuda")
-    parser.add_argument("--numerics", choices=("exact", "equivalent", "fast"), default="fast")
+    parser.add_argument("--numerics", choices=NUMERICS, default="fast")
     parser.add_argument("--dtype", help="the compute dtype (binds the model's float dtype generic)")
     parser.add_argument("--batch", type=int, help="the batch size (binds B and Batch)")
     parser.add_argument(

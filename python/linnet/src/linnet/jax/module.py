@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..compiler import LinnetError
+from ..compiler import LinnetError, check_numerics
 from ..plan import compile_plan
 from .load import LinnetFunction, function_of
 from .source import SourceFunction
@@ -218,13 +218,12 @@ def load_model(
     needs; a KV cache is split by heads."""
     # Any entry will do for the first function, which checks the weights against the
     # plan; the model builds a function for each entry it is asked to run.
+    check_numerics(numerics)
     program = compile_plan(source, root=root, std_root=std_root, optimize=False)
     name = program.root.name
     entries = [f.short_name for f in program.entries()]
     if not entries:
         raise LinnetError(f"block `{name}` has no entries")
-    if numerics not in ("exact", "equivalent", "fast"):
-        raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
     first = function_of(
         program,
         Path(source),

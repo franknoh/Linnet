@@ -18,7 +18,7 @@ import torch
 from torch import nn
 
 from .. import ir
-from ..plan import PlanError, align_shape
+from ..plan import PlanError
 from ..weights import read_bindings, safetensors_index
 from .dtypes import (
     FROM_SAFETENSORS,
@@ -288,14 +288,10 @@ class LinnetModule(nn.Module):
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
         env = self.root.env.copy()
-        bind_generics(env, function.generics, generics or {})
+        ir.bind_named(env, function.generics, generics or {})
         for param, value in zip(params, inputs, strict=True):
             bind_input(env, param, value)
-        for generic in function.generics:
-            if not bound(env, generic):
-                raise PlanError(
-                    f"cannot determine `{generic.name}` of entry `{name}` from its inputs"
-                )
+        ir.require_bound(env, function)
         return self.interpreter.call(function, env, [self.root.instance(), *inputs])
 
     def forward(self, *inputs: torch.Tensor) -> Any:
@@ -483,71 +479,10 @@ def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
     return read
 
 
-def bound(env: ir.Bindings, generic: ir.Generic) -> bool:
-    """Whether `env` binds `generic`."""
-    if generic.kind == "dim":
-        return generic.id in env.dims
-    if generic.kind == "shape":
-        return generic.id in env.packs
-    return generic.id in env.dtypes
-
-
-def bind_generics(
-    env: ir.Bindings, declared: Sequence[ir.Generic], given: Mapping[str, int | str]
-) -> None:
-    """Binds an entry's generics that are given explicitly by name."""
-    names = {generic.name for generic in declared}
-    for name in given:
-        if name not in names:
-            raise PlanError(f"the entry has no generic parameter `{name}`")
-    for generic in declared:
-        if generic.name not in given:
-            continue
-        value = given[generic.name]
-        if generic.kind == "dim":
-            if not isinstance(value, int):
-                raise PlanError(f"`{generic.name}` is a dimension; give an integer")
-            env.dims[generic.id] = value
-        elif generic.kind == "dtype":
-            env.dtypes[generic.id] = str(value)
-        else:
-            raise PlanError(f"`{generic.name}` is a shape pack and cannot be given by name")
-
-
 def bind_input(env: ir.Bindings, param: ir.Value, value: torch.Tensor) -> None:
-    """Binds the generic dimensions of an entry from an input's shape and
-    checks the rest."""
-    param_type = param.type
-    name = param.name
-    if isinstance(param_type, ir.ScalarType):
-        if value.dim() != 0:
-            raise PlanError(f"input `{name}` must be a scalar")
-        return
-    if not isinstance(param_type, ir.TensorType):
-        raise PlanError(f"input `{name}` has a type that cannot be passed from PyTorch")
-    spec = param_type.dtype
-    if isinstance(spec, ir.DTypeVar) and value.dtype in LINNET_DTYPES:
-        # A dtype generic of the entry's own (a function's `T`), bound by the
-        # first input that carries it; the rest must agree.
-        env.dtypes.setdefault(spec.id, LINNET_DTYPES[value.dtype])
-    expected_dtype = torch_dtype(env, spec)
-    if value.dtype != expected_dtype:
-        raise PlanError(f"input `{name}` has dtype {value.dtype}, expected {expected_dtype}")
-    dims, pack = align_shape(param_type.shape, list(value.shape), name)
-    if pack is not None:
-        unit, sizes = pack
-        if env.packs.setdefault(unit.id, tuple(sizes)) != tuple(sizes):
-            raise PlanError(f"input `{name}` disagrees on shape pack `{unit.name}`")
-    for dim, size in dims:
-        if isinstance(dim, ir.DimSymbol):
-            if env.dims.setdefault(dim.id, size) != size:
-                raise PlanError(
-                    f"input `{name}` has size {size} where `{dim.name}` is {env.dims[dim.id]}"
-                )
-            continue
-        expected = env.dim(dim)
-        if expected != size:
-            raise PlanError(f"input `{name}` has size {size} on an axis that must be {expected}")
+    """`ir.bind_input` for a tensor."""
+    dtype = LINNET_DTYPES.get(value.dtype, str(value.dtype))
+    ir.bind_input(env, param, list(value.shape), dtype)
 
 
 # ------------------------------------------------------------------ weights

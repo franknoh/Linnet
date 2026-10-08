@@ -24,10 +24,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from .. import ir
-from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
-from ..dtypes import BY_NUMPY, CLASSES
+from ..compiler import LinnetError, bind_arguments, check_numerics, run_compiler, std_arguments
+from ..dtypes import BY_NUMPY
 from ..generated import import_generated
-from ..plan import bind_shape_names, compile_plan
+from ..plan import compile_plan
 from .dtypes import NUMPY_TYPES
 
 
@@ -67,9 +67,20 @@ class Function:
         params = self.function.params
         if len(params) != len(inputs):
             raise LinnetError(f"`{self.name}` takes {len(params)} inputs, got {len(inputs)}")
-        bindings = self._bindings(params, inputs, generics or {})
+        env = ir.Bindings()
+        ir.bind_named(env, self.function.generics, generics or {})
+        for param, value in zip(params, inputs, strict=True):
+            if isinstance(value, bool | int | float):
+                if not isinstance(param.type, ir.ScalarType):
+                    raise LinnetError(f"input `{param.name}` is a tensor; pass an array")
+                continue
+            found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
+            dtype = str(value.dtype) if found is None else found.name
+            ir.bind_input(env, param, [int(size) for size in np.shape(value)], dtype)
+        ir.require_bound(env, self.function)
+        bindings = ir.bind_names(env, self.function.generics)
         values = [
-            self._number(param, value, bindings) if isinstance(value, bool | int | float) else value
+            self._number(param, value, env) if isinstance(value, bool | int | float) else value
             for param, value in zip(params, inputs, strict=True)
         ]
         key = tuple(sorted(bindings.items()))
@@ -84,70 +95,10 @@ class Function:
             raise LinnetError(f"`{self.name}` has not been compiled yet")
         return next(reversed(self._compiled.values()))[1].read_text(encoding="utf-8")
 
-    # ---- generics from the inputs
-
-    def _bindings(
-        self,
-        params: Sequence[ir.Value],
-        inputs: Sequence[Any],
-        given: Mapping[str, int | str],
-    ) -> dict[str, str]:
-        declared = {generic.name: generic for generic in self.function.generics}
-        for name in given:
-            if name not in declared:
-                raise LinnetError(f"`{self.name}` has no generic parameter `{name}`")
-        bindings: dict[str, Any] = {name: str(value) for name, value in given.items()}
-        for param, value in zip(params, inputs, strict=True):
-            declared_type = param.type
-            name = param.name
-            if isinstance(value, bool | int | float):
-                if not isinstance(declared_type, ir.ScalarType):
-                    raise LinnetError(f"input `{name}` is a tensor; pass an array")
-                continue
-            if isinstance(declared_type, ir.ScalarType):
-                if np.ndim(value) != 0:
-                    raise LinnetError(f"input `{name}` must be a scalar")
-                self._bind_dtype(declared_type.dtype, value, name, bindings)
-                continue
-            if not isinstance(declared_type, ir.TensorType):
-                raise LinnetError(f"input `{name}` has a type that cannot be passed from JAX")
-            self._bind_dtype(declared_type.dtype, value, name, bindings)
-            shape = [int(size) for size in np.shape(value)]
-            bind_shape_names(declared_type.shape, shape, name, bindings)
-        for generic in declared.values():
-            if generic.name not in bindings:
-                raise LinnetError(
-                    f"cannot determine `{generic.name}` of `{self.name}` from its inputs; "
-                    f"give it by name, `{self.name}(..., {generic.name}=...)`"
-                )
-            if generic.kind == "dtype":
-                kind = generic.dtype_class or "any"
-                if bindings[generic.name] not in CLASSES[kind]:
-                    raise LinnetError(
-                        f"`{generic.name}` of `{self.name}` is {kind}, not {bindings[generic.name]}"
-                    )
-        # Sizes bound from shapes arrive as integers; `--bind` takes text.
-        return {name: str(value) for name, value in bindings.items()}
-
-    def _bind_dtype(self, spec: ir.DType, value: Any, name: str, bindings: dict[str, Any]) -> None:
-        found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
-        actual = None if found is None else found.name
-        if actual is None:
-            raise LinnetError(f"input `{name}` has dtype {value.dtype}, which Linnet lacks")
-        wanted = spec if isinstance(spec, str) else bindings.setdefault(spec.name, actual)
-        if actual != wanted:
-            raise LinnetError(f"input `{name}` has dtype {actual}, expected {wanted}")
-
-    def _number(self, param: ir.Value, value: Any, bindings: Mapping[str, str]) -> Any:
+    def _number(self, param: ir.Value, value: Any, env: ir.Bindings) -> Any:
         declared = param.type
-        assert isinstance(declared, ir.ScalarType | ir.TensorType)
-        spec = declared.dtype
-        dtype = spec if isinstance(spec, str) else bindings.get(spec.name)
-        if dtype is None:
-            raise LinnetError(
-                f"the dtype of `{param.name}` is not bound; give it by name or pass an array"
-            )
-        return jnp.asarray(value, dtype=NUMPY_TYPES[dtype])
+        assert isinstance(declared, ir.ScalarType)
+        return jnp.asarray(value, dtype=NUMPY_TYPES[env.dtype(declared.dtype)])
 
     # ---- one compilation per binding
 
@@ -177,8 +128,7 @@ def load_function(
 
     `numerics` is `"fast"` (the default), `"equivalent"`, or `"exact"`, as
     in `load`."""
-    if numerics not in ("exact", "equivalent", "fast"):
-        raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
+    check_numerics(numerics)
     program = compile_plan(source, std_root=std_root, optimize=False, functions=True)
     # Linnet's `i64` needs 64-bit integers. The generated code turns them on
     # when it first loads; on now, the caller's `int64` inputs stay 64-bit.
