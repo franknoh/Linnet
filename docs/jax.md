@@ -52,6 +52,13 @@ weights. The block's `state`, such as KV caches, stays on the device in
 source; `generated=False` runs StableHLO instead. `linnet.serve.Engine`
 takes such a model for continuous batching.
 
+On a GPU, each compiled shape gets XLA options by what bounds it. A pass
+whose products do 256 FLOPs or more per byte of its arguments (a prompt of a
+few hundred tokens) uses cuBLAS products and launches its kernels directly,
+not from command buffers. A decoding step keeps XLA's defaults. On Llama 3.1
+8B on an H100, this takes a 512-token prompt's first token from 17.8 to
+16.5 ms; decoding is unchanged.
+
 ## Numerics policy
 
 | `numerics=` | Effect |

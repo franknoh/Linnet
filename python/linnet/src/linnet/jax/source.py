@@ -125,7 +125,7 @@ class SourceFunction(LinnetFunction):
             compiled.state_inputs,
             compiled.state_outputs,
         )
-        jitted = jax.jit(module.main, donate_argnums=donated)
+        jitted = jax.jit(module.main, donate_argnums=donated, compiler_options=compiled.options)
         compiled.module = module
         compiled.prepared = self._prepared_values(module, compiled.arrays)
 

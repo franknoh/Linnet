@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -188,7 +189,8 @@ class LinnetFunction:
         # The compiled program under `jit`, so a call is one dispatch; the
         # loaded weights go to the device once rather than per call.
         donated = self._donated(len(exported.in_avals), state_inputs, state_outputs)
-        call = jax.jit(exported.call, donate_argnums=donated)
+        options = compiler_options(text)
+        call = jax.jit(exported.call, donate_argnums=donated, compiler_options=options)
         first = len(exported.in_avals) - len(state_inputs) - len(paths)
         declared = exported.in_avals[first : first + len(paths)]
         arrays: list[jax.Array] = []
@@ -232,6 +234,7 @@ class LinnetFunction:
             call,
             arrays,
             dtypes=[aval.dtype for aval in declared],
+            options=options,
         )
 
     def _donated(
@@ -365,6 +368,67 @@ class CompiledEntry:
     prepared: list[jax.Array] = dataclasses.field(  # `prepare`'s
         default_factory=lambda: list[jax.Array]()
     )
+    options: dict[str, str | bool] | None = None  # XLA's, by `compiler_options`
+
+
+# XLA options for a program bound by arithmetic (a prompt's pass): cuBLAS
+# products, which beat XLA's Triton ones over many rows, and kernels launched
+# one by one rather than from command buffers, whose update holds the host for
+# milliseconds before the device starts; here each kernel runs long enough to
+# hide its launch. A program bound by memory (a decoding step) keeps XLA's
+# defaults, which suit it.
+_COMPUTE_BOUND_OPTIONS: dict[str, str | bool] = {
+    "xla_gpu_enable_triton_gemm": False,
+    "xla_gpu_enable_command_buffer": "",
+}
+# Products' FLOPs per byte of the program's arguments (its weights, mostly)
+# from which it counts as bound by arithmetic: about where an H100's bf16
+# products stop waiting on memory.
+_COMPUTE_BOUND = 256
+_DOT = re.compile(
+    r'"stablehlo\.dot_general"\(.*?lhs_contracting_dimensions = \[([\d, ]*)\].*?'
+    r"-> tensor<([^>]*)>"
+)
+_DOT_OPERAND = re.compile(r": \(tensor<([^>]*)>")
+_ARGUMENT = re.compile(r"%[\w.]+: tensor<([^>]*)>")
+
+
+def compiler_options(text: str) -> dict[str, str | bool] | None:
+    """XLA's options for the StableHLO module `text`: those for a program
+    bound by arithmetic when its `intensity` reaches `_COMPUTE_BOUND` on a
+    GPU, otherwise None (the defaults)."""
+    if jax.default_backend() != "gpu" or intensity(text) < _COMPUTE_BOUND:
+        return None
+    return dict(_COMPUTE_BOUND_OPTIONS)
+
+
+def intensity(text: str) -> float:
+    """The FLOPs of the StableHLO module `text`'s products per byte of its
+    `main`'s arguments."""
+    flops = 0
+    arguments = 0
+    for line in text.splitlines():
+        if "func.func" in line and "@main" in line:
+            arguments = sum(math.prod(_dims(t)) * _width(t) for t in _ARGUMENT.findall(line))
+        found = _DOT.search(line)
+        operand = _DOT_OPERAND.search(line)
+        if found is None or operand is None:
+            continue
+        lhs = _dims(operand.group(1))
+        contracted = [int(axis) for axis in found.group(1).replace(" ", "").split(",") if axis]
+        flops += 2 * math.prod(_dims(found.group(2))) * math.prod(lhs[a] for a in contracted)
+    return flops / arguments if arguments else 0.0
+
+
+def _dims(tensor: str) -> list[int]:
+    """`1x512x2048xbf16` -> [1, 512, 2048]."""
+    return [int(d) for d in tensor.split("x")[:-1]]
+
+
+def _width(tensor: str) -> int:
+    """Bytes of one element of `1x512x2048xbf16`."""
+    bits = re.search(r"\d+", tensor.split("x")[-1])
+    return max(1, int(bits.group()) // 8) if bits else 1
 
 
 @functools.cache
