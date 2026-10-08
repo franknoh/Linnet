@@ -581,12 +581,6 @@ class _Translator:
             return [int(x) for x in np.asarray(array).reshape(-1).tolist()]
         raise OnnxImportError(f"`{name}` must be known at import time")
 
-    def _int(self, name: str) -> int:
-        dims = self.dims_of(name)
-        if len(dims) != 1 or not isinstance(dims[0], int):
-            raise OnnxImportError(f"`{name}` must be one integer")
-        return dims[0]
-
     def type_of(self, name: str) -> _Type:
         if name in self.types:
             return self.types[name]

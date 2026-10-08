@@ -393,9 +393,7 @@ std::vector<Pass> canonical_passes() {
     };
 }
 
-std::vector<PassResult>
-run_pipeline(Module& module, const std::vector<Pass>& passes, const PipelineOptions& options) {
-    std::vector<PassResult> results;
+void run_pipeline(Module& module, const std::vector<Pass>& passes, const PipelineOptions& options) {
     for (int iteration = 0; iteration < options.max_iterations; ++iteration) {
         bool has_changed = false;
         for (const Pass& pass : passes) {
@@ -403,7 +401,6 @@ run_pipeline(Module& module, const std::vector<Pass>& passes, const PipelineOpti
                 continue;
             }
             const bool changed = pass.run(module);
-            results.push_back({pass.name, changed});
             has_changed = has_changed || changed;
             if (options.verify && changed) {
                 const std::vector<std::string> problems = verify(module);
@@ -417,7 +414,6 @@ run_pipeline(Module& module, const std::vector<Pass>& passes, const PipelineOpti
             break;
         }
     }
-    return results;
 }
 
 } // namespace linnet::opt

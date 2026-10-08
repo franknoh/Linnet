@@ -126,12 +126,6 @@ class TensorGraph:
     inputs: tuple[int, ...]
     outputs: tuple[int, ...]
 
-    def object(self, id: int) -> MemoryObject:
-        return self.objects[id]
-
-    def storage_owners(self) -> tuple[MemoryObject, ...]:
-        return tuple(o for o in self.objects if o.owns_storage)
-
     def by_category(self, category: Category) -> tuple[MemoryObject, ...]:
         return tuple(o for o in self.objects if o.owns_storage and o.category == category)
 

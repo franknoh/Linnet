@@ -14,7 +14,7 @@ rates.
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -129,15 +129,6 @@ def fit(
 Builder = Callable[[ExecutionConfig, tuple[str, ...]], MemoryModel]
 
 
-@dataclass(frozen=True, slots=True)
-class Candidate:
-    """A configuration and whether it fits."""
-
-    config: ExecutionConfig
-    result: MemoryAnalysisResult
-    fits: bool
-
-
 class ExecutionPlanner:
     """Configurations of one model checked against a device.
 
@@ -166,15 +157,6 @@ class ExecutionPlanner:
 
     def evaluate(self, config: ExecutionConfig) -> MemoryAnalysisResult:
         return self.build(config, ()).analyze()
-
-    def feasible(
-        self, configs: Iterable[ExecutionConfig], constraint: ResourceConstraint
-    ) -> list[Candidate]:
-        out: list[Candidate] = []
-        for config in configs:
-            result = self.evaluate(config)
-            out.append(Candidate(config, result, constraint.fits(result)))
-        return out
 
     def maximize(
         self, config: ExecutionConfig, constraint: ResourceConstraint, target: Target

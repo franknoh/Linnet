@@ -233,10 +233,6 @@ def symbols(expr: Expr) -> frozenset[str]:
     return symbols(expr.lhs) | symbols(expr.rhs)
 
 
-def is_constant(expr: Expr) -> bool:
-    return isinstance(expr, Const)
-
-
 _PRECEDENCE = {"add": 1, "mul": 2}
 
 

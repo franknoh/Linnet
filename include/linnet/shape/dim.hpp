@@ -98,7 +98,6 @@ class DimContext {
 public:
     SymbolId add_symbol(std::string name, SymbolKind kind);
     std::string_view symbol_name(SymbolId id) const { return symbols_[id].name; }
-    SymbolKind symbol_kind(SymbolId id) const { return symbols_[id].kind; }
 
     const Atom& atom(AtomId id) const { return atoms_[id]; }
 

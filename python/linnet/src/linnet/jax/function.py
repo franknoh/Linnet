@@ -14,8 +14,6 @@ generics the same way.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -28,6 +26,7 @@ import numpy as np
 from .. import ir
 from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_NUMPY, CLASSES
+from ..generated import import_generated
 from ..plan import bind_shape_names, compile_plan
 from .dtypes import NUMPY_TYPES
 
@@ -158,14 +157,8 @@ class Function:
         text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
         if self._work is None:
             self._work = Path(tempfile.mkdtemp(prefix="linnet-jax-function-"))
-        path = self._work / f"{self.name}_{len(self._compiled)}.py"
-        path.write_text(text, encoding="utf-8")
-        spec = importlib.util.spec_from_file_location(f"linnet_jax_function_{path.stem}", path)
-        if spec is None or spec.loader is None:
-            raise LinnetError(f"cannot load the generated module at {path}")
-        module: Any = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = import_generated(self._work, f"{self.name}_{len(self._compiled)}", text)
+        path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise LinnetError(f"internal: `{self.name}` compiled with parameters or state")
         return jax.jit(module.main), path

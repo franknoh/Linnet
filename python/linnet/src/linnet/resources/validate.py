@@ -28,7 +28,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from .. import ir
 from ..compiler import LinnetError
@@ -38,6 +38,9 @@ from .cli import add_arguments, config_from_args
 from .graph import Category
 from .result import MemoryAnalysisResult, format_bytes
 from .training import CheckpointPolicy
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +79,7 @@ def root_values(model: MemoryModel, env: Mapping[str, int]) -> dict[str, int | s
     return values
 
 
-def _inputs(model: MemoryModel, env: Mapping[str, int], device: Any) -> list[Any]:
+def _inputs(model: MemoryModel, env: Mapping[str, int], device: torch.device) -> list[Any]:
     import torch
 
     program = model.program

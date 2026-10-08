@@ -63,7 +63,7 @@ class Repository:
 
 
 def interface(
-    program: ir.Program, entry: ir.Function, bindings: ir.Bindings
+    entry: ir.Function, bindings: ir.Bindings
 ) -> tuple[tuple[Tensor, ...], tuple[Tensor, ...]]:
     """The entry's inputs and results with every dimension evaluated."""
     inputs: list[Tensor] = []
@@ -248,7 +248,7 @@ def export(
         function.generics,
         {k: v for k, v in values.items() if k in {g.name for g in function.generics}},
     )
-    inputs, outputs = interface(program, function, merge(root_bindings, entry_bindings))
+    inputs, outputs = interface(function, merge(root_bindings, entry_bindings))
     if function.states and backend == "onnx":
         raise LinnetError(
             f"entry `{function.short_name}` uses state; export it with backend='python', "

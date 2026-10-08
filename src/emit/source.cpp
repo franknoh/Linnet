@@ -1,13 +1,12 @@
 #include "linnet/emit/source.hpp"
 
 #include "linnet/sema/model.hpp"
+#include "linnet/support/text.hpp"
 #include "linnet/syntax/lexer.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <map>
 #include <set>
-#include <sstream>
 
 namespace linnet::emit {
 
@@ -716,24 +715,6 @@ private:
         return "[" + model_.types.to_string(shape) + "]";
     }
 
-    // The shortest decimal that reads back as the same double.
-    static std::string float_literal(double value) {
-        std::string text;
-        for (int precision = 6; precision <= 17; ++precision) {
-            std::ostringstream stream;
-            stream.precision(precision);
-            stream << value;
-            text = stream.str();
-            if (precision == 17 || std::strtod(text.c_str(), nullptr) == value) {
-                break;
-            }
-        }
-        if (text.find_first_of(".eE") == std::string::npos) {
-            text += ".0";
-        }
-        return text;
-    }
-
     // The expression for a value: its name when it is bound, else its
     // definition inlined.
     std::string expr(ir::ValueId id) {
@@ -778,7 +759,7 @@ private:
         case ir::OpKind::ConstInt:
             return std::to_string(a.integer);
         case ir::OpKind::ConstFloat:
-            return float_literal(a.number);
+            return shortest_float(a.number);
         case ir::OpKind::ConstBool:
             return a.integer != 0 ? "true" : "false";
         case ir::OpKind::ConstDim:

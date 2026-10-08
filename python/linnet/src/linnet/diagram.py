@@ -93,16 +93,6 @@ _ARITHMETIC = {
     "cos": "cos",
     "tanh": "tanh",
 }
-_HIDDEN = {
-    "block.sub",
-    "block.param",
-    "return",
-    "yield",
-    "const.bool",
-    "const.int",
-    "const.float",
-    "const.dim",
-}
 
 
 class _Builder:

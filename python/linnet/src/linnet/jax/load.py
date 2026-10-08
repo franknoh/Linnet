@@ -463,20 +463,29 @@ def load(
         raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
     source_path = Path(source)
     program = compile_plan(source_path, root=root, std_root=std_root, optimize=False)
+    return function_of(
+        program, source_path, generics, weights, bindings, std_root, entry, numerics, cast_dtype
+    )
+
+
+def function_of(
+    program: ir.Program,
+    source: Path,
+    generics: Mapping[str, int | str],
+    weights: str | Path | Mapping[str, Any],
+    bindings: str | Path | None,
+    std_root: str | Path | None,
+    entry: str | None,
+    numerics: str,
+    cast_dtype: bool,
+) -> LinnetFunction:
+    """`load` for a program already compiled from `source`."""
     root_name = program.root.name
     entries = [f.short_name for f in program.entries()]
     entry_name = ir.choose_entry(root_name, entries, entry)
     loaded = apply_bindings(read_arrays(weights), bindings)
     return LinnetFunction(
-        source_path,
-        program,
-        generics,
-        loaded,
-        std_root,
-        root_name,
-        entry_name,
-        numerics,
-        cast_dtype,
+        source, program, generics, loaded, std_root, root_name, entry_name, numerics, cast_dtype
     )
 
 

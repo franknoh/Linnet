@@ -1498,7 +1498,6 @@ private:
             }
             fail("no arm matches enum variant `" + subject.path + "`");
         }
-        case ir::OpKind::StructMake:
         case ir::OpKind::StructGet:
             fail(std::string("`") + std::string(ir::op_spelling(op.kind)) +
                  "` is not supported by graph exporters");

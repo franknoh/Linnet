@@ -322,12 +322,6 @@ class Program:
     def methods(self, block: str) -> tuple[Function, ...]:
         return tuple(f for f in self.functions.values() if f.block == block)
 
-    def method(self, block: str, name: str) -> Function:
-        for function in self.functions.values():
-            if function.block == block and function.name.endswith(f"::{block}.{name}"):
-                return function
-        raise LinnetError(f"block `{block}` has no method `{name}`")
-
     def entry(self, name: str | None = None, *, prefer: str | None = None) -> Function:
         """The root entry called `name`; without one, the only entry, or
         else the one called `prefer`."""

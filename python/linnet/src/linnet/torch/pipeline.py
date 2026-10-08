@@ -100,10 +100,6 @@ class Pipeline:
         self._built: dict[tuple[Any, ...], _Built] = {}
 
     @property
-    def is_first(self) -> bool:
-        return self.stage == 0
-
-    @property
     def is_last(self) -> bool:
         return self.stage == self.stages - 1
 

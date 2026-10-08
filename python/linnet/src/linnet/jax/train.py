@@ -261,7 +261,7 @@ class Learner:
         placed: dict[str, Any] = {}
         for path, array in weights.items():
             if id(array) not in moved:
-                moved[id(array)] = _placed(array, path, mesh)
+                moved[id(array)] = _placed(array, mesh)
             placed[path] = moved[id(array)]
         self.ties = ir.shared_paths(placed.items())
         if trainable is None:
@@ -367,7 +367,7 @@ class Learner:
         mesh = self.mesh
         if parameters is not None:
             # Arguments, not closed over: XLA would hold them as constants.
-            given = {path: _placed(value, path, mesh) for path, value in parameters.items()}
+            given = {path: _placed(value, mesh) for path, value in parameters.items()}
             spread = _spread(
                 mesh,
                 {},
@@ -625,7 +625,7 @@ def _split_as(mesh: Any, shape: tuple[int, ...]) -> Any:
     return NamedSharding(mesh, PartitionSpec(*spec))
 
 
-def _placed(array: Any, path: str, mesh: Any) -> Any:
+def _placed(array: Any, mesh: Any) -> Any:
     """`array` on the devices: as it is when already where `mesh` wants it."""
     if mesh is None:
         return array if isinstance(array, jax.Array) else jnp.asarray(array)

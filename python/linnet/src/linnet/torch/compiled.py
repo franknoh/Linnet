@@ -12,9 +12,7 @@ work unchanged.
 from __future__ import annotations
 
 import fnmatch
-import importlib.util
 import math
-import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -26,6 +24,7 @@ import torch
 
 from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
+from ..generated import import_generated
 from ..plan import PlanError
 from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
 from .placement import Placement
@@ -568,16 +567,7 @@ class CompiledLinnetModule(LinnetModule):
     def import_source(self, source: str, name: str) -> Any:
         """Writes generated `source` into this module's work directory and
         imports it."""
-        path = self._work / f"{name}.py"
-        path.write_text(source, encoding="utf-8")
-        spec = importlib.util.spec_from_file_location(f"linnet_generated_{id(self)}_{name}", path)
-        if spec is None or spec.loader is None:
-            raise PlanError(f"cannot load the generated module at {path}")
-        module: Any = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        module.__linnet_path__ = path
-        return module
+        return import_generated(self._work, name, source)
 
     def _compile(
         self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
