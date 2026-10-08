@@ -189,19 +189,10 @@ public:
                                            ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
-        std::vector<const TensorInfo*> at;
-        at.reserve(operands.size());
-        for (const std::optional<TensorInfo>& operand : operands) {
-            at.push_back(operand.has_value() ? &*operand : nullptr);
-        }
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
-        const std::string gqa = "(enable_gqa)";
-        if (implementation_base.ends_with(gqa)) {
-            implementation_base.resize(implementation_base.size() - gqa.size());
-        }
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
+        const CallName parsed = call_name(implementation);
+        const std::string& implementation_base = parsed.base;
+        const bool fast = parsed.fast;
         const auto name = [&](std::size_t i) -> std::string {
             return i < at.size() && at[i] != nullptr ? at[i]->name : "None";
         };

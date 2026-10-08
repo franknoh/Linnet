@@ -156,15 +156,8 @@ public:
                                            ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
-        const std::string gqa = "(enable_gqa)";
-        const bool grouped = implementation_base.ends_with(gqa);
-        if (grouped) {
-            implementation_base.resize(implementation_base.size() - gqa.size());
-        }
+        const auto [implementation_base, fast, grouped] = call_name(implementation);
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
         // `fast`: the kernel runs in the tensor's dtype; otherwise in f32 as
         // the canonical body does.
         const auto up = [&](const std::string& x) { return fast ? x : x + ".float()"; };
@@ -206,11 +199,6 @@ public:
             return mask;
         }
         if (implementation_base == "torch.Tensor.index_copy" && operands.size() == 3) {
-            std::vector<const TensorInfo*> at;
-            at.reserve(operands.size());
-            for (const std::optional<TensorInfo>& operand : operands) {
-                at.push_back(operand.has_value() ? &*operand : nullptr);
-            }
             if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
                 return std::nullopt;
             }
@@ -302,11 +290,6 @@ public:
         }
         if (implementation_base == "torch.Tensor.index_put" &&
             (operands.size() == 3 || operands.size() == 4)) {
-            std::vector<const TensorInfo*> at;
-            at.reserve(operands.size());
-            for (const std::optional<TensorInfo>& operand : operands) {
-                at.push_back(operand.has_value() ? &*operand : nullptr);
-            }
             if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
                 return std::nullopt;
             }
@@ -567,11 +550,6 @@ public:
             operands.size() == 5) {
             // A square causal mask becomes `is_causal=True`, which lets PyTorch
             // pick its fused causal kernels; other masks are passed as they are.
-            std::vector<const TensorInfo*> at;
-            at.reserve(operands.size());
-            for (const std::optional<TensorInfo>& operand : operands) {
-                at.push_back(operand.has_value() ? &*operand : nullptr);
-            }
             const TensorInfo* query = at[0];
             const TensorInfo* key = at[1];
             const TensorInfo* attn_mask = at[4];

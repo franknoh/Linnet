@@ -282,6 +282,19 @@ private:
 // `?` any one. LoRA patterns name the weights they adapt this way.
 bool glob_match(std::string_view pattern, std::string_view text);
 
+// A library call's name with its variant suffixes taken off: `(input dtype)`
+// (`fast`: in the operands' dtype rather than f32) and `(enable_gqa)`
+// (`grouped`: fewer key and value heads than query heads).
+struct CallName {
+    std::string base;
+    bool fast = false;
+    bool grouped = false;
+};
+CallName call_name(std::string_view implementation);
+// A `native_call`'s operands as pointers, null where one is absent.
+std::vector<const TensorInfo*>
+operand_pointers(const std::vector<std::optional<TensorInfo>>& operands);
+
 // Whether `owner` -- a top-level block, or `sema::no_entity` for the module
 // itself -- of module `root_module` declares an entry called `name` (any
 // entry when `name` is empty).

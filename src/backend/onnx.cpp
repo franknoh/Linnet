@@ -134,16 +134,11 @@ public:
                                            ScalarKind dtype) override {
         // Library operations with an ONNX operator of the same meaning;
         // `(input dtype)` variants skip the f32 casts.
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        const std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
+        const CallName parsed = call_name(implementation);
+        const std::string& implementation_base = parsed.base;
+        const bool fast = parsed.fast;
         const ScalarKind acc = fast ? dtype : ScalarKind::F32;
-        std::vector<const TensorInfo*> at;
-        at.reserve(operands.size());
-        for (const std::optional<TensorInfo>& operand : operands) {
-            at.push_back(operand.has_value() ? &*operand : nullptr);
-        }
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
         const auto f32 = [&](const TensorInfo& t) -> TensorInfo {
             return t.dtype == acc ? t : TensorInfo{convert(t, acc), t.shape, acc};
         };
@@ -454,9 +449,7 @@ public:
         if (implementation_base == "torch.relu" && operands.size() == 1 && at[0] != nullptr) {
             return node("Relu", {*at[0]}, "", shape, dtype);
         }
-        if ((implementation_base == "torch.nn.functional.scaled_dot_product_attention" ||
-             implementation_base ==
-                 "torch.nn.functional.scaled_dot_product_attention(enable_gqa)") &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5) {
             return attention(at, fast, shape, dtype);
         }

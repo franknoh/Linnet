@@ -386,15 +386,8 @@ public:
         // Contractions become `dot_general`; everything else keeps its
         // canonical body, which XLA fuses well on its own. `(input dtype)`
         // attention skips the f32 accumulation.
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        const std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
-        std::vector<const TensorInfo*> at;
-        at.reserve(operands.size());
-        for (const std::optional<TensorInfo>& operand : operands) {
-            at.push_back(operand.has_value() ? &*operand : nullptr);
-        }
+        const auto [implementation_base, fast, grouped] = call_name(implementation);
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
         if (implementation == "torch.nn.functional.embedding" && operands.size() == 2 &&
             at[0] != nullptr && at[1] != nullptr) {
             // Rows of the table by id: a gather along axis 0 with the ids as
@@ -528,7 +521,7 @@ public:
             }
             return out;
         }
-        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" && !grouped &&
             operands.size() == 5 && at[0] != nullptr && at[1] != nullptr && at[2] != nullptr &&
             at[3] != nullptr) {
             return attention(*at[0], *at[1], *at[2], *at[3], at[4], shape, dtype, fast);

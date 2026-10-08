@@ -2620,6 +2620,31 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
     return names[static_cast<std::size_t>(dtype)];
 }
 
+CallName call_name(std::string_view implementation) {
+    CallName name;
+    const auto strip = [&](std::string_view suffix) {
+        const bool found = implementation.ends_with(suffix);
+        if (found) {
+            implementation.remove_suffix(suffix.size());
+        }
+        return found;
+    };
+    name.fast = strip("(input dtype)");
+    name.grouped = strip("(enable_gqa)");
+    name.base = std::string(implementation);
+    return name;
+}
+
+std::vector<const TensorInfo*>
+operand_pointers(const std::vector<std::optional<TensorInfo>>& operands) {
+    std::vector<const TensorInfo*> at;
+    at.reserve(operands.size());
+    for (const std::optional<TensorInfo>& operand : operands) {
+        at.push_back(operand.has_value() ? &*operand : nullptr);
+    }
+    return at;
+}
+
 bool declares_entry(const ir::Module& module,
                     std::uint32_t root_module,
                     sema::EntityId owner,
