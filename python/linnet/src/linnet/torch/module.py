@@ -19,9 +19,8 @@ from torch import nn
 
 from .. import ir
 from ..plan import PlanError
-from ..weights import read_bindings, safetensors_index
+from ..weights import check_problems, read_bindings, safetensors_index, tensor_problem
 from .dtypes import (
-    FROM_SAFETENSORS,
     LINNET_DTYPES,
     SAFETENSORS_NAMES,
     TORCH_DTYPES,
@@ -547,24 +546,19 @@ def bind_weights(
                 problems.append(f"missing tensor `{source}` for `{path}`")
             continue
         shape, dtype_name = list(available[source].shape), available[source].dtype
-        expected_dtype = tensor.dtype
         axis = _shard_axis(shape, list(tensor.shape), shard[1]) if shard is not None else None
         if axis is not None:
             parts[path] = (axis, tensor.shape[axis])
             shape = list(tensor.shape)
-        if shape != list(tensor.shape):
-            problems.append(f"`{source}` has shape {shape}, `{path}` needs {list(tensor.shape)}")
-        elif FROM_SAFETENSORS.get(dtype_name) != expected_dtype and not (
-            cast_dtype
-            and expected_dtype.is_floating_point
-            and (found := FROM_SAFETENSORS.get(dtype_name)) is not None
-            and found.is_floating_point
-        ):
-            problems.append(f"`{source}` has dtype {dtype_name}, `{path}` needs {expected_dtype}")
+        wanted = LINNET_DTYPES[tensor.dtype]
+        problem = tensor_problem(
+            source, path, shape, dtype_name, list(tensor.shape), wanted, cast_dtype
+        )
+        if problem is not None:
+            problems.append(problem)
         else:
             assignments.append((path, source, available[source].file))
-    if problems:
-        raise PlanError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
+    check_problems(problems, PlanError)
 
     with torch.no_grad():
         for path, source, file in assignments:

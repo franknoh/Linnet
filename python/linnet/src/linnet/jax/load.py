@@ -134,14 +134,10 @@ class LinnetFunction:
         return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
     def _check_weights(self, manifest: Sequence[ir.ManifestEntry]) -> None:
-        # Manifest paths spell array elements `[*]`; weights spell them `.0`.
-        def matches(pattern: str, path: str) -> bool:
-            return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
-
         for entry in manifest:
             if entry.optional or entry.kind == "state":  # state is never a weight
                 continue
-            if not any(matches(entry.path, path) for path in self._weights):
+            if not any(self._matches(entry.path, path) for path in self._weights):
                 raise LinnetError(f"missing weights for `{entry.path}`")
         # Which optional parameters are absent is read off the first export
         # (see `_export`): checkpoints mix them, a bias on some projections

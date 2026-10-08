@@ -31,6 +31,7 @@ from .compiler import LinnetError, parse_binding
 from .dtypes import DTYPES
 from .weights import (
     TensorLocation,
+    check_problems,
     match_checkpoint,
     read_bindings,
     safetensors_index,
@@ -537,8 +538,7 @@ def export(
         if located:
             present.add(entry.path)
             found += [(path, source, index[source]) for path, source in located]
-    if problems:
-        raise LinnetError("checkpoint does not match the model:\n  " + "\n  ".join(problems))
+    check_problems(problems)
 
     family = recognize(program, present)
     tensors: list[tuple[str, str, tuple[int, ...], TensorLocation | bytes]] = []
