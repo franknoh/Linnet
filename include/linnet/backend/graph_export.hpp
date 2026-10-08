@@ -103,6 +103,10 @@ public:
     state(const std::string& path, const Dims& shape, sema::ScalarKind dtype) = 0;
 
     virtual std::string constant(const Literal& literal, sema::ScalarKind dtype) = 0;
+    // `value` in `dtype`: itself when it already is, else converted.
+    TensorInfo cast_to(const TensorInfo& value, sema::ScalarKind dtype) {
+        return value.dtype == dtype ? value : TensorInfo{convert(value, dtype), value.shape, dtype};
+    }
     // A scalar `constant`, as an operand.
     TensorInfo scalar_constant(const Literal& literal, sema::ScalarKind dtype) {
         return {constant(literal, dtype), {}, dtype};

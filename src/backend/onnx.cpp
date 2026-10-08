@@ -114,11 +114,7 @@ public:
         if (dtype == ScalarKind::BF16) {
             // ONNX's Einsum takes no bf16: contract in f32 and round back,
             // which is what a bf16 matrix product accumulates in anyway.
-            const auto wide = [&](const TensorInfo& t) {
-                return t.dtype == ScalarKind::F32
-                           ? t
-                           : TensorInfo{convert(t, ScalarKind::F32), t.shape, ScalarKind::F32};
-            };
+            const auto wide = [&](const TensorInfo& t) { return cast_to(t, ScalarKind::F32); };
             const TensorInfo product{
                 node("Einsum", {wide(lhs), wide(rhs)}, equation, shape, ScalarKind::F32),
                 shape,
@@ -139,9 +135,7 @@ public:
         const bool fast = parsed.fast;
         const ScalarKind acc = fast ? dtype : ScalarKind::F32;
         const std::vector<const TensorInfo*> at = operand_pointers(operands);
-        const auto f32 = [&](const TensorInfo& t) -> TensorInfo {
-            return t.dtype == acc ? t : TensorInfo{convert(t, acc), t.shape, acc};
-        };
+        const auto f32 = [&](const TensorInfo& t) { return cast_to(t, acc); };
         const auto back = [&](const std::string& name, const Dims& s) -> std::string {
             return dtype == acc ? name : convert({name, s, acc}, dtype);
         };
@@ -166,9 +160,7 @@ public:
             // ONNX Runtime has no bf16 convolution: convolve in f32 and
             // round back, as the contraction does.
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const auto as_kind = [&](const TensorInfo& t) {
-                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-            };
+            const auto as_kind = [&](const TensorInfo& t) { return cast_to(t, kind); };
             std::vector<TensorInfo> inputs{as_kind(*at[0]), as_kind(*at[1])};
             if (at[2] != nullptr) {
                 inputs.push_back(as_kind(*at[2]));
@@ -196,8 +188,7 @@ public:
                 return std::nullopt;
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const TensorInfo x =
-                at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), input, kind};
+            const TensorInfo x = cast_to(*at[0], kind);
             const TensorInfo none{"", {}, ScalarKind::F32};
             const std::string out = node("Resize",
                                          {x, none, none, int64_vector(shape)},
@@ -217,9 +208,7 @@ public:
                 return std::nullopt;
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const auto as_kind = [&](const TensorInfo& t) {
-                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-            };
+            const auto as_kind = [&](const TensorInfo& t) { return cast_to(t, kind); };
             const std::string out = node("BatchNormalization",
                                          {as_kind(*at[0]),
                                           as_kind(*at[3]),
@@ -251,9 +240,7 @@ public:
                 return std::nullopt;
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const auto as_kind = [&](const TensorInfo& t) {
-                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-            };
+            const auto as_kind = [&](const TensorInfo& t) { return cast_to(t, kind); };
             const Dims flat{out * groups};
             const TensorInfo& b = packed;
             const TensorInfo scales{reshape(as_kind(scale), flat), flat, kind};
@@ -281,9 +268,7 @@ public:
             }
             // No bf16 pooling in ONNX Runtime either: pool in f32.
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const TensorInfo x = at[0]->dtype == kind
-                                     ? *at[0]
-                                     : TensorInfo{convert(*at[0], kind), at[0]->shape, kind};
+            const TensorInfo x = cast_to(*at[0], kind);
             const std::string out =
                 node("MaxPool",
                      {x},
@@ -337,10 +322,7 @@ public:
             const Dims& full = at[0]->shape;
             Dims reduced = full;
             reduced.back() = 1;
-            const TensorInfo x =
-                at[0]->dtype == ScalarKind::F32
-                    ? *at[0]
-                    : TensorInfo{convert(*at[0], ScalarKind::F32), full, ScalarKind::F32};
+            const TensorInfo x = cast_to(*at[0], ScalarKind::F32);
             const TensorInfo exponent = scalar_constant(Literal::of_real(2.0), ScalarKind::F32);
             const TensorInfo squares{
                 node("Pow", {x, exponent}, "", full, ScalarKind::F32), full, ScalarKind::F32};
@@ -362,9 +344,7 @@ public:
             if (dtype != ScalarKind::F32) {
                 normalized = {convert(normalized, dtype), full, dtype};
             }
-            const TensorInfo weight = at[1]->dtype == dtype
-                                          ? *at[1]
-                                          : TensorInfo{convert(*at[1], dtype), at[1]->shape, dtype};
+            const TensorInfo weight = cast_to(*at[1], dtype);
             return node("Mul", {normalized, weight}, "", shape, dtype);
         }
         if (implementation_base == "torch.nn.functional.group_norm" && operands.size() == 4 &&
@@ -383,8 +363,7 @@ public:
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
             const Dims rows{full[0], *groups, full[1] / *groups * full[2] * full[3]};
-            const TensorInfo x =
-                at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), full, kind};
+            const TensorInfo x = cast_to(*at[0], kind);
             const TensorInfo grouped{reshape(x, rows), rows, kind};
             const Dims per_group{*groups};
             const TensorInfo ones{
@@ -487,9 +466,7 @@ public:
         const std::int64_t rows = group * queries;
         const ScalarKind product =
             fast ? (dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype) : ScalarKind::F32;
-        const auto as = [&](const TensorInfo& t, ScalarKind kind) -> TensorInfo {
-            return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-        };
+        const auto as = [&](const TensorInfo& t, ScalarKind kind) { return cast_to(t, kind); };
         TensorInfo q = as(*query, product);
         if (group > 1) {
             const Dims folded{batch, kv_heads, rows, width};
@@ -1116,11 +1093,7 @@ private:
         const std::int64_t heads = value.shape[1];
         const std::int64_t span = value.shape[2];
         const Dims grid{rows, heads, span};
-        const auto as_i64 = [&](const TensorInfo& t) {
-            return t.dtype == ScalarKind::I64
-                       ? t
-                       : TensorInfo{convert(t, ScalarKind::I64), t.shape, ScalarKind::I64};
-        };
+        const auto as_i64 = [&](const TensorInfo& t) { return cast_to(t, ScalarKind::I64); };
         // `values` laid along `axis` of the grid and broadcast over the rest.
         const auto spread = [&](const TensorInfo& values, std::size_t axis) {
             Dims placed{1, 1, 1};

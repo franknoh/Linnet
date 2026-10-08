@@ -793,9 +793,7 @@ private:
                           ScalarKind dtype,
                           bool fast) {
         const ScalarKind f32 = fast ? dtype : ScalarKind::F32;
-        const auto as_f32 = [&](const TensorInfo& t) -> TensorInfo {
-            return t.dtype == f32 ? t : TensorInfo{convert(t, f32), t.shape, f32};
-        };
+        const auto as_f32 = [&](const TensorInfo& t) { return cast_to(t, f32); };
         const TensorInfo q = as_f32(query);
         const TensorInfo k = as_f32(key);
         const TensorInfo v = as_f32(value);
