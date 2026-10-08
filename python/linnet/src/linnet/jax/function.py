@@ -25,9 +25,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .. import ir
 from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_NUMPY, CLASSES
-from ..plan import Plan, bind_shape_names, compile_plan
+from ..plan import bind_shape_names, compile_plan
 from .dtypes import NUMPY_TYPES
 
 
@@ -36,16 +37,16 @@ class Function:
 
     def __init__(
         self,
-        plan: Plan,
+        program: ir.Program,
         name: str | None,
         *,
         source: Path,
         std_root: str | Path | None,
         numerics: str,
     ) -> None:
-        self.plan = plan
-        self.function = plan.module_entry(name)
-        self.name: str = self.function["name"].rsplit("::", 1)[1]
+        self.program = program
+        self.function = program.module_entry(name)
+        self.name: str = self.function.name.rsplit("::", 1)[1]
         self._source = source
         self._std_root = std_root
         self._numerics = numerics
@@ -55,7 +56,7 @@ class Function:
     @property
     def inputs(self) -> list[str]:
         """The names of the function's inputs, in order."""
-        return [str(argument["name"]) for argument in self.function["body"]["args"]]
+        return [argument.name for argument in self.function.params]
 
     def __call__(self, *inputs: Any, **generics: int | str) -> Any:
         return self.run(list(inputs), generics)
@@ -64,7 +65,7 @@ class Function:
         """Calls the function on arrays (or Python numbers for scalar inputs);
         `generics` binds by name what the inputs do not determine. A single
         result is returned as it is, several as a tuple."""
-        params: list[dict[str, Any]] = self.function["body"]["args"]
+        params = self.function.params
         if len(params) != len(inputs):
             raise LinnetError(f"`{self.name}` takes {len(params)} inputs, got {len(inputs)}")
         bindings = self._bindings(params, inputs, generics or {})
@@ -88,65 +89,64 @@ class Function:
 
     def _bindings(
         self,
-        params: list[dict[str, Any]],
+        params: Sequence[ir.Value],
         inputs: Sequence[Any],
         given: Mapping[str, int | str],
     ) -> dict[str, str]:
-        declared = {str(generic["name"]): generic for generic in self.function["generics"]}
+        declared = {generic.name: generic for generic in self.function.generics}
         for name in given:
             if name not in declared:
                 raise LinnetError(f"`{self.name}` has no generic parameter `{name}`")
-        bindings = {name: str(value) for name, value in given.items()}
+        bindings: dict[str, Any] = {name: str(value) for name, value in given.items()}
         for param, value in zip(params, inputs, strict=True):
-            kind = param["type"]["kind"]
-            name = param["name"]
+            declared_type = param.type
+            name = param.name
             if isinstance(value, bool | int | float):
-                if kind != "scalar":
+                if not isinstance(declared_type, ir.ScalarType):
                     raise LinnetError(f"input `{name}` is a tensor; pass an array")
                 continue
-            if kind == "scalar":
+            if isinstance(declared_type, ir.ScalarType):
                 if np.ndim(value) != 0:
                     raise LinnetError(f"input `{name}` must be a scalar")
-                self._bind_dtype(param["type"]["dtype"], value, name, bindings)
+                self._bind_dtype(declared_type.dtype, value, name, bindings)
                 continue
-            if kind != "tensor":
+            if not isinstance(declared_type, ir.TensorType):
                 raise LinnetError(f"input `{name}` has a type that cannot be passed from JAX")
-            self._bind_dtype(param["type"]["dtype"], value, name, bindings)
+            self._bind_dtype(declared_type.dtype, value, name, bindings)
             shape = [int(size) for size in np.shape(value)]
-            bind_shape_names(param["type"]["shape"], shape, name, bindings)
+            bind_shape_names(declared_type.shape, shape, name, bindings)
         for generic in declared.values():
-            if generic["name"] not in bindings:
+            if generic.name not in bindings:
                 raise LinnetError(
-                    f"cannot determine `{generic['name']}` of `{self.name}` from its inputs; "
-                    f"give it by name, `{self.name}(..., {generic['name']}=...)`"
+                    f"cannot determine `{generic.name}` of `{self.name}` from its inputs; "
+                    f"give it by name, `{self.name}(..., {generic.name}=...)`"
                 )
-            if generic["kind"] == "dtype":
-                admitted = CLASSES[generic.get("class", "any")]
-                if bindings[generic["name"]] not in admitted:
+            if generic.kind == "dtype":
+                kind = generic.dtype_class or "any"
+                if bindings[generic.name] not in CLASSES[kind]:
                     raise LinnetError(
-                        f"`{generic['name']}` of `{self.name}` is {generic['class']}, "
-                        f"not {bindings[generic['name']]}"
+                        f"`{generic.name}` of `{self.name}` is {kind}, not {bindings[generic.name]}"
                     )
         # Sizes bound from shapes arrive as integers; `--bind` takes text.
         return {name: str(value) for name, value in bindings.items()}
 
-    def _bind_dtype(
-        self, spec: str | dict[str, Any], value: Any, name: str, bindings: dict[str, str]
-    ) -> None:
+    def _bind_dtype(self, spec: ir.DType, value: Any, name: str, bindings: dict[str, Any]) -> None:
         found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
         actual = None if found is None else found.name
         if actual is None:
             raise LinnetError(f"input `{name}` has dtype {value.dtype}, which Linnet lacks")
-        wanted = spec if isinstance(spec, str) else bindings.setdefault(str(spec["name"]), actual)
+        wanted = spec if isinstance(spec, str) else bindings.setdefault(spec.name, actual)
         if actual != wanted:
             raise LinnetError(f"input `{name}` has dtype {actual}, expected {wanted}")
 
-    def _number(self, param: dict[str, Any], value: Any, bindings: Mapping[str, str]) -> Any:
-        spec = param["type"]["dtype"]
-        dtype = spec if isinstance(spec, str) else bindings.get(str(spec["name"]))
+    def _number(self, param: ir.Value, value: Any, bindings: Mapping[str, str]) -> Any:
+        declared = param.type
+        assert isinstance(declared, ir.ScalarType | ir.TensorType)
+        spec = declared.dtype
+        dtype = spec if isinstance(spec, str) else bindings.get(spec.name)
         if dtype is None:
             raise LinnetError(
-                f"the dtype of `{param['name']}` is not bound; give it by name or pass an array"
+                f"the dtype of `{param.name}` is not bound; give it by name or pass an array"
             )
         return jnp.asarray(value, dtype=NUMPY_TYPES[dtype])
 
@@ -186,11 +186,11 @@ def load_function(
     in `load`."""
     if numerics not in ("exact", "equivalent", "fast"):
         raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
-    plan = compile_plan(source, std_root=std_root, optimize=False, functions=True)
+    program = compile_plan(source, std_root=std_root, optimize=False, functions=True)
     # Linnet's `i64` needs 64-bit integers. The generated code turns them on
     # when it first loads; on now, the caller's `int64` inputs stay 64-bit.
     jax.config.update("jax_enable_x64", True)
-    return Function(plan, name, source=Path(source), std_root=std_root, numerics=numerics)
+    return Function(program, name, source=Path(source), std_root=std_root, numerics=numerics)
 
 
 __all__ = ["Function", "load_function"]

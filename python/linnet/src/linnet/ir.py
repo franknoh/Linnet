@@ -1,10 +1,12 @@
-"""A typed view of a plan: the compiled program as immutable dataclasses.
-
-`Program.from_json` reads what `linnet plan` prints (see `docs/plan-format.md`)
-into frozen dataclasses with exhaustive unions for dimensions and types, so
-that a backend, a diagram, or a model card can walk the program without
-indexing JSON. Dimensions stay symbolic; `format_type` prints them the way
-the language spells them (`Tensor[B, S, H; bf16]`).
+"""The compiled program: what `linnet plan` prints (see
+`docs/plan-format.md`), read by `Program.from_json` into frozen dataclasses
+with exhaustive unions for dimensions and types. The runtimes walk it (the
+PyTorch interpreter and modules, the JAX and ONNX loaders), and so do the
+diagrams, the model cards and the resource analysis, none of them indexing
+JSON. Dimensions stay symbolic until `Bindings` give the generics values;
+`format_type` prints them the way the language spells them
+(`Tensor[B, S, H; bf16]`). An operation's attributes stay as the plan
+spells them; `parse_shape`, `parse_dim` and `parse_substitution` read them.
 """
 
 from __future__ import annotations
@@ -18,8 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeVar, cast
 
-from .compiler import LinnetError
-from .plan import compile_plan
+from .compiler import LinnetError, PlanError
 
 T = TypeVar("T")
 
@@ -300,13 +301,14 @@ class Program:
     blocks: Mapping[str, Block]
     functions: Mapping[str, Function]
     constants: tuple[Constant, ...]
+    text: str = field(default="", repr=False, compare=False)  # the plan as `linnet plan` printed it
 
     @staticmethod
     def from_json(text: str) -> Program:
         document: object = json.loads(text)
         if not isinstance(document, dict):
             raise LinnetError("a plan is a JSON object")
-        return _Reader().program(cast(dict[str, Any], document))
+        return _Reader().program(cast(dict[str, Any], document), text)
 
     @property
     def root_block(self) -> Block:
@@ -335,6 +337,30 @@ class Program:
     def parameters(self) -> tuple[ManifestEntry, ...]:
         return tuple(e for e in self.manifest if e.kind == "param")
 
+    def module_entries(self) -> dict[str, Function]:
+        """The entries declared at module level in the root file, by name:
+        functions of their inputs alone (`linnet plan --functions`)."""
+        prefix = f"{self.module}::"
+        return {
+            f.name.removeprefix(prefix): f
+            for f in self.functions.values()
+            if f.kind == "entry" and f.block is None and f.name.startswith(prefix)
+        }
+
+    def module_entry(self, name: str | None) -> Function:
+        """The module-level entry called `name`, or the only one."""
+        entries = self.module_entries()
+        listed = ", ".join(f"`{entry}`" for entry in entries) or "none"
+        if name is None:
+            if len(entries) != 1:
+                raise PlanError(
+                    f"the module has {len(entries)} module-level entries ({listed}); name one"
+                )
+            return next(iter(entries.values()))
+        if name not in entries:
+            raise PlanError(f"no module-level entry `{name}` (there are: {listed})")
+        return entries[name]
+
     def describe(self, block: str | None = None) -> str:
         """The block's signature, members, and functions as the language spells them."""
         name = self.root.name if block is None else block
@@ -359,15 +385,16 @@ def load_program(
     numerics: str = "exact",
 ) -> Program:
     """Compiles a source file (`linnet plan`) and returns its typed program."""
-    plan = compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
-    return Program.from_json(plan.text)
+    from .plan import compile_plan
+
+    return compile_plan(source, root=root, std_root=std_root, optimize=optimize, numerics=numerics)
 
 
 # --------------------------------------------------------------------- reader
 
 
 class _Reader:
-    def program(self, document: dict[str, Any]) -> Program:
+    def program(self, document: dict[str, Any], text: str = "") -> Program:
         version = int(document.get("version", 0))
         if version != 1:
             raise LinnetError(f"unsupported plan version {version!r}")
@@ -394,6 +421,7 @@ class _Reader:
             constants=tuple(
                 self.constant(cast(dict[str, Any], c)) for c in document.get("constants", [])
             ),
+            text=text,
         )
 
     # ---- dimensions and types
@@ -679,13 +707,42 @@ def substitute(type: Type, s: Substitution) -> Type:
 # ---------------------------------------------------------------- evaluation
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Bindings:
-    """Concrete values for generics, by symbol id: what `--bind` gives the compiler."""
+    """Concrete values for generics, by symbol id: what `--bind` gives the
+    compiler. A runtime binds more as a call reads its inputs."""
 
-    dims: Mapping[int, int]
-    packs: Mapping[int, tuple[int, ...]]
-    dtypes: Mapping[int, str]
+    dims: dict[int, int] = field(default_factory=dict[int, int])
+    packs: dict[int, tuple[int, ...]] = field(default_factory=dict[int, tuple[int, ...]])
+    dtypes: dict[int, str] = field(default_factory=dict[int, str])
+
+    def dim(self, dim: Dim) -> int:
+        return evaluate_dim(dim, self)
+
+    def shape(self, shape: Shape) -> tuple[int, ...]:
+        return evaluate_shape(shape, self)
+
+    def dtype(self, dtype: DType) -> str:
+        return evaluate_dtype(dtype, self)
+
+    def holds(self, constraint: Constraint) -> bool:
+        """Whether a `where` constraint holds under these bindings."""
+        return holds(constraint.relation, self.dim(constraint.lhs), self.dim(constraint.rhs))
+
+    def copy(self) -> Bindings:
+        return Bindings(dict(self.dims), dict(self.packs), dict(self.dtypes))
+
+
+def holds(relation: str, lhs: int, rhs: int) -> bool:
+    """Whether `lhs relation rhs` (`==`, `!=`, `<`, `<=`, `>`, `>=`) holds."""
+    return {
+        "==": lhs == rhs,
+        "!=": lhs != rhs,
+        "<": lhs < rhs,
+        "<=": lhs <= rhs,
+        ">": lhs > rhs,
+        ">=": lhs >= rhs,
+    }[relation]
 
 
 def default_of(generic: Generic) -> int | str | None:
@@ -727,7 +784,7 @@ def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) 
     unknown = sorted(set(values) - {g.name for g in generics})
     if unknown:
         raise LinnetError(f"unknown generics: {', '.join(unknown)}")
-    return Bindings(MappingProxyType(dims), MappingProxyType(packs), MappingProxyType(dtypes))
+    return Bindings(dims, packs, dtypes)
 
 
 class Arithmetic(Protocol[T]):
@@ -755,12 +812,12 @@ class _Integers:
 
     def floordiv(self, a: int, b: int) -> int:
         if b == 0:
-            raise LinnetError("division by zero in a dimension")
+            raise PlanError("division by zero in a dimension")
         return a // b
 
     def mod(self, a: int, b: int) -> int:
         if b == 0:
-            raise LinnetError("division by zero in a dimension")
+            raise PlanError("division by zero in a dimension")
         return a % b
 
     def minimum(self, args: Sequence[int]) -> int:
@@ -802,12 +859,12 @@ def fold_dim(
 def evaluate_dim(dim: Dim, bindings: Bindings) -> int:
     def symbol(found: DimSymbol) -> int:
         if found.id not in bindings.dims:
-            raise LinnetError(f"dimension `{found.name}` is not bound")
+            raise PlanError(f"dimension `{found.name}` is not bound")
         return bindings.dims[found.id]
 
     def pack_size(found: PackSize) -> int:
         if found.id not in bindings.packs:
-            raise LinnetError(f"shape pack `{found.name}` is not bound")
+            raise PlanError(f"shape pack `{found.name}` is not bound")
         return math.prod(bindings.packs[found.id])
 
     return fold_dim(dim, symbol, pack_size, INTEGERS)
@@ -818,7 +875,7 @@ def evaluate_shape(shape: Shape, bindings: Bindings) -> tuple[int, ...]:
     for unit in shape:
         if isinstance(unit, Pack):
             if unit.id not in bindings.packs:
-                raise LinnetError(f"shape pack `{unit.name}` is not bound")
+                raise PlanError(f"shape pack `{unit.name}` is not bound")
             sizes.extend(bindings.packs[unit.id])
         else:
             sizes.append(evaluate_dim(unit, bindings))
@@ -829,7 +886,7 @@ def evaluate_dtype(dtype: DType, bindings: Bindings) -> str:
     if isinstance(dtype, str):
         return dtype
     if dtype.id not in bindings.dtypes:
-        raise LinnetError(f"dtype `{dtype.name}` is not bound")
+        raise PlanError(f"dtype `{dtype.name}` is not bound")
     return bindings.dtypes[dtype.id]
 
 

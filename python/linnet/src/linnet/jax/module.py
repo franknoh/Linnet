@@ -11,12 +11,12 @@ memory rather than beside it.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..compiler import LinnetError, run_compiler, std_arguments
+from ..compiler import LinnetError
+from ..plan import compile_plan
 from .load import LinnetFunction, load
 from .source import SourceFunction
 
@@ -34,15 +34,10 @@ class LinnetModel:
         self._first = first
         self._generated = generated
         self._functions: dict[str, LinnetFunction] = {}
-        self.plan = first.plan
+        self.program = first.program
         self.generics = first.generics
         self.weights = first.weights
-        root = first.root
-        self.entries = [
-            f["name"].rsplit(".", 1)[1]
-            for f in first.plan["functions"]
-            if f["kind"] == "entry" and f["block"] == root
-        ]
+        self.entries = [f.short_name for f in first.program.entries()]
         self.state: dict[str, Any] = {}
         # Weight-only values (`prepare`), shared by every entry by key.
         self._prepared: dict[str, Any] = {}
@@ -57,7 +52,7 @@ class LinnetModel:
             kind = SourceFunction if self._generated else LinnetFunction
             function = kind(
                 first._source,  # pyright: ignore[reportPrivateUsage]
-                first.plan,
+                first.program,
                 first.generics,
                 self.weights,
                 first._std_root,  # pyright: ignore[reportPrivateUsage]
@@ -223,21 +218,9 @@ def load_model(
     needs; a KV cache is split by heads."""
     # Any entry will do for `load`, which checks the weights against the
     # plan; the model builds a function for each entry it is asked to run.
-    plan = json.loads(
-        run_compiler(
-            "plan",
-            "--no-optimize",
-            *(["--root", root] if root is not None else []),
-            *std_arguments(std_root),
-            str(source),
-        )
-    )
-    name = str(plan["root"]["name"])
-    entries = [
-        str(f["name"]).rsplit(".", 1)[1]
-        for f in plan["functions"]
-        if f["kind"] == "entry" and f["block"] == name
-    ]
+    program = compile_plan(source, root=root, std_root=std_root, optimize=False)
+    name = program.root.name
+    entries = [f.short_name for f in program.entries()]
     if not entries:
         raise LinnetError(f"block `{name}` has no entries")
     first = load(

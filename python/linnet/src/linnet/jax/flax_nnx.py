@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import jax.numpy as jnp
 
+from .. import ir
 from ..compiler import LinnetError
 from .load import LinnetFunction, load
 
@@ -37,25 +38,23 @@ def _import_nnx() -> Any:
 def to_nnx(function: LinnetFunction) -> Any:
     """The loaded entry as an `nnx.Module` owning its parameters."""
     nnx = _import_nnx()
-    plan = function.plan
-    blocks = cast(dict[str, Any], plan["blocks"])
-    root_name = str(cast(dict[str, Any], plan["root"])["name"])
+    program = function.program
+    root_name = program.root.name
     weights = function.weights
 
     class LinnetBlock(nnx.Module):  # type: ignore[misc]
         """One block of the hierarchy; its attributes are the block's members."""
 
         def __init__(self, block: str, prefix: str) -> None:
-            for member in cast(list[dict[str, Any]], blocks[block]["members"]):
-                name = str(member["name"])
+            for member in program.blocks[block].members:
+                name = member.name
                 path = f"{prefix}{name}"
-                kind = cast(dict[str, Any], member["type"])
-                if member["kind"] == "sub":
-                    setattr(self, name, _child(kind, path))
-                elif member["kind"] == "state":
+                if member.kind == "sub":
+                    setattr(self, name, _child(member.type, path))
+                elif member.kind == "state":
                     continue  # threaded through the call as `state=`, not held here
                 elif path in weights:
-                    variable = nnx.Param if member["kind"] == "param" else nnx.Variable
+                    variable = nnx.Param if member.kind == "param" else nnx.Variable
                     setattr(self, name, variable(jnp.asarray(weights[path])))
                 else:
                     setattr(self, name, None)  # an optional parameter that is absent
@@ -69,20 +68,20 @@ def to_nnx(function: LinnetFunction) -> Any:
             classes[block] = type(block, (LinnetBlock,), {})
         return classes[block]
 
-    def _child(kind: dict[str, Any], path: str) -> Any:
-        if kind["kind"] == "optional":
+    def _child(kind: ir.Type, path: str) -> Any:
+        if isinstance(kind, ir.OptionalType):
             # An optional sub-block: there when the weights have it.
             if not any(key.startswith(f"{path}.") for key in weights):
                 return None
-            kind = cast(dict[str, Any], kind["inner"])
-        if kind["kind"] == "array":
-            element = cast(dict[str, Any], kind["element"])
+            kind = kind.inner
+        if isinstance(kind, ir.ArrayType):
+            element = kind.element
             return nnx.List(
                 [_child(element, f"{path}.{i}") for i in range(_length(kind, path, function))]
             )
-        if kind["kind"] != "block":
-            raise LinnetError(f"member `{path}` has an unexpected type {kind['kind']}")
-        return block_class(str(kind["name"]))(str(kind["name"]), f"{path}.")
+        if not isinstance(kind, ir.NamedType) or kind.kind != "block":
+            raise LinnetError(f"member `{path}` has an unexpected type {ir.format_type(kind)}")
+        return block_class(kind.name)(kind.name, f"{path}.")
 
     class LinnetModule(LinnetBlock):
         """The root block; calling it runs the entry on the module's arrays."""
@@ -97,14 +96,14 @@ def to_nnx(function: LinnetFunction) -> Any:
     return LinnetModule()
 
 
-def _length(kind: dict[str, Any], path: str, function: LinnetFunction) -> int:
+def _length(kind: ir.ArrayType, path: str, function: LinnetFunction) -> int:
     """The element count of a sub array: from its type when the length is a
     literal or a bound generic, otherwise from the weights it has."""
-    length = kind["length"]
+    length = kind.length
     if isinstance(length, int):
         return length
-    if isinstance(length, dict) and "name" in length:
-        bound = function.generics.get(str(cast(dict[str, Any], length)["name"]))
+    if isinstance(length, ir.DimSymbol | ir.PackSize):
+        bound = function.generics.get(length.name)
         if isinstance(bound, int):
             return bound
     pattern = re.compile(re.escape(path) + r"\.(\d+)(\.|$)")

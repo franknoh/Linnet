@@ -483,7 +483,7 @@ def pipeline(
     plan = compile_plan(source, root=root, std_root=std_root, numerics=numerics)
     shard: tuple[int, int] | None = None
     if tensor_parallel is not None:
-        if not any(g["name"] == "Shards" for g in plan.root.get("generics", [])):
+        if not any(g.name == "Shards" for g in plan.root.generics):
             raise PlanError(
                 "a pipeline splits its stages only for a model that says how it splits "
                 "(a `Shards` generic)"

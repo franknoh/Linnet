@@ -18,7 +18,7 @@ import torch
 from torch import nn
 
 from .. import ir
-from ..plan import Env, Plan, PlanError, align_shape
+from ..plan import PlanError, align_shape
 from ..weights import read_bindings, safetensors_index
 from .dtypes import (
     FROM_SAFETENSORS,
@@ -34,7 +34,9 @@ class BlockModule(nn.Module):
     """One instantiated block. Parameters are created lazily as zeros of the
     right shape and dtype so that a checkpoint can replace them."""
 
-    def __init__(self, plan: Plan, name: str, env: Env, device: torch.device) -> None:
+    def __init__(
+        self, program: ir.Program, name: str, env: ir.Bindings, device: torch.device
+    ) -> None:
         super().__init__()
         self.block_name = name
         self.env = env
@@ -45,36 +47,40 @@ class BlockModule(nn.Module):
         self.optional_subs: set[str] = set()
         self.absent_subs: set[str] = set()
         self.state_names: set[str] = set()
-        definition = plan.blocks[name]
-        for constraint in definition["constraints"]:
-            if not env.relation_holds(constraint):
+        definition = program.blocks[name]
+        for constraint in definition.constraints:
+            if not env.holds(constraint):
                 raise PlanError(f"a `where` constraint of block `{name}` does not hold")
-        for member in definition["members"]:
-            member_type = member["type"]
-            if member["kind"] == "sub":
-                if member_type["kind"] == "optional":
-                    member_type = member_type["inner"]
-                    self.optional_subs.add(member["name"])
-                    self.absent_subs.add(member["name"])
-                self.add_module(member["name"], _instantiate_sub(plan, member_type, env, device))
+        for member in definition.members:
+            member_type = member.type
+            if member.kind == "sub":
+                if isinstance(member_type, ir.OptionalType):
+                    member_type = member_type.inner
+                    self.optional_subs.add(member.name)
+                    self.absent_subs.add(member.name)
+                self.add_module(member.name, _instantiate_sub(program, member_type, env, device))
                 continue
-            is_optional = member_type["kind"] == "optional"
-            tensor_type = member_type["inner"] if is_optional else member_type
-            shape = env.shape(tensor_type["shape"])
-            dtype = torch_dtype(env, tensor_type["dtype"])
+            is_optional = isinstance(member_type, ir.OptionalType)
+            tensor_type = (
+                member_type.inner if isinstance(member_type, ir.OptionalType) else member_type
+            )
+            if not isinstance(tensor_type, ir.TensorType):
+                raise PlanError(f"member `{member.name}` of block `{name}` is not a tensor")
+            shape = env.shape(tensor_type.shape)
+            dtype = torch_dtype(env, tensor_type.dtype)
             tensor = torch.zeros(shape, dtype=dtype, device=device)
             if is_optional:
-                self.optional_params.add(member["name"])
-                self.absent_params.add(member["name"])
-            if member["kind"] == "param":
-                self.register_parameter(member["name"], nn.Parameter(tensor, requires_grad=False))
-            elif member["kind"] == "state":
+                self.optional_params.add(member.name)
+                self.absent_params.add(member.name)
+            if member.kind == "param":
+                self.register_parameter(member.name, nn.Parameter(tensor, requires_grad=False))
+            elif member.kind == "state":
                 # Execution state: starts at zero, kept between calls, never
                 # part of the weights.
-                self.state_names.add(member["name"])
-                self.register_buffer(member["name"], tensor, persistent=False)
+                self.state_names.add(member.name)
+                self.register_buffer(member.name, tensor, persistent=False)
             else:
-                self.register_buffer(member["name"], tensor)
+                self.register_buffer(member.name, tensor)
 
     def _get_name(self) -> str:
         return self.block_name  # `print(model)` shows the Linnet block names
@@ -134,40 +140,44 @@ def _tensor_repr(tensor: torch.Tensor) -> str:
     return f"{dtype}{list(tensor.shape)}"
 
 
-def _block_env(plan: Plan, block_type: dict[str, Any], env: Env) -> Env:
-    definition = plan.blocks[block_type["name"]]
-    inner = Env()
-    for generic, arg in zip(definition["generics"], block_type["args"], strict=True):
-        if generic["kind"] == "dim":
-            inner.dims[int(generic["sym"])] = env.dim(arg["dim"])
-        elif generic["kind"] == "shape":
-            inner.packs[int(generic["sym"])] = env.shape(arg["shape"])
+def _block_env(program: ir.Program, block_type: ir.NamedType, env: ir.Bindings) -> ir.Bindings:
+    definition = program.blocks[block_type.name]
+    inner = ir.Bindings()
+    for generic, arg in zip(definition.generics, block_type.args, strict=True):
+        if isinstance(arg, ir.DimArg):
+            inner.dims[generic.id] = env.dim(arg.dim)
+        elif isinstance(arg, ir.ShapeArg):
+            inner.packs[generic.id] = env.shape(arg.shape)
         else:
-            inner.dtypes[int(generic["var"])] = env.dtype_name(arg["dtype"])
+            inner.dtypes[generic.id] = env.dtype(arg.dtype)
     return inner
 
 
 def _instantiate_sub(
-    plan: Plan, member_type: dict[str, Any], env: Env, device: torch.device
+    program: ir.Program, member_type: ir.Type, env: ir.Bindings, device: torch.device
 ) -> nn.Module:
-    if member_type["kind"] == "array":
-        count = env.dim(member_type["length"])
-        element = member_type["element"]
+    if isinstance(member_type, ir.ArrayType):
+        count = env.dim(member_type.length)
+        element = member_type.element
+        assert isinstance(element, ir.NamedType)
         return nn.ModuleList(
             [
-                BlockModule(plan, element["name"], _block_env(plan, element, env), device)
+                BlockModule(program, element.name, _block_env(program, element, env), device)
                 for _ in range(count)
             ]
         )
-    return BlockModule(plan, member_type["name"], _block_env(plan, member_type, env), device)
+    assert isinstance(member_type, ir.NamedType)
+    return BlockModule(program, member_type.name, _block_env(program, member_type, env), device)
 
 
 class LinnetModule(nn.Module):
     """The root block as a PyTorch module."""
 
-    def __init__(self, plan: Plan, generics: Mapping[str, int | str], device: torch.device) -> None:
+    def __init__(
+        self, program: ir.Program, generics: Mapping[str, int | str], device: torch.device
+    ) -> None:
         super().__init__()
-        self.plan = plan
+        self.program = program
         self.generics = dict(generics)  # the root block's, as given
         # Mixed precision: the dtype entries run in under `torch.autocast`,
         # the weights staying in theirs (`load(amp=...)`).
@@ -180,52 +190,49 @@ class LinnetModule(nn.Module):
         # The paths bound to one part of their tensor, split across processes
         # (`bind_weights(shard=...)`): the axis and the part's extent.
         self.shard_parts: dict[str, tuple[int, int]] = {}
-        root = plan.root
-        env = Env()
-        for generic in root["generics"]:
-            if generic["name"] not in generics:
-                if "default" not in generic:
+        root = program.root
+        env = ir.Bindings()
+        for generic in root.generics:
+            if generic.name not in generics:
+                default = generic.default
+                if default is None:
                     raise PlanError(
-                        f"generic parameter `{generic['name']}` of `{root['name']}` needs a value"
+                        f"generic parameter `{generic.name}` of `{root.name}` needs a value"
                     )
-                default = generic["default"]
-                if generic["kind"] == "dim":
-                    env.dims[int(generic["sym"])] = env.dim(default["dim"])
-                elif generic["kind"] == "dtype":
-                    env.dtypes[int(generic["var"])] = env.dtype_name(default["dtype"])
+                if isinstance(default, ir.DimArg):
+                    env.dims[generic.id] = env.dim(default.dim)
+                elif isinstance(default, ir.DTypeArg):
+                    env.dtypes[generic.id] = env.dtype(default.dtype)
                 continue
-            value = generics[generic["name"]]
-            if generic["kind"] == "dim":
+            value = generics[generic.name]
+            if generic.kind == "dim":
                 if not isinstance(value, int):
-                    raise PlanError(f"`{generic['name']}` is a dimension; give an integer")
-                env.dims[int(generic["sym"])] = value
-            elif generic["kind"] == "dtype":
+                    raise PlanError(f"`{generic.name}` is a dimension; give an integer")
+                env.dims[generic.id] = value
+            elif generic.kind == "dtype":
                 if not isinstance(value, str) or value not in TORCH_DTYPES:
                     raise PlanError(
-                        f"`{generic['name']}` is a dtype; give one of {sorted(TORCH_DTYPES)}"
+                        f"`{generic.name}` is a dtype; give one of {sorted(TORCH_DTYPES)}"
                     )
-                env.dtypes[int(generic["var"])] = value
+                env.dtypes[generic.id] = value
             else:
                 raise PlanError("shape-pack generics on a root block are not supported")
         for name in generics:
-            if all(generic["name"] != name for generic in root["generics"]):
-                raise PlanError(f"`{root['name']}` has no generic parameter `{name}`")
+            if all(generic.name != name for generic in root.generics):
+                raise PlanError(f"`{root.name}` has no generic parameter `{name}`")
         # The block's `where` clause under the values given: the checker
         # proves it at every call inside the program, not for the caller's.
-        for constraint in root.get("constraints", []):
-            if not env.relation_holds(constraint):
+        for constraint in root.constraints:
+            if not env.holds(constraint):
                 raise PlanError(
-                    f"the generics given to `{root['name']}` break its `where` clause "
-                    f"({constraint['relation']} does not hold)"
+                    f"the generics given to `{root.name}` break its `where` clause "
+                    f"({constraint.relation} does not hold)"
                 )
-        self.root = BlockModule(plan, root["name"], env, device)
-        self.interpreter = Interpreter(plan, device)
-        self.entries = {
-            function["name"].rsplit(".", 1)[1]: function
-            for function in plan.entries_of(root["name"])
-        }
+        self.root = BlockModule(program, root.name, env, device)
+        self.interpreter = Interpreter(program, device)
+        self.entries = {function.short_name: function for function in program.entries()}
         if not self.entries:
-            raise PlanError(f"block `{root['name']}` has no entry")
+            raise PlanError(f"block `{root.name}` has no entry")
         for name in self.entries:
             setattr(self, name, self._entry_callable(name))
 
@@ -277,25 +284,17 @@ class LinnetModule(nn.Module):
         generics: Mapping[str, int | str] | None = None,
     ) -> Any:
         function = self.entries[name]
-        params = function["body"]["args"][1:]  # after `self`
+        params = function.params  # after `self`
         if len(params) != len(inputs):
             raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
-        env = Env(dict(self.root.env.dims), dict(self.root.env.packs), dict(self.root.env.dtypes))
-        bind_generics(env, function["generics"], generics or {})
+        env = self.root.env.copy()
+        bind_generics(env, function.generics, generics or {})
         for param, value in zip(params, inputs, strict=True):
             bind_input(env, param, value)
-        for generic in function["generics"]:
-            key = int(generic.get("sym", generic.get("var", -1)))
-            bound = (
-                key in env.dims
-                if generic["kind"] == "dim"
-                else key in env.packs
-                if generic["kind"] == "shape"
-                else key in env.dtypes
-            )
-            if not bound:
+        for generic in function.generics:
+            if not bound(env, generic):
                 raise PlanError(
-                    f"cannot determine `{generic['name']}` of entry `{name}` from its inputs"
+                    f"cannot determine `{generic.name}` of entry `{name}` from its inputs"
                 )
         return self.interpreter.call(function, env, [self.root.instance(), *inputs])
 
@@ -310,7 +309,7 @@ class LinnetModule(nn.Module):
 
     def state_paths(self) -> list[str]:
         """The `state` members by parameter path, in manifest order."""
-        return [entry["path"] for entry in self.plan.manifest if entry["kind"] == "state"]
+        return [entry.path for entry in self.program.manifest if entry.kind == "state"]
 
     def set_trainable(self, trainable: bool | str | Sequence[str]) -> list[str]:
         """Chooses the parameters that require gradients and returns their
@@ -484,60 +483,69 @@ def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
     return read
 
 
-def bind_generics(env: Env, declared: list[dict[str, Any]], given: Mapping[str, int | str]) -> None:
+def bound(env: ir.Bindings, generic: ir.Generic) -> bool:
+    """Whether `env` binds `generic`."""
+    if generic.kind == "dim":
+        return generic.id in env.dims
+    if generic.kind == "shape":
+        return generic.id in env.packs
+    return generic.id in env.dtypes
+
+
+def bind_generics(
+    env: ir.Bindings, declared: Sequence[ir.Generic], given: Mapping[str, int | str]
+) -> None:
     """Binds an entry's generics that are given explicitly by name."""
-    names = {str(generic["name"]) for generic in declared}
+    names = {generic.name for generic in declared}
     for name in given:
         if name not in names:
             raise PlanError(f"the entry has no generic parameter `{name}`")
     for generic in declared:
-        name = str(generic["name"])
-        if name not in given:
+        if generic.name not in given:
             continue
-        value = given[name]
-        if generic["kind"] == "dim":
+        value = given[generic.name]
+        if generic.kind == "dim":
             if not isinstance(value, int):
-                raise PlanError(f"`{name}` is a dimension; give an integer")
-            env.dims[int(generic["sym"])] = value
-        elif generic["kind"] == "dtype":
-            env.dtypes[int(generic["var"])] = str(value)
+                raise PlanError(f"`{generic.name}` is a dimension; give an integer")
+            env.dims[generic.id] = value
+        elif generic.kind == "dtype":
+            env.dtypes[generic.id] = str(value)
         else:
-            raise PlanError(f"`{name}` is a shape pack and cannot be given by name")
+            raise PlanError(f"`{generic.name}` is a shape pack and cannot be given by name")
 
 
-def bind_input(env: Env, param: dict[str, Any], value: torch.Tensor) -> None:
+def bind_input(env: ir.Bindings, param: ir.Value, value: torch.Tensor) -> None:
     """Binds the generic dimensions of an entry from an input's shape and
     checks the rest."""
-    param_type = param["type"]
-    name = param["name"]
-    if param_type["kind"] == "scalar":
+    param_type = param.type
+    name = param.name
+    if isinstance(param_type, ir.ScalarType):
         if value.dim() != 0:
             raise PlanError(f"input `{name}` must be a scalar")
         return
-    if param_type["kind"] != "tensor":
+    if not isinstance(param_type, ir.TensorType):
         raise PlanError(f"input `{name}` has a type that cannot be passed from PyTorch")
-    spec: str | dict[str, Any] = param_type["dtype"]
-    if isinstance(spec, dict) and value.dtype in LINNET_DTYPES:
+    spec = param_type.dtype
+    if isinstance(spec, ir.DTypeVar) and value.dtype in LINNET_DTYPES:
         # A dtype generic of the entry's own (a function's `T`), bound by the
         # first input that carries it; the rest must agree.
-        env.dtypes.setdefault(int(spec["var"]), LINNET_DTYPES[value.dtype])
+        env.dtypes.setdefault(spec.id, LINNET_DTYPES[value.dtype])
     expected_dtype = torch_dtype(env, spec)
     if value.dtype != expected_dtype:
         raise PlanError(f"input `{name}` has dtype {value.dtype}, expected {expected_dtype}")
-    dims, pack = align_shape(param_type["shape"], list(value.shape), name)
+    dims, pack = align_shape(param_type.shape, list(value.shape), name)
     if pack is not None:
         unit, sizes = pack
-        if env.packs.setdefault(int(unit["pack"]), sizes) != sizes:
-            raise PlanError(f"input `{name}` disagrees on shape pack `{unit['name']}`")
-    for unit, size in dims:
-        if isinstance(unit, dict) and "sym" in unit:
-            symbol = int(unit["sym"])
-            if env.dims.setdefault(symbol, size) != size:
+        if env.packs.setdefault(unit.id, tuple(sizes)) != tuple(sizes):
+            raise PlanError(f"input `{name}` disagrees on shape pack `{unit.name}`")
+    for dim, size in dims:
+        if isinstance(dim, ir.DimSymbol):
+            if env.dims.setdefault(dim.id, size) != size:
                 raise PlanError(
-                    f"input `{name}` has size {size} where `{unit['name']}` is {env.dims[symbol]}"
+                    f"input `{name}` has size {size} where `{dim.name}` is {env.dims[dim.id]}"
                 )
             continue
-        expected = env.dim(unit)
+        expected = env.dim(dim)
         if expected != size:
             raise PlanError(f"input `{name}` has size {size} on an axis that must be {expected}")
 

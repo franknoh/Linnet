@@ -20,8 +20,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from .. import dtypes, ir, nest
+from ..ir import holds
 from ..parallel import layout_stages, split_axis, state_axis
-from ..plan import holds
 from ..weights import paths_by_tensor, read_bindings
 from . import expr as ex
 from .backends import BackendResourceModel, Channels, Estimate, backend_model

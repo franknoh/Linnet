@@ -24,8 +24,9 @@ from typing import Any, cast
 
 import torch
 
+from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
-from ..plan import Env, Plan, PlanError
+from ..plan import PlanError
 from .module import BlockModule, LinnetModule, bind_generics, bind_input, owner_of
 from .placement import Placement
 from .regions import regional
@@ -36,7 +37,7 @@ class CompiledLinnetModule(LinnetModule):
 
     def __init__(
         self,
-        plan: Plan,
+        program: ir.Program,
         generics: Mapping[str, int | str],
         device: torch.device,
         *,
@@ -46,7 +47,7 @@ class CompiledLinnetModule(LinnetModule):
         backend: str | None,
         placement: Placement | None = None,
     ) -> None:
-        super().__init__(plan, generics, device)
+        super().__init__(program, generics, device)
         # Set by `linnet.torch.load` once the weights are bound and placed.
         self.placement = placement
         self._source = Path(source)
@@ -403,9 +404,10 @@ class CompiledLinnetModule(LinnetModule):
         trains: bool,
     ) -> _Prepared:
         function = self.entries[name]
-        params = function["body"]["args"][1:]
-        if len(params) != len(inputs):
-            raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
+        if len(function.params) != len(inputs):
+            raise PlanError(
+                f"entry `{name}` takes {len(function.params)} inputs, got {len(inputs)}"
+            )
         bindings = self._bindings(function, inputs, generics)
         key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend, trains)
         if key not in self._compiled:
@@ -472,33 +474,30 @@ class CompiledLinnetModule(LinnetModule):
 
     def _bindings(
         self,
-        function: dict[str, Any],
+        function: ir.Function,
         inputs: list[torch.Tensor],
         given: Mapping[str, int | str],
     ) -> dict[str, str]:
         """Every generic the export needs: the root's, then the entry's from
         `given` and the input shapes, by name."""
         bindings = {name: str(value) for name, value in self._generic_arguments.items()}
-        env = Env(dict(self.root.env.dims), dict(self.root.env.packs), dict(self.root.env.dtypes))
-        bind_generics(env, function["generics"], given)
-        for param, value in zip(function["body"]["args"][1:], inputs, strict=True):
+        env = self.root.env.copy()
+        bind_generics(env, function.generics, given)
+        for param, value in zip(function.params, inputs, strict=True):
             bind_input(env, param, value)
-        for generic in function["generics"]:
-            if generic["kind"] == "dim":
-                symbol = int(generic["sym"])
-                if symbol not in env.dims:
-                    raise PlanError(f"cannot determine `{generic['name']}` from the inputs")
-                bindings[generic["name"]] = str(env.dims[symbol])
-            elif generic["kind"] == "dtype":
-                symbol = int(generic["var"])
-                if symbol in env.dtypes:
-                    bindings[generic["name"]] = env.dtypes[symbol]
+        for generic in function.generics:
+            if generic.kind == "dim":
+                if generic.id not in env.dims:
+                    raise PlanError(f"cannot determine `{generic.name}` from the inputs")
+                bindings[generic.name] = str(env.dims[generic.id])
+            elif generic.kind == "dtype":
+                if generic.id in env.dtypes:
+                    bindings[generic.name] = env.dtypes[generic.id]
             else:
-                symbol = int(generic["sym"])
-                if symbol not in env.packs:
-                    raise PlanError(f"cannot determine `{generic['name']}` from the inputs")
+                if generic.id not in env.packs:
+                    raise PlanError(f"cannot determine `{generic.name}` from the inputs")
                 # A shape pack's dimensions, as `linnet torch --bind S=2,3` takes them.
-                bindings[generic["name"]] = ",".join(map(str, env.packs[symbol]))
+                bindings[generic.name] = ",".join(map(str, env.packs[generic.id]))
         return bindings
 
     def _absent_optionals(self) -> tuple[str, ...]:
@@ -525,9 +524,10 @@ class CompiledLinnetModule(LinnetModule):
         """Every generic `linnet torch` needs to compile `entry` for these
         inputs, as `--bind` values."""
         function = self.entries[entry]
-        params = function["body"]["args"][1:]
-        if len(params) != len(inputs):
-            raise PlanError(f"entry `{entry}` takes {len(params)} inputs, got {len(inputs)}")
+        if len(function.params) != len(inputs):
+            raise PlanError(
+                f"entry `{entry}` takes {len(function.params)} inputs, got {len(inputs)}"
+            )
         return self._bindings(function, inputs, generics)
 
     def source_for(
@@ -537,7 +537,7 @@ class CompiledLinnetModule(LinnetModule):
         `bindings`, with this module's placement, adapters, sharding and
         absent optional parameters. `prepare=False` keeps weight-only work
         in `main`."""
-        command = ["torch", "--root", self.plan.root["name"], "--entry", entry]
+        command = ["torch", "--root", self.program.root.name, "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
         absent = self._absent_optionals()

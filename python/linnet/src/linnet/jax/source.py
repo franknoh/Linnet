@@ -213,7 +213,7 @@ def load_source(
     )
     return SourceFunction(
         function._source,  # pyright: ignore[reportPrivateUsage]
-        function.plan,
+        function.program,
         function.generics,
         function.weights,
         function._std_root,  # pyright: ignore[reportPrivateUsage]
