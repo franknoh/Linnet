@@ -12,7 +12,6 @@ when it is too large for one protobuf.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,16 +128,14 @@ def export_model(
             if p.key.startswith("linnet.path.") and mapping.get(p.value, p.value) not in available
         )
         if missing:
-            with tempfile.TemporaryDirectory() as work:
-                listing = Path(work) / "absent.txt"
-                listing.write_text("\n".join(missing) + "\n", encoding="utf-8")
-                text = run_compiler(
-                    *arguments,
-                    "--absent-file",
-                    str(listing),
-                    *std_arguments(std_root),
-                    str(source),
-                )
+            text = run_compiler(
+                *arguments,
+                "--absent-file",
+                "-",
+                *std_arguments(std_root),
+                str(source),
+                stdin="".join(f"{path}\n" for path in missing),
+            )
             model = parser.parse_model(text)
 
     paths = {
