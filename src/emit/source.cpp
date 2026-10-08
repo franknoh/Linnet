@@ -271,14 +271,10 @@ private:
     std::string where_clause(const std::vector<ConstraintInfo>& constraints) const {
         std::string text;
         for (const ConstraintInfo& constraint : constraints) {
-            const char* relation = constraint.relation == shape::Relation::Equal       ? "=="
-                                   : constraint.relation == shape::Relation::NotEqual  ? "!="
-                                   : constraint.relation == shape::Relation::Less      ? "<"
-                                   : constraint.relation == shape::Relation::LessEqual ? "<="
-                                   : constraint.relation == shape::Relation::Greater   ? ">"
-                                                                                       : ">=";
             text += text.empty() ? " where " : ", ";
-            text += dim(constraint.lhs) + " " + relation + " " + dim(constraint.rhs);
+            text += dim(constraint.lhs) + " " +
+                    std::string(shape::relation_spelling(constraint.relation)) + " " +
+                    dim(constraint.rhs);
         }
         return text;
     }
@@ -300,11 +296,9 @@ private:
 
         // Defaults are not part of the IR: emitted signatures have none and
         // emitted calls pass every argument.
-        std::string header = pad + (target.is_pub ? "pub " : "") +
-                             (function.is_op      ? "op "
-                              : function.is_entry ? "entry "
-                                                  : "fn ") +
-                             std::string(target.name) + generics_header(function.generics) + "(";
+        std::string header = pad + (target.is_pub ? "pub " : "") + std::string(function.keyword()) +
+                             " " + std::string(target.name) + generics_header(function.generics) +
+                             "(";
         const ir::Block& body = module_.block(module_.region(function.body).blocks.front());
         const std::size_t first_param = target.parent == no_entity ? 0 : 1;
         if (first_param == 1) {

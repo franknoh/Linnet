@@ -253,14 +253,9 @@ private:
         std::string out = "[";
         for (std::size_t i = 0; i < constraints.size(); ++i) {
             const ConstraintInfo& constraint = constraints[i];
-            const char* relation = constraint.relation == shape::Relation::Equal       ? "=="
-                                   : constraint.relation == shape::Relation::NotEqual  ? "!="
-                                   : constraint.relation == shape::Relation::Less      ? "<"
-                                   : constraint.relation == shape::Relation::LessEqual ? "<="
-                                   : constraint.relation == shape::Relation::Greater   ? ">"
-                                                                                       : ">=";
+            const std::string_view relation = shape::relation_spelling(constraint.relation);
             out += i == 0 ? "" : ",";
-            out += std::string("{\"relation\":\"") + relation +
+            out += std::string("{\"relation\":\"") + std::string(relation) +
                    "\",\"lhs\":" + dim(constraint.lhs) + ",\"rhs\":" + dim(constraint.rhs) + "}";
         }
         return out + "]";
@@ -360,10 +355,7 @@ private:
     std::string function_json(const ir::Function& function) const {
         const Entity& entity = model_.entities[function.entity];
         std::string out = "{\"name\":" + json_string(function.name) + ",\"kind\":\"" +
-                          (function.is_op      ? "op"
-                           : function.is_entry ? "entry"
-                                               : "fn") +
-                          "\"";
+                          std::string(function.keyword()) + "\"";
         out += ",\"block\":" + (entity.parent == no_entity
                                     ? std::string("null")
                                     : json_string(model_.entities[entity.parent].name));
