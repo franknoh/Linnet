@@ -92,7 +92,7 @@ before-all = [
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "pyright>=1.1.380",
+    "basedpyright>=1.40",
     "ruff>=0.6",
     "torch>=2.4",
     # The released flax needs an unreleased jax; the last pair that works.
@@ -116,12 +116,16 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 
-[tool.pyright]
+[tool.basedpyright]
 include = ["src", "tests"]
 strict = ["src", "tests"]
 # NumPy 2.5 types arrays with 3.12's `collections.abc.Buffer`.
 pythonVersion = "3.12"
+# pyright's strict rules and, of basedpyright's own, only this one: no
+# explicit `Any`.
+typeCheckingMode = "standard"
 reportMissingTypeStubs = false
+reportExplicitAny = "error"
 
 [tool.ruff]
 line-length = 100
