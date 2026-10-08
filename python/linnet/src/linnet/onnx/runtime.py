@@ -128,15 +128,7 @@ class OnnxModel:
                 binding.bind_ortvalue_input(port, value)
             else:
                 binding.bind_cpu_input(port, _encode(array, element))
-        for port, path in session.parameters.items():
-            binding.bind_ortvalue_input(port, self._weights[path])
-        for port, key in session.prepared.items():
-            binding.bind_ortvalue_input(port, self._prepared[key])
-        for port, (path, shape, element) in session.states.items():
-            if path not in self.state:
-                zeros = np.zeros(shape, dtype=_NUMPY[element])
-                self.state[path] = _to_device(self._ort, zeros, element, self._device)
-            binding.bind_ortvalue_input(port, self.state[path])
+        self._bind_held(session, binding)
         # bf16 results land in host buffers of their bits: ONNX Runtime has
         # no NumPy type to hand them back as.
         buffers: dict[int, np.ndarray] = {}
@@ -176,11 +168,28 @@ class OnnxModel:
     def _state_buffer(self, session: _Session, port: str, path: str) -> Any:
         """The buffer state `path` lives in, made (zeros) for one an entry
         writes before any entry has read it."""
+        return self._state_of(path, *session.next_specs[port])
+
+    def _state_of(self, path: str, shape: tuple[int, ...], element: int) -> Any:
+        """State `path` on the device, zeros until an entry writes it."""
         if path not in self.state:
-            shape, element = session.next_specs[port]
             zeros = np.zeros(shape, dtype=_NUMPY[element])
             self.state[path] = _to_device(self._ort, zeros, element, self._device)
         return self.state[path]
+
+    def _bind_held(self, session: _Session, binding: Any) -> dict[str, Any]:
+        """Binds what the model holds rather than the caller passes: the
+        weights, the values `prepare` computed, and the state, which it
+        returns by path."""
+        for port, path in session.parameters.items():
+            binding.bind_ortvalue_input(port, self._weights[path])
+        for port, key in session.prepared.items():
+            binding.bind_ortvalue_input(port, self._prepared[key])
+        states: dict[str, Any] = {}
+        for port, (path, shape, element) in session.states.items():
+            states[path] = self._state_of(path, shape, element)
+            binding.bind_ortvalue_input(port, states[path])
+        return states
 
     def _replay(self, session: _Session, arrays: list[Any]) -> Any:
         """One call of a session captured as a CUDA graph: the first binds
@@ -206,17 +215,7 @@ class OnnxModel:
             value = _to_device(self._ort, _encode(host, element), element, self._device)
             binding.bind_ortvalue_input(port, value)
             inputs.append(value)
-        for port, path in session.parameters.items():
-            binding.bind_ortvalue_input(port, self._weights[path])
-        for port, key in session.prepared.items():
-            binding.bind_ortvalue_input(port, self._prepared[key])
-        states: dict[str, Any] = {}
-        for port, (path, shape, element) in session.states.items():
-            if path not in self.state:
-                zeros = np.zeros(shape, dtype=_NUMPY[element])
-                self.state[path] = _to_device(self._ort, zeros, element, self._device)
-            binding.bind_ortvalue_input(port, self.state[path])
-            states[path] = self.state[path]
+        states = self._bind_held(session, binding)
         outputs: list[Any] = []
         for port, shape, element in zip(
             session.results, session.result_shapes, session.result_elements, strict=True
@@ -278,13 +277,7 @@ class OnnxModel:
         cuda_graph = cuda_graph and names[:1] == ["CUDAExecutionProvider"]
         settings = self._ort.SessionOptions()
         settings.graph_optimization_level = self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        if self._device == "cuda":
-            # The GPU does the work; ONNX Runtime's default is a spinning
-            # thread per visible core, which in a container allowed fewer
-            # cores than it sees spends the quota and stalls the process for
-            # the rest of each scheduling period (tens of milliseconds).
-            settings.intra_op_num_threads = 1
-            settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        self._quiet(settings)
         if self._device == "cuda" and not cuda_graph:
             # Every session allocates from one arena: each of its own grows
             # to the largest call it has seen and keeps it, which for a
@@ -299,9 +292,7 @@ class OnnxModel:
         for port, path in parameters.items():
             if path not in self._weights:
                 tensor = exported.weights[port]
-                array = np.frombuffer(tensor.raw_data, dtype=_NUMPY[tensor.data_type]).reshape(
-                    tuple(tensor.dims)
-                )
+                array = _host_array(tensor)
                 self._weights[path] = _to_device(self._ort, array, tensor.data_type, self._device)
         prepared: dict[str, str] = {}
         if not stateless:
@@ -449,12 +440,7 @@ class OnnxModel:
                 provider = (name, options)
             providers.append(provider)
         settings = self._ort.SessionOptions()
-        if self._device == "cuda":
-            # As for the entries' sessions: a spinning pool as wide as the
-            # visible cores would spend the container's quota for as long
-            # as this session lives, stalling the first calls after it.
-            settings.intra_op_num_threads = 1
-            settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        self._quiet(settings)
         session = self._ort.InferenceSession(
             prepare.SerializeToString(), settings, providers=providers
         )
@@ -470,6 +456,16 @@ class OnnxModel:
         session.run_with_iobinding(binding, run)
         for name, value in zip(missing, binding.get_outputs(), strict=True):
             self._prepared[split.keys[name]] = value
+
+    def _quiet(self, settings: Any) -> None:
+        """On a GPU, one CPU thread that sleeps when idle. The GPU does the
+        work; ONNX Runtime's default is a spinning thread per visible core,
+        which in a container allowed fewer cores than it sees spends the
+        quota and stalls the process for the rest of each scheduling period
+        (tens of milliseconds)."""
+        if self._device == "cuda":
+            settings.intra_op_num_threads = 1
+            settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
     def _fold_weights(self, exported: Any, parameters: Mapping[str, str], settings: Any) -> None:
         """Makes the graph's parameters initializers, their bytes the shared
@@ -490,9 +486,7 @@ class OnnxModel:
                 continue
             if path not in self._host:
                 tensor = exported.weights[port]
-                array = np.frombuffer(tensor.raw_data, dtype=_NUMPY[tensor.data_type]).reshape(
-                    tuple(tensor.dims)
-                )
+                array = _host_array(tensor)
                 self._host[path] = (array, _to_device(self._ort, array, tensor.data_type, "cpu"))
             array = self._host[path][0]
             # An initializer whose data is external: the session takes it
@@ -651,21 +645,18 @@ def _split_weight_only(graph: Any, parameters: Mapping[str, str]) -> _WeightOnly
             boundary.append(name)
     keys = {name: digest[name] for name in boundary}
     # The entry keeps every node it needs but those behind the boundary.
-    needed: set[int] = set()
-    pending = [name for name in outside]
-    for index, node in enumerate(nodes):
-        if not all(o in weight_only for o in node.output):
-            needed.add(index)
-    stop = set(boundary) | set(parameters)
-    seen: set[str] = set()
-    while pending:
-        name = pending.pop()
-        if name in seen or name in stop or name not in producer:
-            continue
-        seen.add(name)
-        needed.add(producer[name])
-        pending.extend(i for i in nodes[producer[name]].input if i)
+    needed = {
+        index for index, node in enumerate(nodes) if not all(o in weight_only for o in node.output)
+    }
+    needed |= _producers(graph, list(outside), set(boundary) | set(parameters))
     return _WeightOnly(boundary, keys, needed)
+
+
+def _host_array(tensor: Any) -> np.ndarray:
+    """An exported weight's bytes as a host array, without a copy."""
+    return np.frombuffer(tensor.raw_data, dtype=_NUMPY[tensor.data_type]).reshape(
+        tuple(tensor.dims)
+    )
 
 
 def _producers(graph: Any, outputs: Sequence[str], stop: set[str]) -> set[int]:
