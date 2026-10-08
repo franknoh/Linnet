@@ -23,7 +23,7 @@ entry's results.
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
 
 from ..plan import PlanError
@@ -64,13 +64,13 @@ def split(source: str, stage_of: Callable[[str], int], stages: int) -> Split:
     )
     if main is None:
         raise PlanError("the generated source has no `main`")
-    parameter_paths = _list_constant(module, "PARAMETERS")
+    parameter_paths = list_constant(module, "PARAMETERS")
     stage_of_parameter = [stage_of(path) for path in parameter_paths]
-    constant_list = _list_constant(module, "CONSTANTS")
+    constant_list = list_constant(module, "CONSTANTS")
     constant_names = set(constant_list)
-    if _list_constant(module, "STATES") or _list_constant(module, "NEXT_STATES"):
+    if list_constant(module, "STATES") or list_constant(module, "NEXT_STATES"):
         raise PlanError("a pipeline runs entries that keep no state between calls")
-    if _list_constant(module, "PREPARED"):
+    if list_constant(module, "PREPARED"):
         raise PlanError("a pipeline's entry is generated without `--prepare`")
 
     # name -> (stage or None for "decide later", anchored to a parameter)
@@ -125,8 +125,8 @@ def split(source: str, stage_of: Callable[[str], int], stages: int) -> Split:
     bound: list[bool] = []
     placed: list[set[int]] = []
     for node in statements:
-        read = _loads(node, made_on)
-        written = _stores(node)
+        read = read_names(node, made_on)
+        written = stores(node)
         uses.append(read)
         defs.append(written)
         anchors = [made_on[name] or 0 for name in read if anchored[name]]
@@ -239,7 +239,7 @@ def _parameter(name: str) -> bool:
     return name.startswith("p") and name[1:].isdigit()
 
 
-def _list_constant(module: ast.Module, name: str) -> list[str]:
+def list_constant(module: ast.Module, name: str) -> list[str]:
     for node in module.body:
         if (
             isinstance(node, ast.Assign)
@@ -253,8 +253,8 @@ def _list_constant(module: ast.Module, name: str) -> list[str]:
     return []
 
 
-def _loads(node: ast.AST, known: dict[str, int | None]) -> list[str]:
-    """The local values `node` reads, once each, in order."""
+def read_names(node: ast.AST, known: Container[str]) -> list[str]:
+    """The `known` names `node` reads, once each, in order."""
     found: dict[str, None] = {}
     for child in ast.walk(node):
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and child.id in known:
@@ -262,7 +262,7 @@ def _loads(node: ast.AST, known: dict[str, int | None]) -> list[str]:
     return list(found)
 
 
-def _stores(node: ast.stmt) -> list[str]:
+def stores(node: ast.stmt) -> list[str]:
     if not isinstance(node, ast.Assign):
         return []
     found: dict[str, None] = {}
@@ -291,27 +291,17 @@ def _function(
         for value in read:
             last[value] = index
     for index, node in enumerate(body):
-        for value in _stores(node):
+        for value in stores(node):
             last.setdefault(value, index)
     kept = set(sends)
-    released: dict[int, list[str]] = {}
+    released: dict[str, int] = {}
     for value in [*positional, *inputs]:
         if value not in kept and value not in last:
-            released.setdefault(-1, []).append(value)
+            released[value] = -1
     for value, index in last.items():
         if value not in kept:
-            released.setdefault(index, []).append(value)
-    statements: list[ast.stmt] = []
-    if -1 in released:
-        statements.append(_delete(released[-1]))
-    for index, node in enumerate(body):
-        statements.append(node)
-        if index in released:
-            statements.append(_delete(released[index]))
-    returned: ast.expr = ast.Tuple(
-        elts=[ast.Name(id=value, ctx=ast.Load()) for value in sends], ctx=ast.Load()
-    )
-    statements.append(ast.Return(value=returned))
+            released[value] = index
+    statements = released_after(body, released, sends)
     # Parsed rather than built, so the node has every field this Python's
     # `ast` expects.
     signature = ", ".join([*positional, "*", *inputs, "_device", "**_unused"])
@@ -319,6 +309,26 @@ def _function(
     assert isinstance(function, ast.FunctionDef)
     function.body = statements
     return function
+
+
+def released_after(
+    body: Sequence[ast.stmt], last: Mapping[str, int], returned: Sequence[str]
+) -> list[ast.stmt]:
+    """`body` with each value of `last` deleted after the statement it maps
+    to (-1: before the first), then `return` of the `returned` values as a
+    tuple: a generated function that holds each value only as long as it is
+    read."""
+    released: dict[int, list[str]] = {}
+    for name, index in last.items():
+        released.setdefault(index, []).append(name)
+    out: list[ast.stmt] = [_delete(released[-1])] if -1 in released else []
+    for index, node in enumerate(body):
+        out.append(node)
+        if index in released:
+            out.append(_delete(released[index]))
+    values: list[ast.expr] = [ast.Name(id=name, ctx=ast.Load()) for name in returned]
+    out.append(ast.Return(value=ast.Tuple(elts=values, ctx=ast.Load())))
+    return out
 
 
 def _delete(names: Sequence[str]) -> ast.Delete:
