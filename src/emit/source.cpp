@@ -556,9 +556,7 @@ private:
             }
         }
         std::string text = "let (";
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            text += (i == 0 ? "" : ", ") + names[i];
-        }
+        text += join(names, ", ");
         return text + (names.size() == 1 ? ",)" : ")") + " = " + expr(tuple);
     }
 

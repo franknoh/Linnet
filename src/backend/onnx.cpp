@@ -1,5 +1,7 @@
 #include "linnet/backend/onnx.hpp"
 
+#include "linnet/support/text.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -21,9 +23,7 @@ std::string tensor_type(const Dims& shape, ScalarKind dtype) {
         return text;
     }
     text += "[";
-    for (std::size_t i = 0; i < shape.size(); ++i) {
-        text += (i == 0 ? "" : ",") + std::to_string(shape[i]);
-    }
+    text += join(shape, ",", [&](const auto& item) { return std::to_string(item); });
     return text + "]";
 }
 
@@ -48,9 +48,7 @@ std::string float_text(double value) {
 
 std::string int_list(const Dims& values) {
     std::string text;
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        text += (i == 0 ? "" : ", ") + std::to_string(values[i]);
-    }
+    text += join(values, ", ", [&](const auto& item) { return std::to_string(item); });
     return text;
 }
 
@@ -926,19 +924,13 @@ public:
                           "\"";
         if (!metadata_.empty()) {
             out += ", metadata_props: [";
-            for (std::size_t i = 0; i < metadata_.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + metadata_[i];
-            }
+            out += join(metadata_, ", ");
             out += "]";
         }
         out += ">\nmain (";
-        for (std::size_t i = 0; i < inputs_.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + inputs_[i];
-        }
+        out += join(inputs_, ", ");
         out += ") => (";
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + outputs[i];
-        }
+        out += join(outputs, ", ");
         out += ") {\n";
         out += body_;
         out += "}\n";
@@ -1134,9 +1126,7 @@ private:
             line += " <" + attributes + ">";
         }
         line += " (";
-        for (std::size_t i = 0; i < operands.size(); ++i) {
-            line += (i == 0 ? "" : ", ") + operands[i].name;
-        }
+        line += join(operands, ", ", [&](const auto& item) { return item.name; });
         body_ += line + ")\n";
         return name;
     }

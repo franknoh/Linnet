@@ -2,6 +2,7 @@
 
 #include "linnet/backend/graph_export.hpp"
 #include "linnet/diagnostic/json.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -103,9 +104,7 @@ private:
             std::string product = factors.front();
             if (factors.size() > 1) {
                 product = "{\"op\":\"mul\",\"args\":[";
-                for (std::size_t i = 0; i < factors.size(); ++i) {
-                    product += (i == 0 ? "" : ",") + factors[i];
-                }
+                product += join(factors, ",");
                 product += "]}";
             }
             terms += (terms.empty() ? "" : ",") + product;
@@ -186,9 +185,7 @@ private:
                    ",\"dtype\":" + dtype_json(data.dtype) + "}";
         case TypeKind::Tuple: {
             std::string out = "{\"kind\":\"tuple\",\"elements\":[";
-            for (std::size_t i = 0; i < data.elements.size(); ++i) {
-                out += (i == 0 ? "" : ",") + type_json(data.elements[i]);
-            }
+            out += join(data.elements, ",", [&](const auto& item) { return type_json(item); });
             return out + "]}";
         }
         case TypeKind::Optional:
@@ -207,9 +204,7 @@ private:
                 "\",\"name\":" + json_string(model_.entities[data.decl].name) + ",\"module\":" +
                 json_string(model_.module_paths.at(model_.entities[data.decl].module)) +
                 ",\"args\":[";
-            for (std::size_t i = 0; i < data.args.size(); ++i) {
-                out += (i == 0 ? "" : ",") + generic_value(data.args[i]);
-            }
+            out += join(data.args, ",", [&](const auto& item) { return generic_value(item); });
             return out + "]}";
         }
         case TypeKind::ShapeValue:
@@ -376,14 +371,10 @@ private:
         out += ",\"generics\":" + generics_json(function.generics);
         out += ",\"constraints\":" + constraints_json(function.constraints);
         out += ",\"results\":[";
-        for (std::size_t i = 0; i < function.results.size(); ++i) {
-            out += (i == 0 ? "" : ",") + type_json(function.results[i]);
-        }
+        out += join(function.results, ",", [&](const auto& item) { return type_json(item); });
         out += "],\"states\":[";
         const std::vector<std::string> states = state_footprint(function);
-        for (std::size_t i = 0; i < states.size(); ++i) {
-            out += (i == 0 ? "" : ",") + json_string(states[i]);
-        }
+        out += join(states, ",", [&](const auto& item) { return json_string(item); });
         out += "],\"body\":" + region_json(function.body) + "}";
         return out;
     }
@@ -476,26 +467,18 @@ private:
     std::string region_json(ir::RegionId id) const {
         const ir::Block& block = module_.block(module_.region(id).blocks.front());
         std::string out = "{\"args\":[";
-        for (std::size_t i = 0; i < block.arguments.size(); ++i) {
-            out += (i == 0 ? "" : ",") + value_json(block.arguments[i]);
-        }
+        out += join(block.arguments, ",", [&](const auto& item) { return value_json(item); });
         out += "],\"ops\":[";
-        for (std::size_t i = 0; i < block.ops.size(); ++i) {
-            out += (i == 0 ? "" : ",") + op_json(module_.op(block.ops[i]));
-        }
+        out += join(block.ops, ",", [&](const auto& item) { return op_json(module_.op(item)); });
         return out + "]}";
     }
 
     std::string op_json(const ir::Operation& op) const {
         const ir::Attributes& a = op.attributes;
         std::string out = "{\"kind\":" + json_string(ir::op_spelling(op.kind)) + ",\"operands\":[";
-        for (std::size_t i = 0; i < op.operands.size(); ++i) {
-            out += (i == 0 ? "" : ",") + std::to_string(op.operands[i]);
-        }
+        out += join(op.operands, ",", [&](const auto& item) { return std::to_string(item); });
         out += "],\"results\":[";
-        for (std::size_t i = 0; i < op.results.size(); ++i) {
-            out += (i == 0 ? "" : ",") + value_json(op.results[i]);
-        }
+        out += join(op.results, ",", [&](const auto& item) { return value_json(item); });
         out += "],\"attrs\":{";
         std::vector<std::string> attrs;
         switch (op.kind) {
@@ -567,9 +550,8 @@ private:
             attrs.push_back("\"substitution\":" + substitution_json(a.substitution));
             {
                 std::string generics = "\"generics\":[";
-                for (std::size_t i = 0; i < a.generic_args.size(); ++i) {
-                    generics += (i == 0 ? "" : ",") + generic_value(a.generic_args[i]);
-                }
+                generics += join(
+                    a.generic_args, ",", [&](const auto& item) { return generic_value(item); });
                 attrs.push_back(generics + "]");
             }
             if (op.kind == ir::OpKind::SemanticCall && !a.names.empty()) {
@@ -578,22 +560,16 @@ private:
             break;
         case ir::OpKind::EnumMatch: {
             std::string variants = "\"variants\":[";
-            for (std::size_t i = 0; i < a.names.size(); ++i) {
-                variants += (i == 0 ? "" : ",") + json_string(a.names[i]);
-            }
+            variants += join(a.names, ",", [&](const auto& item) { return json_string(item); });
             attrs.push_back(variants + "]");
             break;
         }
         default:
             break;
         }
-        for (std::size_t i = 0; i < attrs.size(); ++i) {
-            out += (i == 0 ? "" : ",") + attrs[i];
-        }
+        out += join(attrs, ",");
         out += "},\"regions\":[";
-        for (std::size_t i = 0; i < op.regions.size(); ++i) {
-            out += (i == 0 ? "" : ",") + region_json(op.regions[i]);
-        }
+        out += join(op.regions, ",", [&](const auto& item) { return region_json(item); });
         return out + "]}";
     }
 

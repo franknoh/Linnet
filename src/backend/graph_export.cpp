@@ -2111,9 +2111,7 @@ std::string release_dead_values(const std::string& body, const std::string& live
         }
         if (!after[g].empty()) {
             std::string line = "    del ";
-            for (std::size_t i = 0; i < after[g].size(); ++i) {
-                line += (i == 0 ? "" : ", ") + after[g][i];
-            }
+            line += join(after[g], ", ");
             out += line + "\n";
         }
     }
@@ -2587,9 +2585,7 @@ std::string prune_python_assignments(const std::string& body, const std::string&
 
 std::string python_tuple(const Dims& dims) {
     std::string out = "(";
-    for (std::size_t i = 0; i < dims.size(); ++i) {
-        out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
-    }
+    out += join(dims, ", ", [&](const auto& item) { return std::to_string(item); });
     return out + (dims.size() == 1 ? ",)" : ")");
 }
 

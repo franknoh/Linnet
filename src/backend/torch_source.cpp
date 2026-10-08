@@ -1,6 +1,7 @@
 #include "linnet/backend/torch_source.hpp"
 
 #include "linnet/backend/python_target.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -78,9 +79,7 @@ public:
     concat(const std::vector<TensorInfo>& parts, std::int64_t axis, const Dims& shape) override {
         (void)shape;
         std::string list;
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-            list += (i == 0 ? "" : ", ") + parts[i].name;
-        }
+        list += join(parts, ", ", [&](const auto& item) { return item.name; });
         return define("torch.cat([" + list + "], dim=" + std::to_string(axis) + ")");
     }
 
@@ -130,9 +129,7 @@ public:
     }
     void release(const std::vector<std::string>& names) override {
         std::string line = indent_ + "del ";
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            line += (i == 0 ? "" : ", ") + names[i];
-        }
+        line += join(names, ", ");
         body_ += line + "\n";
     }
 
@@ -720,9 +717,7 @@ public:
         for (const auto& [path, value] : states) {
             outputs.push_back(value.name);
         }
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            tail += (i == 0 ? "" : ", ") + outputs[i];
-        }
+        tail += join(outputs, ", ");
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
         // Sibling linear layers become one product only where their joined
@@ -751,9 +746,7 @@ public:
             // Parameters `_adjacent` joins, which the runtime lays out one
             // after another so that the joined weight is a view of them.
             out += "FUSED = [";
-            for (std::size_t i = 0; i < fused.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + string_list(fused[i]);
-            }
+            out += join(fused, ", ", [&](const auto& item) { return string_list(item); });
             out += "]\n";
         }
         // The states `main` writes into the tensor it was given: CUDA graphs
@@ -779,9 +772,7 @@ public:
         }
         out += hoisted.constants;
         out += "    return (";
-        for (std::size_t i = 0; i < hoisted.names.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + hoisted.names[i];
-        }
+        out += join(hoisted.names, ", ");
         out += hoisted.names.size() == 1 ? ",)\n\n\n" : ")\n\n\n";
         if (!prepared.outputs.empty()) {
             // `PREPARE_INPUTS` names parameters (`pN`, PARAMETERS order) and
@@ -792,9 +783,7 @@ public:
                 out += input + ", ";
             }
             std::string returned = "    return (";
-            for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
-                returned += (i == 0 ? "" : ", ") + prepared.outputs[i];
-            }
+            returned += join(prepared.outputs, ", ");
             returned += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
             // Intermediates are released as soon as they are dead: a model's
             // worth of dequantization scratch at once would not fit.
@@ -808,9 +797,7 @@ public:
         if (placed_) {
             arguments.emplace_back("_dev");
         }
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments[i];
-        }
+        out += join(arguments, ", ");
         out += "):\n";
         if (placed_) {
             out += "    _device = _dev[0]\n";

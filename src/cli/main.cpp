@@ -20,6 +20,7 @@
 #include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
+#include "linnet/support/text.hpp"
 #include "linnet/syntax/lexer.hpp"
 #include "linnet/syntax/parser.hpp"
 #include "linnet/version.hpp"
@@ -861,9 +862,7 @@ std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool a
             out += b == 0 ? "" : ",";
             out += "{\"name\":" + json_string(block.name) +
                    ",\"module\":" + json_string(block.module) + ",\"generics\":[";
-            for (std::size_t i = 0; i < block.generics.size(); ++i) {
-                out += (i == 0 ? "" : ",") + json_string(block.generics[i]);
-            }
+            out += join(block.generics, ",", [&](const auto& item) { return json_string(item); });
             out += "],\"entries\":[";
             for (std::size_t e = 0; e < block.entries.size(); ++e) {
                 const sema::ManifestEntry& entry = block.entries[e];
@@ -871,13 +870,9 @@ std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool a
                 out += "{\"path\":" + json_string(entry.path) +
                        ",\"kind\":" + json_string(entry.kind) +
                        ",\"dtype\":" + json_string(entry.dtype) + ",\"shape\":[";
-                for (std::size_t i = 0; i < entry.shape.size(); ++i) {
-                    out += (i == 0 ? "" : ",") + json_string(entry.shape[i]);
-                }
+                out += join(entry.shape, ",", [&](const auto& item) { return json_string(item); });
                 out += "],\"repeat\":[";
-                for (std::size_t i = 0; i < entry.repeat.size(); ++i) {
-                    out += (i == 0 ? "" : ",") + json_string(entry.repeat[i]);
-                }
+                out += join(entry.repeat, ",", [&](const auto& item) { return json_string(item); });
                 out +=
                     std::string("],\"optional\":") + (entry.is_optional ? "true" : "false") + "}";
             }
@@ -889,17 +884,13 @@ std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool a
         out += block.module + "::" + block.name;
         if (!block.generics.empty()) {
             out += "<";
-            for (std::size_t i = 0; i < block.generics.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + block.generics[i];
-            }
+            out += join(block.generics, ", ");
             out += ">";
         }
         out += "\n";
         for (const sema::ManifestEntry& entry : block.entries) {
             out += "  " + entry.kind + " " + entry.path + ": Tensor[";
-            for (std::size_t i = 0; i < entry.shape.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + entry.shape[i];
-            }
+            out += join(entry.shape, ", ");
             out += "; " + entry.dtype + "]" + (entry.is_optional ? "?" : "");
             for (const std::string& count : entry.repeat) {
                 out += " x " + count;

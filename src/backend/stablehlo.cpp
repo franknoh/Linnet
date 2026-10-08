@@ -1,6 +1,7 @@
 #include "linnet/backend/stablehlo.hpp"
 
 #include "linnet/backend/graph_export.hpp"
+#include "linnet/support/text.hpp"
 
 #include <cstdio>
 #include <optional>
@@ -35,9 +36,7 @@ std::string i64_array(const Dims& values) {
 
 std::string index_list(const Dims& values) {
     std::string text = "[";
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        text += (i == 0 ? "" : ", ") + std::to_string(values[i]);
-    }
+    text += join(values, ", ", [&](const auto& item) { return std::to_string(item); });
     return text + "]";
 }
 
@@ -693,9 +692,7 @@ public:
         }
         out += "module @" + module_name + " {\n";
         out += "  func.func @main(";
-        for (std::size_t i = 0; i < arguments_.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments_[i];
-        }
+        out += join(arguments_, ", ");
         out += ") -> " + (outputs.size() == 1 ? types : "(" + types + ")");
         if (!states.empty()) {
             out += " attributes {linnet.states = [";
@@ -773,9 +770,7 @@ private:
 
     static std::string i64_list(const Dims& dims) {
         std::string out = "[";
-        for (std::size_t i = 0; i < dims.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
-        }
+        out += join(dims, ", ", [&](const auto& item) { return std::to_string(item); });
         return out + "]";
     }
 

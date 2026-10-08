@@ -1,6 +1,7 @@
 #include "linnet/backend/jax_source.hpp"
 
 #include "linnet/backend/python_target.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -152,9 +153,7 @@ public:
     concat(const std::vector<TensorInfo>& parts, std::int64_t axis, const Dims& shape) override {
         (void)shape;
         std::string list;
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-            list += (i == 0 ? "" : ", ") + parts[i].name;
-        }
+        list += join(parts, ", ", [&](const auto& item) { return item.name; });
         return define("jnp.concatenate([" + list + "], axis=" + std::to_string(axis) + ")");
     }
 
@@ -595,9 +594,7 @@ public:
         for (const auto& [path, value] : states) {
             outputs.push_back(value.name);
         }
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            tail += (i == 0 ? "" : ", ") + outputs[i];
-        }
+        tail += join(outputs, ", ");
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         // Weight-only work, run once per loaded model (`--prepare`).
         PreparedSplit prepared;
@@ -612,22 +609,16 @@ public:
             out += "PREPARED = " + string_list(prepared.keys) + "\n";
             out += "PREPARE_INPUTS = " + string_list(prepared.inputs) + "\n\n\n";
             out += "def prepare(";
-            for (std::size_t i = 0; i < prepared.inputs.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + prepared.inputs[i];
-            }
+            out += join(prepared.inputs, ", ");
             std::string returned = "    return (";
-            for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
-                returned += (i == 0 ? "" : ", ") + prepared.outputs[i];
-            }
+            returned += join(prepared.outputs, ", ");
             returned += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
             out += "):\n" + precise(prepared.prepare + returned);
         }
         out += "\n\ndef main(";
         std::vector<std::string> arguments = arguments_;
         arguments.insert(arguments.end(), prepared.outputs.begin(), prepared.outputs.end());
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments[i];
-        }
+        out += join(arguments, ", ");
         out += "):\n" + precise(prepared.body + tail);
         return out;
     }
@@ -668,9 +659,7 @@ private:
 
     static std::string unpack(const std::vector<std::string>& names) {
         std::string out;
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + names[i];
-        }
+        out += join(names, ", ");
         return names.size() == 1 ? out + "," : out;
     }
 
