@@ -24,7 +24,7 @@ def _pool() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     positions, then padding as the engine packs it."""
     table = torch.zeros(4, 12, dtype=torch.int32)
     table[0, :11] = torch.tensor([5, 9, 3, 17, 22, 8, 12, 19, 25, 26, 28])
-    table[1, :5] = torch.tensor([5, 9, 11, 30, 2])
+    table[1, :6] = torch.tensor([5, 9, 11, 30, 2, 31])
     table[2, :4] = torch.tensor([5, 9, 14, 27])
     rows = [0] * 128 + [1] * 50 + [2] * 30
     positions = [*range(40, 168), *range(32, 82), *range(20, 50)]
