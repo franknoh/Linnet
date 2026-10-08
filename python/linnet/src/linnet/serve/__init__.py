@@ -761,6 +761,16 @@ def _shared(
     return [*batch, *extra], copies
 
 
+def _record(held: list[Sampling], slots: list[int], sampling: list[Sampling]) -> bool:
+    """Sets rows' sampling in `held`; whether any changed, which with no
+    rows given (the first upload) it always has."""
+    if slots and all(held[s] == x for s, x in zip(slots, sampling, strict=True)):
+        return False
+    for slot, row in zip(slots, sampling, strict=True):
+        held[slot] = row
+    return True
+
+
 def _top(completions: Iterable[Completion]) -> int:
     """What a pass computes of log-probabilities (see `_Backend`)."""
     wanted = [c.request.logprobs for c in completions if c.request.logprobs is not None]
@@ -892,10 +902,8 @@ class _TorchBackend:
     def _hold(self, slots: list[int], sampling: list[Sampling]) -> None:
         """Puts rows' sampling on the device, all of it, when any changed."""
         torch = self.torch
-        if slots and all(self.sampling[s] == x for s, x in zip(slots, sampling, strict=True)):
+        if not _record(self.sampling, slots, sampling):
             return
-        for slot, row in zip(slots, sampling, strict=True):
-            self.sampling[slot] = row
         rows = self.sampling
         self.temperature = self._put([r.temperature for r in rows], torch.float32)
         self.top_k = self._put([r.top_k for r in rows], torch.int64)
@@ -910,22 +918,9 @@ class _TorchBackend:
         sampling: list[Sampling],
         top: int = -1,
     ) -> _Tokens:
-        torch = self.torch
         rows, at = self._put(slots), self._put(lengths)
         logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at], compile=True)
-        self._hold(slots, sampling)
-        index = rows.long()
-        first = self._draw(
-            logits,
-            self.temperature[index],
-            self.top_k[index],
-            self.top_p[index],
-            self.keys[index],
-            at,
-            mode(sampling),
-        )
-        self.tokens[index, 0] = first.to(torch.int32)
-        self.positions[index] = at
+        first = self._admit(logits, rows, at, slots, sampling)
         return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
     def _pack(self, prompts: list[list[int]], slots: list[int], size: int, pad: int) -> list[Any]:
@@ -983,16 +978,19 @@ class _TorchBackend:
             self._changed.clear()
         return self.table
 
+    def _lengths(self, prompts: list[list[int]], slots: list[int]) -> tuple[Any, Any]:
+        """Prompts' rows and lengths, on the device."""
+        return self._put(slots), self._put([len(prompt) for prompt in prompts])
+
     def _admit(
-        self, logits: Any, prompts: list[list[int]], slots: list[int], sampling: list[Sampling]
+        self, logits: Any, rows: Any, at: Any, slots: list[int], sampling: list[Sampling]
     ) -> Any:
         """Draws the token after each prompt from its logits and sets its row
-        to it, at the position after the prompt."""
+        (`rows`, `slots` on the device) to it, at the position after the
+        prompt (`at`)."""
         torch = self.torch
-        lengths = [len(prompt) for prompt in prompts]
-        rows_at, at = self._put(slots), self._put(lengths)
         self._hold(slots, sampling)
-        index = rows_at.long()
+        index = rows.long()
         first = self._draw(
             logits,
             self.temperature[index],
@@ -1025,7 +1023,7 @@ class _TorchBackend:
             compile=self.step_compile,
         )[: len(prompts)]
         logits, prompts, slots, sampling = self._share(logits, prompts, slots, sampling, copies)
-        first = self._admit(logits, prompts, slots, sampling)
+        first = self._admit(logits, *self._lengths(prompts, slots), slots, sampling)
         return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
     def step_packed(
@@ -1057,7 +1055,7 @@ class _TorchBackend:
         prompted, prompts, slots, sampling = self._share(
             logits[: len(prompts)], prompts, slots, sampling, copies
         )
-        first = self._admit(prompted, prompts, slots, sampling)
+        first = self._admit(prompted, *self._lengths(prompts, slots), slots, sampling)
         return (
             _TorchTokens(first, _logprobs_torch(prompted, first, top) if top >= 0 else None),
             _TorchTokens(
@@ -1302,10 +1300,8 @@ class _JaxBackend(_Grouped):
     def _hold(self, slots: list[int], sampling: list[Sampling]) -> None:
         """Puts rows' sampling on the device, all of it, when any changed."""
         np = self.np
-        if slots and all(self.sampling[s] == x for s, x in zip(slots, sampling, strict=True)):
+        if not _record(self.sampling, slots, sampling):
             return
-        for slot, row in zip(slots, sampling, strict=True):
-            self.sampling[slot] = row
         rows = self.sampling
         self.held = (
             self._put([r.temperature for r in rows], np.float32),
