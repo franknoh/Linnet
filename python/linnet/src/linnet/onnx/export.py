@@ -224,7 +224,7 @@ def export_function(
     from ..plan import compile_plan
 
     plan = compile_plan(source, std_root=std_root, optimize=False, functions=True)
-    entry = str(plan.module_entry(name)["name"]).rsplit("::", 1)[1]
+    entry = plan.module_entry(name).name.rsplit("::", 1)[1]
     arguments = ["onnx", "--numerics", numerics, "--entry", entry]
     arguments += bind_arguments(generics)
     model = parser.parse_model(run_compiler(*arguments, *std_arguments(std_root), str(source)))

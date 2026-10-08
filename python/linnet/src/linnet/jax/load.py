@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import json
 import re
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -30,7 +29,7 @@ from jax.sharding import SingleDeviceSharding
 
 from .. import ir
 from ..compiler import LinnetError, bind_arguments, run_compiler, std_arguments
-from ..plan import bind_shape_names
+from ..plan import bind_shape_names, compile_plan
 from ..weights import apply_bindings, read_arrays
 from .dtypes import MLIR_TYPES
 
@@ -41,7 +40,7 @@ class LinnetFunction:
     def __init__(
         self,
         source: Path,
-        plan: dict[str, Any],
+        program: ir.Program,
         generics: Mapping[str, int | str],
         weights: dict[str, Any],
         std_root: str | Path | None,
@@ -53,7 +52,7 @@ class LinnetFunction:
         self._source = source
         self.numerics = numerics
         self.cast_dtype = cast_dtype
-        self.plan = plan
+        self.program = program
         self.generics = dict(generics)
         self._generics = self.generics
         self.weights = weights
@@ -64,14 +63,13 @@ class LinnetFunction:
         # How a weight goes to the devices when an entry first compiles:
         # `placement(path, host_array)`, or onto the default device.
         self.placement: Callable[[str, Any], Any] | None = None
-        functions = cast(list[dict[str, Any]], plan["functions"])
-        matching = [f for f in functions if f["name"].endswith(f"::{root}.{entry}")]
+        matching = [f for f in program.functions.values() if f.name.endswith(f"::{root}.{entry}")]
         if not matching:
             raise LinnetError(f"block `{root}` has no entry `{entry}`")
         self._signature = matching[0]
-        manifest = cast(list[dict[str, Any]], plan["manifest"])
-        self.parameter_paths: list[str] = [entry["path"] for entry in manifest]
-        self.optional_paths: set[str] = {e["path"] for e in manifest if e["optional"]}
+        manifest = program.manifest
+        self.parameter_paths: list[str] = [entry.path for entry in manifest]
+        self.optional_paths: set[str] = {e.path for e in manifest if e.optional}
         self._cache: dict[tuple[Any, ...], CompiledEntry] = {}
         # Set by `LinnetModel`, which runs several entries over one copy of
         # the weights and keeps their state on the device: the weights are
@@ -143,16 +141,16 @@ class LinnetFunction:
         """Manifest paths spell array elements `[*]`; weights spell them `.0`."""
         return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
-    def _check_weights(self, manifest: list[dict[str, Any]]) -> None:
+    def _check_weights(self, manifest: Sequence[ir.ManifestEntry]) -> None:
         # Manifest paths spell array elements `[*]`; weights spell them `.0`.
         def matches(pattern: str, path: str) -> bool:
             return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
         for entry in manifest:
-            if entry["optional"] or entry["kind"] == "state":  # state is never a weight
+            if entry.optional or entry.kind == "state":  # state is never a weight
                 continue
-            if not any(matches(entry["path"], path) for path in self._weights):
-                raise LinnetError(f"missing weights for `{entry['path']}`")
+            if not any(matches(entry.path, path) for path in self._weights):
+                raise LinnetError(f"missing weights for `{entry.path}`")
         # Which optional parameters are absent is read off the first export
         # (see `_export`): checkpoints mix them, a bias on some projections
         # and not others, so it is decided per parameter.
@@ -161,18 +159,18 @@ class LinnetFunction:
     # ---- entry generics from input shapes
 
     def _bindings_for(self, inputs: Sequence[Any]) -> dict[str, int | str]:
-        arguments = cast(list[dict[str, Any]], self._signature["body"]["args"])[1:]
+        arguments = self._signature.params
         if len(arguments) != len(inputs):
             raise LinnetError(
                 f"entry `{self.entry}` takes {len(arguments)} inputs, got {len(inputs)}"
             )
         bindings: dict[str, int | str] = dict(self._generics)
         for argument, value in zip(arguments, inputs, strict=True):
-            declared = cast(dict[str, Any], argument["type"])
-            if declared.get("kind") != "tensor":
+            declared = argument.type
+            if not isinstance(declared, ir.TensorType):
                 continue
             actual = [int(d) for d in np.shape(value)]
-            bind_shape_names(declared["shape"], actual, str(argument["name"]), bindings)
+            bind_shape_names(declared.shape, actual, argument.name, bindings)
         return bindings
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
@@ -464,23 +462,21 @@ def load(
     if numerics not in ("exact", "equivalent", "fast"):
         raise LinnetError('numerics must be "exact", "equivalent", or "fast"')
     source_path = Path(source)
-    plan_arguments = ["plan", "--no-optimize"]
-    if root is not None:
-        plan_arguments += ["--root", root]
-    plan = cast(
-        dict[str, Any],
-        json.loads(run_compiler(*plan_arguments, *std_arguments(std_root), str(source_path))),
-    )
-    root_name = str(cast(dict[str, Any], plan["root"])["name"])
-    entries = [
-        f["name"].rsplit(".", 1)[1]
-        for f in cast(list[dict[str, Any]], plan["functions"])
-        if f["kind"] == "entry" and f["block"] == root_name
-    ]
+    program = compile_plan(source_path, root=root, std_root=std_root, optimize=False)
+    root_name = program.root.name
+    entries = [f.short_name for f in program.entries()]
     entry_name = ir.choose_entry(root_name, entries, entry)
     loaded = apply_bindings(read_arrays(weights), bindings)
     return LinnetFunction(
-        source_path, plan, generics, loaded, std_root, root_name, entry_name, numerics, cast_dtype
+        source_path,
+        program,
+        generics,
+        loaded,
+        std_root,
+        root_name,
+        entry_name,
+        numerics,
+        cast_dtype,
     )
 
 

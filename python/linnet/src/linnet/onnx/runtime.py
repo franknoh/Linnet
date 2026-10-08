@@ -22,17 +22,17 @@ session keeps its own device copy.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from ..compiler import LinnetError, run_compiler, std_arguments
+from .. import ir
+from ..compiler import LinnetError
 from ..dtypes import BY_ONNX, DTYPES
 from ..dtypes import dtype as dtype_info
-from ..plan import bind_shape_names
+from ..plan import bind_shape_names, compile_plan
 from ..weights import from_bf16_bits, to_bf16_bits
 from .export import export_model
 
@@ -64,7 +64,7 @@ class OnnxModel:
     def __init__(
         self,
         source: Path,
-        plan: dict[str, Any],
+        program: ir.Program,
         options: dict[str, Any],
         providers: Sequence[Any],
     ) -> None:
@@ -72,7 +72,7 @@ class OnnxModel:
 
         self._ort = onnxruntime
         self._source = source
-        self.plan = plan
+        self.program = program
         self._options = options
         self.providers = list(providers)
         # Providers are names or (name, options); a GPU one keeps the
@@ -80,12 +80,7 @@ class OnnxModel:
         names = [p if isinstance(p, str) else p[0] for p in self.providers]
         gpu = {"CUDAExecutionProvider", "TensorrtExecutionProvider"}
         self._device = "cuda" if gpu & set(names) else "cpu"
-        root = str(plan["root"]["name"])
-        self._signatures = {
-            str(f["name"]).rsplit(".", 1)[1]: f
-            for f in plan["functions"]
-            if f["kind"] == "entry" and f["block"] == root
-        }
+        self._signatures = {f.short_name: f for f in program.entries()}
         self.entries = list(self._signatures)
         self.generics = dict(options["generics"])
         self._sessions: dict[tuple[Any, ...], _Session] = {}
@@ -255,7 +250,7 @@ class OnnxModel:
         options = self._options
         # Weights an earlier session loaded are not read again: on the
         # device for an entry with state, as host bytes for one without.
-        held = self._weights if self._signatures[name].get("states") else self._host
+        held = self._weights if self._signatures[name].states else self._host
         exported = export_model(
             self._source,
             generics={**options["generics"], **bindings},
@@ -521,18 +516,18 @@ class OnnxModel:
 
     def _bindings(self, name: str, inputs: Sequence[Any]) -> dict[str, int | str]:
         """The entry's own generics, from the shapes of its inputs."""
-        arguments = self._signatures[name]["body"]["args"][1:]
+        arguments = self._signatures[name].params
         if len(arguments) != len(inputs):
             raise LinnetError(f"entry `{name}` takes {len(arguments)} inputs, got {len(inputs)}")
         # The root's generics are bound already: inputs are checked against
         # them, and only the entry's own are returned.
         bindings: dict[str, Any] = dict(self.generics)
         for argument, value in zip(arguments, inputs, strict=True):
-            declared = argument["type"]
-            if declared.get("kind") != "tensor":
+            declared = argument.type
+            if not isinstance(declared, ir.TensorType):
                 continue
             shape = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
-            bind_shape_names(declared["shape"], [int(d) for d in shape], argument["name"], bindings)
+            bind_shape_names(declared.shape, [int(d) for d in shape], argument.name, bindings)
         return {name: size for name, size in bindings.items() if name not in self.generics}
 
 
@@ -841,8 +836,7 @@ def load_model(
             "for CUDA and TensorRT"
         ) from None
 
-    arguments = ["plan", "--no-optimize", *(["--root", root] if root is not None else [])]
-    plan = json.loads(run_compiler(*arguments, *std_arguments(std_root), str(source)))
+    program = compile_plan(source, root=root, std_root=std_root, optimize=False)
     if providers is None:
         available = onnxruntime.get_available_providers()
         providers = (
@@ -859,4 +853,4 @@ def load_model(
         "numerics": numerics,
         "cast_dtype": cast_dtype,
     }
-    return OnnxModel(Path(source), plan, options, providers)
+    return OnnxModel(Path(source), program, options, providers)
