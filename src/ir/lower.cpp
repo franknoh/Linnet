@@ -582,12 +582,7 @@ private:
         }
         const TypeId result = value_type(id, no_type);
         Attributes attributes = index_attributes(names, reduction_facts.index_domains);
-        attributes.reduce = reduction.kind == ast::ReductionKind::Sum    ? ReduceKind::Sum
-                            : reduction.kind == ast::ReductionKind::Prod ? ReduceKind::Prod
-                            : reduction.kind == ast::ReductionKind::Max  ? ReduceKind::Max
-                            : reduction.kind == ast::ReductionKind::Min  ? ReduceKind::Min
-                            : reduction.kind == ast::ReductionKind::Any  ? ReduceKind::Any
-                                                                         : ReduceKind::All;
+        attributes.reduce = reduction.kind;
         const OpId op = region_op(OpKind::Reduce, {}, {result}, attributes, node.span);
         const RegionId region =
             nested_region(op,

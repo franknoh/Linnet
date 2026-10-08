@@ -29,13 +29,19 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Protocol, cast
+from typing import Protocol, TypeAlias, TypeVar, cast
 
 from . import Completion, Engine, Request
 from .sampling import Sampling
+
+# A JSON value: a request's body as `json.loads` reads it, or a response's
+# as `json.dumps` writes it.
+_Json: TypeAlias = "bool | int | float | str | Sequence[_Json] | Mapping[str, _Json] | None"
+
+_T = TypeVar("_T")
 
 
 class Tokenizer(Protocol):
@@ -43,7 +49,9 @@ class Tokenizer(Protocol):
 
     def encode(self, text: str, add_special_tokens: bool = ...) -> list[int]: ...
     def decode(self, token_ids: Sequence[int], skip_special_tokens: bool = ...) -> str: ...
-    def apply_chat_template(self, conversation: Any, **options: Any) -> Any: ...
+    def apply_chat_template(
+        self, conversation: list[_Json], *, tokenize: bool = ..., add_generation_prompt: bool = ...
+    ) -> object: ...
 
 
 class RequestError(ValueError):
@@ -157,7 +165,7 @@ class Server:
     # ---- handlers
 
     def generate(
-        self, prompt: list[int], body: dict[str, Any], limit: int, chat: bool
+        self, prompt: list[int], body: Mapping[str, _Json], limit: int, chat: bool
     ) -> _Generation:
         """Hands a request to the engine, one per choice; their tokens and
         text come from the returned generation as they are produced."""
@@ -180,11 +188,11 @@ class Server:
                 "`echo` with `logprobs` needs the prompt's log probabilities, "
                 "which are not computed"
             )
-        stop: Any = body.get("stop") or []
-        stops: list[Any] = [stop] if isinstance(stop, str) else list(stop)
+        stop = cast("str | list[_Json]", body.get("stop") or [])
+        stops: list[_Json] = [stop] if isinstance(stop, str) else list(stop)
         if len(stops) > 4 or not all(isinstance(s, str) and s for s in stops):
             raise RequestError("`stop` is a string or up to four")
-        seed = body.get("seed")
+        seed = cast("int | None", body.get("seed"))
         events: queue.Queue[_Event] = queue.Queue()
         pending: list[_Pending] = []
         for index in range(choices):
@@ -216,7 +224,7 @@ class Server:
         for one in pending:
             self._inbox.put(("submit", one))
         texts = [_Text(self.tokenizer, prompt) for _ in pending]
-        return _Generation(self, pending, texts, stops, events)
+        return _Generation(self, pending, texts, cast("list[str]", stops), events)
 
     def cancel(self, pending: _Pending) -> None:
         self._inbox.put(("cancel", pending))
@@ -226,9 +234,11 @@ def _done(pending: _Pending) -> bool:
     return pending.completion is not None and bool(pending.completion.reason)
 
 
-def _given(body: dict[str, Any], key: str, default: Any) -> Any:
+def _given(body: Mapping[str, _Json], key: str, default: _T) -> _T:
     value = body.get(key)
-    return default if value is None else value
+    # Typed as `default` is, as the API has it: the caller's `int` or `float`
+    # converts it and refuses a field that does not convert (a 400).
+    return default if value is None else cast("_T", value)
 
 
 class _Text:
@@ -353,7 +363,7 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "linnet"
 
-        def log_message(self, format: str, *args: Any) -> None:
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
         def do_GET(self) -> None:
@@ -368,10 +378,10 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             try:
                 length = int(self.headers.get("Content-Length") or 0)
-                parsed: Any = json.loads(self.rfile.read(length) or b"{}")
+                parsed: _Json = json.loads(self.rfile.read(length) or b"{}")
                 if not isinstance(parsed, dict):
                     raise RequestError("the body is a JSON object")
-                body = cast("dict[str, Any]", parsed)
+                body = parsed
                 if self.path == "/v1/completions":
                     self._complete(body)
                 elif self.path == "/v1/chat/completions":
@@ -385,14 +395,14 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
             except Exception as error:
                 self._error(500, str(error))
 
-        def _complete(self, body: dict[str, Any]) -> None:
-            prompt: Any = body.get("prompt")
-            if isinstance(prompt, list) and len(cast("list[Any]", prompt)) == 1:
-                prompt = cast("list[Any]", prompt)[0]
+        def _complete(self, body: Mapping[str, _Json]) -> None:
+            prompt: _Json = body.get("prompt")
+            if isinstance(prompt, list) and len(prompt) == 1:
+                prompt = prompt[0]
             if isinstance(prompt, str):
                 ids = server.tokenizer.encode(prompt, add_special_tokens=True)
                 echo = prompt
-            elif isinstance(prompt, list) and all(isinstance(t, int) for t in prompt):  # pyright: ignore[reportUnknownVariableType]
+            elif isinstance(prompt, list) and all(isinstance(t, int) for t in prompt):
                 ids = [int(t) for t in cast("list[int]", prompt)]
                 echo = server.tokenizer.decode(ids, skip_special_tokens=True)
             else:
@@ -402,7 +412,7 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 body, generation, len(ids), chat=False, echo=echo if body.get("echo") else ""
             )
 
-        def _chat(self, body: dict[str, Any]) -> None:
+        def _chat(self, body: Mapping[str, _Json]) -> None:
             messages = body.get("messages")
             if not isinstance(messages, list) or not messages:
                 raise RequestError("`messages` is a list of messages")
@@ -417,14 +427,14 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
 
         def _respond(
             self,
-            body: dict[str, Any],
+            body: Mapping[str, _Json],
             generation: _Generation,
             prompt: int,
             chat: bool,
             echo: str = "",
         ) -> None:
             identity = ("chatcmpl-" if chat else "cmpl-") + uuid.uuid4().hex
-            head: dict[str, Any] = {
+            head: dict[str, _Json] = {
                 "id": identity,
                 "object": "chat.completion" if chat else "text_completion",
                 "created": int(time.time()),
@@ -439,9 +449,9 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 for index, piece, shown, _ in generation.pieces():
                     texts[index] += piece
                     taken[index] += shown
-                choices: list[dict[str, Any]] = []
+                choices: list[dict[str, _Json]] = []
                 for index, choice in enumerate(generation.choices):
-                    entry: dict[str, Any] = {"index": index, "finish_reason": choice.reason}
+                    entry: dict[str, _Json] = {"index": index, "finish_reason": choice.reason}
                     formatted = logprobs.format(index, taken[index], chat) if wanted else None
                     if chat:
                         entry["message"] = {"role": "assistant", "content": texts[index]}
@@ -465,10 +475,10 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 first: bool = False,
                 shown: list[_Logprob] | None = None,
             ) -> None:
-                choice: dict[str, Any] = {"index": index, "finish_reason": reason}
+                choice: dict[str, _Json] = {"index": index, "finish_reason": reason}
                 formatted = logprobs.format(index, shown or [], chat) if wanted and shown else None
                 if chat:
-                    delta: dict[str, Any] = {"role": "assistant"} if first else {}
+                    delta: dict[str, _Json] = {"role": "assistant"} if first else {}
                     if piece is not None:
                         delta["content"] = piece
                     choice["delta"] = delta
@@ -489,10 +499,8 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         chunk(index, piece, None, shown=shown)
                     if reason:
                         chunk(index, None, reason)
-                options: Any = body.get("stream_options")
-                if isinstance(options, dict) and cast("dict[str, Any]", options).get(
-                    "include_usage"
-                ):
+                options = body.get("stream_options")
+                if isinstance(options, dict) and options.get("include_usage"):
                     usage = _usage(prompt, generation.tokens)
                     self._event({**head, "choices": [], "usage": usage})
                 self.wfile.write(b"data: [DONE]\n\n")
@@ -500,11 +508,11 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
             finally:
                 pieces.close()
 
-        def _event(self, data: dict[str, Any]) -> None:
+        def _event(self, data: Mapping[str, _Json]) -> None:
             self.wfile.write(b"data: " + json.dumps(data).encode() + b"\n\n")
             self.wfile.flush()
 
-        def _json(self, status: int, data: dict[str, Any]) -> None:
+        def _json(self, status: int, data: Mapping[str, _Json]) -> None:
             payload = json.dumps(data).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -519,7 +527,7 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def _logprobs_wanted(body: dict[str, Any], chat: bool) -> int | None:
+def _logprobs_wanted(body: Mapping[str, _Json], chat: bool) -> int | None:
     """How many alternatives a request wants with each token's
     log-probability, or None when it wants none: a chat's `logprobs` and
     `top_logprobs`, a completion's `logprobs`."""
@@ -530,7 +538,7 @@ def _logprobs_wanted(body: dict[str, Any], chat: bool) -> int | None:
             return None
         wanted = int(_given(body, "top_logprobs", 0))
     else:
-        value = body.get("logprobs")
+        value = cast("bool | int | None", body.get("logprobs"))
         if value is None or value is False:
             return None
         wanted = 0 if value is True else int(value)
@@ -551,9 +559,9 @@ class _Logprobs:
     def text(self, token: int) -> str:
         return self.tokenizer.decode([token], skip_special_tokens=False)
 
-    def format(self, index: int, entries: list[_Logprob], chat: bool) -> dict[str, Any]:
+    def format(self, index: int, entries: list[_Logprob], chat: bool) -> dict[str, _Json]:
         if chat:
-            content: list[dict[str, Any]] = []
+            content: list[dict[str, _Json]] = []
             for entry in entries:
                 text = self.text(entry.token)
                 alternatives = [

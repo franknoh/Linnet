@@ -36,6 +36,14 @@ enum class ScalarKind : std::uint8_t {
 };
 
 std::string_view scalar_name(ScalarKind kind);
+
+// The smallest and largest value of an integer dtype, the largest unsigned so
+// that u64's fits (bool: 0 and 1).
+struct IntegerLimits {
+    std::int64_t lowest = 0;
+    std::uint64_t highest = 0;
+};
+IntegerLimits integer_limits(ScalarKind kind);
 std::optional<ScalarKind> scalar_from_name(std::string_view name);
 bool is_float(ScalarKind kind);
 bool is_integer(ScalarKind kind);
@@ -45,6 +53,11 @@ enum class DTypeClass : std::uint8_t { Any, Numeric, Integer, Float };
 
 bool class_contains(DTypeClass outer, ScalarKind kind);
 bool class_contains(DTypeClass outer, DTypeClass inner);
+// A dtype class as source bounds a generic with it (`DType`, `Float`), as
+// plans spell it (`any`, `float`), and back from a plan.
+std::string_view dtype_class_name(DTypeClass dtype_class);
+std::string_view dtype_class_key(DTypeClass dtype_class);
+std::optional<DTypeClass> parse_dtype_class_key(std::string_view key);
 
 using DTypeVarId = std::uint32_t;
 

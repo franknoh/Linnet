@@ -25,8 +25,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import hf
-from .compiler import LinnetError, parse_binding
+from . import hf, nest
+from .compiler import LinnetError
 
 OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
@@ -178,36 +178,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     exp = commands.add_parser("export", help="write a GGUF file and a Modelfile")
-    exp.add_argument("model", help="a Nest model directory or name, or a .linnet file")
+    nest.add_model_arguments(exp)
     exp.add_argument("-o", "--output", required=True)
     exp.add_argument("--converter", help="llama.cpp's convert_hf_to_gguf.py (or its checkout)")
     exp.add_argument("--outtype", choices=OUTTYPES, default="f16")
     exp.add_argument("--name", help="the GGUF file's stem")
-    exp.add_argument("--root")
-    exp.add_argument("--std")
-    exp.add_argument("--bind", action="append", default=[], metavar="NAME=VALUE")
-    exp.add_argument("--weights")
-    exp.add_argument("--bindings")
     exp.add_argument("--tokenizer")
     exp.add_argument(
         "--keep-checkpoint", action="store_true", help="keep the Transformers directory"
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        generics = dict(parse_binding(bind) for bind in args.bind)
         exported = export(
             args.model,
             args.output,
             converter=args.converter,
             outtype=args.outtype,
-            generics=generics,
-            weights=args.weights,
-            bindings=args.bindings,
-            root=args.root,
-            std_root=args.std,
             tokenizer=args.tokenizer,
             name=args.name,
             keep_checkpoint=args.keep_checkpoint,
+            **nest.model_options(args),
         )
     except LinnetError as error:
         print(str(error), file=sys.stderr)

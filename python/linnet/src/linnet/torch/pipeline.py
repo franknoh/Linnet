@@ -38,7 +38,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import torch
 from torch import nn
@@ -46,6 +46,7 @@ from torch.distributed.tensor import DTensor
 
 from ..parallel import layout_stages, stage_of_path, stage_starts
 from ..plan import PlanError, compile_plan
+from ..results import Result
 from ..weights import paths_by_tensor
 from .compiled import CompiledLinnetModule
 from .fsdp import Held, sharded
@@ -53,7 +54,38 @@ from .module import bind_weights, owner_of
 from .placement import units_of
 from .stages import Split, Stage, split
 
+if TYPE_CHECKING:
+    from typing import TypeAlias
+
+    from torch.distributed import ProcessGroup
+    from torch.distributed.device_mesh import DeviceMesh
+
+    # What the entry returns on the last stage: one tensor, or a tuple of them
+    # when it has several results.
+    # A stage function of the generated source: its results as a tuple.
+    StageFunction: TypeAlias = Callable[..., tuple[torch.Tensor, ...]]
+
 Schedule = Literal["1f1b", "gpipe"]
+
+
+class _Runner(Protocol):
+    """A `torch.distributed.pipelining` schedule, as a `Pipeline` drives it."""
+
+    def step(
+        self,
+        *,
+        kwarg_mbs: list[dict[str, torch.Tensor]],
+        target_mbs: list[torch.Tensor] | None,
+        losses: list[torch.Tensor] | None,
+        return_outputs: bool,
+    ) -> object: ...
+
+    def eval(
+        self,
+        *,
+        kwarg_mbs: list[dict[str, torch.Tensor]],
+        target_mbs: list[torch.Tensor] | None,
+    ) -> Result | None: ...
 
 
 class Pipeline:
@@ -69,11 +101,11 @@ class Pipeline:
         assigned: Sequence[int],
         microbatches: int,
         schedule: Schedule,
-        group: Any,
+        group: ProcessGroup,
         device: torch.device,
-        ties: Sequence[tuple[list[str], Any]],
+        ties: Sequence[tuple[list[str], ProcessGroup | None]],
         compile: str | None,
-        data_parallel: Any = None,
+        data_parallel: ProcessGroup | None = None,
     ) -> None:
         import torch.distributed as dist
 
@@ -97,7 +129,7 @@ class Pipeline:
         # The processes training this stage on batches of their own, when
         # its weights are sharded across them.
         self.data_parallel = data_parallel
-        self._built: dict[tuple[Any, ...], _Built] = {}
+        self._built: dict[tuple[tuple[tuple[int, ...], torch.dtype], ...], _Built] = {}
 
     @property
     def is_last(self) -> bool:
@@ -161,7 +193,7 @@ class Pipeline:
             return None
         return torch.stack([loss.detach().float() for loss in losses]).sum()
 
-    def run(self, *inputs: torch.Tensor) -> Any:
+    def run(self, *inputs: torch.Tensor) -> Result | None:
         """The entry's forward pass over the micro-batches, without
         gradients. On the last stage, each result joined along its first
         axis (a scalar result: one value per micro-batch); None elsewhere."""
@@ -172,7 +204,7 @@ class Pipeline:
         try:
             with torch.no_grad():
                 self._hold(built, trains=False)
-                merged: Any = built.schedule.eval(
+                merged: Result | None = built.schedule.eval(
                     kwarg_mbs=self._microbatches(built, inputs),
                     target_mbs=self._targets(),
                 )
@@ -239,7 +271,7 @@ class Pipeline:
         with torch.no_grad():
             computed = generated.constants(self.device) if pieces.constants else ()
             constants = dict(zip(pieces.constants, computed, strict=True))
-        function: Callable[..., Any] = getattr(generated, stage.name)
+        function: StageFunction = getattr(generated, stage.name)
         if self.compile is not None:
             function = torch.compile(function, backend=self.compile)
         blocks = [
@@ -335,7 +367,7 @@ class Pipeline:
 class _Built:
     split: Split
     stage: Stage
-    schedule: Any
+    schedule: _Runner
     module: _StageModule
 
 
@@ -345,7 +377,7 @@ class _StageModule(nn.Module):
 
     def __init__(
         self,
-        function: Callable[..., Any],
+        function: StageFunction,
         parameters: list[tuple[nn.Module, str]],
         dtypes: list[torch.dtype],
         constants: list[torch.Tensor],
@@ -368,7 +400,7 @@ class _StageModule(nn.Module):
         # Sharded weights gathered whole for the current step.
         self.held: Held | None = None
 
-    def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Any:
+    def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Result:
         weights = [getattr(owner, leaf) for owner, leaf in self.locations]
         if self.held is not None:
             weights = [
@@ -381,7 +413,7 @@ class _StageModule(nn.Module):
         return out[0] if self.last and len(out) == 1 else out
 
 
-def _result(output: torch.Tensor, target: Any) -> torch.Tensor:
+def _result(output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """The loss of a micro-batch: the entry's own result."""
     return output
 
@@ -418,9 +450,9 @@ def pipeline(
     trainable: bool | str | Sequence[str] = True,
     stages: Sequence[str] | None = None,
     schedule: Schedule = "1f1b",
-    group: Any = None,
-    tensor_parallel: Any = None,
-    data_parallel: Any = None,
+    group: ProcessGroup | None = None,
+    tensor_parallel: DeviceMesh | None = None,
+    data_parallel: DeviceMesh | None = None,
     device: str | torch.device | None = None,
     cast_dtype: bool = False,
     compile: str | None = None,
@@ -463,7 +495,8 @@ def pipeline(
         raise PlanError("a pipeline over split or sharded stages needs group=, its own processes")
     if tensor_parallel is not None and data_parallel is not None:
         raise PlanError("a pipeline's stages are split or sharded, not both")
-    group = group if group is not None else dist.group.WORLD
+    # Set once the job is initialized, as it is here.
+    group = group if group is not None else cast("ProcessGroup", dist.group.WORLD)
     rank, size = dist.get_rank(group), dist.get_world_size(group)
     if microbatches < size:
         raise PlanError(
@@ -517,14 +550,15 @@ def pipeline(
     # Parameters read from one checkpoint tensor: one parameter within a
     # stage, and summed gradients across stages.
     by_tensor = paths_by_tensor(bound)
-    ties: list[tuple[list[str], Any]] = []
+    ties: list[tuple[list[str], ProcessGroup | None]] = []
     # Every process makes every group, in the same order: with the stages
     # split or sharded, each place in a stage has a pipeline of its own.
     pipelines = [[dist.get_global_rank(group, s) for s in range(size)]]
     if tensor_parallel is not None or data_parallel is not None:
-        everyone: list[Any] = [None] * dist.get_world_size()
+        everyone: list[list[int] | None] = [None] * dist.get_world_size()
         dist.all_gather_object(everyone, pipelines[0])
-        pipelines = [list(p) for p in sorted({tuple(p) for p in everyone})]
+        # Every place now holds that process's pipeline.
+        pipelines = [list(p) for p in sorted({tuple(p) for p in cast(list[list[int]], everyone)})]
     for tensor in sorted(by_tensor):
         paths = by_tensor[tensor]
         if len(paths) < 2:
@@ -538,12 +572,12 @@ def pipeline(
                 setattr(owner, leaf, kept)
         holders = sorted({stage_of_path(names, assigned, p) or 0 for p in paths})
         if len(holders) > 1:
-            own: Any = None
+            own: ProcessGroup | None = None
             for ranks_of in pipelines:
                 ranks = [ranks_of[s] for s in holders]
                 made = dist.new_group(ranks)
                 if dist.get_rank() in ranks:
-                    own = made
+                    own = cast("ProcessGroup", made)  # a member's is the group itself
             ties.append((paths, own))
     module.forget_parameters()
     if tensor_parallel is not None:

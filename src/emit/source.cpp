@@ -253,14 +253,7 @@ private:
         std::string text;
         for (const GenericInfo& generic : generics) {
             text += text.empty() ? "<" : ", ";
-            text += generic.kind == GenericKind::Pack ? "*" : "";
-            text += generic.name;
-            text += generic.kind == GenericKind::Dim            ? ": Dim"
-                    : generic.kind == GenericKind::Pack         ? ": Shape"
-                    : generic.constraint == DTypeClass::Float   ? ": Float"
-                    : generic.constraint == DTypeClass::Integer ? ": Integer"
-                    : generic.constraint == DTypeClass::Numeric ? ": Numeric"
-                                                                : ": DType";
+            text += generic_text(generic);
             if (generic.default_value) {
                 text += " = " + model_.types.to_string(*generic.default_value);
             }
@@ -773,12 +766,8 @@ private:
         case ir::OpKind::Or:
             return binary("||");
         case ir::OpKind::Compare:
-            return binary(a.compare == ir::CompareKind::Eq   ? "=="
-                          : a.compare == ir::CompareKind::Ne ? "!="
-                          : a.compare == ir::CompareKind::Lt ? "<"
-                          : a.compare == ir::CompareKind::Le ? "<="
-                          : a.compare == ir::CompareKind::Gt ? ">"
-                                                             : ">=");
+            // The symbols are literals: `data()` ends in a null.
+            return binary(ir::compare_symbol(a.compare).data());
         case ir::OpKind::BitAnd:
             return binary("&");
         case ir::OpKind::BitOr:

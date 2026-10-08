@@ -22,16 +22,25 @@ target logits are combined across the processes, never the logits. The
 hidden states' gradient each process computes is its part of the whole.
 """
 
-# pyright: reportIncompatibleMethodOverride=false, reportUnknownMemberType=false, reportUntypedFunctionDecorator=false
+# pyright: reportIncompatibleMethodOverride=false, reportUnknownMemberType=false
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from torch.distributed import ProcessGroup
+
+    _CrossEntropyFn = Callable[
+        [torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, ProcessGroup | None], torch.Tensor
+    ]
+    _LogProbsFn = Callable[
+        [torch.Tensor, torch.Tensor, torch.Tensor, ProcessGroup | None], torch.Tensor
+    ]
 
 
 # The f32 logits of one block of rows.
@@ -81,10 +90,34 @@ def _whole(
     return peak + sums[0].log(), sums[1], inside, local
 
 
+class _CrossEntropyCtx(Protocol):
+    """What `_CrossEntropy` reads from and keeps on its autograd context."""
+
+    weight_dtype: torch.dtype
+
+    @property
+    def needs_input_grad(self) -> tuple[bool, ...]: ...
+    @property
+    def saved_tensors(self) -> tuple[torch.Tensor, ...]: ...
+    def save_for_backward(self, *tensors: torch.Tensor) -> None: ...
+
+
+class _TokenLogProbsCtx(Protocol):
+    """What `_TokenLogProbs` reads from and keeps on its autograd context."""
+
+    group: ProcessGroup | None
+
+    @property
+    def needs_input_grad(self) -> tuple[bool, ...]: ...
+    @property
+    def saved_tensors(self) -> tuple[torch.Tensor, ...]: ...
+    def save_for_backward(self, *tensors: torch.Tensor) -> None: ...
+
+
 class _CrossEntropy(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx: Any,
+        ctx: _CrossEntropyCtx,
         hidden: torch.Tensor,
         weight: torch.Tensor,
         targets: torch.Tensor,
@@ -124,7 +157,9 @@ class _CrossEntropy(torch.autograd.Function):
         return total
 
     @staticmethod
-    def backward(ctx: Any, grad_total: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
+    def backward(
+        ctx: _CrossEntropyCtx, grad_total: torch.Tensor
+    ) -> tuple[torch.Tensor | None, ...]:
         grad_hidden, grad_weight = ctx.saved_tensors
         scale = grad_total.float()
         return (
@@ -139,7 +174,7 @@ class _CrossEntropy(torch.autograd.Function):
 class _TokenLogProbs(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx: Any,
+        ctx: _TokenLogProbsCtx | None,
         hidden: torch.Tensor,
         weight: torch.Tensor,
         targets: torch.Tensor,
@@ -159,7 +194,7 @@ class _TokenLogProbs(torch.autograd.Function):
         return out
 
     @staticmethod
-    def backward(ctx: Any, grad_out: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
+    def backward(ctx: _TokenLogProbsCtx, grad_out: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
         hidden, weight, targets, norms = ctx.saved_tensors
         rows = _rows(weight.shape[0])
         grad_hidden = torch.empty_like(hidden) if ctx.needs_input_grad[0] else None
@@ -214,7 +249,7 @@ def split_cross_entropy(
     """`linear_cross_entropy` over a vocabulary split across `group`'s
     processes, `weight` this one's rows of the output head, in order; one
     process without a group."""
-    return cast(torch.Tensor, _cross_entropy(hidden, weight, targets.long(), weights, group))
+    return _cross_entropy(hidden, weight, targets.long(), weights, group)
 
 
 def split_token_log_probs(
@@ -225,7 +260,7 @@ def split_token_log_probs(
 ) -> torch.Tensor:
     """`linear_token_log_probs` over a vocabulary split across `group`'s
     processes, as `split_cross_entropy`."""
-    return cast(torch.Tensor, _log_probs(hidden, weight, targets.long(), group))
+    return _log_probs(hidden, weight, targets.long(), group)
 
 
 def _cross_entropy_eager(
@@ -253,8 +288,15 @@ def _log_probs_eager(
 
 # `torch.compile` calls these as they are: their loops over blocks are the
 # point, and tracing would unroll them.
-_cross_entropy: Any = torch.compiler.disable(_cross_entropy_eager)
-_log_probs: Any = torch.compiler.disable(_log_probs_eager)
+# `disable` carries no types; what it returns takes the same arguments.
+_cross_entropy = cast(
+    "_CrossEntropyFn",
+    torch.compiler.disable(_cross_entropy_eager),
+)
+_log_probs = cast(
+    "_LogProbsFn",
+    torch.compiler.disable(_log_probs_eager),
+)
 
 
 __all__ = [

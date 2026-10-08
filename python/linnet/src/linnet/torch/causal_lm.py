@@ -27,9 +27,9 @@ from __future__ import annotations
 
 import json
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import SimpleNamespace
-from typing import Any
+from typing import cast
 
 import torch
 
@@ -106,13 +106,14 @@ class CausalLM(torch.nn.Module):
         labels: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         num_items_in_batch: torch.Tensor | int | None = None,
-        **_: Any,
+        **_: object,
     ) -> Output:
         inputs, _count = packed(
             input_ids, attention_mask, labels, position_ids, self.bucket, num_items_in_batch
         )
         if not self.return_logits:
-            return Output(loss=self.model.run_entry(self.entry, inputs))
+            # `loss_packed` returns the loss alone.
+            return Output(loss=cast(torch.Tensor, self.model.run_entry(self.entry, inputs)))
         states = self._states(inputs)
         weight = self.get_output_embeddings().weight
         loss = linear_cross_entropy(states, weight, inputs[3], inputs[4])
@@ -134,7 +135,7 @@ class CausalLM(torch.nn.Module):
             input_ids: torch.Tensor,
             attention_mask: torch.Tensor | None = None,
             position_ids: torch.Tensor | None = None,
-            **_: Any,
+            **_: object,
         ) -> SimpleNamespace:
             inputs, _count = packed(input_ids, attention_mask, None, position_ids, self.bucket)
             states = self._states(inputs)
@@ -158,7 +159,8 @@ class CausalLM(torch.nn.Module):
     def _states(self, inputs: list[torch.Tensor]) -> torch.Tensor:
         if self.hidden not in self.model.entries:
             raise PlanError(f"the model has no `{self.hidden}` entry, which this needs")
-        return self.model.run_entry(self.hidden, inputs[:3])
+        # `hidden_packed` returns the hidden states alone.
+        return cast(torch.Tensor, self.model.run_entry(self.hidden, inputs[:3]))
 
     def add_model_tags(self, tags: str | list[str]) -> None:
         """Trainers tag the model they train (TRL: `trl`, `sft`); the tags
@@ -167,7 +169,7 @@ class CausalLM(torch.nn.Module):
         self.model_tags = sorted({*self.model_tags, *new})
 
     def gradient_checkpointing_enable(
-        self, gradient_checkpointing_kwargs: Any = None, **_: Any
+        self, gradient_checkpointing_kwargs: Mapping[str, object] | None = None, **_: object
     ) -> None:
         """Trainers call this for `gradient_checkpointing=True` (TRL's
         default). Linnet entries keep their activations; with
@@ -182,11 +184,11 @@ class CausalLM(torch.nn.Module):
         pass
 
 
-class Output(dict[str, Any]):
+class Output(dict[str, torch.Tensor]):
     """The loss (and logits), by key or attribute, as transformers' model
     outputs are read."""
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> torch.Tensor:
         try:
             return self[name]
         except KeyError:
@@ -209,13 +211,13 @@ class Config:
         self.pad_token_id: int | None = None
         self.use_cache = False
 
-    def get_text_config(self, *_: Any, **__: Any) -> Config:
+    def get_text_config(self, *_: object, **__: object) -> Config:
         return self
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {"model_type": self.model_type, **vars(self)}
 
-    def to_json_string(self, *_: Any, **__: Any) -> str:
+    def to_json_string(self, *_: object, **__: object) -> str:
         return json.dumps(self.to_dict(), indent=2)
 
 

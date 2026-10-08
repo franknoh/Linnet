@@ -17,7 +17,7 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +29,18 @@ from ..dtypes import BY_NUMPY
 from ..generated import import_generated
 from ..plan import compile_plan
 from .dtypes import NUMPY_TYPES
+
+if TYPE_CHECKING:
+    from typing import TypeAlias
+
+    from numpy.typing import NDArray
+
+    from .load import Result
+
+    # An input: an array, or a Python number for a scalar input.
+    Input: TypeAlias = jax.Array | NDArray[np.generic] | bool | int | float
+    # The compiled function: the generated `main` under `jax.jit`, all results in a sequence.
+    _Compiled: TypeAlias = Callable[..., Sequence[jax.Array]]
 
 
 class Function:
@@ -49,7 +61,7 @@ class Function:
         self._source = source
         self._std_root = std_root
         self._numerics = numerics
-        self._compiled: dict[tuple[tuple[str, str], ...], tuple[Callable[..., Any], Path]] = {}
+        self._compiled: dict[tuple[tuple[str, str], ...], tuple[_Compiled, Path]] = {}
         self._work: Path | None = None
 
     @property
@@ -57,10 +69,12 @@ class Function:
         """The names of the function's inputs, in order."""
         return [argument.name for argument in self.function.params]
 
-    def __call__(self, *inputs: Any, **generics: int | str) -> Any:
+    def __call__(self, *inputs: Input, **generics: int | str) -> Result:
         return self.run(list(inputs), generics)
 
-    def run(self, inputs: Sequence[Any], generics: Mapping[str, int | str] | None = None) -> Any:
+    def run(
+        self, inputs: Sequence[Input], generics: Mapping[str, int | str] | None = None
+    ) -> Result:
         """Calls the function on arrays (or Python numbers for scalar inputs);
         `generics` binds by name what the inputs do not determine. A single
         result is returned as it is, several as a tuple."""
@@ -95,14 +109,14 @@ class Function:
             raise LinnetError(f"`{self.name}` has not been compiled yet")
         return next(reversed(self._compiled.values()))[1].read_text(encoding="utf-8")
 
-    def _number(self, param: ir.Value, value: Any, env: ir.Bindings) -> Any:
+    def _number(self, param: ir.Value, value: bool | float, env: ir.Bindings) -> jax.Array:
         declared = param.type
         assert isinstance(declared, ir.ScalarType)
         return jnp.asarray(value, dtype=NUMPY_TYPES[env.dtype(declared.dtype)])
 
     # ---- one compilation per binding
 
-    def _compile(self, bindings: Mapping[str, str]) -> tuple[Callable[..., Any], Path]:
+    def _compile(self, bindings: Mapping[str, str]) -> tuple[_Compiled, Path]:
         arguments = ["jax", "--entry", self.name, "--numerics", self._numerics]
         arguments += bind_arguments(bindings)
         text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))

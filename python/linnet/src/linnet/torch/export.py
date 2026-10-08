@@ -18,10 +18,18 @@ without a verified mapping stops the export with a diagnostic that names it.
 from __future__ import annotations
 
 import operator
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    Protocol,
+    SupportsFloat,
+    SupportsInt,
+    TypeAlias,
+    cast,
+)
 
 import torch
 from torch import nn
@@ -36,6 +44,12 @@ from ..importing import (
 )
 from ..plan import PlanError
 from .dtypes import LINNET_DTYPES
+
+if TYPE_CHECKING:
+    import sympy  # type: ignore[import-untyped]  # torch depends on sympy
+    from torch.export.graph_signature import ExportGraphSignature, InputSpec
+    from torch.fx.node import Argument
+    from torch.utils._sympy.value_ranges import ValueRanges
 
 
 class ExportError(PlanError):
@@ -53,18 +67,25 @@ def _dtype_name(dtype: torch.dtype) -> str:
 
 # --------------------------------------------------------------- dimensions
 
-# A dimension is an int or a sympy expression from torch's symbolic shapes.
-Dim = Any
+# A dimension is an int or a sympy expression from torch's symbolic shapes
+# (a `torch.SymInt` where a fake tensor's shape is read as is).
+Dim: TypeAlias = "int | torch.SymInt | sympy.Expr"
+
+# A dimension as the plan writes it: a size, a symbol, or an expression.
+_DimJson: TypeAlias = "int | dict[str, int | str | list[_DimJson]]"
+
+# `torch.export.export`'s `dynamic_shapes`: per input name or position.
+_DynamicShapes: TypeAlias = Mapping[str, object] | Sequence[object] | None
 
 
 @dataclass
 class _Symbols:
     """The symbolic dimensions of the graph, numbered for the plan."""
 
-    ids: dict[Any, int] = field(default_factory=lambda: {})
-    names: dict[Any, str] = field(default_factory=lambda: {})
+    ids: dict[sympy.Basic, int] = field(default_factory=lambda: {})
+    names: dict[sympy.Basic, str] = field(default_factory=lambda: {})
 
-    def declare(self, symbol: Any, name: str | None = None) -> int:
+    def declare(self, symbol: sympy.Basic, name: str | None = None) -> int:
         if symbol not in self.ids:
             self.ids[symbol] = len(self.ids)
             self.names[symbol] = name or f"D{len(self.ids) - 1}"
@@ -72,7 +93,7 @@ class _Symbols:
             self.names[symbol] = name
         return self.ids[symbol]
 
-    def json(self, dim: Dim) -> Any:
+    def json(self, dim: Dim | sympy.Basic) -> _DimJson:
         if isinstance(dim, bool):
             raise ExportError("a boolean is not a dimension")
         if isinstance(dim, int):
@@ -101,14 +122,14 @@ class _Symbols:
             return {"op": "mod", "args": [self.json(dim.args[0]), self.json(dim.args[1])]}
         if isinstance(dim, sympy.Min | sympy.Max):
             op = "min" if isinstance(dim, sympy.Min) else "max"
-            result = self.json(dim.args[0])
+            result: _DimJson = self.json(dim.args[0])
             for arg in dim.args[1:]:
                 result = {"op": op, "args": [result, self.json(arg)]}
             return result
         raise ExportError(f"dimension expression `{dim}` is not supported")
 
 
-def _same_dims(a: Sequence[Dim], b: Sequence[Dim]) -> bool:
+def _same_dims(a: Sequence[object], b: Sequence[object]) -> bool:
     return len(a) == len(b) and all(x == y for x, y in zip(a, b, strict=True))
 
 
@@ -122,7 +143,7 @@ class _Value:
     id: int
     dtype: torch.dtype
     shape: tuple[Dim, ...] | None  # None for a scalar
-    type_json: dict[str, Any] | None = None  # blocks, arrays, optionals: the plan type itself
+    type_json: dict[str, object] | None = None  # blocks, arrays, optionals: the plan type itself
 
     @property
     def is_tensor(self) -> bool:
@@ -146,17 +167,17 @@ class _Builder(PlanBuilder[_Value, _Kind, torch.dtype, Dim]):
     def kind(self, dtype: torch.dtype, shape: tuple[Dim, ...] | None) -> _Kind:
         return (dtype, shape)
 
-    def make(self, id: int, kind: _Kind, type_json: dict[str, Any] | None) -> _Value:
+    def make(self, id: int, kind: _Kind, type_json: dict[str, object] | None) -> _Value:
         return _Value(id, kind[0], kind[1], type_json)
 
-    def kind_json(self, kind: _Kind) -> dict[str, Any]:
+    def kind_json(self, kind: _Kind) -> dict[str, object]:
         dtype, shape = kind
         return self.scalar_type(dtype) if shape is None else self.tensor_type(shape, dtype)
 
     def kind_of(self, value: _Value) -> _Kind:
         return (value.dtype, value.shape)
 
-    def type_of(self, value: _Value) -> dict[str, Any]:
+    def type_of(self, value: _Value) -> dict[str, object]:
         return value.type_json if value.type_json is not None else super().type_of(value)
 
     def dtype_of(self, value: _Value) -> torch.dtype:
@@ -167,21 +188,21 @@ class _Builder(PlanBuilder[_Value, _Kind, torch.dtype, Dim]):
             return "bool"
         return "float" if dtype.is_floating_point else "int"
 
-    def dim_json(self, dim: Dim) -> int | dict[str, Any]:
+    def dim_json(self, dim: Dim) -> _DimJson:
         return self.symbols.json(dim)
 
     @property
     def index_dtype(self) -> torch.dtype:
         return torch.int64
 
-    def tensor_type(self, shape: Sequence[Dim], dtype: torch.dtype) -> dict[str, Any]:
+    def tensor_type(self, shape: Sequence[Dim], dtype: torch.dtype) -> dict[str, object]:
         return {
             "kind": "tensor",
             "shape": [self.symbols.json(d) for d in shape],
             "dtype": _dtype_name(dtype),
         }
 
-    def scalar_type(self, dtype: torch.dtype) -> dict[str, Any]:
+    def scalar_type(self, dtype: torch.dtype) -> dict[str, object]:
         return {"kind": "scalar", "dtype": _dtype_name(dtype)}
 
 
@@ -207,8 +228,8 @@ class _Hierarchy(Hierarchy):
         self.root = member
         return member
 
-    def _describe(self, module: nn.Module) -> tuple[Any, Member | None]:
-        entries: list[Any] = []
+    def _describe(self, module: nn.Module) -> tuple[Hashable, Member | None]:
+        entries: list[Hashable] = []
         children: dict[str, Member] = {}
         for name, parameter in module.named_parameters(recurse=False):
             entries.append(("param", name, _dtype_name(parameter.dtype), tuple(parameter.shape)))
@@ -216,7 +237,7 @@ class _Hierarchy(Hierarchy):
         for name, buffer in module.named_buffers(recurse=False):
             entries.append(("buffer", name, _dtype_name(buffer.dtype), tuple(buffer.shape)))
             children[name] = Member("buffer", identifier(name))
-        described: list[tuple[str, Any, Member, str]] = []
+        described: list[tuple[str, Hashable, Member, str]] = []
         for name, child in module.named_children():
             child_signature, child_member = self._describe(child)
             if child_member is not None:
@@ -252,6 +273,25 @@ class _Hierarchy(Hierarchy):
 # ----------------------------------------------------------------- export
 
 
+class _Program(Protocol):
+    """What the exporter reads of a `torch.export.ExportedProgram`, typed
+    where torch leaves it partly unknown."""
+
+    @property
+    def graph(self) -> torch.fx.Graph: ...
+
+    @property
+    def graph_signature(self) -> ExportGraphSignature: ...
+
+    @property
+    def range_constraints(self) -> Mapping[sympy.Symbol, ValueRanges[sympy.Expr]]: ...
+
+    @property
+    def constants(self) -> Mapping[str, object]: ...
+
+    def run_decompositions(self) -> _Program: ...
+
+
 @dataclass
 class ExportResult:
     """What `export_linnet` produced."""
@@ -262,15 +302,15 @@ class ExportResult:
     entry: str
     weights: Path | None
     bindings: Path | None
-    plan: dict[str, Any]
+    plan: dict[str, object]
 
 
 def export_linnet(
     model: nn.Module,
-    example_args: tuple[Any, ...],
+    example_args: tuple[object, ...],
     *,
     output: str | Path,
-    dynamic_shapes: Any = None,
+    dynamic_shapes: _DynamicShapes = None,
     module_name: str | None = None,
     weights: str | Path | None = None,
     std_root: str | Path | None = None,
@@ -289,7 +329,7 @@ def export_linnet(
 
     output_path = Path(output)
     module = module_name or identifier(output_path.stem)
-    exported: Any = export(model, example_args, dynamic_shapes=dynamic_shapes)
+    exported = cast(_Program, export(model, example_args, dynamic_shapes=dynamic_shapes))
     program = exported.run_decompositions()
     exporter = _Exporter(model, program, module, dynamic_shapes)
     plan = exporter.run()
@@ -312,12 +352,20 @@ def export_linnet(
 
 
 class _Exporter:
-    def __init__(self, model: nn.Module, program: Any, module: str, dynamic_shapes: Any) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        program: _Program,
+        module: str,
+        dynamic_shapes: _DynamicShapes,
+    ) -> None:
         self.model = model
         self.program = program
         self.module = module
         self.dynamic_shapes = dynamic_shapes
         self.symbols = _Symbols()
+        # Each named dimension's bounds as its `Dim` gives them: at least, at most.
+        self.bounds: dict[sympy.Basic, tuple[int, int | None]] = {}
         self.builder = _Builder(self.symbols)
         self.hierarchy = _Hierarchy(self.symbols, module)
         self.self_value = self.builder.fresh((torch.float32, None))
@@ -330,7 +378,7 @@ class _Exporter:
 
     # ---- driver
 
-    def run(self) -> dict[str, Any]:
+    def run(self) -> dict[str, object]:
         root = self.hierarchy.describe(self.model)
         if root is None or root.block is None:
             raise ExportError("the model has no parameters or buffers to export")
@@ -352,7 +400,9 @@ class _Exporter:
             buffer = signature.inputs_to_buffers.get(node.name)
             constant = signature.inputs_to_lifted_tensor_constants.get(node.name)
             if spec is not None or buffer is not None or constant is not None:
-                self.values[node.name] = self._member_value(spec or buffer or constant, node)
+                self.values[node.name] = self._member_value(
+                    cast(str, spec or buffer or constant), node
+                )
             elif node.name in tensor_inputs:
                 value = self._input_value(node)
                 inputs.append((node.name, value))
@@ -391,19 +441,17 @@ class _Exporter:
 
     # ---- inputs and members
 
-    def _name_symbols(self, graph: Any, tensor_inputs: dict[str, Any]) -> None:
+    def _name_symbols(self, graph: torch.fx.Graph, tensor_inputs: dict[str, InputSpec]) -> None:
         """Declares the symbolic dimensions of the inputs, named after the
         `torch.export.Dim`s of `dynamic_shapes` when they can be matched."""
         from torch.export import Dim as ExportDim
 
-        specs_by_name: dict[str, Any] = {}
-        shapes: Any = self.dynamic_shapes
+        specs_by_name: dict[str, object] = {}
+        shapes = self.dynamic_shapes
         if isinstance(shapes, Mapping):
-            specs_by_name = dict(cast(Mapping[str, Any], shapes))
+            specs_by_name = dict(shapes)
         elif isinstance(shapes, Sequence):
-            specs_by_name = dict(
-                zip(list(tensor_inputs), cast(Sequence[Any], shapes), strict=False)
-            )
+            specs_by_name = dict(zip(list(tensor_inputs), shapes, strict=False))
         for node in graph.nodes:
             if node.op != "placeholder" or node.name not in tensor_inputs:
                 continue
@@ -418,25 +466,36 @@ class _Exporter:
                 name: str | None = None
                 axis_spec = None
                 if isinstance(spec, Mapping):
-                    axis_spec = cast(Mapping[int, Any], spec).get(axis)
-                elif isinstance(spec, Sequence) and axis < len(cast(Sequence[Any], spec)):
-                    axis_spec = cast(Sequence[Any], spec)[axis]
+                    axis_spec = cast(Mapping[int, object], spec).get(axis)
+                elif isinstance(spec, Sequence) and axis < len(cast(Sequence[object], spec)):
+                    axis_spec = cast(Sequence[object], spec)[axis]
                 if axis_spec is not None and isinstance(axis_spec, ExportDim):
                     name = identifier(str(getattr(axis_spec, "__name__", "")) or "D")
+                    if expr.is_Symbol:
+                        # Unbounded above is torch's `int_oo`, not an int.
+                        lower: object = getattr(axis_spec, "min", 0)
+                        upper: object = getattr(axis_spec, "max", None)
+                        self.bounds[expr] = (
+                            lower if isinstance(lower, int) else 0,
+                            upper if isinstance(upper, int) else None,
+                        )
                 if expr.is_Symbol:
                     self.symbols.declare(expr, name)
 
-    def _constraints(self) -> list[dict[str, Any]]:
-        constraints: list[dict[str, Any]] = []
-        for symbol, value_range in self.program.range_constraints.items():
+    def _constraints(self) -> list[dict[str, object]]:
+        """The bounds the `Dim`s of `dynamic_shapes` give, as `where`
+        constraints. torch's own ranges are not used: they hold its default
+        lower bound of 2 (it specializes sizes 0 and 1), which no model
+        asks for."""
+        constraints: list[dict[str, object]] = []
+        for symbol, (lower, upper) in self.bounds.items():
             if symbol not in self.symbols.ids:
                 continue
-            lower, upper = value_range.lower, value_range.upper
             sym = {"sym": self.symbols.ids[symbol], "name": self.symbols.names[symbol]}
-            if isinstance(lower, int) and lower > 0:
-                constraints.append({"relation": ">=", "lhs": sym, "rhs": int(lower)})
-            if isinstance(upper, int) and upper < 2**62:
-                constraints.append({"relation": "<=", "lhs": sym, "rhs": int(upper)})
+            if lower > 0:
+                constraints.append({"relation": ">=", "lhs": sym, "rhs": lower})
+            if upper is not None and upper < 2**62:
+                constraints.append({"relation": "<=", "lhs": sym, "rhs": upper})
         return constraints
 
     def _fill_member_types(self, root: Member) -> None:
@@ -451,7 +510,7 @@ class _Exporter:
                     entry["type"] = self.builder.tensor_type(tuple(tensor.shape), tensor.dtype)
         # Lifted tensor constants become buffers of the root block.
         for target in self.program.graph_signature.inputs_to_lifted_tensor_constants.values():
-            tensor = self.program.constants[target]
+            tensor = cast(torch.Tensor, self.program.constants[target])
             member_name = identifier(target)
             assert root.block is not None
             root.block.members.append(
@@ -487,7 +546,7 @@ class _Exporter:
             member = member.children[part]
         return member.children[path.split(".")[-1]].name
 
-    def _member_value(self, path: str, node: Any) -> _Value:
+    def _member_value(self, path: str, node: torch.fx.Node) -> _Value:
         """Loads a parameter, buffer, or constant through its member chain."""
         root = self.hierarchy.root
         assert root is not None
@@ -497,7 +556,7 @@ class _Exporter:
             self.hierarchy, root, self.self_value, path, kind, node.name
         )
 
-    def _input_value(self, node: Any) -> _Value:
+    def _input_value(self, node: torch.fx.Node) -> _Value:
         tensor = node.meta.get("val")
         if not isinstance(tensor, torch.Tensor):
             raise ExportError(f"input `{node.name}` is not a tensor")
@@ -507,7 +566,7 @@ class _Exporter:
 
     # ---- translation
 
-    def value_of(self, arg: Any) -> _Value:
+    def value_of(self, arg: Argument) -> _Value:
         """The IR value of a graph argument: a node's value, or a constant."""
         if isinstance(arg, torch.fx.Node):
             if arg.name in self.values:
@@ -517,38 +576,39 @@ class _Exporter:
             raise ExportError(f"`{arg.name}` has no value")
         raise ExportError(f"unexpected argument {arg!r}")
 
-    def dim_of(self, arg: Any) -> Dim:
+    def dim_of(self, arg: Argument) -> Dim:
         if isinstance(arg, torch.fx.Node):
             if arg.name in self.dims:
                 return self.dims[arg.name]
             raise ExportError(f"`{arg.name}` is not a compile-time integer")
         if isinstance(arg, torch.SymInt):
-            return arg.node.expr
+            return cast("sympy.Expr", arg.node.expr)
         if isinstance(arg, int):
             return arg
         raise ExportError(f"{arg!r} is not a dimension")
 
-    def scalar(self, arg: Any, dtype: torch.dtype) -> _Value:
+    def scalar(self, arg: Argument, dtype: torch.dtype) -> _Value:
         """A Python number as a constant of `dtype`, or a node's value."""
         if isinstance(arg, torch.fx.Node):
             return self.value_of(arg)
         if isinstance(arg, torch.SymInt):
-            return self.builder.const_dim(arg.node.expr)
+            return self.builder.const_dim(cast("sympy.Expr", arg.node.expr))
         if isinstance(arg, bool | int | float):
             return self.builder.const(arg, dtype)
         raise ExportError(f"{arg!r} cannot be a scalar operand")
 
-    def _result(self, node: Any) -> tuple[torch.dtype, tuple[Dim, ...] | None]:
+    def _result(self, node: torch.fx.Node) -> tuple[torch.dtype, tuple[Dim, ...] | None]:
         value = node.meta.get("val")
         if isinstance(value, torch.Tensor):
             shape = tuple(
-                d.node.expr if isinstance(d, torch.SymInt) else int(d) for d in value.shape
+                cast("sympy.Expr", d.node.expr) if isinstance(d, torch.SymInt) else int(d)
+                for d in value.shape
             )
             return value.dtype, shape if value.dim() > 0 else None
         raise ExportError(f"`{node.name}` has no tensor result")
 
-    def _translate(self, node: Any) -> None:
-        target: Any = node.target
+    def _translate(self, node: torch.fx.Node) -> None:
+        target = node.target
         name = str(getattr(target, "__name__", None) or target)
         # ATen overloads print as `aten.mm.default`; Python operators by name.
         overload = str(target) if str(target).startswith("aten.") else name
@@ -561,7 +621,7 @@ class _Exporter:
             if target in _SYMBOLIC_OPERATORS:
                 value = node.meta.get("val")
                 if isinstance(value, torch.SymInt):
-                    self.dims[node.name] = value.node.expr
+                    self.dims[node.name] = cast("sympy.Expr", value.node.expr)
                     return
                 if isinstance(value, int):
                     self.dims[node.name] = value
@@ -576,23 +636,29 @@ class _Exporter:
         if value is not None:
             self.values[node.name] = value
 
-    def _is_known(self, node: Any) -> bool:
+    def _is_known(self, node: torch.fx.Node) -> bool:
         return node.name in self.values or node.name in self.dims or node.name in self.tuples
 
     # ---- helpers used by handlers
 
-    def tensor_arg(self, node: Any, index: int) -> _Value:
+    def tensor_arg(self, node: torch.fx.Node, index: int) -> _Value:
         return self.value_of(node.args[index])
 
-    def result_of(self, node: Any) -> tuple[torch.dtype, tuple[Dim, ...] | None]:
+    def result_of(self, node: torch.fx.Node) -> tuple[torch.dtype, tuple[Dim, ...] | None]:
         return self._result(node)
 
     def elementwise(
-        self, node: Any, kind: str, *operands: _Value, attrs: dict[str, Any] | None = None
+        self,
+        node: torch.fx.Node,
+        kind: str,
+        *operands: _Value,
+        attrs: dict[str, object] | None = None,
     ) -> _Value:
         return self.builder.op(kind, list(operands), self._result(node), attrs, name=node.name)
 
-    def binary(self, node: Any, kind: str, attrs: dict[str, Any] | None = None) -> _Value:
+    def binary(
+        self, node: torch.fx.Node, kind: str, attrs: dict[str, object] | None = None
+    ) -> _Value:
         dtype, _ = self._result(node)
         a, b = node.args[0], node.args[1]
         left = self.scalar(a, dtype) if not isinstance(a, torch.fx.Node) else self.value_of(a)
@@ -601,7 +667,9 @@ class _Exporter:
         alpha = node.kwargs.get("alpha", 1)
         if alpha != 1:
             right = self.builder.op(
-                "mul", [right, self.builder.const(alpha, dtype)], (right.dtype, right.shape)
+                "mul",
+                [right, self.builder.const(cast(float, alpha), dtype)],
+                (right.dtype, right.shape),
             )
         return self.builder.op(kind, [left, right], self._result(node), attrs, name=node.name)
 
@@ -629,7 +697,11 @@ class _Exporter:
         )
 
     def call(
-        self, node: Any, callee: str, generics: list[dict[str, Any]], operands: list[_Value]
+        self,
+        node: torch.fx.Node,
+        callee: str,
+        generics: list[dict[str, object]],
+        operands: list[_Value],
     ) -> _Value:
         module_path = callee.split("::")[0]
         self.imports.add(module_path)
@@ -652,17 +724,17 @@ class _Exporter:
         for name, tensor in self.model.named_buffers():
             tensors[name] = tensor
         for target in self.program.graph_signature.inputs_to_lifted_tensor_constants.values():
-            tensors[target] = self.program.constants[target]
+            tensors[target] = cast(torch.Tensor, self.program.constants[target])
         return tensors
 
 
-def _flatten(value: Any) -> list[Any]:
+def _flatten(value: Argument) -> list[Argument]:
     if isinstance(value, list | tuple):
-        return [item for element in cast(Sequence[Any], value) for item in _flatten(element)]
+        return [item for element in value for item in _flatten(element)]
     return [value]
 
 
-_SYMBOLIC_OPERATORS: set[Any] = {
+_SYMBOLIC_OPERATORS: set[Callable[..., object]] = {
     operator.mul,
     operator.add,
     operator.sub,
@@ -676,7 +748,7 @@ _SYMBOLIC_OPERATORS: set[Any] = {
 
 # ----------------------------------------------------------------- handlers
 
-Handler = Callable[[_Exporter, Any], _Value | None]
+Handler = Callable[[_Exporter, torch.fx.Node], _Value | None]
 _HANDLERS: dict[str, Handler] = {}
 
 
@@ -689,26 +761,28 @@ def _handles(*names: str) -> Callable[[Handler], Handler]:
     return register
 
 
-def _dim_json(exporter: _Exporter, dim: Dim) -> Any:
+def _dim_json(exporter: _Exporter, dim: Dim) -> _DimJson:
     return exporter.symbols.json(dim)
 
 
-def _generic_dim(exporter: _Exporter, dim: Dim) -> dict[str, Any]:
+def _generic_dim(exporter: _Exporter, dim: Dim) -> dict[str, object]:
     return {"dim": _dim_json(exporter, dim)}
 
 
-def _generic_shape(exporter: _Exporter, shape: Sequence[Dim]) -> dict[str, Any]:
+def _generic_shape(exporter: _Exporter, shape: Sequence[Dim]) -> dict[str, object]:
     return {"shape": [_dim_json(exporter, d) for d in shape]}
 
 
-def _generic_dtype(dtype: torch.dtype) -> dict[str, Any]:
+def _generic_dtype(dtype: torch.dtype) -> dict[str, object]:
     return {"dtype": _dtype_name(dtype)}
 
 
 @_handles("aten.sym_size.int")
-def _sym_size(exporter: _Exporter, node: Any) -> _Value | None:
-    value = node.meta.get("val")
-    exporter.dims[node.name] = value.node.expr if isinstance(value, torch.SymInt) else int(value)
+def _sym_size(exporter: _Exporter, node: torch.fx.Node) -> _Value | None:
+    value = cast("torch.SymInt | int", node.meta.get("val"))
+    exporter.dims[node.name] = (
+        cast("sympy.Expr", value.node.expr) if isinstance(value, torch.SymInt) else int(value)
+    )
     return None
 
 
@@ -717,7 +791,7 @@ def _sym_size(exporter: _Exporter, node: Any) -> _Value | None:
     "aten.unsqueeze.default", "aten.squeeze.dim", "aten.squeeze.dims", "aten.squeeze.default",
     "aten.flatten.using_ints",
 )  # fmt: skip
-def _view(exporter: _Exporter, node: Any) -> _Value:
+def _view(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     _, shape = exporter.result_of(node)
     if shape is None:
         raise ExportError("rank-0 results are not supported")
@@ -728,12 +802,12 @@ def _view(exporter: _Exporter, node: Any) -> _Value:
     "aten.clone.default", "aten.alias.default", "aten.detach.default", "aten.contiguous.default",
     "aten.lift_fresh_copy.default", "aten.detach_.default",
 )  # fmt: skip
-def _alias(exporter: _Exporter, node: Any) -> _Value:
+def _alias(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     return exporter.tensor_arg(node, 0)
 
 
 @_handles("aten._to_copy.default", "aten.to.dtype", "aten.to.dtype_layout")
-def _to_copy(exporter: _Exporter, node: Any) -> _Value:
+def _to_copy(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     source = exporter.tensor_arg(node, 0)
     dtype, shape = exporter.result_of(node)
     if dtype == source.dtype:
@@ -742,9 +816,9 @@ def _to_copy(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.permute.default")
-def _permute(exporter: _Exporter, node: Any) -> _Value:
+def _permute(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     source = exporter.tensor_arg(node, 0)
-    axes = [int(a) for a in node.args[1]]
+    axes = [int(a) for a in cast(Sequence[SupportsInt], node.args[1])]
     if axes == list(range(len(axes))):
         return source
     return exporter.builder.op(
@@ -753,10 +827,13 @@ def _permute(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.transpose.int")
-def _transpose(exporter: _Exporter, node: Any) -> _Value:
+def _transpose(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     source = exporter.tensor_arg(node, 0)
     rank = len(source.shape or ())
-    a, b = (int(node.args[1]) % rank, int(node.args[2]) % rank)
+    a, b = (
+        int(cast(SupportsInt, node.args[1])) % rank,
+        int(cast(SupportsInt, node.args[2])) % rank,
+    )
     axes = list(range(rank))
     axes[a], axes[b] = axes[b], axes[a]
     return exporter.builder.op(
@@ -765,7 +842,7 @@ def _transpose(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.t.default")
-def _t(exporter: _Exporter, node: Any) -> _Value:
+def _t(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     source = exporter.tensor_arg(node, 0)
     if len(source.shape or ()) < 2:
         return source
@@ -775,7 +852,7 @@ def _t(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.expand.default", "aten.expand_copy.default", "aten.broadcast_to.default")
-def _expand(exporter: _Exporter, node: Any) -> _Value:
+def _expand(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     source = exporter.tensor_arg(node, 0)
     dtype, shape = exporter.result_of(node)
     if shape is None or (source.shape is not None and _same_dims(source.shape, shape)):
@@ -806,7 +883,7 @@ _BINARY = {
         for variant in ("Tensor", "Scalar", "default", "Tensor_mode")
     ]
 )
-def _binary(exporter: _Exporter, node: Any) -> _Value:
+def _binary(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     base = str(node.target).rsplit(".", 1)[0]
     if node.kwargs.get("rounding_mode") not in (None, "trunc") and base == "aten.div":
         raise ExportError("floor division of tensors is not supported")
@@ -815,7 +892,7 @@ def _binary(exporter: _Exporter, node: Any) -> _Value:
 
 @_handles("aten.logical_and.default", "aten.bitwise_and.Tensor", "aten.logical_or.default",
           "aten.bitwise_or.Tensor")  # fmt: skip
-def _logical(exporter: _Exporter, node: Any) -> _Value:
+def _logical(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     """Boolean tensors combine through `select`; `&&` and `||` are scalar."""
     dtype, shape = exporter.result_of(node)
     if dtype != torch.bool:
@@ -833,7 +910,7 @@ def _logical(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.logical_not.default", "aten.bitwise_not.default")
-def _logical_not(exporter: _Exporter, node: Any) -> _Value:
+def _logical_not(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     dtype, shape = exporter.result_of(node)
     if dtype != torch.bool:
         raise ExportError("bitwise not on integers is not supported")
@@ -849,7 +926,7 @@ def _logical_not(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.rsub.Scalar", "aten.rsub.Tensor")
-def _rsub(exporter: _Exporter, node: Any) -> _Value:
+def _rsub(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     dtype, _ = exporter.result_of(node)
     left = exporter.scalar(node.args[1], dtype)
     right = exporter.tensor_arg(node, 0)
@@ -867,7 +944,7 @@ _COMPARE = {
 
 
 @_handles(*[f"{name}.{variant}" for name in _COMPARE for variant in ("Tensor", "Scalar")])
-def _compare(exporter: _Exporter, node: Any) -> _Value:
+def _compare(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     base = str(node.target).rsplit(".", 1)[0]
     left = exporter.tensor_arg(node, 0)
     right = exporter.scalar(node.args[1], left.dtype)
@@ -895,25 +972,25 @@ _UNARY = {
 
 
 @_handles(*_UNARY)
-def _unary(exporter: _Exporter, node: Any) -> _Value:
+def _unary(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     return exporter.elementwise(node, _UNARY[str(node.target)], exporter.tensor_arg(node, 0))
 
 
 @_handles("aten.reciprocal.default")
-def _reciprocal(exporter: _Exporter, node: Any) -> _Value:
+def _reciprocal(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     one = exporter.builder.const(1, x.dtype)
     return exporter.builder.op("div", [one, x], exporter.result_of(node), name=node.name)
 
 
 @_handles("aten.square.default")
-def _square(exporter: _Exporter, node: Any) -> _Value:
+def _square(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     return exporter.builder.op("mul", [x, x], exporter.result_of(node), name=node.name)
 
 
 @_handles("aten.pow.Tensor_Scalar")
-def _pow(exporter: _Exporter, node: Any) -> _Value:
+def _pow(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     exponent = node.args[1]
     result = exporter.result_of(node)
@@ -936,7 +1013,7 @@ def _pow(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.sigmoid.default")
-def _sigmoid(exporter: _Exporter, node: Any) -> _Value:
+def _sigmoid(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     shape = x.shape or ()
     return exporter.call(
@@ -948,7 +1025,7 @@ def _sigmoid(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.silu.default")
-def _silu(exporter: _Exporter, node: Any) -> _Value:
+def _silu(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     return exporter.call(
         node,
@@ -959,7 +1036,7 @@ def _silu(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.relu.default")
-def _relu(exporter: _Exporter, node: Any) -> _Value:
+def _relu(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     return exporter.call(
         node,
@@ -970,7 +1047,7 @@ def _relu(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.gelu.default")
-def _gelu(exporter: _Exporter, node: Any) -> _Value:
+def _gelu(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     tanh = node.kwargs.get("approximate", "none") == "tanh"
     x = exporter.tensor_arg(node, 0)
     return exporter.call(
@@ -982,7 +1059,7 @@ def _gelu(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.where.self")
-def _where(exporter: _Exporter, node: Any) -> _Value:
+def _where(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     dtype, _ = exporter.result_of(node)
     condition = exporter.tensor_arg(node, 0)
     a = exporter.scalar(node.args[1], dtype)
@@ -997,7 +1074,7 @@ def _where(exporter: _Exporter, node: Any) -> _Value:
     "aten.zeros_like.default", "aten.ones_like.default", "aten.empty.memory_format",
     "aten.new_zeros.default", "aten.new_ones.default", "aten.scalar_tensor.default",
 )  # fmt: skip
-def _fill(exporter: _Exporter, node: Any) -> _Value:
+def _fill(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     dtype, shape = exporter.result_of(node)
     target = str(node.target)
     if "full" in target:
@@ -1010,7 +1087,7 @@ def _fill(exporter: _Exporter, node: Any) -> _Value:
         fill_value = node.args[0]
     if isinstance(fill_value, torch.fx.Node):
         raise ExportError("fill values must be constants")
-    value = exporter.builder.const(fill_value, dtype)
+    value = exporter.builder.const(cast(float, fill_value), dtype)
     if shape is None:
         return value
     return exporter.builder.op(
@@ -1023,7 +1100,7 @@ def _fill(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.arange.default", "aten.arange.start", "aten.arange.start_step")
-def _arange(exporter: _Exporter, node: Any) -> _Value:
+def _arange(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     dtype, shape = exporter.result_of(node)
     if shape is None or len(shape) != 1:
         raise ExportError("arange must produce a vector")
@@ -1050,7 +1127,7 @@ def _arange(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.mm.default")
-def _mm(exporter: _Exporter, node: Any) -> _Value:
+def _mm(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     a = exporter.tensor_arg(node, 0)
     b = exporter.tensor_arg(node, 1)
     m, k = cast(tuple[Dim, Dim], a.shape)
@@ -1069,7 +1146,7 @@ def _mm(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.bmm.default")
-def _bmm(exporter: _Exporter, node: Any) -> _Value:
+def _bmm(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     a = exporter.tensor_arg(node, 0)
     b = exporter.tensor_arg(node, 1)
     batch, m, k = cast(tuple[Dim, Dim, Dim], a.shape)
@@ -1089,7 +1166,7 @@ def _bmm(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.addmm.default")
-def _addmm(exporter: _Exporter, node: Any) -> _Value:
+def _addmm(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     bias = exporter.tensor_arg(node, 0)
     a = exporter.tensor_arg(node, 1)
     b = exporter.tensor_arg(node, 2)
@@ -1115,7 +1192,7 @@ def _addmm(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.linear.default")
-def _linear(exporter: _Exporter, node: Any) -> _Value:
+def _linear(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     weight = exporter.tensor_arg(node, 1)
     out, inner = cast(tuple[Dim, Dim], weight.shape)
@@ -1144,10 +1221,10 @@ def _linear(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten._softmax.default", "aten.softmax.int")
-def _softmax(exporter: _Exporter, node: Any) -> _Value:
+def _softmax(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     shape = list(x.shape or ())
-    axis = int(node.args[1]) % len(shape)
+    axis = int(cast(SupportsInt, node.args[1])) % len(shape)
     if axis != len(shape) - 1:
         raise ExportError("softmax over an axis other than the last is not supported")
     return exporter.call(
@@ -1162,18 +1239,16 @@ def _softmax(exporter: _Exporter, node: Any) -> _Value:
     )
 
 
-def _reduction(exporter: _Exporter, node: Any, kind: str, divide: bool) -> _Value:
+def _reduction(exporter: _Exporter, node: torch.fx.Node, kind: str, divide: bool) -> _Value:
     x = exporter.tensor_arg(node, 0)
     shape = list(x.shape or ())
     rank = len(shape)
     dims_arg = node.args[1] if len(node.args) > 1 else None
-    raw: list[Any] = (
-        list(cast(Sequence[Any], dims_arg)) if isinstance(dims_arg, list | tuple) else [dims_arg]
-    )
+    raw: list[Argument] = list(dims_arg) if isinstance(dims_arg, list | tuple) else [dims_arg]
     if dims_arg is None or not raw:
         reduced = list(range(rank))
     else:
-        reduced = sorted(int(d) % rank for d in raw)
+        reduced = sorted(int(cast(SupportsInt, d)) % rank for d in raw)
     keepdim = bool(node.args[2]) if len(node.args) > 2 else bool(node.kwargs.get("keepdim", False))
     dtype, result_shape = exporter.result_of(node)
     divisor: Dim | None = None
@@ -1203,27 +1278,27 @@ def _reduction(exporter: _Exporter, node: Any, kind: str, divide: bool) -> _Valu
 
 
 @_handles("aten.sum.dim_IntList", "aten.sum.default")
-def _sum(exporter: _Exporter, node: Any) -> _Value:
+def _sum(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     return _reduction(exporter, node, "sum", divide=False)
 
 
 @_handles("aten.mean.dim", "aten.mean.default")
-def _mean(exporter: _Exporter, node: Any) -> _Value:
+def _mean(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     return _reduction(exporter, node, "sum", divide=True)
 
 
 @_handles("aten.amax.default")
-def _amax(exporter: _Exporter, node: Any) -> _Value:
+def _amax(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     return _reduction(exporter, node, "max", divide=False)
 
 
 @_handles("aten.amin.default")
-def _amin(exporter: _Exporter, node: Any) -> _Value:
+def _amin(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     return _reduction(exporter, node, "min", divide=False)
 
 
 @_handles("aten.embedding.default")
-def _embedding(exporter: _Exporter, node: Any) -> _Value:
+def _embedding(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     table = exporter.tensor_arg(node, 0)
     ids = exporter.tensor_arg(node, 1)
     dtype, shape = exporter.result_of(node)
@@ -1246,23 +1321,23 @@ def _embedding(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.slice.Tensor")
-def _slice(exporter: _Exporter, node: Any) -> _Value:
+def _slice(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     shape = list(x.shape or ())
-    axis = int(node.args[1]) % len(shape)
+    axis = int(cast(SupportsInt, node.args[1])) % len(shape)
     start = exporter.dim_of(node.args[2]) if len(node.args) > 2 and node.args[2] is not None else 0
     stop = (
         exporter.dim_of(node.args[3])
         if len(node.args) > 3 and node.args[3] is not None
         else shape[axis]
     )
-    step = int(node.args[4]) if len(node.args) > 4 else 1
+    step = int(cast(SupportsInt, node.args[4])) if len(node.args) > 4 else 1
     if isinstance(stop, int) and stop >= 2**62:
         stop = shape[axis]
     dtype, result_shape = exporter.result_of(node)
     if result_shape is not None and _same_dims(result_shape, shape):
         return x
-    axes: list[dict[str, Any]] = []
+    axes: list[dict[str, object]] = []
     for i, size in enumerate(shape):
         if i == axis:
             axes.append(
@@ -1281,17 +1356,17 @@ def _slice(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.select.int")
-def _select(exporter: _Exporter, node: Any) -> _Value:
+def _select(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     shape = list(x.shape or ())
-    axis = int(node.args[1]) % len(shape)
+    axis = int(cast(SupportsInt, node.args[1])) % len(shape)
     index = exporter.dim_of(node.args[2])
     if isinstance(index, int) and index < 0:
         index = shape[axis] + index
     dtype, result_shape = exporter.result_of(node)
     if result_shape is None:
         raise ExportError("selecting from a vector gives a scalar, which slicing cannot express")
-    axes: list[dict[str, Any]] = []
+    axes: list[dict[str, object]] = []
     for i, size in enumerate(shape):
         if i == axis:
             axes.append(
@@ -1310,17 +1385,17 @@ def _select(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.cat.default")
-def _cat(exporter: _Exporter, node: Any) -> _Value:
-    parts = [exporter.value_of(arg) for arg in node.args[0]]
+def _cat(exporter: _Exporter, node: torch.fx.Node) -> _Value:
+    parts = [exporter.value_of(arg) for arg in cast("Sequence[Argument]", node.args[0])]
     rank = len(parts[0].shape or ())
-    axis = int(node.args[1]) % rank if len(node.args) > 1 else 0
+    axis = int(cast(SupportsInt, node.args[1])) % rank if len(node.args) > 1 else 0
     return exporter.builder.op(
         "concat", parts, exporter.result_of(node), {"axis": axis}, name=node.name
     )
 
 
 @_handles("aten.split.Tensor", "aten.split_with_sizes.default", "aten.unbind.int")
-def _split(exporter: _Exporter, node: Any) -> _Value | None:
+def _split(exporter: _Exporter, node: torch.fx.Node) -> _Value | None:
     x = exporter.tensor_arg(node, 0)
     shape = list(x.shape or ())
     target = str(node.target)
@@ -1331,16 +1406,17 @@ def _split(exporter: _Exporter, node: Any) -> _Value | None:
         raw_axis = node.args[2] if len(node.args) > 2 else node.kwargs.get("dim", 0)
     else:
         raw_axis = node.args[1] if len(node.args) > 1 else node.kwargs.get("dim", 0)
-    axis = int(raw_axis) % len(shape)
+    axis = int(cast(SupportsInt, raw_axis)) % len(shape)
     pieces: list[_Value] = []
     offset: Dim = 0
-    for piece in cast(Sequence[Any], values):
+    for piece in cast(Sequence[torch.Tensor], values):
         piece_shape = tuple(
-            d.node.expr if isinstance(d, torch.SymInt) else int(d) for d in piece.shape
+            cast("sympy.Expr", d.node.expr) if isinstance(d, torch.SymInt) else int(d)
+            for d in piece.shape
         )
         is_unbind = target.startswith("aten.unbind")
         size: Dim = 1 if is_unbind else piece_shape[axis]
-        axes: list[dict[str, Any]] = []
+        axes: list[dict[str, object]] = []
         for i, dim in enumerate(shape):
             if i == axis:
                 axes.append(
@@ -1362,10 +1438,10 @@ def _split(exporter: _Exporter, node: Any) -> _Value | None:
 
 
 @_handles("_operator.getitem", "getitem")
-def _getitem(exporter: _Exporter, node: Any) -> _Value:
+def _getitem(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     source = node.args[0]
     if isinstance(source, torch.fx.Node) and source.name in exporter.tuples:
-        element = exporter.tuples[source.name][int(node.args[1])]
+        element = exporter.tuples[source.name][int(cast(SupportsInt, node.args[1]))]
         if element.id < 0:
             raise ExportError("this result of the operation is not available")
         return element
@@ -1373,12 +1449,12 @@ def _getitem(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.native_layer_norm.default", "aten.layer_norm.default")
-def _layer_norm(exporter: _Exporter, node: Any) -> _Value | None:
+def _layer_norm(exporter: _Exporter, node: torch.fx.Node) -> _Value | None:
     """`layer_norm` over the last axis is the standard library's op; the
     statistics PyTorch also returns are not offered."""
     x = exporter.tensor_arg(node, 0)
     shape = list(x.shape or ())
-    normalized = [exporter.dim_of(d) for d in node.args[1]]
+    normalized = [exporter.dim_of(d) for d in cast("Sequence[Argument]", node.args[1])]
     if len(normalized) != 1 or normalized[0] != shape[-1]:
         raise ExportError("layer_norm over more than the last axis is not supported")
     weight_node, bias_node = node.args[2], node.args[3]
@@ -1401,7 +1477,7 @@ def _layer_norm(exporter: _Exporter, node: Any) -> _Value | None:
         bias = exporter.builder.op(
             "option.none", [], (x.dtype, (shape[-1],)), type_json=optional_type
         )
-    epsilon = exporter.builder.const(float(eps), torch.float32)
+    epsilon = exporter.builder.const(float(cast(SupportsFloat, eps)), torch.float32)
     result_type = (x.dtype, tuple(shape))
     call = exporter.builder.op(
         "semantic.call",
@@ -1427,14 +1503,15 @@ def _layer_norm(exporter: _Exporter, node: Any) -> _Value | None:
 
 
 @_handles("aten.clamp.default", "aten.clamp_min.default", "aten.clamp_max.default")
-def _clamp(exporter: _Exporter, node: Any) -> _Value:
+def _clamp(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     target = str(node.target)
     result = exporter.result_of(node)
     low = node.args[1] if len(node.args) > 1 else None
     high = node.args[2] if len(node.args) > 2 else None
     if target.endswith("clamp_max.default"):
-        low, high = None, node.args[1]
+        # The length checks above narrow `node.args`; clamp_max has its bound here.
+        low, high = None, cast("tuple[Argument, ...]", node.args)[1]
     value = x
     if low is not None:
         value = exporter.builder.op("max", [value, exporter.scalar(low, x.dtype)], result)
@@ -1445,12 +1522,12 @@ def _clamp(exporter: _Exporter, node: Any) -> _Value:
 
 
 @_handles("aten.tril.default")
-def _tril(exporter: _Exporter, node: Any) -> _Value:
+def _tril(exporter: _Exporter, node: torch.fx.Node) -> _Value:
     x = exporter.tensor_arg(node, 0)
     dtype, shape = exporter.result_of(node)
     if shape is None or len(shape) < 2:
         raise ExportError("tril needs a matrix")
-    diagonal = int(node.args[1]) if len(node.args) > 1 else 0
+    diagonal = int(cast(SupportsInt, node.args[1])) if len(node.args) > 1 else 0
     rows, cols = shape[-2], shape[-1]
     row_positions = exporter.builder.op(
         "iota", [], (torch.int64, (rows,)), {"shape": [_dim_json(exporter, rows)]}

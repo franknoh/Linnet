@@ -16,16 +16,43 @@ runs where the kernel cannot (the CPU, widths it does not tile).
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
 
 import jax
 import jax.numpy as jnp
+
+if TYPE_CHECKING:
+    import numpy as np
+    from jax.experimental.hijax import TransformedRef
+    from jax.experimental.pallas import Slice
+    from jax.typing import DTypeLike
 
 # At most this many pairs gather their experts' weights.
 GATHERED = 64
 
 
-def mxfp4_weight(blocks: Any, scales: Any, dtype: Any) -> Any:
+class _Indexer(Protocol):
+    """A kernel operand's `at`: a view of part of it, for `load` and
+    `store`."""
+
+    def __getitem__(self, index: tuple[slice | Slice, slice | Slice], /) -> TransformedRef: ...
+
+
+class _KernelRef(Protocol):
+    """One of the kernel's operands, as Pallas hands it to the kernel."""
+
+    @property
+    def at(self) -> _Indexer: ...
+
+    @property
+    def dtype(self) -> np.dtype[np.generic]: ...
+
+    def __getitem__(
+        self, index: jax.Array | tuple[jax.Array | slice | Slice, ...], /
+    ) -> jax.Array: ...
+
+
+def mxfp4_weight(blocks: jax.Array, scales: jax.Array, dtype: DTypeLike) -> jax.Array:
     """MXFP4 experts (`blocks` [E, Out, G, 16] u8, `scales` [E, Out, G] u8)
     as `std.quant::dequantize_mxfp4` reads them: [E, Out, G * 32] in
     `dtype`, every value exact."""
@@ -38,7 +65,9 @@ def mxfp4_weight(blocks: Any, scales: Any, dtype: Any) -> Any:
     return values.reshape(count, out, groups * 32)
 
 
-def experts(x: Any, weight: Any, chosen: Any, shared: bool, dtype: Any = None) -> Any:
+def experts(
+    x: jax.Array, weight: jax.Array, chosen: jax.Array, shared: bool, dtype: DTypeLike | None = None
+) -> jax.Array:
     """`y[r, k] = input @ weight[chosen[r, k]].T`, [R, K, Out]: the input is
     row `r`'s when `shared` (`x` [R, In]) and the pair's own otherwise (`x`
     [R, K, In]). Accumulates in f32; the result is `dtype` (`x`'s unless
@@ -62,14 +91,16 @@ def experts(x: Any, weight: Any, chosen: Any, shared: bool, dtype: Any = None) -
     return product[places].reshape(rows, picks, weight.shape[1])
 
 
-def experts_combined(x: Any, weight: Any, chosen: Any, weights: Any) -> Any:
+def experts_combined(
+    x: jax.Array, weight: jax.Array, chosen: jax.Array, weights: jax.Array
+) -> jax.Array:
     """The pairs' products (`x` [R, K, In]) weighed by `weights` [R, K] and
     summed per row, [R, Out]."""
     y = experts(x, weight, chosen, False, jnp.float32)
     return jnp.einsum("rk,rko->ro", weights.astype(jnp.float32), y).astype(x.dtype)
 
 
-def grouped(x: Any, weight: Any, counts: Any, dtype: Any) -> Any:
+def grouped(x: jax.Array, weight: jax.Array, counts: jax.Array, dtype: DTypeLike) -> jax.Array:
     """`y[i] = x[i] @ weight[e].T` for rows sorted by expert, `counts[e]` of
     them for expert `e` (`x` [P, In], `weight` [E, Out, In]), [P, Out] in
     `dtype`."""
@@ -82,7 +113,7 @@ def grouped(x: Any, weight: Any, counts: Any, dtype: Any) -> Any:
     return _grouped_pallas(x, weight, counts, dtype, *tiles)
 
 
-def _tiling(out: int, width: int, dtype: Any) -> tuple[int, int, int, int, int] | None:
+def _tiling(out: int, width: int, dtype: DTypeLike) -> tuple[int, int, int, int, int] | None:
     """The kernel's tile (rows, outputs, inputs) and its warps and pipeline
     stages for these widths, or `None` where it does not tile them."""
     if jnp.dtype(dtype) not in (jnp.dtype(jnp.bfloat16), jnp.dtype(jnp.float16)):
@@ -94,7 +125,9 @@ def _tiling(out: int, width: int, dtype: Any) -> tuple[int, int, int, int, int] 
     return 64, block_n, block_k, 4, 3
 
 
-def _tiles_of(counts: Any, pairs: int, block_m: int) -> tuple[Any, Any, Any]:
+def _tiles_of(
+    counts: jax.Array, pairs: int, block_m: int
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Each row tile's expert and its rows' span in the sorted order: an
     expert's rows split into tiles of `block_m`, the last one partial. There
     are at most `ceil(pairs / block_m) + E` tiles; the spare ones are empty."""
@@ -114,16 +147,16 @@ def _tiles_of(counts: Any, pairs: int, block_m: int) -> tuple[Any, Any, Any]:
 
 @functools.partial(jax.jit, static_argnums=(3, 4, 5, 6, 7, 8))
 def _grouped_pallas(
-    x: Any,
-    weight: Any,
-    counts: Any,
-    dtype: Any,
+    x: jax.Array,
+    weight: jax.Array,
+    counts: jax.Array,
+    dtype: DTypeLike,
     block_m: int,
     block_n: int,
     block_k: int,
     warps: int,
     stages: int,
-) -> Any:
+) -> jax.Array:
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as plgpu
 
@@ -131,7 +164,14 @@ def _grouped_pallas(
     _, out, _ = weight.shape
     owner, first, last = _tiles_of(counts, pairs, block_m)
 
-    def kernel(owner_ref: Any, first_ref: Any, last_ref: Any, x_ref: Any, w_ref: Any, y_ref: Any):
+    def kernel(
+        owner_ref: _KernelRef,
+        first_ref: _KernelRef,
+        last_ref: _KernelRef,
+        x_ref: _KernelRef,
+        w_ref: _KernelRef,
+        y_ref: _KernelRef,
+    ) -> None:
         tile = pl.program_id(0)
         columns = pl.ds(pl.program_id(1) * block_n, block_n)
         expert = owner_ref[tile]
@@ -143,7 +183,7 @@ def _grouped_pallas(
             rows = pl.ds(start, block_m)
             live = (start + jnp.arange(block_m)) < stop
 
-            def step(k: Any, acc: Any) -> Any:
+            def step(k: jax.Array, acc: jax.Array) -> jax.Array:
                 inputs = pl.ds(k * block_k, block_k)
                 a = plgpu.load(x_ref.at[rows, inputs], mask=live[:, None], other=0.0)
                 b = w_ref[expert, columns, inputs]

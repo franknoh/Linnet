@@ -18,16 +18,31 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import jax.numpy as jnp
 
 from .. import ir
 from ..compiler import LinnetError
+from ..results import Result
 from .load import LinnetFunction, load
 
+if TYPE_CHECKING:
+    import jax
+    from flax import nnx as flax_nnx
+    from jax.typing import ArrayLike
 
-def _import_nnx() -> Any:
+
+class _Nnx(Protocol):
+    """The parts of `flax.nnx` used here; the module is imported when first needed."""
+
+    Module: type[flax_nnx.Module]
+    Param: type[flax_nnx.Param[jax.Array]]
+    Variable: type[flax_nnx.Variable[jax.Array]]
+    List: type[flax_nnx.List[flax_nnx.Module | None]]
+
+
+def _import_nnx() -> _Nnx:
     try:
         from flax import nnx  # type: ignore[import-untyped]
     except ImportError as error:  # pragma: no cover - depends on the environment
@@ -35,7 +50,7 @@ def _import_nnx() -> Any:
     return nnx
 
 
-def to_nnx(function: LinnetFunction) -> Any:
+def to_nnx(function: LinnetFunction) -> flax_nnx.Module:
     """The loaded entry as an `nnx.Module` owning its parameters."""
     nnx = _import_nnx()
     program = function.program
@@ -68,7 +83,7 @@ def to_nnx(function: LinnetFunction) -> Any:
             classes[block] = type(block, (LinnetBlock,), {})
         return classes[block]
 
-    def _child(kind: ir.Type, path: str) -> Any:
+    def _child(kind: ir.Type, path: str) -> flax_nnx.Module | None:
         if isinstance(kind, ir.OptionalType):
             # An optional sub-block: there when the weights have it.
             if not any(key.startswith(f"{path}.") for key in weights):
@@ -89,7 +104,9 @@ def to_nnx(function: LinnetFunction) -> Any:
         def __init__(self) -> None:
             super().__init__(root_name, "")
 
-        def __call__(self, *inputs: Any, state: Any = None) -> Any:
+        def __call__(
+            self, *inputs: ArrayLike, state: Mapping[str, jax.Array] | None = None
+        ) -> Result:
             return function.apply(_collect(self, ""), *inputs, state=state)
 
     LinnetModule.__name__ = LinnetModule.__qualname__ = root_name
@@ -113,10 +130,10 @@ def _length(kind: ir.ArrayType, path: str, function: LinnetFunction) -> int:
     return max(indices) + 1
 
 
-def _collect(module: Any, prefix: str) -> dict[str, Any]:
+def _collect(module: flax_nnx.Module, prefix: str) -> dict[str, jax.Array]:
     """Every variable under `module` by parameter path."""
     nnx = _import_nnx()
-    out: dict[str, Any] = {}
+    out: dict[str, jax.Array] = {}
     for name, value in vars(module).items():
         if name.startswith("_"):
             continue
@@ -124,7 +141,7 @@ def _collect(module: Any, prefix: str) -> dict[str, Any]:
         if isinstance(value, nnx.Variable):
             out[path] = value[...]
         elif isinstance(value, nnx.List):
-            for i, element in enumerate(cast(list[Any], value)):
+            for i, element in enumerate(cast("list[flax_nnx.Module]", value)):
                 out.update(_collect(element, f"{path}.{i}."))
         elif isinstance(value, nnx.Module):
             out.update(_collect(value, f"{path}."))
@@ -135,13 +152,13 @@ def load_nnx(
     source: str | Path,
     *,
     generics: Mapping[str, int | str],
-    weights: str | Path | Mapping[str, Any],
+    weights: str | Path | Mapping[str, ArrayLike],
     root: str | None = None,
     entry: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
     numerics: str = "fast",
-) -> Any:
+) -> flax_nnx.Module:
     """`load` followed by `to_nnx`."""
     return to_nnx(
         load(

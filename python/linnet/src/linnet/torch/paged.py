@@ -10,11 +10,7 @@ Otherwise each row's positions are gathered out of the pool and attended
 over as two products around a softmax.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
-
-from typing import Any
 
 import torch
 
@@ -76,7 +72,9 @@ def _flex(
     current = current.reshape(rows, 1, 1, pages)
     partial = torch.ones(rows, 1, 1, dtype=torch.int32, device=query.device)
 
-    def mask_mod(b: Any, h: Any, q: Any, kv: Any) -> Any:
+    def mask_mod(
+        b: torch.Tensor, h: torch.Tensor, q: torch.Tensor, kv: torch.Tensor
+    ) -> torch.Tensor:
         return kv % size <= positions[b] % size
 
     block_mask = BlockMask.from_kv_blocks(

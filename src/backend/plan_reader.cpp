@@ -249,10 +249,7 @@ private:
             } else if (kind == "dtype") {
                 info.kind = GenericKind::DType;
                 const std::string& klass = generic["class"].as_string();
-                info.constraint = klass == "float"     ? DTypeClass::Float
-                                  : klass == "integer" ? DTypeClass::Integer
-                                  : klass == "numeric" ? DTypeClass::Numeric
-                                                       : DTypeClass::Any;
+                info.constraint = parse_dtype_class_key(klass).value_or(DTypeClass::Any);
                 info.dtype_var = dtype_var(generic, info.constraint);
             } else {
                 fail("generic `" + std::string(info.name) + "` has unknown kind `" + kind + "`");
@@ -556,21 +553,11 @@ private:
             break;
         case ir::OpKind::Compare: {
             const std::string& spelling = attrs["compare"].as_string();
-            bool is_known = false;
-            for (const ir::CompareKind compare : {ir::CompareKind::Eq,
-                                                  ir::CompareKind::Ne,
-                                                  ir::CompareKind::Lt,
-                                                  ir::CompareKind::Le,
-                                                  ir::CompareKind::Gt,
-                                                  ir::CompareKind::Ge}) {
-                if (ir::compare_spelling(compare) == spelling) {
-                    a.compare = compare;
-                    is_known = true;
-                }
-            }
-            if (!is_known) {
+            const auto compare = ir::parse_compare(spelling);
+            if (!compare) {
                 fail("unknown comparison `" + spelling + "`");
             }
+            a.compare = *compare;
             break;
         }
         case ir::OpKind::Concat:
@@ -615,21 +602,11 @@ private:
             }
             if (kind == ir::OpKind::Reduce) {
                 const std::string& spelling = attrs["reduce"].as_string();
-                bool is_known = false;
-                for (const ir::ReduceKind reduce : {ir::ReduceKind::Sum,
-                                                    ir::ReduceKind::Prod,
-                                                    ir::ReduceKind::Max,
-                                                    ir::ReduceKind::Min,
-                                                    ir::ReduceKind::Any,
-                                                    ir::ReduceKind::All}) {
-                    if (ir::reduce_spelling(reduce) == spelling) {
-                        a.reduce = reduce;
-                        is_known = true;
-                    }
-                }
-                if (!is_known) {
+                const auto reduce = ast::parse_reduction_kind(spelling);
+                if (!reduce) {
                     fail("unknown reduction `" + spelling + "`");
                 }
+                a.reduce = *reduce;
             }
             break;
         }

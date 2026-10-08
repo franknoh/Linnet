@@ -122,13 +122,7 @@ public:
                         const TensorInfo& b,
                         const Dims& shape) override {
         (void)shape;
-        const char* op = kind == ir::CompareKind::Eq   ? "=="
-                         : kind == ir::CompareKind::Ne ? "!="
-                         : kind == ir::CompareKind::Lt ? "<"
-                         : kind == ir::CompareKind::Le ? "<="
-                         : kind == ir::CompareKind::Gt ? ">"
-                                                       : ">=";
-        return define(a.name + " " + op + " " + b.name);
+        return define(a.name + " " + std::string(ir::compare_symbol(kind)) + " " + b.name);
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {

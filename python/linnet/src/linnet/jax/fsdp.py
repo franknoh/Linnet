@@ -9,19 +9,23 @@ is whole already and is only cast. With `--remat` on the same blocks, the
 backward pass gathers each block's weights again rather than keeping them.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
 from collections.abc import Callable, Generator, Sequence
-from typing import Any
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 
+from .. import lora
 from ..parallel import units
+
+if TYPE_CHECKING:
+    from jax.typing import DTypeLike
 
 _axis: contextvars.ContextVar[str | None] = contextvars.ContextVar("linnet_fsdp_axis", default=None)
 
@@ -36,7 +40,7 @@ def gathering(axis: str) -> Generator[None, None, None]:
         _axis.reset(token)
 
 
-def gather(part: Any, shape: Sequence[int], dtype: Any) -> Any:
+def gather(part: jax.Array, shape: Sequence[int], dtype: DTypeLike) -> jax.Array:
     """`part` whole (`shape`) in `dtype`: gathered over the mesh axis when it
     is one device's part, only cast when it is whole already."""
     axis = _axis.get()
@@ -48,19 +52,19 @@ def gather(part: Any, shape: Sequence[int], dtype: Any) -> Any:
     return gather_as(axis, dim, dtype)(part)
 
 
-def gather_as(axis: str, dim: int, dtype: Any) -> Callable[[Any], Any]:
+def gather_as(axis: str, dim: int, dtype: DTypeLike) -> Callable[[jax.Array], jax.Array]:
     """Inside `shard_map`: a part gathered whole along `dim` in `dtype`, and
     its gradient reduce-scattered back in f32 (in the part's own dtype when
     that is wider), then given the part's dtype."""
 
     @jax.custom_vjp
-    def gather_part(part: Any) -> Any:
+    def gather_part(part: jax.Array) -> jax.Array:
         return jax.lax.all_gather(part.astype(dtype), axis, axis=dim, tiled=True)
 
-    def forward(part: Any) -> Any:
+    def forward(part: jax.Array) -> tuple[jax.Array, jax.Array]:
         return gather_part(part), jnp.zeros((0,), part.dtype)
 
-    def backward(kept: Any, grad: Any) -> Any:
+    def backward(kept: jax.Array, grad: jax.Array) -> tuple[jax.Array]:
         wide = jnp.promote_types(kept.dtype, jnp.float32)
         summed = jax.lax.psum_scatter(grad.astype(wide), axis, scatter_dimension=dim, tiled=True)
         return (summed.astype(kept.dtype),)
@@ -73,9 +77,7 @@ def gathered_by_code(path: str, sharded: Sequence[str]) -> bool:
     """Whether generated code gathers the parameter at `path` itself: it
     belongs to a sharded block and is not an adapter (adapters are added by
     the code generator, outside the blocks' gathering)."""
-    return not path.endswith((".lora_a", ".lora_b")) and any(
-        path.startswith(unit + ".") for unit in sharded
-    )
+    return not lora.is_adapter(path) and any(path.startswith(unit + ".") for unit in sharded)
 
 
 __all__ = ["gather", "gather_as", "gathered_by_code", "gathering", "units"]

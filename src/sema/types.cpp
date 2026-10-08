@@ -1,6 +1,8 @@
 #include "linnet/sema/types.hpp"
 
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace linnet::sema {
@@ -10,7 +12,59 @@ namespace {
 constexpr auto scalar_names = std::to_array<std::string_view>(
     {"bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "bf16", "f32", "f64"});
 
+// In `DTypeClass` order.
+constexpr auto class_names =
+    std::to_array<std::string_view>({"DType", "Numeric", "Integer", "Float"});
+constexpr auto class_keys = std::to_array<std::string_view>({"any", "numeric", "integer", "float"});
+
 } // namespace
+
+std::string_view dtype_class_name(DTypeClass dtype_class) {
+    return class_names[static_cast<std::size_t>(dtype_class)];
+}
+
+std::string_view dtype_class_key(DTypeClass dtype_class) {
+    return class_keys[static_cast<std::size_t>(dtype_class)];
+}
+
+std::optional<DTypeClass> parse_dtype_class_key(std::string_view key) {
+    for (std::size_t i = 0; i < class_keys.size(); ++i) {
+        if (class_keys[i] == key) {
+            return static_cast<DTypeClass>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+IntegerLimits integer_limits(ScalarKind kind) {
+    const auto of = [](auto type) {
+        using T = decltype(type);
+        return IntegerLimits{static_cast<std::int64_t>(std::numeric_limits<T>::min()),
+                             static_cast<std::uint64_t>(std::numeric_limits<T>::max())};
+    };
+    switch (kind) {
+    case ScalarKind::Bool:
+        return {0, 1};
+    case ScalarKind::I8:
+        return of(std::int8_t{});
+    case ScalarKind::I16:
+        return of(std::int16_t{});
+    case ScalarKind::I32:
+        return of(std::int32_t{});
+    case ScalarKind::I64:
+        return of(std::int64_t{});
+    case ScalarKind::U8:
+        return of(std::uint8_t{});
+    case ScalarKind::U16:
+        return of(std::uint16_t{});
+    case ScalarKind::U32:
+        return of(std::uint32_t{});
+    case ScalarKind::U64:
+        return of(std::uint64_t{});
+    default:
+        return {};
+    }
+}
 
 std::string_view scalar_name(ScalarKind kind) {
     return scalar_names[static_cast<std::size_t>(kind)];

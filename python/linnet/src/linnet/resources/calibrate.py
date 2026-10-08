@@ -41,13 +41,16 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
+    import torch
+    from torch.distributed import ProcessGroup
+
     from .performance import DeviceSpec
 
 
-def _time(run: Callable[[], Any], repeats: int = 20) -> float:
+def _time(run: Callable[[], object], repeats: int = 20) -> float:
     """The best of a few timings of `repeats` calls, in device seconds per call."""
     import torch
 
@@ -67,7 +70,7 @@ def _time(run: Callable[[], Any], repeats: int = 20) -> float:
     return best
 
 
-def _host(device: Any) -> float:
+def _host(device: torch.device) -> float:
     """Host seconds per eager call: a decoder layer's calls on tensors too
     small for the device to be the limit."""
     import torch
@@ -84,7 +87,7 @@ def _host(device: Any) -> float:
     mask = torch.ones(1, 64, dtype=torch.bool, device=device)
     position = torch.zeros(1, dtype=torch.long, device=device)
 
-    def rotate(t: Any) -> Any:
+    def rotate(t: torch.Tensor) -> torch.Tensor:
         half = t.shape[-1] // 2
         return t * cos + torch.cat([-t[..., half:], t[..., :half]], dim=-1) * cos
 
@@ -117,7 +120,7 @@ def _host(device: Any) -> float:
     return best
 
 
-def _host_by_kind(device: Any) -> dict[str, float]:
+def _host_by_kind(device: torch.device) -> dict[str, float]:
     """Host seconds of one eager call of each kind the generated code makes,
     on tensors too small for the device to matter; `backward` and
     `product_backward` are autograd's per node of a chain, each product by a
@@ -138,7 +141,7 @@ def _host_by_kind(device: Any) -> dict[str, float]:
     mask = torch.ones(1, 1, 1, 64, dtype=torch.bool, device=device)
     tokens = torch.zeros(1, 1, dtype=torch.long, device=device)
     table = torch.randn(100, 64, device=device, dtype=bf16)
-    calls: dict[str, Callable[[], Any]] = {
+    calls: dict[str, Callable[[], object]] = {
         "view": lambda: x.reshape(1, 4, 16),
         "elementwise": lambda: x * x,
         "product": lambda: functional.linear(x, w),
@@ -166,7 +169,7 @@ def _host_by_kind(device: Any) -> dict[str, float]:
             best = min(best, (time.perf_counter() - begin) / 500)
         found[kind] = best
 
-    def backward(steps: list[Callable[[Any], Any]]) -> float:
+    def backward(steps: list[Callable[[torch.Tensor], torch.Tensor]]) -> float:
         best = float("inf")
         for _ in range(5):
             y = x.detach().requires_grad_(True)
@@ -180,7 +183,7 @@ def _host_by_kind(device: Any) -> dict[str, float]:
             best = min(best, time.perf_counter() - begin)
         return best
 
-    def per_node(make: Callable[[int], Callable[[Any], Any]]) -> float:
+    def per_node(make: Callable[[int], Callable[[torch.Tensor], torch.Tensor]]) -> float:
         """A node's share of a long chain's backward against a short one's,
         so that starting the backward pass counts for neither."""
         long, short = 200, 50
@@ -200,7 +203,7 @@ def _host_by_kind(device: Any) -> dict[str, float]:
 _DECODER = {"Vocab": 256, "H": 64, "Heads": 4, "KvHeads": 2, "Inner": 128, "Layers": 4}
 
 
-def _generated(device: Any, host: Mapping[str, float], dispatch: float) -> float:
+def _generated(device: torch.device, host: Mapping[str, float], dispatch: float) -> float:
     """How much more the generated code's calls cost the host than the
     kinds' costs measured alone add up to: a small decoder's eager decoding
     step (`calibration.linnet`) on the host, against the sum
@@ -215,7 +218,7 @@ def _generated(device: Any, host: Mapping[str, float], dispatch: float) -> float
     source = Path(__file__).with_name("calibration.linnet")
     generics: dict[str, int | str] = {**_DECODER, "Batch": 1, "MaxSeq": 64, "T": "bf16"}
     module = linnet_torch.load(source, generics=generics, device=device, compile=True)
-    decode: Callable[..., Any] = getattr(module, "decode")  # noqa: B009
+    decode: Callable[..., object] = getattr(module, "decode")  # noqa: B009
     token = torch.zeros(1, 1, dtype=torch.int32, device=device)
     pos = torch.tensor(0, dtype=torch.int32, device=device)
     for _ in range(10):
@@ -239,19 +242,21 @@ def _generated(device: Any, host: Mapping[str, float], dispatch: float) -> float
     return best / counted
 
 
-def _products(device: Any) -> tuple[dict[str, float], dict[str, list[list[float]]], float]:
+def _products(
+    device: torch.device,
+) -> tuple[dict[str, float], dict[str, list[list[float]]], float]:
     """The best bf16 and f32 rates; both by the weight's shape, `[n, k,
     FLOP/s]` for 8192 rows times an `n` by `k` weight; and the bytes per
     second a product of 16 rows reads its weight at (a decoding step's)."""
     import torch
     from torch.nn import functional
 
-    def seconds(m: int, n: int, k: int, dtype: Any) -> float:
+    def seconds(m: int, n: int, k: int, dtype: torch.dtype) -> float:
         a = torch.randn(m, k, device=device, dtype=dtype)
         b = torch.randn(n, k, device=device, dtype=dtype)
         return _time(lambda: functional.linear(a, b))
 
-    def rate(m: int, n: int, k: int, dtype: Any) -> float:
+    def rate(m: int, n: int, k: int, dtype: torch.dtype) -> float:
         return 2 * m * n * k / seconds(m, n, k, dtype)
 
     shapes = [(8192, 8192, 8192), (8192, 14336, 4096), (8192, 4096, 14336), (4096, 4096, 4096)]
@@ -266,7 +271,7 @@ def _products(device: Any) -> tuple[dict[str, float], dict[str, list[list[float]
     return peaks, sizes, skinny
 
 
-def _bandwidth(device: Any) -> float:
+def _bandwidth(device: torch.device) -> float:
     import torch
 
     x = torch.empty(1 << 30, device=device, dtype=torch.uint8)
@@ -274,7 +279,7 @@ def _bandwidth(device: Any) -> float:
     return 2 * x.numel() / _time(lambda: y.copy_(x), repeats=10)
 
 
-def _elementwise(device: Any) -> tuple[float, float]:
+def _elementwise(device: torch.device) -> tuple[float, float]:
     """Bytes per second of a bf16 sum of two same-shape tensors, and of a
     product whose second operand is broadcast over the leading axes (a
     rotary table over the heads)."""
@@ -288,7 +293,14 @@ def _elementwise(device: Any) -> tuple[float, float]:
     return same, broadcast
 
 
-def _attention(device: Any) -> dict[str, float]:
+class _Masking(TypedDict, total=False):
+    """How `_attention` masks the scores: causally, or by a boolean mask."""
+
+    is_causal: bool
+    attn_mask: torch.Tensor
+
+
+def _attention(device: torch.device) -> dict[str, float]:
     """FLOP/s of fused attention with grouped key/value heads, by head
     width and in f32 (`causal/64`, `causal/64/f32`): `causal` counts the
     half of the scores its kernel computes, `masked` all; `_backward` the
@@ -309,13 +321,16 @@ def _attention(device: Any) -> dict[str, float]:
             v.requires_grad_(True)
             flops = 4 * heads * length * length * width
             for kind, options, work in (
-                ("causal", {"is_causal": True}, flops / 2),
-                ("masked", {"attn_mask": mask}, flops),
+                ("causal", cast(_Masking, {"is_causal": True}), flops / 2),
+                ("masked", cast(_Masking, {"attn_mask": mask}), flops),
             ):
 
                 def forward(
-                    options: dict[str, Any] = options, q: Any = q, k: Any = k, v: Any = v
-                ) -> Any:
+                    options: _Masking = options,
+                    q: torch.Tensor = q,
+                    k: torch.Tensor = k,
+                    v: torch.Tensor = v,
+                ) -> torch.Tensor:
                     return functional.scaled_dot_product_attention(
                         q, k, v, enable_gqa=True, **options
                     )
@@ -333,7 +348,7 @@ def _attention(device: Any) -> dict[str, float]:
     return rates
 
 
-def _decode(device: Any) -> float:
+def _decode(device: torch.device) -> float:
     """Bytes of cache per second one query per row reads under a mask, as
     the generated code runs it: two products around an f32 softmax."""
     import torch
@@ -346,7 +361,7 @@ def _decode(device: Any) -> float:
     value = torch.randn_like(key)
     mask = torch.ones(rows, 1, 1, cache, dtype=torch.bool, device=device)
 
-    def attend() -> Any:
+    def attend() -> torch.Tensor:
         scores = torch.matmul(query, key.transpose(-1, -2)).float() * 0.088
         scores = scores.masked_fill(~mask, -1e30)
         weights = torch.softmax(scores, dim=-1).to(value.dtype)
@@ -357,7 +372,7 @@ def _decode(device: Any) -> float:
     return 2 * key.numel() * key.element_size() / seconds
 
 
-def _kernel(device: Any) -> tuple[float, float]:
+def _kernel(device: torch.device) -> tuple[float, float]:
     """Device seconds of a small kernel (one decoding step's rows) issued
     eagerly, timed behind long products so that the host is ahead and the
     kernels run back to back: a contiguous one, and one reading a permuted
@@ -370,7 +385,7 @@ def _kernel(device: Any) -> tuple[float, float]:
     heads = torch.randn(16, 1, 32, 128, device=device, dtype=torch.bfloat16).permute(0, 2, 1, 3)
     row = torch.randn(1, 128, device=device, dtype=torch.bfloat16)
 
-    def queued(call: Callable[[], Any]) -> float:
+    def queued(call: Callable[[], object]) -> float:
         best = float("inf")
         for _ in range(5):
             torch.cuda.synchronize()
@@ -389,7 +404,7 @@ def _kernel(device: Any) -> tuple[float, float]:
     return queued(lambda: x.add_(1.0)), queued(lambda: heads * row)
 
 
-def _collectives(device: Any) -> tuple[float, float, float]:
+def _collectives(device: torch.device) -> tuple[float, float, float]:
     """In an initialized NCCL group: a small all-reduce's seconds, a large
     one's bus bandwidth, and the seconds one token's sum takes as the
     generated code calls it (`linnet.torch.collectives`, its one-shot kernel
@@ -399,7 +414,7 @@ def _collectives(device: Any) -> tuple[float, float, float]:
 
     from ..torch import collectives
 
-    group = dist.group.WORLD
+    group = cast("ProcessGroup", dist.group.WORLD)
     small = torch.ones(2048, device=device)
     latency = _time(lambda: dist.all_reduce(small), repeats=50)
     large = torch.ones(64 << 20, device=device)
@@ -408,7 +423,7 @@ def _collectives(device: Any) -> tuple[float, float, float]:
     collectives.prepare(group)
     hidden = torch.ones(1, 4096, device=device, dtype=torch.bfloat16)
 
-    def reduced() -> Any:
+    def reduced() -> torch.Tensor:
         # The next call reads the sum, as in a layer.
         return collectives.all_reduce(hidden, group) + 1
 
@@ -442,7 +457,7 @@ def _spawned(rank: int, world: int, port: int, out: str) -> None:
         Path(out).write_text(json.dumps(found), encoding="utf-8")
 
 
-def measure(name: str) -> dict[str, Any]:
+def measure(name: str) -> dict[str, object]:
     import torch
 
     torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
@@ -457,7 +472,7 @@ def measure(name: str) -> dict[str, Any]:
     small, strided = _kernel(device)
     peaks, sizes, skinny = _products(device)
     same, broadcast = _elementwise(device)
-    found: dict[str, Any] = {
+    found: dict[str, object] = {
         "name": name,
         "source": f"measured: {torch.cuda.get_device_name()}, PyTorch {torch.__version__}",
         "memory": int(total),

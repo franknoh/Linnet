@@ -52,24 +52,11 @@ struct IntRange {
 // Range of an integer kind; u64 is limited to what a literal can spell.
 IntRange int_range(ScalarKind kind) {
     constexpr std::int64_t max = std::numeric_limits<std::int64_t>::max();
-    switch (kind) {
-    case ScalarKind::I8:
-        return {-128, 127};
-    case ScalarKind::I16:
-        return {-32768, 32767};
-    case ScalarKind::I32:
-        return {-2147483648LL, 2147483647LL};
-    case ScalarKind::U8:
-        return {0, 255};
-    case ScalarKind::U16:
-        return {0, 65535};
-    case ScalarKind::U32:
-        return {0, 4294967295LL};
-    case ScalarKind::U64:
-        return {0, max};
-    default:
+    if (kind == ScalarKind::Bool || !is_integer(kind)) {
         return {std::numeric_limits<std::int64_t>::min(), max};
     }
+    const IntegerLimits limits = integer_limits(kind);
+    return {limits.lowest, static_cast<std::int64_t>(std::min<std::uint64_t>(limits.highest, max))};
 }
 
 double max_finite(ScalarKind kind) {

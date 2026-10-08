@@ -3,6 +3,7 @@
 #include "linnet/backend/graph_export.hpp"
 #include "linnet/support/text.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -65,16 +66,8 @@ std::string lowest(ScalarKind dtype) {
         return "0xFFF0000000000000";
     case ScalarKind::Bool:
         return "false";
-    case ScalarKind::I8:
-        return "-128";
-    case ScalarKind::I16:
-        return "-32768";
-    case ScalarKind::I32:
-        return "-2147483648";
-    case ScalarKind::I64:
-        return "-9223372036854775808";
     default:
-        return "0";
+        return std::to_string(sema::integer_limits(dtype).lowest);
     }
 }
 
@@ -90,24 +83,9 @@ std::string highest(ScalarKind dtype) {
         return "0x7FF0000000000000";
     case ScalarKind::Bool:
         return "true";
-    case ScalarKind::I8:
-        return "127";
-    case ScalarKind::I16:
-        return "32767";
-    case ScalarKind::I32:
-        return "2147483647";
-    case ScalarKind::I64:
-        return "9223372036854775807";
-    case ScalarKind::U8:
-        return "255";
-    case ScalarKind::U16:
-        return "65535";
-    case ScalarKind::U32:
-        return "4294967295";
-    case ScalarKind::U64:
-        return "18446744073709551615";
+    default:
+        return std::to_string(sema::integer_limits(dtype).highest);
     }
-    return "0";
 }
 
 const char* elementwise_name(Elementwise kind) {
@@ -225,12 +203,10 @@ public:
                         const TensorInfo& a,
                         const TensorInfo& b,
                         const Dims& shape) override {
-        const char* direction = kind == ir::CompareKind::Eq   ? "EQ"
-                                : kind == ir::CompareKind::Ne ? "NE"
-                                : kind == ir::CompareKind::Lt ? "LT"
-                                : kind == ir::CompareKind::Le ? "LE"
-                                : kind == ir::CompareKind::Gt ? "GT"
-                                                              : "GE";
+        std::string direction(ir::compare_spelling(kind));
+        for (char& c : direction) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
         return emit("compare",
                     {a, b},
                     std::string("comparison_direction = #stablehlo<comparison_direction ") +

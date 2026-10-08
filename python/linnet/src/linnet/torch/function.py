@@ -15,10 +15,10 @@ model's parameters.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -26,9 +26,17 @@ from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..generated import import_generated
 from ..plan import PlanError, compile_plan
+from ..results import Result
 from .dtypes import torch_dtype
 from .interp import Interpreter
 from .module import bind_input
+
+if TYPE_CHECKING:
+    from typing import TypeAlias
+
+    # What a function returns: one tensor, or a tuple of them when it has several results.
+    # The cache key of one compilation: its generic bindings, sorted, the device, the backend.
+    _Key: TypeAlias = tuple[tuple[tuple[str, str], ...], torch.device, str | None]
 
 
 class Function:
@@ -52,7 +60,7 @@ class Function:
         self._numerics = numerics
         self._compile = compile
         self._interpreters: dict[torch.device, Interpreter] = {}
-        self._generated: dict[tuple[Any, ...], _Generated] = {}
+        self._generated: dict[_Key, _Generated] = {}
         self._work: Path | None = None
 
     @property
@@ -60,15 +68,15 @@ class Function:
         """The names of the function's inputs, in order."""
         return [argument.name for argument in self.function.params]
 
-    def __call__(self, *inputs: Any, **generics: int | str) -> Any:
+    def __call__(self, *inputs: torch.Tensor | float, **generics: int | str) -> Result:
         return self.run(list(inputs), generics)
 
     def run(
         self,
-        inputs: Sequence[Any],
+        inputs: Sequence[torch.Tensor | float],
         generics: Mapping[str, int | str] | None = None,
         compile: bool | str | None = None,
-    ) -> Any:
+    ) -> Result:
         """Calls the function. `inputs` are tensors, or Python numbers for
         scalar inputs; `generics` binds by name what the inputs do not
         determine; `compile` overrides `load_function`'s for this call. A
@@ -95,6 +103,7 @@ class Function:
         if mode is None:
             mode = device.type == "cuda"
         if not mode:
+            # An entry's results are tensors (a scalar as a 0-d one).
             return self._interpreter(device).call(self.function, env, values)
         return self._call_generated(env, values, device, mode if isinstance(mode, str) else None)
 
@@ -107,7 +116,7 @@ class Function:
     # ---- inputs and generics
 
     def _number(
-        self, param: ir.Value, value: Any, env: ir.Bindings, device: torch.device
+        self, param: ir.Value, value: object, env: ir.Bindings, device: torch.device
     ) -> torch.Tensor:
         declared = param.type
         if not isinstance(declared, ir.ScalarType):
@@ -131,7 +140,7 @@ class Function:
         values: list[torch.Tensor],
         device: torch.device,
         backend: str | None,
-    ) -> Any:
+    ) -> Result:
         bindings = ir.bind_names(env, self.function.generics)
         key = (tuple(sorted(bindings.items())), device, backend)
         generated = self._generated.get(key)
@@ -163,7 +172,7 @@ class Function:
         path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise PlanError(f"internal: `{self.name}` compiled with parameters or state")
-        main: Callable[..., Any] = module.main
+        main: Callable[..., Iterable[torch.Tensor]] = module.main
         if backend in ("reduce-overhead", "cudagraphs"):
             main = torch.compile(main, mode="reduce-overhead")
         elif backend is not None:
@@ -179,7 +188,7 @@ class _Generated:
     """The function compiled for one binding of its generics, on one device."""
 
     path: Path
-    main: Callable[..., Any]
+    main: Callable[..., Iterable[torch.Tensor]]
     constants: list[torch.Tensor]
 
 

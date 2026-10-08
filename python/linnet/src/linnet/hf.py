@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ir, nest
-from .compiler import LinnetError, parse_binding
+from .compiler import LinnetError
 from .dtypes import DTYPES
 from .weights import (
     TensorLocation,
@@ -502,18 +502,12 @@ def export(
     `.linnet` file with `generics`, `weights`, and `bindings` given here.
     `tokenizer` names a Hub repository whose tokenizer files are copied in.
     """
-    card, source = nest.model_source(model)
-    values: dict[str, int | str] = {}
-    if card is not None:
-        values.update(card.generics)
-        root = card.root if root is None else root
-        if weights is None:
-            weights = nest.download_weights(card)
-        if bindings is None:
-            bindings = card.bindings_path
-        if tokenizer is None and card.weights is not None:
-            tokenizer = card.weights.repo
-    values.update(generics or {})
+    resolved = nest.resolve_model(model, root=root, weights=weights, bindings=bindings)
+    card, source, root = resolved.card, resolved.source, resolved.root
+    weights, bindings = resolved.weights, resolved.bindings
+    if tokenizer is None and card is not None and card.weights is not None:
+        tokenizer = card.weights.repo
+    values = {**resolved.generics, **(generics or {})}
     if weights is None:
         raise LinnetError("an export needs weights: a SafeTensors file or directory")
 
@@ -645,26 +639,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     exp = commands.add_parser(
         "export", help="write a checkpoint directory vLLM and transformers load"
     )
-    exp.add_argument("model", help="a Nest model directory or name, or a .linnet file")
+    nest.add_model_arguments(exp)
     exp.add_argument("-o", "--output", required=True)
-    exp.add_argument("--root")
-    exp.add_argument("--std")
-    exp.add_argument("--bind", action="append", default=[], metavar="NAME=VALUE")
-    exp.add_argument("--weights")
-    exp.add_argument("--bindings")
     exp.add_argument("--tokenizer", help="a Hub repository to take tokenizer files from")
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        generics = dict(parse_binding(bind) for bind in args.bind)
         exported = export(
-            args.model,
-            args.output,
-            generics=generics,
-            weights=args.weights,
-            bindings=args.bindings,
-            root=args.root,
-            std_root=args.std,
-            tokenizer=args.tokenizer,
+            args.model, args.output, tokenizer=args.tokenizer, **nest.model_options(args)
         )
     except LinnetError as error:
         print(str(error), file=sys.stderr)

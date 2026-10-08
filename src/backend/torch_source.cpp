@@ -39,13 +39,8 @@ public:
                         const TensorInfo& b,
                         const Dims& shape) override {
         (void)shape;
-        const char* op = kind == ir::CompareKind::Eq   ? "eq"
-                         : kind == ir::CompareKind::Ne ? "ne"
-                         : kind == ir::CompareKind::Lt ? "lt"
-                         : kind == ir::CompareKind::Le ? "le"
-                         : kind == ir::CompareKind::Gt ? "gt"
-                                                       : "ge";
-        return define(std::string("torch.") + op + "(" + a.name + ", " + b.name + ")");
+        return define("torch." + std::string(ir::compare_spelling(kind)) + "(" + a.name + ", " +
+                      b.name + ")");
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {

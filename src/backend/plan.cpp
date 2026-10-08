@@ -232,12 +232,7 @@ private:
                    "\"";
             if (generic.kind == GenericKind::DType) {
                 out += ",\"var\":" + std::to_string(generic.dtype_var);
-                out += std::string(",\"class\":\"") +
-                       (generic.constraint == DTypeClass::Float     ? "float"
-                        : generic.constraint == DTypeClass::Integer ? "integer"
-                        : generic.constraint == DTypeClass::Numeric ? "numeric"
-                                                                    : "any") +
-                       "\"";
+                out += ",\"class\":\"" + std::string(dtype_class_key(generic.constraint)) + "\"";
             } else {
                 out += ",\"sym\":" + std::to_string(generic.symbol);
             }

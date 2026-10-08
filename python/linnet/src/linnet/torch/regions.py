@@ -20,11 +20,16 @@ differ, are left as they are (`regional` returns None).
 from __future__ import annotations
 
 import ast
-from collections.abc import Container, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..parallel import units
-from .stages import _delete, _list_constant, _stores  # pyright: ignore[reportPrivateUsage]
+from .stages import (
+    list_constant,
+    read_names,
+    released_after,
+    stores,
+)
 
 _OUTER = -1  # `main`'s own statements: what no block array holds
 _FREE = -2  # statements of the inputs and constants alone
@@ -47,8 +52,8 @@ def regional(source: str) -> Regions | None:
     )
     if main is None:
         return None
-    parameters = _list_constant(module, "PARAMETERS")
-    states = _list_constant(module, "STATES")
+    parameters = list_constant(module, "PARAMETERS")
+    states = list_constant(module, "STATES")
     _, elements = units([*parameters, *states])
     if len(elements) < 2:
         return None
@@ -76,9 +81,9 @@ def regional(source: str) -> Regions | None:
     )
     if prepare is not None:
         for node in prepare.body:
-            for name in _stores(node):
+            for name in stores(node):
                 if name in owner:
-                    made_of = [owner[read] for read in _reads(node, owner) if read != name]
+                    made_of = [owner[read] for read in read_names(node, owner) if read != name]
                     anchored = [u for u in made_of if u != _FREE]
                     owner[name] = max(anchored) if anchored else _FREE
     arguments = set(owner)
@@ -106,7 +111,7 @@ def regional(source: str) -> Regions | None:
     writes: list[list[str]] = []
     place: list[int] = []
     for node in statements:
-        read = _reads(node, known)
+        read = read_names(node, known)
         direct = {owner[name] for name in read if name in arguments and owner[name] != _FREE}
         anchors = {known[name] for name in read if known[name] >= 0}
         if _OUTER in direct:
@@ -117,7 +122,7 @@ def regional(source: str) -> Regions | None:
             where = _OUTER
         else:
             where = _FREE
-        written = _stores(node)
+        written = stores(node)
         for name in written:
             known[name] = where
         reads.append(read)
@@ -285,33 +290,16 @@ def _function(body: list[ast.stmt], needed: Sequence[str], sends: Sequence[str])
         for name in read:
             last[name] = i
     kept = set(sends)
-    released: dict[int, list[str]] = {}
-    for name, i in last.items():
-        if name not in kept and (name in needed or any(name in _stores(n) for n in body)):
-            released.setdefault(i, []).append(name)
-    out: list[ast.stmt] = []
-    for i, node in enumerate(body):
-        out.append(node)
-        if i in released:
-            out.append(_delete(released[i]))
-    out.append(
-        ast.Return(
-            value=ast.Tuple(elts=[ast.Name(id=n, ctx=ast.Load()) for n in sends], ctx=ast.Load())
-        )
-    )
+    released = {
+        name: i
+        for name, i in last.items()
+        if name not in kept and (name in needed or any(name in stores(n) for n in body))
+    }
+    out = released_after(body, released, sends)
     function = ast.parse(f"def _element({', '.join(needed)}):\n    pass\n").body[0]
     assert isinstance(function, ast.FunctionDef)
     function.body = out
     return function
-
-
-def _reads(node: ast.AST, known: Container[str]) -> list[str]:
-    """The known names `node` reads, once each, in order."""
-    found: dict[str, None] = {}
-    for child in ast.walk(node):
-        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and child.id in known:
-            found[child.id] = None
-    return list(found)
 
 
 def _names(node: ast.AST, context: type) -> list[str]:
@@ -323,7 +311,7 @@ def _local_names(function: ast.FunctionDef) -> list[str]:
     found: dict[str, None] = {a.arg: None for a in function.args.args}
     for node in function.body:
         if isinstance(node, ast.Assign):
-            for name in _stores(node):
+            for name in stores(node):
                 found[name] = None
     return list(found)
 
@@ -366,18 +354,10 @@ def _released(
     for i, read in enumerate(reads):
         for name in read:
             last[name] = i
-    released: dict[int, list[str]] = {}
-    for name, i in last.items():
-        if name not in arguments and name not in returned:
-            released.setdefault(i, []).append(name)
-    out: list[ast.stmt] = []
-    for i, node in enumerate(body):
-        out.append(node)
-        if i in released:
-            out.append(_delete(released[i]))
-    names = ", ".join(returned)
-    out.append(ast.parse(f"return ({names}{',' if len(returned) == 1 else ''})").body[0])
-    return out
+    released = {
+        name: i for name, i in last.items() if name not in arguments and name not in returned
+    }
+    return released_after(body, released, returned)
 
 
 __all__ = ["Regions", "regional"]

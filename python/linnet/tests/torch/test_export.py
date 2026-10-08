@@ -114,6 +114,8 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
     )
     source = result.source.read_text()
     assert "pub entry forward<batch: Dim, seq: Dim>" in source
+    # `Dim("seq", min=2)` bounds the entry; the batch has torch's default.
+    assert "seq >= 2" in source and "batch >=" not in source
     assert "sub layers: [Layer; 2]" in source
     assert result.bindings is None  # every parameter path is spelled as in PyTorch
     _compiler_ok("lint", "--std", str(STDLIB), str(result.source))

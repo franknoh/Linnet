@@ -72,7 +72,7 @@ enum class Elementwise : std::uint8_t {
     Abs,
 }; // clang-format: keep one line per group
 
-enum class Reduction : std::uint8_t { Sum, Prod, Max, Min, Any, All };
+using Reduction = ir::ReduceKind;
 
 // A scalar constant. `Lowest`/`Highest` are the identities of max/min.
 struct Literal {

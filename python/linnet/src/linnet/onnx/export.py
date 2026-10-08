@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..dtypes import BY_ONNX, BY_SAFETENSORS
@@ -29,6 +29,9 @@ from ..weights import (
     tensor_problem,
 )
 
+if TYPE_CHECKING:
+    from onnx import ModelProto, TensorProto, ValueInfoProto
+
 
 @dataclass(frozen=True, slots=True)
 class Port:
@@ -41,12 +44,12 @@ class Port:
 class Exported:
     """A packaged model and the interface that remains: inputs, states, results."""
 
-    model: Any  # onnx.ModelProto
+    model: ModelProto
     inputs: tuple[Port, ...]
     outputs: tuple[Port, ...]
     parameters: tuple[str, ...]  # the paths now embedded
     # With `embed=False`: the checked weights as initializers-to-be, by input name.
-    weights: dict[str, Any] = field(default_factory=dict)  # pyright: ignore[reportUnknownVariableType]
+    weights: dict[str, TensorProto] = field(default_factory=dict)  # pyright: ignore[reportUnknownVariableType]
 
     def save(self, path: str | Path, *, external_threshold: int = 1 << 30) -> Path:
         """Writes the model; weights beyond `external_threshold` bytes go next to it."""
@@ -150,7 +153,7 @@ def export_model(
     declared = {i.name: i for i in model.graph.input}
     skipped = set(held) if not embed else set()
     wanted: dict[str, list[tuple[str, str]]] = {}
-    found: dict[str, Any] = {}
+    found: dict[str, TensorProto] = {}
     checked: set[str] = set()  # held: header checked, bytes not read
     problems: list[str] = []
     for input_name, path in paths.items():
@@ -241,7 +244,7 @@ def _matches(
     name: str,
     input_name: str,
     path: str,
-    declared: dict[str, Any],
+    declared: dict[str, ValueInfoProto],
     cast_dtype: bool,
     problems: list[str],
 ) -> bool:
@@ -258,12 +261,12 @@ def _matches(
 
 
 def _take(
-    tensor: Any,
+    tensor: RawTensor,
     input_name: str,
     path: str,
-    declared: dict[str, Any],
+    declared: dict[str, ValueInfoProto],
     cast_dtype: bool,
-    found: dict[str, Any],
+    found: dict[str, TensorProto],
     problems: list[str],
 ) -> None:
     """`tensor` as the initializer for graph input `input_name` (parameter
@@ -287,7 +290,7 @@ def _take(
     found[input_name] = initializer
 
 
-def _port(value: Any) -> Port:
+def _port(value: ValueInfoProto) -> Port:
     info = value.type.tensor_type
     return Port(
         name=value.name,

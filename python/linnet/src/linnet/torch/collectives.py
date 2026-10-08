@@ -28,15 +28,20 @@ which every process holds; a gathered slice's is its slice of the gradient.
 
 # PyTorch's symmetric memory, functional collectives, and custom-op registry,
 # and the Triton kernel, carry no complete types.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportIncompatibleMethodOverride=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportIncompatibleMethodOverride=false
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 
 from ..parallel import ONE_SHOT_BYTES
+
+if TYPE_CHECKING:
+    from torch.autograd.function import FunctionCtx
+    from torch.distributed import ProcessGroup
 
 # The largest message the one-shot kernel sums (`linnet.parallel`). Past it
 # NCCL is faster: the kernel reads every peer's whole part, where NCCL
@@ -48,11 +53,17 @@ _DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 _one_shots: dict[str, OneShot] = {}
 
 
+class _Launcher(Protocol):
+    """A Triton kernel: indexed by its grid, then called with its arguments."""
+
+    def __getitem__(self, grid: tuple[int, ...], /) -> Callable[..., object]: ...
+
+
 class OneShot:
     """A group's symmetric buffers: two slots of `ONE_SHOT_BYTES` each, the
     flags, and each block's call count. Made by `prepare`."""
 
-    def __init__(self, group: Any) -> None:
+    def __init__(self, group: ProcessGroup) -> None:
         import torch.distributed as dist
         import torch.distributed._symmetric_memory as symm_mem
 
@@ -70,7 +81,8 @@ class OneShot:
         self.counters = torch.zeros(_MAX_BLOCKS, dtype=torch.int32, device=cuda)
         from .kernels import one_shot_all_reduce_kernel
 
-        self.kernel: Any = one_shot_all_reduce_kernel
+        # `triton.jit` carries no types: to the checker the kernel is a plain function.
+        self.kernel = cast(_Launcher, one_shot_all_reduce_kernel)
         # Every process's flags are zero before anyone can set one.
         torch.cuda.synchronize()
         dist.barrier(group)
@@ -107,7 +119,7 @@ def _(x: torch.Tensor, group: str) -> torch.Tensor:
     return torch.empty_like(x)
 
 
-def prepare(group: Any) -> bool:
+def prepare(group: ProcessGroup) -> bool:
     """Sets up the one-shot kernel's buffers for `group`: a collective, which
     every process of the group calls together. Returns whether the kernel
     runs; where it cannot (no Triton, no CUDA, no symmetric memory), every
@@ -134,7 +146,7 @@ def _eager(x: torch.Tensor) -> bool:
     )
 
 
-def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
+def all_reduce(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
     """The sum of `x` over the processes of `group`."""
     if x.requires_grad and torch.is_grad_enabled():
         return _Sum.apply(x, group)  # type: ignore[no-any-return]
@@ -159,7 +171,7 @@ def all_reduce(x: torch.Tensor, group: Any) -> torch.Tensor:
     return funcol.all_reduce(x, "sum", group)
 
 
-def all_gather(x: torch.Tensor, group: Any) -> torch.Tensor:
+def all_gather(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
     """The processes' `x` side by side along the last axis, in rank order."""
     if x.requires_grad and torch.is_grad_enabled():
         return _Gather.apply(x, group)  # type: ignore[no-any-return]
@@ -175,7 +187,7 @@ def all_gather(x: torch.Tensor, group: Any) -> torch.Tensor:
     return funcol.all_gather_tensor(x.contiguous(), x.dim() - 1, group)
 
 
-def shared(x: torch.Tensor, group: Any) -> torch.Tensor:
+def shared(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
     """`x` as every process of `group` reads it whole: itself, and in
     backward the sum of the processes' gradients of it."""
     if x.requires_grad and torch.is_grad_enabled():
@@ -183,37 +195,46 @@ def shared(x: torch.Tensor, group: Any) -> torch.Tensor:
     return x
 
 
+class _SharedCtx(Protocol):
+    group: ProcessGroup
+
+
+class _GatherCtx(Protocol):
+    rank: int
+    world: int
+
+
 class _Sum(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: Any, x: torch.Tensor, group: Any) -> torch.Tensor:
+    def forward(ctx: FunctionCtx, x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
         return all_reduce(x, group)
 
     @staticmethod
-    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def backward(ctx: FunctionCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
         return grad, None
 
 
 class _Shared(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: Any, x: torch.Tensor, group: Any) -> torch.Tensor:
+    def forward(ctx: _SharedCtx, x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
         ctx.group = group
         return x.view_as(x)
 
     @staticmethod
-    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def backward(ctx: _SharedCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
         return all_reduce(grad.contiguous(), ctx.group), None
 
 
 class _Gather(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: Any, x: torch.Tensor, group: Any) -> torch.Tensor:
+    def forward(ctx: _GatherCtx, x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
         import torch.distributed as dist
 
         ctx.rank, ctx.world = dist.get_rank(group), dist.get_world_size(group)
         return all_gather(x, group)
 
     @staticmethod
-    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def backward(ctx: _GatherCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
         return grad.chunk(ctx.world, dim=-1)[ctx.rank].contiguous(), None
 
 

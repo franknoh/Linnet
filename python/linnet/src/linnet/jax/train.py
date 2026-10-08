@@ -28,36 +28,68 @@ import contextlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Concatenate, Protocol, TypeVar, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .. import ir
+from .. import ir, lora
 from ..dtypes import BY_NUMPY
 from ..packing import Packed
 from ..runs import History, Step, checkpoint_path, complete, prune, unsaved
 from ..weights import read_arrays, write_safetensors
 
+if TYPE_CHECKING:
+    from typing import TypeAlias
+
+    from jax.sharding import Mesh, NamedSharding
+    from jax.typing import ArrayLike, DTypeLike
+
+    from .load import LinnetFunction
+    from .source import SourceFunction
+
+    # Parameters by path: trained, frozen, or their gradients.
+    _Tree: TypeAlias = dict[str, jax.Array]
+    # A loss over trained and frozen parameters and one batch's inputs.
+    _Loss: TypeAlias = Callable[[_Tree, _Tree, Sequence[jax.Array]], jax.Array]
+    # One argument of a call `Learner.stack` builds: an array, or a list of them.
+    _Argument: TypeAlias = ArrayLike | Sequence[ArrayLike]
+
+_S = TypeVar("_S")  # an optimizer's state
+_A = TypeVar("_A")  # a loss's auxiliary values
+_X = TypeVar("_X")  # a function's arguments
+_R = TypeVar("_R")  # a function's result
+
+
+class Optimizer(Protocol):
+    """An optax gradient transformation (`optax.adamw(...)`, say): `Learner`
+    starts its state over the trained parameters and takes its updates."""
+
+    @property
+    def init(self) -> Callable[[dict[str, jax.Array]], object]: ...
+
+    @property
+    def update(self) -> Callable[..., tuple[object, object]]: ...
+
 
 def train(
-    model: Any,
+    model: SourceFunction,
     batches: Iterable[Packed],
     *,
-    optimizer: Any,
+    optimizer: Optimizer,
     steps: int | None = None,
     accumulate: int = 1,
     clip: float | None = 1.0,
     trainable: bool | str | Sequence[str] | None = None,
-    master: Any = jnp.float32,
-    parameters: dict[str, Any] | None = None,
-    mesh: Any = None,
+    master: DTypeLike | None = jnp.float32,
+    parameters: dict[str, jax.Array] | None = None,
+    mesh: Mesh | None = None,
     remat: bool = False,
     checkpoint: str | Path | None = None,
     checkpoint_every: int | None = None,
     on_step: Callable[[Step], None] | None = None,
-) -> tuple[dict[str, Any], History]:
+) -> tuple[dict[str, jax.Array], History]:
     """Fits `model`'s parameters on `batches` (`linnet.packing.pack`) with
     `optimizer` (an optax transformation); returns them, path -> array, with
     the steps taken.
@@ -99,7 +131,7 @@ def train(
     from jax.sharding import NamedSharding, PartitionSpec
 
     width = 1
-    split: Any = None
+    split: NamedSharding | None = None
     if mesh is not None:
         axis = mesh.axis_names[0]
         width = int(mesh.shape[axis])
@@ -128,20 +160,26 @@ def train(
                 next(iterator, None)
             group = take()
 
-    def loss_of(trained: Any, frozen: Any, inputs: Any) -> Any:
-        return model.apply(learner.values(trained, frozen), *inputs)
+    def loss_of(trained: _Tree, frozen: _Tree, inputs: Sequence[jax.Array]) -> jax.Array:
+        # The `loss_packed` entry: one scalar.
+        return cast(jax.Array, model.apply(learner.values(trained, frozen), *inputs))
 
-    def micro(trained: Any, frozen: Any, inputs: Any) -> Any:
+    def micro(trained: _Tree, frozen: _Tree, inputs: Sequence[jax.Array]) -> jax.Array:
         if mesh is None:
             return loss_of(trained, frozen, inputs)
-        return spread(trained, frozen, inputs)
+        # Set below whenever there is a mesh.
+        return cast("_Loss", spread)(trained, frozen, inputs)
 
-    spread: Any = None
+    spread: _Loss | None = None
     if mesh is not None:
         spread = _spread(mesh, trained, frozen, loss_of, learner.dtypes, learner.gathered)
 
-    def update(trained: Any, state: Any, frozen: Any, stacked: Any) -> Any:
-        def one(carry: Any, inputs: Any) -> Any:
+    def update(
+        trained: _Tree, state: object, frozen: _Tree, stacked: Sequence[jax.Array]
+    ) -> tuple[_Tree, object, jax.Array, jax.Array]:
+        def one(
+            carry: tuple[_Tree, jax.Array], inputs: Sequence[jax.Array]
+        ) -> tuple[tuple[_Tree, jax.Array], None]:
             grads, total = carry
             loss, more = jax.value_and_grad(micro)(trained, frozen, inputs)
             return (jax.tree.map(jnp.add, grads, more), total + loss), None
@@ -220,21 +258,21 @@ class Learner:
 
     def __init__(
         self,
-        model: Any,
-        weights: dict[str, Any],
-        optimizer: Any,
+        model: SourceFunction,
+        weights: Mapping[str, ArrayLike],
+        optimizer: Optimizer,
         *,
         trainable: bool | str | Sequence[str] | None = None,
-        master: Any = jnp.float32,
-        mesh: Any = None,
+        master: DTypeLike | None = jnp.float32,
+        mesh: Mesh | None = None,
     ) -> None:
         self.optimizer = optimizer
         self.mesh = mesh
         self.width = 1 if mesh is None else int(mesh.shape[mesh.axis_names[0]])
         self._model = model
         # On the devices, as `mesh` splits them; one array per tied tensor.
-        moved: dict[int, Any] = {}
-        placed: dict[str, Any] = {}
+        moved: dict[int, jax.Array] = {}
+        placed: dict[str, jax.Array] = {}
         for path, array in weights.items():
             if id(array) not in moved:
                 moved[id(array)] = _placed(array, mesh)
@@ -242,11 +280,11 @@ class Learner:
         self.ties = ir.shared_paths(placed.items())
         if trainable is None:
             adapted = getattr(model, "lora", None) is not None
-            trainable = ["*.lora_a", "*.lora_b"] if adapted else True
+            trainable = list(lora.PATTERNS) if adapted else True
         chosen = _chosen(list(placed), placed, trainable, self.ties)
         self.dtypes = {path: placed[path].dtype for path in chosen}
         shardings = {path: placed[path].sharding for path in chosen}
-        self.trained: dict[str, Any] = jax.jit(
+        self.trained: dict[str, jax.Array] = jax.jit(
             lambda tree: {p: jnp.copy(v.astype(master or v.dtype)) for p, v in tree.items()},
             out_shardings=shardings,
         )({path: placed[path] for path in chosen})
@@ -257,7 +295,7 @@ class Learner:
         }
         self.gathered = _gathered_by_code(model, placed, self.ties)
         if mesh is None:
-            self.state = jax.jit(optimizer.init)(self.trained)
+            self.state: object = jax.jit(optimizer.init)(self.trained)
         else:
             # Zeros depend on no input: their parts are said, as the weights'.
             shapes = jax.eval_shape(optimizer.init, self.trained)
@@ -265,11 +303,11 @@ class Learner:
                 optimizer.init,
                 out_shardings=jax.tree.map(lambda s: _split_as(mesh, s.shape), shapes),
             )(self.trained)
-        self._apply: Any = None
+        self._apply: Callable[[_Tree, object, _Tree], tuple[_Tree, object, jax.Array]] | None = None
 
     def values(
-        self, trained: dict[str, Any], frozen: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, trained: dict[str, jax.Array], frozen: dict[str, jax.Array] | None = None
+    ) -> dict[str, jax.Array]:
         """Every parameter the model takes, the trained ones cast to the
         dtype it computes in (traceable). One the model's code gathers from
         its parts stays in the master's dtype: the code casts it, and its
@@ -284,7 +322,7 @@ class Learner:
         values.update({path: values[tie] for path, tie in self.ties.items()})
         return values
 
-    def parameters(self, *, copy: bool = False) -> dict[str, Any]:
+    def parameters(self, *, copy: bool = False) -> dict[str, jax.Array]:
         """The parameters now, path -> array: the trained ones in `master`.
         The next `step` donates the trained arrays; `copy` hands out copies
         of them that outlive it (for an engine to keep)."""
@@ -295,7 +333,9 @@ class Learner:
         final.update({path: final[tie] for path, tie in self.ties.items()})
         return final
 
-    def gradient(self, loss: Callable[..., Any]) -> Callable[..., Any]:
+    def gradient(
+        self, loss: Callable[Concatenate[_Tree, ...], tuple[jax.Array, _A]]
+    ) -> Callable[Concatenate[_Tree, _Tree, ...], tuple[tuple[jax.Array, _A], _Tree]]:
         """`loss(values, *args) -> (scalar, aux)` as a compiled function of
         `(trained, frozen, *args)` returning `((scalar, aux), gradients)`.
 
@@ -303,7 +343,7 @@ class Learner:
         (`stack`): every device computes the loss of its own, and the
         scalars, aux values and gradients come back summed over them."""
 
-        def of(trained: Any, frozen: Any, *args: Any) -> Any:
+        def of(trained: _Tree, frozen: _Tree, *args: object) -> tuple[jax.Array, _A]:
             return loss(self.values(trained, frozen), *args)
 
         if self.mesh is None:
@@ -323,13 +363,17 @@ class Learner:
         )
         mesh = self.mesh
 
-        def call(*arguments: Any) -> Any:
+        def call(*arguments: object) -> tuple[tuple[jax.Array, _A], _Tree]:
             with _partitioner(mesh):
                 return compiled(*arguments)
 
         return call
 
-    def forward(self, function: Callable[..., Any], parameters: Any = None) -> Callable[..., Any]:
+    def forward(
+        self,
+        function: Callable[Concatenate[_Tree, ...], _R],
+        parameters: dict[str, jax.Array] | None = None,
+    ) -> Callable[..., _R]:
         """`function(values, *args)` as a compiled function of `*args`, over
         the trained parameters as they are when called, or over
         `parameters` (path -> array, all of them, placed as `placement`
@@ -355,7 +399,7 @@ class Learner:
             )
             jitted = jax.jit(lambda values, *args: spread({}, values, args))
 
-            def call_given(*args: Any) -> Any:
+            def call_given(*args: object) -> _R:
                 with _partitioner(mesh):
                     return jitted(given, *args)
 
@@ -371,13 +415,13 @@ class Learner:
         )
         own = jax.jit(lambda trained, frozen, *args: spread(trained, frozen, args))
 
-        def call(*args: Any) -> Any:
+        def call(*args: object) -> _R:
             with _partitioner(mesh):
                 return own(self.trained, self.frozen, *args)
 
         return call
 
-    def stack(self, rows: Sequence[Sequence[Any]]) -> tuple[Any, ...]:
+    def stack(self, rows: Sequence[Sequence[_Argument]]) -> tuple[_Argument, ...]:
         """One call's arguments from `width` devices' own (`rows`, each a
         sequence of arrays or lists of arrays): as they are on one device,
         stacked along a new first axis and split over the mesh on more."""
@@ -392,12 +436,14 @@ class Learner:
             *[tuple(row) for row in rows],
         )
 
-    def step(self, grads: dict[str, Any], clip: float | None) -> float:
+    def step(self, grads: dict[str, jax.Array], clip: float | None) -> float:
         """Clips `grads` to that global norm at most and applies the
         optimizer to the trained parameters; returns the norm before."""
         if self._apply is None:
 
-            def apply(trained: Any, state: Any, grads: Any) -> Any:
+            def apply(
+                trained: _Tree, state: object, grads: _Tree
+            ) -> tuple[_Tree, object, jax.Array]:
                 norm = _global_norm(grads)
                 if clip is not None:
                     scale = jnp.minimum(1.0, clip / (norm + 1e-6))
@@ -412,26 +458,26 @@ class Learner:
 
 
 @jax.jit
-def _copied(tree: Any) -> Any:
+def _copied(tree: dict[str, jax.Array]) -> dict[str, jax.Array]:
     return jax.tree.map(jnp.copy, tree)
 
 
 @jax.jit
-def add(total: Any, more: Any) -> Any:
+def add(total: dict[str, jax.Array], more: dict[str, jax.Array]) -> dict[str, jax.Array]:
     """Two gradient trees summed."""
     return jax.tree.map(jnp.add, total, more)
 
 
 def _spread(
-    mesh: Any,
-    trained: Any,
-    frozen: Any,
-    function: Callable[..., Any],
-    dtypes: dict[str, Any],
+    mesh: Mesh,
+    trained: dict[str, jax.Array],
+    frozen: dict[str, jax.Array],
+    function: Callable[[_Tree, _Tree, Sequence[_X]], _R],
+    dtypes: Mapping[str, DTypeLike],
     gathered: set[str],
     *,
     reduce: bool = True,
-) -> Any:
+) -> Callable[[_Tree, _Tree, Sequence[_X]], _R]:
     """`function(trained, frozen, args)` on every device of the mesh, each on
     its own arguments (`args`, stacked `[N, ...]`, split by the first axis),
     with every parameter whole: summed over the devices (`reduce`), or each
@@ -453,23 +499,28 @@ def _spread(
         from jax.experimental.shard_map import shard_map  # type: ignore[no-redef]
 
     axis = mesh.axis_names[0]
-    trained_specs = {path: value.sharding.spec for path, value in trained.items()}
-    frozen_specs = {path: value.sharding.spec for path, value in frozen.items()}
+    # Every array here was placed by `_split_as`: its sharding is a `NamedSharding`.
+    trained_specs = {
+        path: cast("NamedSharding", value.sharding).spec for path, value in trained.items()
+    }
+    frozen_specs = {
+        path: cast("NamedSharding", value.sharding).spec for path, value in frozen.items()
+    }
 
-    def split_at(spec: Any) -> int | None:
+    def split_at(spec: PartitionSpec) -> int | None:
         return next((dim for dim, name in enumerate(spec) if name == axis), None)
 
-    def whole(value: Any, spec: Any) -> Any:
+    def whole(value: jax.Array, spec: PartitionSpec) -> jax.Array:
         dim = split_at(spec)
         return value if dim is None else jax.lax.all_gather(value, axis, axis=dim, tiled=True)
 
-    def whole_as(value: Any, spec: Any, dtype: Any) -> Any:
+    def whole_as(value: jax.Array, spec: PartitionSpec, dtype: DTypeLike) -> jax.Array:
         dim = split_at(spec)
         if dim is None:
             return value.astype(dtype)
         return fsdp.gather_as(axis, dim, dtype)(value)
 
-    def local(trained: Any, frozen: Any, args: Any) -> Any:
+    def local(trained: _Tree, frozen: _Tree, args: Sequence[_X]) -> _R:
         mine = jax.tree.map(lambda value: value[0], args)
         with fsdp.gathering(axis):
             out = function(
@@ -488,12 +539,13 @@ def _spread(
     # shares and carry values each device has its own of.
     import inspect
 
-    unchecked: dict[str, Any] = (
+    unchecked: dict[str, bool] = (
         {"check_vma": False}
         if "check_vma" in inspect.signature(shard_map).parameters
         else {"check_rep": False}
     )
-    spread: Any = shard_map
+    # As untyped as `unchecked`: JAX versions take `check_vma` or `check_rep`.
+    spread = cast("Callable[..., Callable[[_Tree, _Tree, Sequence[_X]], _R]]", shard_map)
     return spread(
         local,
         mesh=mesh,
@@ -503,7 +555,9 @@ def _spread(
     )
 
 
-def _gathered_by_code(model: Any, placed: dict[str, Any], ties: dict[str, str]) -> set[str]:
+def _gathered_by_code(
+    model: LinnetFunction, placed: Mapping[str, jax.Array], ties: Mapping[str, str]
+) -> set[str]:
     """The parameters the model's generated code gathers from their parts
     itself (`SourceFunction.blocks`). A tied pair is gathered by the code
     only when both sides are: passed whole, a weight is only cast."""
@@ -519,7 +573,11 @@ def _gathered_by_code(model: Any, placed: dict[str, Any], ties: dict[str, str]) 
 
 
 def prepare_blocks(
-    model: Any, *, mesh: Any = None, remat: bool = False, parameters: Any = None
+    model: LinnetFunction,
+    *,
+    mesh: Mesh | None = None,
+    remat: bool = False,
+    parameters: Mapping[str, ArrayLike] | None = None,
 ) -> None:
     """Before the model's first call: over `mesh`, its weights load split
     (`placement`) and its blocks gather them where they run; with `remat`,
@@ -541,7 +599,7 @@ def prepare_blocks(
     blocks(sharded=every if mesh is not None else (), remat=listed if remat else ())
 
 
-def _partitioner(mesh: Any) -> Any:
+def _partitioner(mesh: Mesh | None) -> contextlib.AbstractContextManager[None]:
     """Where the step is compiled over `mesh`: with GSPMD. Shardy, JAX's
     default, crashes XLA compiling cuDNN attention inside `shard_map`
     (JAX 0.11, H100)."""
@@ -553,24 +611,20 @@ def _partitioner(mesh: Any) -> Any:
     return contextlib.nullcontext() if shardy is None else shardy(False)
 
 
-def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
+def merge_lora(model: SourceFunction, parameters: Mapping[str, jax.Array]) -> dict[str, jax.Array]:
     """`parameters` with each adapter's product added into its weight,
     `W + B @ A * alpha / rank` in f32, and the adapters left out: plain
     weights for the model loaded again without adapters, or for serving."""
     if getattr(model, "lora", None) is None:
         return dict(parameters)
-    _, rank, alpha = model.lora
-    merged = {
-        path: value
-        for path, value in parameters.items()
-        if not path.endswith((".lora_a", ".lora_b"))
-    }
+    _, rank, alpha = cast("tuple[tuple[str, ...], int, float]", model.lora)
+    merged = {path: value for path, value in parameters.items() if not lora.is_adapter(path)}
     for path, down in parameters.items():
-        if not path.endswith(".lora_a"):
+        if not path.endswith("." + lora.DOWN):
             continue
-        block = path.removesuffix(".lora_a")
+        block = path.removesuffix("." + lora.DOWN)
         weight = merged[block + ".weight"]
-        up = parameters[block + ".lora_b"]
+        up = parameters[f"{block}.{lora.UP}"]
         product = up.astype(jnp.float32) @ down.astype(jnp.float32)
         merged[block + ".weight"] = (weight.astype(jnp.float32) + product * (alpha / rank)).astype(
             weight.dtype
@@ -578,30 +632,30 @@ def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def placement(mesh: Any) -> Callable[[str, Any], Any]:
+def placement(mesh: Mesh) -> Callable[[str, ArrayLike], jax.Array]:
     """How a weight goes onto `mesh` for fully sharded training: split along
     its largest axis the mesh's first axis divides, or copied to every
     device when none does."""
 
-    def place(path: str, value: Any) -> Any:
+    def place(path: str, value: ArrayLike) -> jax.Array:
         return jax.device_put(value, _split_as(mesh, tuple(np.shape(value))))
 
     return place
 
 
-def _split_as(mesh: Any, shape: tuple[int, ...]) -> Any:
+def _split_as(mesh: Mesh, shape: tuple[int, ...]) -> NamedSharding:
     from jax.sharding import NamedSharding, PartitionSpec
 
     axis = mesh.axis_names[0]
     width = int(mesh.shape[axis])
-    spec: list[Any] = [None] * len(shape)
+    spec: list[str | None] = [None] * len(shape)
     fits = [i for i, extent in enumerate(shape) if extent % width == 0 and extent >= width]
     if fits:
         spec[max(fits, key=lambda i: shape[i])] = axis
     return NamedSharding(mesh, PartitionSpec(*spec))
 
 
-def _placed(array: Any, mesh: Any) -> Any:
+def _placed(array: ArrayLike, mesh: Mesh | None) -> jax.Array:
     """`array` on the devices: as it is when already where `mesh` wants it."""
     if mesh is None:
         return array if isinstance(array, jax.Array) else jnp.asarray(array)
@@ -617,8 +671,8 @@ def _placed(array: Any, mesh: Any) -> Any:
 _MARKER = "progress.json"
 
 
-def _write(path: Path, arrays: dict[str, Any]) -> None:
-    entries: list[tuple[str, str, tuple[int, ...], Any]] = []
+def _write(path: Path, arrays: Mapping[str, ArrayLike]) -> None:
+    entries: list[tuple[str, str, tuple[int, ...], bytes]] = []
     for name, array in arrays.items():
         host = np.ascontiguousarray(np.asarray(jax.device_get(array)))
         code = BY_NUMPY[host.dtype.name].safetensors
@@ -626,7 +680,9 @@ def _write(path: Path, arrays: dict[str, Any]) -> None:
     write_safetensors(path, entries)
 
 
-def save_weights(parameters: dict[str, Any], path: str | Path, *, dtype: Any = None) -> Path:
+def save_weights(
+    parameters: Mapping[str, jax.Array], path: str | Path, *, dtype: DTypeLike | None = None
+) -> Path:
     """Writes `parameters` (path -> array, as `train` returns them) to one
     SafeTensors file under their Linnet paths, which `load_source` reads
     back; `dtype` converts floating ones as they are written."""
@@ -642,7 +698,12 @@ def save_weights(parameters: dict[str, Any], path: str | Path, *, dtype: Any = N
 
 
 def save_checkpoint(
-    directory: str | Path, step: int, trained: dict[str, Any], state: Any, *, keep: int | None = 2
+    directory: str | Path,
+    step: int,
+    trained: Mapping[str, jax.Array],
+    state: object,
+    *,
+    keep: int | None = 2,
 ) -> Path:
     """Writes the parameters being trained and the optimizer state at
     `step` to `directory/step-<step>` (from one host), then removes all but
@@ -661,8 +722,8 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    directory: str | Path, trained: dict[str, Any], state: Any
-) -> tuple[int, dict[str, Any], Any] | None:
+    directory: str | Path, trained: Mapping[str, jax.Array], state: _S
+) -> tuple[int, dict[str, jax.Array], _S] | None:
     """The latest complete checkpoint under `directory`: its step, and the
     parameters and optimizer state shaped and placed as `trained` and
     `state` are. None when there is none."""
@@ -683,7 +744,7 @@ def load_checkpoint(
 
 def _chosen(
     paths: list[str],
-    weights: dict[str, Any],
+    weights: Mapping[str, jax.Array],
     trainable: bool | str | Sequence[str],
     ties: Mapping[str, str],
 ) -> list[str]:
@@ -693,7 +754,7 @@ def _chosen(
     return [p for p in picked if p not in ties and jnp.issubdtype(weights[p].dtype, jnp.floating)]
 
 
-def _global_norm(tree: Any) -> Any:
+def _global_norm(tree: Mapping[str, jax.Array]) -> jax.Array:
     leaves = jax.tree.leaves(tree)
     if not leaves:
         return jnp.zeros((), jnp.float32)
@@ -703,6 +764,7 @@ def _global_norm(tree: Any) -> Any:
 __all__ = [
     "History",
     "Learner",
+    "Optimizer",
     "Step",
     "add",
     "load_checkpoint",

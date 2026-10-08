@@ -193,7 +193,8 @@ def test_grpo_reuses_samples_against_a_reference(weights: Path) -> None:
     # The second step starts after the first moved the policy away.
     assert history[1].kl is not None and history[1].kl > 0
     with pytest.raises(ValueError, match="reference"):
-        grpo(policy, None, [], _threes, optimizer=torch.optim.SGD(trained), steps=1, beta=0.1)
+        # No engine: the options are refused before one is needed.
+        grpo(policy, None, [], _threes, optimizer=torch.optim.SGD(trained), steps=1, beta=0.1)  # pyright: ignore[reportArgumentType]
 
 
 def _grpo_rank(rank: int, world: int, port: int, weights: str) -> None:

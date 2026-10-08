@@ -30,7 +30,7 @@ import random
 import time
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 
@@ -52,6 +52,21 @@ from . import (
     reduce_gradients,
     save_checkpoint,
 )
+
+if TYPE_CHECKING:
+    from torch.optim.lr_scheduler import LRScheduler
+
+    from ..serve import Completion, Request
+    from ..torch.module import LinnetModule
+
+
+class _Engine(Protocol):
+    """What samples the completions: a `linnet.serve.Engine`, or anything
+    with its `load_weights` and `run`."""
+
+    def load_weights(self, source: LinnetModule, /) -> None: ...
+
+    def run(self, requests: list[Request], /) -> tuple[Sequence[Completion], object]: ...
 
 
 def grpo_loss(
@@ -92,8 +107,8 @@ def grpo_loss(
 
 
 def grpo(
-    policy: Any,
-    engine: Any,
+    policy: LinnetModule,
+    engine: _Engine,
     prompts: Iterable[Prompt | Sequence[int]],
     reward: Reward,
     *,
@@ -110,10 +125,10 @@ def grpo(
     iterations: int = 1,
     clip: tuple[float, float] = (0.2, 0.2),
     beta: float = 0.0,
-    reference: Any = None,
+    reference: LinnetModule | None = None,
     scale_rewards: bool = True,
     clip_grad: float | None = 1.0,
-    schedule: Any = None,
+    schedule: LRScheduler | None = None,
     entry: str = "log_probs_packed",
     seed: int = 0,
     drop_uniform: bool = False,
@@ -237,9 +252,11 @@ def grpo(
             with torch.no_grad():
                 for item in prepared:
                     if iterations > 1:
-                        item.old = policy.run_entry(entry, item.inputs).detach()
+                        item.old = cast(torch.Tensor, policy.run_entry(entry, item.inputs)).detach()
                     if reference is not None and beta:
-                        item.reference = reference.run_entry(entry, item.inputs).detach()
+                        item.reference = cast(
+                            torch.Tensor, reference.run_entry(entry, item.inputs)
+                        ).detach()
 
         loss_total = clipped_total = mismatch = 0.0
         kl_total: float | None = None
@@ -248,7 +265,7 @@ def grpo(
             loss_total = clipped_total = mismatch = 0.0
             kl_total = None
             for item in prepared:
-                log_probs = policy.run_entry(entry, item.inputs)
+                log_probs = cast(torch.Tensor, policy.run_entry(entry, item.inputs))
                 old = item.old if item.old is not None else log_probs.detach()
                 correction = None
                 if item.engine is not None and correction_cap is not None:

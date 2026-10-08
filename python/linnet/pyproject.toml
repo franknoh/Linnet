@@ -119,7 +119,8 @@ torch = { index = "pytorch-cpu" }
 [tool.pyright]
 include = ["src", "tests"]
 strict = ["src", "tests"]
-pythonVersion = "3.11"
+# NumPy 2.5 types arrays with 3.12's `collections.abc.Buffer`.
+pythonVersion = "3.12"
 reportMissingTypeStubs = false
 
 [tool.ruff]
@@ -129,49 +130,9 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "ANN401"]
 
-# `Any` in a signature is banned. These files still have some: shrink the
-# list as they are typed, never add to it.
+# `Any` in a signature is banned. Tests may take anything.
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN401"]
-"src/linnet/convert.py" = ["ANN401"]
-"src/linnet/ir.py" = ["ANN401"]
-"src/linnet/jax/dpo.py" = ["ANN401"]
-"src/linnet/jax/export.py" = ["ANN401"]
-"src/linnet/jax/flax_nnx.py" = ["ANN401"]
-"src/linnet/jax/fsdp.py" = ["ANN401"]
-"src/linnet/jax/function.py" = ["ANN401"]
-"src/linnet/jax/grpo.py" = ["ANN401"]
-"src/linnet/jax/load.py" = ["ANN401"]
-"src/linnet/jax/loss.py" = ["ANN401"]
-"src/linnet/jax/module.py" = ["ANN401"]
-"src/linnet/jax/moe.py" = ["ANN401"]
-"src/linnet/jax/source.py" = ["ANN401"]
-"src/linnet/jax/train.py" = ["ANN401"]
-"src/linnet/nest.py" = ["ANN401"]
-"src/linnet/onnx/export.py" = ["ANN401"]
-"src/linnet/onnx/import_onnx.py" = ["ANN401"]
-"src/linnet/onnx/runtime.py" = ["ANN401"]
-"src/linnet/resources/calibrate.py" = ["ANN401"]
-"src/linnet/serve/__init__.py" = ["ANN401"]
-"src/linnet/serve/sampling.py" = ["ANN401"]
-"src/linnet/serve/server.py" = ["ANN401"]
-"src/linnet/torch/__init__.py" = ["ANN401"]
-"src/linnet/torch/causal_lm.py" = ["ANN401"]
-"src/linnet/torch/collectives.py" = ["ANN401"]
-"src/linnet/torch/compiled.py" = ["ANN401"]
-"src/linnet/torch/export.py" = ["ANN401"]
-"src/linnet/torch/fsdp.py" = ["ANN401"]
-"src/linnet/torch/function.py" = ["ANN401"]
-"src/linnet/torch/interp.py" = ["ANN401"]
-"src/linnet/torch/loss.py" = ["ANN401"]
-"src/linnet/torch/module.py" = ["ANN401"]
-"src/linnet/torch/paged.py" = ["ANN401"]
-"src/linnet/torch/parallel.py" = ["ANN401"]
-"src/linnet/torch/pipeline.py" = ["ANN401"]
-"src/linnet/train/__init__.py" = ["ANN401"]
-"src/linnet/train/checkpoints.py" = ["ANN401"]
-"src/linnet/train/dpo.py" = ["ANN401"]
-"src/linnet/train/grpo.py" = ["ANN401"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

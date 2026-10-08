@@ -36,40 +36,33 @@ int op_region_count(OpKind kind) {
     return op_table[static_cast<std::size_t>(kind)].regions;
 }
 
+namespace {
+
+// In `CompareKind` order.
+constexpr std::array<std::string_view, 6> compare_spellings{"eq", "ne", "lt", "le", "gt", "ge"};
+constexpr std::array<std::string_view, 6> compare_symbols{"==", "!=", "<", "<=", ">", ">="};
+
+} // namespace
+
 std::string_view compare_spelling(CompareKind kind) {
-    switch (kind) {
-    case CompareKind::Eq:
-        return "eq";
-    case CompareKind::Ne:
-        return "ne";
-    case CompareKind::Lt:
-        return "lt";
-    case CompareKind::Le:
-        return "le";
-    case CompareKind::Gt:
-        return "gt";
-    case CompareKind::Ge:
-        return "ge";
+    return compare_spellings[static_cast<std::size_t>(kind)];
+}
+
+std::optional<CompareKind> parse_compare(std::string_view spelling) {
+    for (std::size_t i = 0; i < compare_spellings.size(); ++i) {
+        if (compare_spellings[i] == spelling) {
+            return static_cast<CompareKind>(i);
+        }
     }
-    return "?";
+    return std::nullopt;
+}
+
+std::string_view compare_symbol(CompareKind kind) {
+    return compare_symbols[static_cast<std::size_t>(kind)];
 }
 
 std::string_view reduce_spelling(ReduceKind kind) {
-    switch (kind) {
-    case ReduceKind::Sum:
-        return "sum";
-    case ReduceKind::Prod:
-        return "prod";
-    case ReduceKind::Max:
-        return "max";
-    case ReduceKind::Min:
-        return "min";
-    case ReduceKind::Any:
-        return "any";
-    case ReduceKind::All:
-        return "all";
-    }
-    return "?";
+    return ast::reduction_kind_spelling(kind);
 }
 
 FunctionId Module::add_function(Function function) {

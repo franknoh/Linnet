@@ -16,20 +16,18 @@ saved as SafeTensors under their ONNX names. Nodes without a verified
 mapping stop the import with a diagnostic naming every one of them.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias, TypedDict, TypeVar, cast, overload
 
 import numpy as np
-import onnx  # type: ignore[import-untyped]
-from onnx import numpy_helper, shape_inference  # type: ignore[import-untyped]
+import onnx
+from onnx import numpy_helper, shape_inference
 
 from ..compiler import LinnetError
 from ..dtypes import BY_NUMPY, BY_ONNX, DTYPES
@@ -43,6 +41,14 @@ from ..importing import (
     write_source,
 )
 
+if TYPE_CHECKING:
+    import numpy.typing as npt
+
+    # A value known at import time: an initializer, or a folded constant.
+    _Array: TypeAlias = npt.NDArray[np.generic]
+
+_T = TypeVar("_T")
+
 
 class OnnxImportError(LinnetError):
     """The graph cannot be expressed in Linnet as captured."""
@@ -54,7 +60,7 @@ def _dtype_name(elem_type: int) -> str:
     return BY_ONNX[elem_type].name
 
 
-def _numpy_dtype_name(array: Any) -> str:
+def _numpy_dtype_name(array: _Array) -> str:
     found = BY_NUMPY.get(np.dtype(array.dtype).name)
     if found is None:
         raise OnnxImportError(f"dtype {array.dtype} has no Linnet equivalent")
@@ -63,6 +69,8 @@ def _numpy_dtype_name(array: Any) -> str:
 
 # A dimension: an int, or a symbol name from `dim_param`.
 Dim = int | str
+# A dimension as the plan writes it: a size, or a numbered symbol.
+_DimJson = int | dict[str, int | str]
 
 
 @dataclass
@@ -83,7 +91,7 @@ class _Value:
     id: int
     type: _Type
     dims: list[Dim] | None = None
-    const: Any = None
+    const: _Array | None = None
 
 
 class _Symbols:
@@ -97,7 +105,7 @@ class _Symbols:
             self.ids[name] = len(self.ids)
         return self.ids[name]
 
-    def json(self, dim: Dim) -> Any:
+    def json(self, dim: Dim) -> _DimJson:
         if isinstance(dim, int):
             return dim
         if dim not in self.ids:
@@ -117,10 +125,10 @@ class _Builder(PlanBuilder[_Value, _Type, str, Dim]):
     def kind(self, dtype: str, shape: tuple[Dim, ...] | None) -> _Type:
         return _Type(shape or (), dtype)
 
-    def make(self, id: int, kind: _Type, type_json: dict[str, Any] | None) -> _Value:
+    def make(self, id: int, kind: _Type, type_json: dict[str, object] | None) -> _Value:
         return _Value(id, kind)
 
-    def kind_json(self, kind: _Type) -> dict[str, Any]:
+    def kind_json(self, kind: _Type) -> dict[str, object]:
         if kind.is_scalar:
             return {"kind": "scalar", "dtype": kind.dtype}
         return {
@@ -140,7 +148,7 @@ class _Builder(PlanBuilder[_Value, _Type, str, Dim]):
             return "bool"
         return "float" if DTYPES[dtype].is_float else "int"
 
-    def dim_json(self, dim: Dim) -> int | dict[str, Any]:
+    def dim_json(self, dim: Dim) -> _DimJson:
         return self.symbols.json(dim)
 
     @property
@@ -148,7 +156,11 @@ class _Builder(PlanBuilder[_Value, _Type, str, Dim]):
         return "i64"
 
     def call(
-        self, callee: str, generics: list[dict[str, Any]], operands: list[_Value], kind: _Type
+        self,
+        callee: str,
+        generics: Sequence[Mapping[str, object]],
+        operands: list[_Value],
+        kind: _Type,
     ) -> _Value:
         return self.op(
             "semantic.call",
@@ -178,20 +190,24 @@ def _broadcast(shapes: Sequence[tuple[Dim, ...]]) -> list[Dim]:
     return out
 
 
+# The initializers by the parts of their dotted names.
+_Tree: TypeAlias = "dict[str, _Tree | _Type]"
+
+
 class _Hierarchy(Hierarchy):
     """Blocks from the dotted names of the initializers."""
 
-    def leaf_type(self, member: Member) -> dict[str, Any] | None:
+    def leaf_type(self, member: Member) -> dict[str, object] | None:
         leaf = cast(_Type, member.leaf)
         return {"kind": "tensor", "shape": list(leaf.shape), "dtype": leaf.dtype}
 
     def describe(self, leaves: dict[str, _Type], root_name: str) -> Member:
-        tree: dict[str, Any] = {}
+        tree: _Tree = {}
         for name, kind in leaves.items():
             node = tree
             parts = re.split(r"[./]", name)
             for part in parts[:-1]:
-                node = node.setdefault(part, {})
+                node = cast(_Tree, node.setdefault(part, {}))
             node[parts[-1]] = kind
         signature, member = self._describe(tree, root_name)
         if member is None:
@@ -199,10 +215,10 @@ class _Hierarchy(Hierarchy):
         member.block = self.block_for(root_name, signature, member)
         return member
 
-    def _describe(self, node: Any, name_hint: str) -> tuple[Any, Member | None]:
+    def _describe(self, node: _Tree | _Type, name_hint: str) -> tuple[Hashable, Member | None]:
         if isinstance(node, _Type):
             return ("param", node.dtype, node.shape), Member("param", "", leaf=node)
-        tree = cast(dict[str, Any], node)
+        tree = node
         keys = list(tree)
         if (
             keys
@@ -220,7 +236,7 @@ class _Hierarchy(Hierarchy):
                 return ("array", len(keys), signature), Member(
                     "sub", "", length=len(keys), element=block, children=children
                 )
-        entries: list[Any] = []
+        entries: list[tuple[str, Hashable]] = []
         children: dict[str, Member] = {}
         for key in keys:
             signature, child = self._describe(tree[key], key)
@@ -246,12 +262,12 @@ class ImportResult:
     root: str
     weights: Path | None
     bindings: Path | None
-    plan: dict[str, Any]
+    plan: dict[str, object]
     notes: list[str]
 
 
 def import_onnx(
-    model: str | Path | Any,
+    model: str | Path | onnx.ModelProto,
     *,
     output: str | Path,
     module_name: str | None = None,
@@ -264,7 +280,12 @@ def import_onnx(
     under their ONNX names (plus `bindings.json` when a name had to change)."""
     output_path = Path(output)
     module = module_name or identifier(output_path.stem)
-    proto: Any = onnx.load(str(model)) if isinstance(model, str | Path) else model
+    proto = (
+        # `onnx.load` takes an unparameterized `os.PathLike`.
+        onnx.load(str(model))  # pyright: ignore[reportUnknownMemberType]
+        if isinstance(model, str | Path)
+        else model
+    )
     proto = shape_inference.infer_shapes(proto, strict_mode=False)
     translator = _Translator(proto, module, root_name)
     plan = translator.run()
@@ -274,7 +295,7 @@ def import_onnx(
     weights_path: Path | None = None
     bindings_path: Path | None = None
     if weights is not None:
-        from safetensors.numpy import save_file  # type: ignore[import-untyped]
+        from safetensors.numpy import save_file  # pyright: ignore[reportUnknownVariableType]
 
         weights_path, bindings_path = translator.hierarchy.weights_files(weights)
         save_file(
@@ -293,7 +314,7 @@ def import_onnx(
 
 
 class _Translator:
-    def __init__(self, proto: Any, module: str, root_name: str) -> None:
+    def __init__(self, proto: onnx.ModelProto, module: str, root_name: str) -> None:
         self.proto = proto
         self.graph = proto.graph
         self.module = module
@@ -304,15 +325,15 @@ class _Translator:
         self.self_value = self.builder.fresh(_Type((), "f32"))
         self.values: dict[str, _Value] = {}
         self.types: dict[str, _Type] = {}
-        self.parameters: dict[str, Any] = {}  # ONNX name -> array
-        self.constants: dict[str, Any] = {}  # values known at import time
+        self.parameters: dict[str, _Array] = {}  # ONNX name -> array
+        self.constants: dict[str, _Array] = {}  # values known at import time
         self.unsupported: list[str] = []
         self.notes: list[str] = []
-        self.producers: dict[str, Any] = {}  # ONNX value name -> the node computing it
+        self.producers: dict[str, onnx.NodeProto] = {}  # ONNX value name -> the node computing it
 
     # ---- driver
 
-    def run(self) -> dict[str, Any]:
+    def run(self) -> dict[str, object]:
         for info in list(self.graph.input) + list(self.graph.output) + list(self.graph.value_info):
             kind = self._value_type(info)
             if kind is not None:
@@ -398,7 +419,7 @@ class _Translator:
             generics,
         )
 
-    def _value_type(self, info: Any) -> _Type | None:
+    def _value_type(self, info: onnx.ValueInfoProto) -> _Type | None:
         tensor = info.type.tensor_type
         if not tensor.HasField("shape"):
             return None
@@ -459,15 +480,32 @@ class _Translator:
             return self.values[name].type
         raise OnnxImportError(f"the shape of `{name}` is unknown; shape inference did not reach it")
 
+    # The attributes read without a default, by their ONNX types; any other
+    # attribute has its default's type.
+    @overload
     @staticmethod
-    def attr(node: Any, name: str, default: Any = None) -> Any:
+    def attr(node: onnx.NodeProto, name: Literal["axes", "perm"]) -> list[int] | None: ...
+    @overload
+    @staticmethod
+    def attr(node: onnx.NodeProto, name: Literal["value"]) -> onnx.TensorProto | None: ...
+    @overload
+    @staticmethod
+    def attr(node: onnx.NodeProto, name: Literal["end"]) -> int | None: ...
+    @overload
+    @staticmethod
+    def attr(node: onnx.NodeProto, name: Literal["to"]) -> int: ...
+    @overload
+    @staticmethod
+    def attr(node: onnx.NodeProto, name: str, default: _T) -> _T: ...
+    @staticmethod
+    def attr(node: onnx.NodeProto, name: str, default: object = None) -> object:
         for attribute in node.attribute:
             if attribute.name == name:
                 value = onnx.helper.get_attribute_value(attribute)
                 return value.decode() if isinstance(value, bytes) else value  # strings are bytes
         return default
 
-    def _translate(self, node: Any) -> None:
+    def _translate(self, node: onnx.NodeProto) -> None:
         for name in node.input:
             if name and name not in self.values and name not in self.constants:
                 return  # downstream of an unsupported node; reported already
@@ -480,11 +518,11 @@ class _Translator:
         except OnnxImportError as error:
             self.unsupported.append(f"{node.op_type}: {error}")
 
-    def define(self, node: Any, value: _Value, index: int = 0) -> None:
+    def define(self, node: onnx.NodeProto, value: _Value, index: int = 0) -> None:
         self.values[node.output[index]] = value
         self.types[node.output[index]] = value.type
 
-    def result(self, node: Any, index: int = 0) -> _Type:
+    def result(self, node: onnx.NodeProto, index: int = 0) -> _Type:
         """The output type: ONNX's inference when it is complete, otherwise
         propagated from the operands (inference gives up after a `Reshape`
         whose shape comes from shape arithmetic)."""
@@ -503,7 +541,7 @@ class _Translator:
     def _shape_in(self, name: str) -> tuple[Dim, ...]:
         return self.type_of(name).shape
 
-    def _propagate(self, node: Any) -> _Type | None:
+    def _propagate(self, node: onnx.NodeProto) -> _Type | None:
         kind = node.op_type
         inputs = [n for n in node.input if n]
         first = self.type_of(inputs[0]) if inputs else None
@@ -574,11 +612,11 @@ class _Translator:
             return None  # computed by the handler itself
         return None
 
-    def operand(self, node: Any, index: int) -> _Value:
+    def operand(self, node: onnx.NodeProto, index: int) -> _Value:
         return self._materialized(node.input[index])
 
 
-Handler = Callable[[_Translator, Any], None]
+Handler = Callable[[_Translator, onnx.NodeProto], None]
 _HANDLERS: dict[str, Handler] = {}
 
 
@@ -595,7 +633,7 @@ def _handles(*names: str) -> Callable[[Handler], Handler]:
 
 
 @_handles("Constant")
-def _constant(t: _Translator, node: Any) -> None:
+def _constant(t: _Translator, node: onnx.NodeProto) -> None:
     tensor = t.attr(node, "value")
     if tensor is None:
         raise OnnxImportError("only tensor-valued Constant nodes are supported")
@@ -605,7 +643,7 @@ def _constant(t: _Translator, node: Any) -> None:
 
 
 @_handles("Shape")
-def _shape(t: _Translator, node: Any) -> None:
+def _shape(t: _Translator, node: onnx.NodeProto) -> None:
     kind = t.type_of(node.input[0])
     start = int(t.attr(node, "start", 0))
     end = t.attr(node, "end")
@@ -614,12 +652,12 @@ def _shape(t: _Translator, node: Any) -> None:
     t.define(node, value)
 
 
-def _shape_op(t: _Translator, node: Any, dims: list[Dim]) -> None:
+def _shape_op(t: _Translator, node: onnx.NodeProto, dims: list[Dim]) -> None:
     t.define(node, _Value(-1, _Type((len(dims),), "i64"), dims=dims))
 
 
 @_handles("Gather")
-def _gather(t: _Translator, node: Any) -> None:
+def _gather(t: _Translator, node: onnx.NodeProto) -> None:
     data, indices = node.input[0], node.input[1]
     axis = int(t.attr(node, "axis", 0))
     # Shape arithmetic: picking a dimension out of a shape vector.
@@ -671,7 +709,7 @@ def _gather(t: _Translator, node: Any) -> None:
 
 
 @_handles("Unsqueeze")
-def _unsqueeze(t: _Translator, node: Any) -> None:
+def _unsqueeze(t: _Translator, node: onnx.NodeProto) -> None:
     source = node.input[0]
     if source in t.values and t.values[source].dims is not None:
         _shape_op(t, node, t.dims_of(source))
@@ -688,7 +726,7 @@ def _unsqueeze(t: _Translator, node: Any) -> None:
 
 
 @_handles("Squeeze", "Reshape", "Flatten")
-def _reshape(t: _Translator, node: Any) -> None:
+def _reshape(t: _Translator, node: onnx.NodeProto) -> None:
     source = node.input[0]
     if source in t.constants and node.output[0] not in t.values and node.op_type == "Reshape":
         shape = t.dims_of(node.input[1])
@@ -727,7 +765,7 @@ def _resolve_reshape(source: Sequence[Dim], target: Sequence[Dim]) -> list[Dim]:
     return out
 
 
-def _reshape_to(t: _Translator, node: Any, value: _Value, kind: _Type) -> None:
+def _reshape_to(t: _Translator, node: onnx.NodeProto, value: _Value, kind: _Type) -> None:
     if tuple(kind.shape) == tuple(value.type.shape):
         t.define(node, value)
         return
@@ -757,7 +795,7 @@ def _reshape_to(t: _Translator, node: Any, value: _Value, kind: _Type) -> None:
 
 
 @_handles("Concat")
-def _concat(t: _Translator, node: Any) -> None:
+def _concat(t: _Translator, node: onnx.NodeProto) -> None:
     if all(
         (n in t.values and t.values[n].dims is not None) or n in t.constants for n in node.input
     ) and all(
@@ -777,7 +815,7 @@ def _concat(t: _Translator, node: Any) -> None:
 
 
 @_handles("ConstantOfShape")
-def _constant_of_shape(t: _Translator, node: Any) -> None:
+def _constant_of_shape(t: _Translator, node: onnx.NodeProto) -> None:
     dims = t.dims_of(node.input[0])
     tensor = t.attr(node, "value")
     array = numpy_helper.to_array(tensor) if tensor is not None else np.zeros((1,), np.float32)
@@ -793,7 +831,7 @@ def _constant_of_shape(t: _Translator, node: Any) -> None:
 
 
 @_handles("Range")
-def _range(t: _Translator, node: Any) -> None:
+def _range(t: _Translator, node: onnx.NodeProto) -> None:
     """`Range(0, n, 1)` is `iota`; other ranges shift and scale it."""
     start = t.dims_of(node.input[0])
     limit = t.dims_of(node.input[1])
@@ -822,7 +860,7 @@ def _range(t: _Translator, node: Any) -> None:
 
 
 @_handles("GatherND")
-def _gather_nd(t: _Translator, node: Any) -> None:
+def _gather_nd(t: _Translator, node: onnx.NodeProto) -> None:
     """`out[g...] = source[indices[g..., 0], indices[g..., 1], ...]`."""
     if int(t.attr(node, "batch_dims", 0)) != 0:
         raise OnnxImportError("GatherND with batch dimensions is not supported")
@@ -859,7 +897,7 @@ def _gather_nd(t: _Translator, node: Any) -> None:
 
 
 @_handles("Not")
-def _not(t: _Translator, node: Any) -> None:
+def _not(t: _Translator, node: onnx.NodeProto) -> None:
     x = t.operand(node, 0)
     kind = t.result(node) if node.output[0] in t.types else x.type
     if kind.is_scalar:
@@ -877,7 +915,7 @@ def _not(t: _Translator, node: Any) -> None:
 
 
 @_handles("Expand")
-def _expand(t: _Translator, node: Any) -> None:
+def _expand(t: _Translator, node: onnx.NodeProto) -> None:
     source = t.operand(node, 0)
     kind = t.result(node)
     if tuple(kind.shape) == tuple(source.type.shape):
@@ -902,7 +940,7 @@ _BINARY = {"Add": "add", "Sub": "sub", "Mul": "mul", "Div": "div", "Max": "max",
 
 
 @_handles(*_BINARY)
-def _binary(t: _Translator, node: Any) -> None:
+def _binary(t: _Translator, node: onnx.NodeProto) -> None:
     # Shape arithmetic stays symbolic.
     if all(
         (n in t.values and t.values[n].dims is not None)
@@ -942,20 +980,20 @@ _UNARY = {
 }  # fmt: skip
 
 
-_NUMPY_UNARY: dict[str, Callable[[Any], Any]] = {
+_NUMPY_UNARY: dict[str, Callable[[_Array], _Array]] = {
     "Exp": np.exp, "Log": np.log, "Sqrt": np.sqrt, "Tanh": np.tanh, "Sin": np.sin,
     "Cos": np.cos, "Abs": np.abs, "Neg": np.negative,
 }  # fmt: skip
 
 
-def _fold_constant(t: _Translator, node: Any, array: Any) -> None:
+def _fold_constant(t: _Translator, node: onnx.NodeProto, array: _Array) -> None:
     """A node over constants stays a constant."""
     t.constants[node.output[0]] = array
     t.types[node.output[0]] = _Type(tuple(int(d) for d in array.shape), _numpy_dtype_name(array))
 
 
 @_handles(*_UNARY)
-def _unary(t: _Translator, node: Any) -> None:
+def _unary(t: _Translator, node: onnx.NodeProto) -> None:
     source = node.input[0]
     if source in t.constants and source not in t.values:
         _fold_constant(t, node, _NUMPY_UNARY[node.op_type](t.constants[source]))
@@ -969,7 +1007,7 @@ def _unary(t: _Translator, node: Any) -> None:
 
 
 @_handles("Identity")
-def _identity(t: _Translator, node: Any) -> None:
+def _identity(t: _Translator, node: onnx.NodeProto) -> None:
     source = node.input[0]
     if source in t.constants and source not in t.values:
         _fold_constant(t, node, t.constants[source])
@@ -978,7 +1016,7 @@ def _identity(t: _Translator, node: Any) -> None:
 
 
 @_handles("Reciprocal")
-def _reciprocal(t: _Translator, node: Any) -> None:
+def _reciprocal(t: _Translator, node: onnx.NodeProto) -> None:
     x = t.operand(node, 0)
     t.define(
         node,
@@ -989,7 +1027,7 @@ def _reciprocal(t: _Translator, node: Any) -> None:
 
 
 @_handles("Pow")
-def _pow(t: _Translator, node: Any) -> None:
+def _pow(t: _Translator, node: onnx.NodeProto) -> None:
     x = t.operand(node, 0)
     exponent_name = node.input[1]
     if exponent_name not in t.constants or t.constants[exponent_name].size != 1:
@@ -1010,7 +1048,7 @@ def _pow(t: _Translator, node: Any) -> None:
 
 
 def _std_activation(callee: str) -> Handler:
-    def handler(t: _Translator, node: Any) -> None:
+    def handler(t: _Translator, node: onnx.NodeProto) -> None:
         x = t.operand(node, 0)
         t.define(
             node,
@@ -1030,7 +1068,7 @@ _handles("Relu")(_std_activation("std.nn.activations::relu"))
 
 
 @_handles("Gelu")
-def _gelu(t: _Translator, node: Any) -> None:
+def _gelu(t: _Translator, node: onnx.NodeProto) -> None:
     if t.attr(node, "approximate", "none") != "tanh":
         raise OnnxImportError(
             "only the tanh approximation of Gelu is available; erf is not primitive"
@@ -1039,7 +1077,7 @@ def _gelu(t: _Translator, node: Any) -> None:
 
 
 @_handles("Softmax")
-def _softmax(t: _Translator, node: Any) -> None:
+def _softmax(t: _Translator, node: onnx.NodeProto) -> None:
     x = t.operand(node, 0)
     rank = len(x.type.shape)
     axis = int(t.attr(node, "axis", -1)) % rank
@@ -1061,7 +1099,7 @@ def _softmax(t: _Translator, node: Any) -> None:
 
 
 @_handles("LayerNormalization")
-def _layer_norm(t: _Translator, node: Any) -> None:
+def _layer_norm(t: _Translator, node: onnx.NodeProto) -> None:
     x = t.operand(node, 0)
     rank = len(x.type.shape)
     axis = int(t.attr(node, "axis", -1)) % rank
@@ -1101,7 +1139,7 @@ def _layer_norm(t: _Translator, node: Any) -> None:
 
 
 @_handles("Where")
-def _where(t: _Translator, node: Any) -> None:
+def _where(t: _Translator, node: onnx.NodeProto) -> None:
     t.define(
         node,
         t.builder.op(
@@ -1120,7 +1158,7 @@ _COMPARE = {
 
 
 @_handles(*_COMPARE)
-def _compare(t: _Translator, node: Any) -> None:
+def _compare(t: _Translator, node: onnx.NodeProto) -> None:
     t.define(
         node,
         t.builder.op(
@@ -1134,7 +1172,7 @@ def _compare(t: _Translator, node: Any) -> None:
 
 
 @_handles("Cast")
-def _cast(t: _Translator, node: Any) -> None:
+def _cast(t: _Translator, node: onnx.NodeProto) -> None:
     target = _dtype_name(int(t.attr(node, "to")))
     # NumPy has no bf16 to fold into; a cast to it stays an operation.
     if node.input[0] in t.constants and node.input[0] not in t.values and target != "bf16":
@@ -1149,7 +1187,7 @@ def _cast(t: _Translator, node: Any) -> None:
 
 
 @_handles("Transpose")
-def _transpose(t: _Translator, node: Any) -> None:
+def _transpose(t: _Translator, node: onnx.NodeProto) -> None:
     source = t.operand(node, 0)
     rank = len(source.type.shape)
     axes = [int(a) for a in (t.attr(node, "perm") or list(reversed(range(rank))))]
@@ -1162,8 +1200,17 @@ def _transpose(t: _Translator, node: Any) -> None:
     )
 
 
+class _SliceAxis(TypedDict):
+    """One axis of a `slice` operation."""
+
+    start: int
+    stop: _DimJson
+    step: int
+    squeeze: bool
+
+
 @_handles("Slice")
-def _slice(t: _Translator, node: Any) -> None:
+def _slice(t: _Translator, node: onnx.NodeProto) -> None:
     source = t.operand(node, 0)
     shape = list(source.type.shape)
     starts = t.dims_of(node.input[1])
@@ -1174,7 +1221,7 @@ def _slice(t: _Translator, node: Any) -> None:
         else list(range(len(starts)))
     )
     steps = t.dims_of(node.input[4]) if len(node.input) > 4 and node.input[4] else [1] * len(starts)
-    per_axis: list[dict[str, Any]] = [
+    per_axis: list[_SliceAxis] = [
         {"start": 0, "stop": t.symbols.json(d), "step": 1, "squeeze": False} for d in shape
     ]
     for start, end, axis, step in zip(starts, ends, axes, steps, strict=True):
@@ -1245,7 +1292,7 @@ class _Const:
     name: str | None = None
 
 
-_Pattern = str | _Const | tuple[Any, ...]
+_Pattern: TypeAlias = "str | _Const | tuple[str, *tuple[_Pattern, ...]]"
 _COMMUTATIVE = {"Add", "Mul", "Max", "Min"}
 
 
@@ -1309,7 +1356,7 @@ class _Matcher:
             return self.match(inputs[0], operands[1]) and self.match(inputs[1], operands[0])
         return all(self.match(n, p) for n, p in zip(inputs, operands, strict=True))
 
-    def _last_axis(self, node: Any) -> bool:
+    def _last_axis(self, node: onnx.NodeProto) -> bool:
         """A keepdims reduction over exactly the last axis of its operand."""
         try:
             rank = len(self.t.type_of(node.input[0]).shape)
@@ -1342,13 +1389,15 @@ _SOFTMAX: _Pattern = ("Div", "e", ("reduce", "ReduceSum", "e"))
 _SOFTMAX_NUMERATOR: _Pattern = ("Exp", ("Sub", "x", ("reduce", "ReduceMax", "x")))
 
 
-def _recover(t: _Translator, node: Any) -> _Value | None:
+def _recover(t: _Translator, node: onnx.NodeProto) -> _Value | None:
     """The library operation whose decomposition `node` completes, if any."""
     result = node.output[0]
     kind = t.result(node)
     dims = [t.symbols.json(d) for d in kind.shape]
 
-    def recovered(name: str, generics: list[dict[str, Any]], operands: list[_Value]) -> _Value:
+    def recovered(
+        name: str, generics: Sequence[Mapping[str, object]], operands: list[_Value]
+    ) -> _Value:
         t.notes.append(f"recovered {name} from its decomposition")
         module = {"softmax": "std.nn.softmax", "rms_norm": "std.nn.norm"}.get(
             name, "std.nn.activations"
@@ -1392,7 +1441,7 @@ def _recover(t: _Translator, node: Any) -> _Value | None:
 
 
 @_handles("MatMul")
-def _matmul(t: _Translator, node: Any) -> None:
+def _matmul(t: _Translator, node: onnx.NodeProto) -> None:
     a, b = t.operand(node, 0), t.operand(node, 1)
     kind = t.result(node)
     ra, rb = len(a.type.shape), len(b.type.shape)
@@ -1457,7 +1506,7 @@ def _matmul(t: _Translator, node: Any) -> None:
 
 
 @_handles("Gemm")
-def _gemm(t: _Translator, node: Any) -> None:
+def _gemm(t: _Translator, node: onnx.NodeProto) -> None:
     if float(t.attr(node, "alpha", 1.0)) != 1.0 or float(t.attr(node, "beta", 1.0)) != 1.0:
         raise OnnxImportError("Gemm with alpha or beta other than 1 is not supported")
     a, b = t.operand(node, 0), t.operand(node, 1)
@@ -1498,7 +1547,7 @@ def _gemm(t: _Translator, node: Any) -> None:
 
 
 def _reduction(kind: str, divide: bool) -> Handler:
-    def handler(t: _Translator, node: Any) -> None:
+    def handler(t: _Translator, node: onnx.NodeProto) -> None:
         x = t.operand(node, 0)
         shape = list(x.type.shape)
         rank = len(shape)

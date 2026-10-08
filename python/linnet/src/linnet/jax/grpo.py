@@ -26,7 +26,7 @@ import math
 import random
 import time
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
@@ -34,16 +34,45 @@ import numpy as np
 
 from ..packing import Prompt, Reward, empty, pack
 from ..runs import GrpoStep, as_prompt, check_grpo, learned_positions, sample_requests, score
-from .train import Learner, add, merge_lora, prepare_blocks
+from .train import Learner, Optimizer, add, merge_lora, prepare_blocks
+
+if TYPE_CHECKING:
+    from jax.sharding import Mesh
+    from numpy.typing import NDArray
+
+    from ..serve import Completion, Request
+    from .source import SourceFunction
+
+    # A compiled loss: its value and moments, and the trained parameters'
+    # gradients.
+    _Gradient: TypeAlias = Callable[..., tuple[tuple[jax.Array, jax.Array], dict[str, jax.Array]]]
+    # A batch's inputs, each position's weight and advantage, and the
+    # engine's log-probability of its target (with `correction_cap`).
+    _Prepared: TypeAlias = tuple[list[np.ndarray], np.ndarray, np.ndarray, np.ndarray | None]
+    # One device's arguments to the loss: a batch's inputs, weights and
+    # advantages, and the policy's, the engine's and the reference's
+    # log-probabilities (zeros where unused).
+    _Row: TypeAlias = tuple[
+        list[np.ndarray], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+    ]
+
+
+class _Engine(Protocol):
+    """What samples the completions: a `linnet.serve.Engine`, or anything
+    with its `load_weights` and `run`."""
+
+    def load_weights(self, parameters: dict[str, jax.Array], /) -> None: ...
+
+    def run(self, requests: list[Request], /) -> tuple[Sequence[Completion], object]: ...
 
 
 def grpo(
-    policy: Any,
-    engine: Any,
+    policy: SourceFunction,
+    engine: _Engine,
     prompts: Iterable[Prompt | Sequence[int]],
     reward: Reward,
     *,
-    optimizer: Any,
+    optimizer: Optimizer,
     steps: int,
     group: int = 8,
     prompts_per_step: int = 8,
@@ -56,18 +85,18 @@ def grpo(
     iterations: int = 1,
     clip: tuple[float, float] = (0.2, 0.2),
     beta: float = 0.0,
-    reference: dict[str, Any] | None = None,
+    reference: dict[str, jax.Array] | None = None,
     scale_rewards: bool = True,
     clip_grad: float | None = 1.0,
     seed: int = 0,
     drop_uniform: bool = False,
     correction_cap: float | None = None,
     trainable: bool | str | Sequence[str] | None = None,
-    parameters: dict[str, Any] | None = None,
-    mesh: Any = None,
+    parameters: dict[str, jax.Array] | None = None,
+    mesh: Mesh | None = None,
     remat: bool = False,
     on_step: Callable[[GrpoStep], None] | None = None,
-) -> tuple[dict[str, Any], list[GrpoStep]]:
+) -> tuple[dict[str, jax.Array], list[GrpoStep]]:
     """Trains `policy` (the `log_probs_packed` entry as generated JAX) with
     GRPO for `steps` steps or until `prompts` run out; returns its
     parameters and the steps.
@@ -93,12 +122,19 @@ def grpo(
         learner = Learner(policy, dict(parameters), optimizer, trainable=trainable, mesh=mesh)
     low, high = clip
 
-    def log_probs(values: Any, inputs: Any) -> Any:
-        return policy.apply(values, *inputs)
+    def log_probs(values: dict[str, jax.Array], inputs: Sequence[jax.Array]) -> jax.Array:
+        # The `log_probs_packed` entry: one log-probability per position.
+        return cast(jax.Array, policy.apply(values, *inputs))
 
     def loss(
-        values: Any, inputs: Any, weights: Any, advantages: Any, old: Any, sampled: Any, theirs: Any
-    ) -> Any:
+        values: dict[str, jax.Array],
+        inputs: Sequence[jax.Array],
+        weights: jax.Array,
+        advantages: jax.Array,
+        old: jax.Array,
+        sampled: jax.Array,
+        theirs: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
         mine = log_probs(values, inputs)
         if iterations == 1:
             old = jax.lax.stop_gradient(mine)
@@ -119,7 +155,7 @@ def grpo(
         share = jnp.sum(clipped * weights)
         return jnp.sum(per_token * weights), jnp.stack([share, kl, mismatch])
 
-    gradient: Any = None
+    gradient: _Gradient | None = None
     history: list[GrpoStep] = []
     for step in range(1, steps + 1):
         chosen = [as_prompt(p) for p in itertools.islice(source, prompts_per_step)]
@@ -186,11 +222,11 @@ def grpo(
         ]
         calls = [prepared[i : i + width] for i in range(0, len(prepared), width)]
 
-        olds: list[list[Any] | None] = [None] * len(calls)
+        olds: list[list[NDArray[np.floating]] | None] = [None] * len(calls)
         if iterations > 1:
             own = learner.forward(log_probs)
             olds = [_per_device(learner, own, call) for call in calls]
-        theirs: list[list[Any] | None] = [None] * len(calls)
+        theirs: list[list[NDArray[np.floating]] | None] = [None] * len(calls)
         if beta and reference is not None:
             frozen = learner.forward(log_probs, reference)
             theirs = [_per_device(learner, frozen, call) for call in calls]
@@ -199,9 +235,9 @@ def grpo(
         for _ in range(iterations):
             loss_total = 0.0
             moments = np.zeros(3)
-            grads: Any = None
+            grads: dict[str, jax.Array] | None = None
             for call, old, other in zip(calls, olds, theirs, strict=True):
-                rows: list[tuple[Any, ...]] = []
+                rows: list[_Row] = []
                 for k, (inputs, weights_, advantage, sampled) in enumerate(call):
                     zero = np.zeros_like(weights_)
                     rows.append(
@@ -245,7 +281,9 @@ def grpo(
     return (learner.parameters() if learner is not None else dict(parameters or {})), history
 
 
-def _per_device(learner: Learner, function: Callable[..., Any], call: list[Any]) -> list[Any]:
+def _per_device(
+    learner: Learner, function: Callable[..., jax.Array], call: list[_Prepared]
+) -> list[NDArray[np.floating]]:
     """`function` (a `Learner.forward`) of each device's batch inputs in
     `call`, one row per device."""
     out = np.asarray(function(*learner.stack([(item[0],) for item in call])))

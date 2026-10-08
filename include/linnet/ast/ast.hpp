@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -64,6 +65,7 @@ enum class ReductionKind : std::uint8_t { Sum, Prod, Max, Min, Any, All };
 std::string_view unary_op_spelling(UnaryOp op);
 std::string_view binary_op_spelling(BinaryOp op);
 std::string_view reduction_kind_spelling(ReductionKind kind);
+std::optional<ReductionKind> parse_reduction_kind(std::string_view spelling);
 
 struct ErrorExpr {};
 struct LiteralExpr {
