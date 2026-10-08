@@ -24,15 +24,22 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import jax
 import numpy as np
 
 from ..compiler import LinnetError
-from ..dtypes import BY_MLIR, BY_NUMPY
-from ..importing import Block, Hierarchy, Member, identifier, write_source
-from ..weights import write_bindings
+from ..dtypes import BY_MLIR, BY_NUMPY, DTYPES
+from ..importing import (
+    Block,
+    Hierarchy,
+    Member,
+    PlanBuilder,
+    identifier,
+    refuse_unsupported,
+    write_source,
+)
 from .dtypes import NUMPY_TYPES
 
 
@@ -71,27 +78,43 @@ class _Value:
     splat: float | int | bool | None = None
 
 
-class _Builder:
-    """Accumulates the plan's operations and regions."""
+def _type_json(kind: _Type) -> dict[str, Any]:
+    if kind.is_scalar:
+        return {"kind": "scalar", "dtype": kind.dtype}
+    return {"kind": "tensor", "shape": list(kind.shape), "dtype": kind.dtype}
 
-    def __init__(self) -> None:
-        self.next_id = 0
-        self.regions: list[list[dict[str, Any]]] = [[]]
 
-    @staticmethod
-    def type_json(kind: _Type) -> dict[str, Any]:
-        if kind.is_scalar:
-            return {"kind": "scalar", "dtype": kind.dtype}
-        return {"kind": "tensor", "shape": list(kind.shape), "dtype": kind.dtype}
+class _Builder(PlanBuilder[_Value, _Type, str, int]):
+    """The plan's operations, in Linnet dtypes and static sizes."""
 
-    def fresh(self, kind: _Type) -> _Value:
-        self.next_id += 1
-        return _Value(self.next_id - 1, kind)
+    error = ExportError
 
-    def value_json(
-        self, value: _Value, name: str = "", type_json: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        return {"id": value.id, "name": name, "type": type_json or self.type_json(value.type)}
+    def kind(self, dtype: str, shape: tuple[int, ...] | None) -> _Type:
+        return _Type(shape or (), dtype)
+
+    def make(self, id: int, kind: _Type, type_json: dict[str, Any] | None) -> _Value:
+        return _Value(id, kind)
+
+    def kind_json(self, kind: _Type) -> dict[str, Any]:
+        return _type_json(kind)
+
+    def kind_of(self, value: _Value) -> _Type:
+        return value.type
+
+    def dtype_of(self, value: _Value) -> str:
+        return value.type.dtype
+
+    def literal(self, dtype: str) -> Literal["bool", "int", "float"]:
+        if dtype == "bool":
+            return "bool"
+        return "float" if DTYPES[dtype].is_float else "int"
+
+    def dim_json(self, dim: int) -> int:
+        return dim
+
+    @property
+    def index_dtype(self) -> str:
+        return "i64"
 
     def op(
         self,
@@ -106,79 +129,12 @@ class _Builder:
         for operand in operands:
             if operand.id < 0:
                 raise ExportError("a non-finite constant is used in arithmetic")
-        results: list[_Value] = [self.fresh(result)] if result is not None else []
-        self.regions[-1].append(
-            {
-                "kind": kind,
-                "operands": [v.id for v in operands],
-                "results": [self.value_json(v, name, type_json) for v in results],
-                "attrs": attrs or {},
-                "regions": list(regions),
-            }
-        )
-        return results[0] if results else _Value(-1, _Type((), "f32"))
+        return super().op(kind, operands, result, attrs, regions, name, type_json)
 
     def const(self, value: float | int | bool, dtype: str) -> _Value:
-        kind = _Type((), dtype)
-        if dtype == "bool":
-            result = self.op("const.bool", [], kind, {"value": 1 if value else 0})
-        elif dtype.startswith("f") or dtype == "bf16":
-            result = self.op("const.float", [], kind, {"value": float(value)})
-        else:
-            result = self.op("const.int", [], kind, {"value": int(value)})
+        result = super().const(value, dtype)
         result.splat = value
         return result
-
-    def region(
-        self, arguments: Sequence[tuple[str, _Type]], body: Callable[[list[_Value]], _Value]
-    ) -> dict[str, Any]:
-        values = [self.fresh(kind) for _, kind in arguments]
-        self.regions.append([])
-        yielded = body(values)
-        self.op("yield", [yielded], None)
-        ops = self.regions.pop()
-        return {
-            "args": [self.value_json(v, n) for v, (n, _) in zip(values, arguments, strict=True)],
-            "ops": ops,
-        }
-
-    def comprehension(
-        self,
-        indices: Sequence[tuple[str, int]],
-        dtype: str,
-        body: Callable[[list[_Value]], _Value],
-        name: str = "",
-    ) -> _Value:
-        index_type = _Type((), "i64")
-        region = self.region([(n, index_type) for n, _ in indices], body)
-        return self.op(
-            "comprehension",
-            [],
-            _Type(tuple(d for _, d in indices), dtype),
-            {"indices": [{"name": n, "domain": [d]} for n, d in indices]},
-            [region],
-            name,
-        )
-
-    def reduce(
-        self,
-        kind: str,
-        indices: Sequence[tuple[str, int]],
-        dtype: str,
-        body: Callable[[list[_Value]], _Value],
-    ) -> _Value:
-        index_type = _Type((), "i64")
-        region = self.region([(n, index_type) for n, _ in indices], body)
-        return self.op(
-            "reduce",
-            [],
-            _Type((), dtype),
-            {"indices": [{"name": n, "domain": [d]} for n, d in indices], "reduce": kind},
-            [region],
-        )
-
-    def element(self, tensor: _Value, indices: Sequence[_Value]) -> _Value:
-        return self.op("tensor.element", [tensor, *indices], _Type((), tensor.type.dtype))
 
 
 @dataclass
@@ -259,8 +215,7 @@ def import_stablehlo(
     if weights is not None:
         from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
-        weights_dir = Path(weights)
-        weights_dir.mkdir(parents=True, exist_ok=True)
+        weights_path, bindings_path = hierarchy.weights_files(weights)
         tensors = {
             path: np.ascontiguousarray(np.asarray(leaf))
             for path, leaf in _flatten_with_paths(params)
@@ -268,12 +223,7 @@ def import_stablehlo(
         if any(array.dtype == object for array in tensors.values()):
             raise ExportError("weights need concrete arrays for every parameter")
         tensors.update(translator.constants)
-        weights_path = weights_dir / "model.safetensors"
         save_file(tensors, str(weights_path))
-        if hierarchy.renamed:
-            bindings_path = write_bindings(
-                weights_dir / "bindings.json", dict(sorted(hierarchy.renamed.items()))
-            )
     return ExportResult(
         output_path,
         module,
@@ -326,7 +276,7 @@ def _leaf_type(node: Any) -> _Type:
 
 class _Hierarchy(Hierarchy):
     def leaf_type(self, member: Member) -> dict[str, Any] | None:
-        return _Builder.type_json(cast(_Type, member.leaf))
+        return _type_json(cast(_Type, member.leaf))
 
     def describe(self, params: Any, root_name: str) -> Member:
         signature, member = self._describe(params, root_name)
@@ -422,19 +372,15 @@ class _Translator:
             for i, argument in enumerate(block.arguments):
                 kind = argument_types[i]
                 if i < parameter_count:
-                    self.values[_key(argument)] = self._member_value(
-                        self.leaves[i], kind, self_value
+                    self.values[_key(argument)] = self.builder.member_value(
+                        self.hierarchy, self.root, self_value, self.leaves[i], kind
                     )
                 else:
                     value = self.builder.fresh(kind)
                     inputs.append((f"x{i - parameter_count}", value))
                     self.values[_key(argument)] = value
             outputs = self._translate_block(block)
-        if self.unsupported:
-            raise ExportError(
-                "the function uses operations without a Linnet mapping:\n  "
-                + "\n  ".join(sorted(set(self.unsupported)))
-            )
+        refuse_unsupported(self.unsupported, "the function", ExportError)
         if len(outputs) != 1:
             raise ExportError("the function must return exactly one array")
         result = outputs[0]
@@ -442,16 +388,6 @@ class _Translator:
             raise ExportError("the function must return a tensor, not a scalar")
         self.builder.op("return", [result], None)
         root_block = cast(Block, self.root.block)
-        blocks = {
-            name: {
-                "module": self.module,
-                "pub": True,
-                "generics": [],
-                "constraints": [],
-                "members": block.members,
-            }
-            for name, block in self.hierarchy.blocks.items()
-        }
         for name, array in self.constants.items():
             root_block.members.append(
                 {
@@ -464,66 +400,14 @@ class _Translator:
                     },
                 }
             )
-        body = {
-            "args": [
-                self.builder.value_json(self_value, "self", self.hierarchy.block_type(root_block))
-            ]
-            + [self.builder.value_json(v, n) for n, v in inputs],
-            "ops": self.builder.regions[0],
-        }
-        return {
-            "version": 1,
-            "module": self.module,
-            "root": {"name": root_block.name, "generics": [], "constraints": []},
-            "manifest": [],
-            "blocks": blocks,
-            "functions": [
-                {
-                    "name": f"{self.module}::{root_block.name}.forward",
-                    "kind": "entry",
-                    "block": root_block.name,
-                    "pub": True,
-                    "generics": [],
-                    "constraints": [],
-                    "results": [self.builder.type_json(result.type)],
-                    "body": body,
-                }
-            ],
-        }
+        root_type = self.hierarchy.block_type(root_block)
+        args = [self.builder.value_json(self_value, "self", root_type)]
+        args += [self.builder.value_json(v, n) for n, v in inputs]
+        return self.hierarchy.plan(
+            root_block.name, args, self.builder.regions[0], self.builder.type_of(result)
+        )
 
     # ---- parameters
-
-    def _member_value(self, path: str, kind: _Type, self_value: _Value) -> _Value:
-        member = self.root
-        current = self_value
-        parts = path.split(".")
-        linnet_parts: list[str] = []
-        for i, part in enumerate(parts):
-            child = member.children[part]
-            is_last = i == len(parts) - 1
-            if member.length is not None:
-                index = self.builder.const(int(part), "i64")
-                current = self.builder.op(
-                    "array.get", [current, index], _Type((), "f32"),
-                    type_json=self.hierarchy.block_type(cast(Block, member.element)),
-                )  # fmt: skip
-                linnet_parts.append(part)
-                member = child
-                continue
-            linnet_parts.append(child.name)
-            if is_last:
-                linnet_path = ".".join(linnet_parts)
-                if linnet_path != path:
-                    self.hierarchy.renamed[linnet_path] = path
-                return self.builder.op(
-                    "block.param", [current], kind, {"name": child.name}, name=child.name
-                )
-            current = self.builder.op(
-                "block.sub", [current], _Type((), "f32"), {"name": child.name},
-                type_json=self.hierarchy.member_type(child),
-            )  # fmt: skip
-            member = child
-        raise ExportError(f"cannot resolve `{path}`")
 
     # ---- translation
 
@@ -1250,26 +1134,7 @@ def _reduce(t: _Translator, operation: Any) -> _Value:
         raise ExportError("reduction initial value must be the operation's identity")
     dims = t.int_array(operation, "dimensions")
     kind = t.result_type(operation)
-    rank = len(source.type.shape)
-    kept = [i for i in range(rank) if i not in dims]
-
-    def body(out: list[_Value]) -> _Value:
-        def inner(reduced: list[_Value]) -> _Value:
-            indices: list[_Value] = []
-            outer_iter, inner_iter = iter(out), iter(reduced)
-            for axis in range(rank):
-                indices.append(next(inner_iter) if axis in dims else next(outer_iter))
-            return t.builder.element(source, indices)
-
-        return t.builder.reduce(
-            reduce_kind, [(f"r{d}", source.type.shape[d]) for d in dims], kind.dtype, inner
-        )
-
-    if not kept:
-        return body([])
-    return t.builder.comprehension(
-        [(f"o{i}", source.type.shape[i]) for i in kept], kind.dtype, body
-    )
+    return t.builder.reduce_axes(source, source.type.shape, dims, reduce_kind, kind.dtype)
 
 
 @_handles("stablehlo.gather")

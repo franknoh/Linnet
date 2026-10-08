@@ -282,6 +282,22 @@ private:
 // `?` any one. LoRA patterns name the weights they adapt this way.
 bool glob_match(std::string_view pattern, std::string_view text);
 
+// Whether `owner` -- a top-level block, or `sema::no_entity` for the module
+// itself -- of module `root_module` declares an entry called `name` (any
+// entry when `name` is empty).
+bool declares_entry(const ir::Module& module,
+                    std::uint32_t root_module,
+                    sema::EntityId owner,
+                    std::string_view name = {});
+// The top-level block of module `root_module` called `root`, or with `root`
+// empty the only one that declares an entry; otherwise why not, ending with
+// `no_entry_hint` when no block has an entry.
+std::expected<sema::EntityId, std::string>
+find_root_block(const ir::Module& module,
+                std::uint32_t root_module,
+                std::string_view root,
+                std::string_view no_entry_hint = "name one with --root");
+
 struct GraphExportOptions {
     std::string root;  // root block; empty selects the only block with entries
     std::string entry; // entry to export; empty selects the block's only entry
@@ -387,5 +403,25 @@ std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Di
 // decimal point (`1.0`, not `1`).
 std::string python_tuple(const Dims& dims);
 std::string python_float(double value);
+
+// How each format names a scalar dtype: MLIR (`bf16`, `ui8`), the ONNX text
+// format (`bfloat16`, `double`) and its `TensorProto.DataType` number, and
+// NumPy and the libraries that follow it (`bfloat16`, `float64`).
+struct DTypeNames {
+    std::string_view mlir;
+    std::string_view onnx;
+    int onnx_code = 0;
+    std::string_view numpy;
+};
+const DTypeNames& dtype_names(sema::ScalarKind dtype);
+
+// Python text the source targets print, read back: whether `c` can be part
+// of an identifier; whether `word` is a generated name with `prefix` (`v3`,
+// `p0`); every identifier-like word of `text` with its position (numbers
+// are not words); and the `vN` values `text` mentions.
+bool word_char(char c);
+bool numbered(std::string_view word, char prefix);
+std::vector<std::pair<std::size_t, std::string>> words_of(std::string_view text);
+std::set<std::string> value_names(std::string_view text);
 
 } // namespace linnet::backend

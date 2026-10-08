@@ -1170,17 +1170,7 @@ std::optional<Substitution> Checker::bind_generic_args(const DeclInfo& info,
                   "missing generic argument for `" + std::string(param.name) + "`");
             return std::nullopt;
         }
-        switch (param.kind) {
-        case GenericKind::Dim:
-            substitution.dims[param.symbol] = value->dim;
-            break;
-        case GenericKind::Pack:
-            substitution.packs[param.symbol] = value->shape;
-            break;
-        case GenericKind::DType:
-            substitution.dtypes[param.dtype_var] = value->dtype;
-            break;
-        }
+        bind(substitution, param, *value);
         if (values != nullptr) {
             values->push_back(std::move(*value));
         }

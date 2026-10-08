@@ -711,23 +711,7 @@ TypeId Checker::check_binary(const ast::Expr& node, const ast::BinaryExpr& binar
 }
 
 Substitution Checker::substitution_of(const TypeData& nominal) {
-    Substitution substitution;
-    const DeclInfo& info = decls_[nominal.decl];
-    for (std::size_t i = 0; i < info.generics.size() && i < nominal.args.size(); ++i) {
-        const GenericInfo& param = info.generics[i];
-        switch (param.kind) {
-        case GenericKind::Dim:
-            substitution.dims[param.symbol] = nominal.args[i].dim;
-            break;
-        case GenericKind::Pack:
-            substitution.packs[param.symbol] = nominal.args[i].shape;
-            break;
-        case GenericKind::DType:
-            substitution.dtypes[param.dtype_var] = nominal.args[i].dtype;
-            break;
-        }
-    }
-    return substitution;
+    return sema::substitution_of(decls_[nominal.decl], nominal);
 }
 
 TypeId Checker::check_member(const ast::Expr& node, const ast::MemberExpr& member) {

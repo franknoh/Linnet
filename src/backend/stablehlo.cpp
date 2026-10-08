@@ -13,44 +13,12 @@ namespace {
 
 using sema::ScalarKind;
 
-const char* mlir_dtype(ScalarKind kind) {
-    switch (kind) {
-    case ScalarKind::Bool:
-        return "i1";
-    case ScalarKind::I8:
-        return "i8";
-    case ScalarKind::I16:
-        return "i16";
-    case ScalarKind::I32:
-        return "i32";
-    case ScalarKind::I64:
-        return "i64";
-    case ScalarKind::U8:
-        return "ui8";
-    case ScalarKind::U16:
-        return "ui16";
-    case ScalarKind::U32:
-        return "ui32";
-    case ScalarKind::U64:
-        return "ui64";
-    case ScalarKind::F16:
-        return "f16";
-    case ScalarKind::BF16:
-        return "bf16";
-    case ScalarKind::F32:
-        return "f32";
-    case ScalarKind::F64:
-        return "f64";
-    }
-    return "f32";
-}
-
 std::string tensor_type(const Dims& shape, ScalarKind dtype) {
     std::string text = "tensor<";
     for (const std::int64_t dim : shape) {
         text += std::to_string(dim) + "x";
     }
-    return text + mlir_dtype(dtype) + ">";
+    return text + std::string(dtype_names(dtype).mlir) + ">";
 }
 
 std::string tensor_type(const TensorInfo& info) {

@@ -165,6 +165,9 @@ public:
     DType substitute(DType dtype, const Substitution& substitution) const;
     GenericValue substitute(const GenericValue& value, const Substitution& substitution);
     TypeId substitute(TypeId type, const Substitution& substitution);
+    // `inner` with every binding substituted by `outer`: a call's bindings
+    // in terms of its caller's.
+    Substitution substitute(Substitution inner, const Substitution& outer);
 
     bool equal(const Shape& a, const Shape& b, shape::Solver& solver);
     bool equal(const GenericValue& a, const GenericValue& b, shape::Solver& solver);

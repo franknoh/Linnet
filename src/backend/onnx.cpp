@@ -15,74 +15,8 @@ namespace {
 
 using sema::ScalarKind;
 
-// ONNX element type names as the text format spells them, and the
-// `TensorProto.DataType` numbers `Cast` takes.
-const char* onnx_dtype(ScalarKind kind) {
-    switch (kind) {
-    case ScalarKind::Bool:
-        return "bool";
-    case ScalarKind::I8:
-        return "int8";
-    case ScalarKind::I16:
-        return "int16";
-    case ScalarKind::I32:
-        return "int32";
-    case ScalarKind::I64:
-        return "int64";
-    case ScalarKind::U8:
-        return "uint8";
-    case ScalarKind::U16:
-        return "uint16";
-    case ScalarKind::U32:
-        return "uint32";
-    case ScalarKind::U64:
-        return "uint64";
-    case ScalarKind::F16:
-        return "float16";
-    case ScalarKind::BF16:
-        return "bfloat16";
-    case ScalarKind::F32:
-        return "float";
-    case ScalarKind::F64:
-        return "double";
-    }
-    return "float";
-}
-
-int onnx_dtype_code(ScalarKind kind) {
-    switch (kind) {
-    case ScalarKind::Bool:
-        return 9;
-    case ScalarKind::I8:
-        return 3;
-    case ScalarKind::I16:
-        return 5;
-    case ScalarKind::I32:
-        return 6;
-    case ScalarKind::I64:
-        return 7;
-    case ScalarKind::U8:
-        return 2;
-    case ScalarKind::U16:
-        return 4;
-    case ScalarKind::U32:
-        return 12;
-    case ScalarKind::U64:
-        return 13;
-    case ScalarKind::F16:
-        return 10;
-    case ScalarKind::BF16:
-        return 16;
-    case ScalarKind::F32:
-        return 1;
-    case ScalarKind::F64:
-        return 11;
-    }
-    return 1;
-}
-
 std::string tensor_type(const Dims& shape, ScalarKind dtype) {
-    std::string text = onnx_dtype(dtype);
+    std::string text(dtype_names(dtype).onnx);
     if (shape.empty()) {
         return text;
     }
@@ -792,8 +726,11 @@ public:
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
-        return node(
-            "Cast", {value}, "to = " + std::to_string(onnx_dtype_code(dtype)), value.shape, dtype);
+        return node("Cast",
+                    {value},
+                    "to = " + std::to_string(dtype_names(dtype).onnx_code),
+                    value.shape,
+                    dtype);
     }
 
     std::string reshape(const TensorInfo& value, const Dims& shape) override {

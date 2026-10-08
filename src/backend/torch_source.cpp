@@ -1,5 +1,7 @@
 #include "linnet/backend/torch_source.hpp"
 
+#include "linnet/backend/python_target.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -19,224 +21,17 @@ using sema::ScalarKind;
 
 namespace {
 
-std::string torch_dtype(ScalarKind dtype) {
-    switch (dtype) {
-    case ScalarKind::Bool:
-        return "torch.bool";
-    case ScalarKind::I8:
-        return "torch.int8";
-    case ScalarKind::I16:
-        return "torch.int16";
-    case ScalarKind::I32:
-        return "torch.int32";
-    case ScalarKind::I64:
-        return "torch.int64";
-    case ScalarKind::U8:
-        return "torch.uint8";
-    case ScalarKind::U16:
-        return "torch.uint16";
-    case ScalarKind::U32:
-        return "torch.uint32";
-    case ScalarKind::U64:
-        return "torch.uint64";
-    case ScalarKind::F16:
-        return "torch.float16";
-    case ScalarKind::BF16:
-        return "torch.bfloat16";
-    case ScalarKind::F32:
-        return "torch.float32";
-    case ScalarKind::F64:
-        return "torch.float64";
-    }
-    return "torch.float32";
-}
-
 // The generated module: straight-line PyTorch over static shapes.
-class TorchTarget : public GraphTarget {
+class TorchTarget : public PythonTarget {
 public:
     explicit TorchTarget(const TorchSourceOptions& options)
-        : prepare_(options.prepare), fuse_(options.fuse), lora_(options.lora),
-          lora_rank_(options.lora_rank), lora_alpha_(options.lora_alpha) {}
+        : PythonTarget("torch",
+                       "bool",
+                       options.prepare,
+                       {options.lora, options.lora_rank, options.lora_alpha}),
+          fuse_(options.fuse) {}
 
-    std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        std::string clean;
-        for (const char c : name) {
-            clean += std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' ? c : '_';
-        }
-        const std::string argument = "in_" + clean;
-        arguments_.push_back(argument);
-        return argument;
-    }
-
-    std::string parameter(const std::string& path, const Dims& shape, ScalarKind dtype) override {
-        const std::string argument = "p" + std::to_string(parameters_.size());
-        parameters_.push_back(path);
-        parameter_types_.emplace_back(shape, dtype);
-        arguments_.push_back(argument);
-        parameters_end_ = arguments_.size();
-        return argument;
-    }
-
-    std::string state(const std::string& path, const Dims& shape, ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        const std::string argument = "s" + std::to_string(states_.size());
-        states_.push_back(path);
-        arguments_.push_back(argument);
-        return argument;
-    }
-
-    std::string constant(const Literal& literal, ScalarKind dtype) override {
-        const std::string text = literal_text(literal, dtype);
-        const std::string name = define("torch.tensor(" + text + ", dtype=" + torch_dtype(dtype) +
-                                        ", device=" + device() + ")");
-        literals_[name] = text;
-        if (literal.kind == Literal::Kind::Integer || literal.kind == Literal::Kind::Real) {
-            values_[name] = literal.kind == Literal::Kind::Real
-                                ? literal.real
-                                : static_cast<double>(literal.integer);
-        }
-        return name;
-    }
-
-    // Scalar arithmetic on constants is folded to a Python literal as well,
-    // so a computed `rsqrt(cast<f32>(D))` reaches a kernel as `scale=...`
-    // rather than as a tensor `torch.compile` has to read back.
-    void fold(const std::string& name,
-              Elementwise kind,
-              const std::vector<TensorInfo>& operands,
-              ScalarKind dtype) {
-        if (dtype == ScalarKind::Bool || operands.empty() || !operands[0].shape.empty()) {
-            return;
-        }
-        std::vector<double> values;
-        for (const TensorInfo& operand : operands) {
-            const auto found = values_.find(operand.name);
-            if (found == values_.end()) {
-                return;
-            }
-            values.push_back(found->second);
-        }
-        double result = 0.0;
-        const double a = values[0];
-        const double b = values.size() > 1 ? values[1] : 0.0;
-        switch (kind) {
-        case Elementwise::Add:
-            result = a + b;
-            break;
-        case Elementwise::Sub:
-            result = a - b;
-            break;
-        case Elementwise::Mul:
-            result = a * b;
-            break;
-        case Elementwise::Div:
-            if (b == 0.0) {
-                return;
-            }
-            result = sema::is_float(dtype) ? a / b : std::trunc(a / b);
-            break;
-        case Elementwise::Neg:
-            result = -a;
-            break;
-        case Elementwise::Sqrt:
-            result = std::sqrt(a);
-            break;
-        case Elementwise::Rsqrt:
-            result = 1.0 / std::sqrt(a);
-            break;
-        case Elementwise::Exp:
-            result = std::exp(a);
-            break;
-        case Elementwise::Log:
-            result = std::log(a);
-            break;
-        default:
-            return;
-        }
-        if (!sema::is_float(dtype)) {
-            if (kind != Elementwise::Add && kind != Elementwise::Sub && kind != Elementwise::Mul &&
-                kind != Elementwise::Div && kind != Elementwise::Neg) {
-                return;
-            }
-            values_[name] = result;
-            literals_[name] = std::to_string(static_cast<long long>(result));
-            return;
-        }
-        if (dtype == ScalarKind::F32) {
-            result = static_cast<double>(static_cast<float>(result));
-        }
-        values_[name] = result;
-        literals_[name] = python_float(result);
-    }
-
-    std::string elementwise(Elementwise kind,
-                            const std::vector<TensorInfo>& operands,
-                            const Dims& shape,
-                            ScalarKind dtype) override {
-        (void)shape;
-        const std::string name = spell(kind, operands);
-        fold(name, kind, operands, dtype);
-        return name;
-    }
-
-    std::string spell(Elementwise kind, const std::vector<TensorInfo>& operands) {
-        const std::string& a = operands[0].name;
-        const std::string b = operands.size() > 1 ? operands[1].name : "";
-        switch (kind) {
-        case Elementwise::Add:
-            return define(a + " + " + b);
-        case Elementwise::Sub:
-            return define(a + " - " + b);
-        case Elementwise::Mul:
-            return define(a + " * " + b);
-        case Elementwise::Div:
-            return define(sema::is_float(operands[0].dtype)
-                              ? a + " / " + b
-                              : "torch.div(" + a + ", " + b + ", rounding_mode=\"trunc\")");
-        case Elementwise::Rem:
-            return define("torch.fmod(" + a + ", " + b + ")");
-        case Elementwise::Min:
-            return define("torch.minimum(" + a + ", " + b + ")");
-        case Elementwise::Max:
-            return define("torch.maximum(" + a + ", " + b + ")");
-        case Elementwise::And:
-        case Elementwise::BitAnd:
-            return define(a + " & " + b);
-        case Elementwise::Or:
-        case Elementwise::BitOr:
-            return define(a + " | " + b);
-        case Elementwise::BitXor:
-            return define(a + " ^ " + b);
-        case Elementwise::Shl:
-            return define(a + " << " + b);
-        case Elementwise::Shr:
-            return define(a + " >> " + b);
-        case Elementwise::Not:
-            return define("~" + a);
-        case Elementwise::Neg:
-            return define("-" + a);
-        case Elementwise::Exp:
-            return define("torch.exp(" + a + ")");
-        case Elementwise::Log:
-            return define("torch.log(" + a + ")");
-        case Elementwise::Sqrt:
-            return define("torch.sqrt(" + a + ")");
-        case Elementwise::Rsqrt:
-            return define("torch.rsqrt(" + a + ")");
-        case Elementwise::Sin:
-            return define("torch.sin(" + a + ")");
-        case Elementwise::Cos:
-            return define("torch.cos(" + a + ")");
-        case Elementwise::Tanh:
-            return define("torch.tanh(" + a + ")");
-        case Elementwise::Abs:
-            return define("torch.abs(" + a + ")");
-        }
-        return define(a);
-    }
+    using PythonTarget::gather;
 
     std::string compare(ir::CompareKind kind,
                         const TensorInfo& a,
@@ -252,19 +47,8 @@ public:
         return define(std::string("torch.") + op + "(" + a.name + ", " + b.name + ")");
     }
 
-    std::string select(const TensorInfo& condition,
-                       const TensorInfo& on_true,
-                       const TensorInfo& on_false,
-                       const Dims& shape,
-                       ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        return define("torch.where(" + condition.name + ", " + on_true.name + ", " + on_false.name +
-                      ")");
-    }
-
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
-        const std::string name = define(value.name + ".to(" + torch_dtype(dtype) + ")");
+        const std::string name = define(value.name + ".to(" + dtype_name(dtype) + ")");
         const auto found = values_.find(value.name);
         if (found != values_.end() && sema::is_float(dtype)) {
             fold(name,
@@ -286,65 +70,10 @@ public:
         return cached;
     }
 
-    std::string reshape(const TensorInfo& value, const Dims& shape) override {
-        return define(value.name + ".reshape(" + python_tuple(shape) + ")");
-    }
-
     std::string
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) override {
         (void)shape;
         return define(value.name + ".permute(" + python_tuple(permutation) + ")");
-    }
-
-    std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
-        // Axes first in the order they take in the result, then size-one
-        // axes inserted, then the expansion.
-        Dims order(dims.size());
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            order[i] = static_cast<std::int64_t>(i);
-        }
-        std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-            return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
-        });
-        TensorInfo source = value;
-        Dims sorted_dims = dims;
-        bool is_identity = true;
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
-        }
-        if (!is_identity) {
-            Dims permuted;
-            for (const std::int64_t axis : order) {
-                permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
-                sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
-            }
-            source = {transpose(value, order, permuted), permuted, value.dtype};
-        }
-        Dims placed(shape.size(), 1);
-        for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
-            placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
-        }
-        if (placed != source.shape) {
-            source = {reshape(source, placed), placed, source.dtype};
-        }
-        if (placed == shape) {
-            return source.name;
-        }
-        return define(source.name + ".expand(" + python_tuple(shape) + ")");
-    }
-
-    std::string slice(const TensorInfo& value,
-                      const Dims& starts,
-                      const Dims& limits,
-                      const Dims& strides,
-                      const Dims& shape) override {
-        (void)shape;
-        std::string index;
-        for (std::size_t i = 0; i < starts.size(); ++i) {
-            index += (i == 0 ? "" : ", ") + std::to_string(starts[i]) + ":" +
-                     std::to_string(limits[i]) + ":" + std::to_string(strides[i]);
-        }
-        return define(value.name + "[" + index + "]");
     }
 
     std::string
@@ -360,19 +89,6 @@ public:
     std::string iota(std::int64_t length) override {
         return define("torch.arange(" + std::to_string(length) +
                       ", dtype=torch.int64, device=" + device() + ")");
-    }
-
-    std::string
-    gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
-        (void)shape;
-        // `indices[..., k]` selects along axis k of the source: advanced
-        // indexing with one index tensor per leading source axis, the
-        // trailing ones taken whole.
-        std::string index;
-        for (std::size_t k = 0; k < static_cast<std::size_t>(indices.shape.back()); ++k) {
-            index += (k == 0 ? "" : ", ") + indices.name + "[..., " + std::to_string(k) + "]";
-        }
-        return define(source.name + "[" + index + "]");
     }
 
     std::string
@@ -396,20 +112,6 @@ public:
             return define(body.name + ".all(dim=" + axes + ")");
         }
         return body.name;
-    }
-
-    bool broadcasts_elementwise() const override { return true; }
-
-    std::optional<std::string> contract(const TensorInfo& lhs,
-                                        const Dims& lhs_axes,
-                                        const TensorInfo& rhs,
-                                        const Dims& rhs_axes,
-                                        const Dims& out_axes,
-                                        const Dims& shape,
-                                        ScalarKind dtype) override {
-        (void)shape, (void)dtype;
-        return define("torch.einsum(\"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\", " +
-                      lhs.name + ", " + rhs.name + ")");
     }
 
     // Placement: `_dev` is the tuple of devices `main` receives, one per
@@ -444,7 +146,7 @@ public:
         const std::string name = "v" + std::to_string(next_++);
         gathered_[name] = value.name;
         body_ +=
-            indent_ + name + " = _gather(" + value.name + ", " + torch_dtype(value.dtype) + ")\n";
+            indent_ + name + " = _gather(" + value.name + ", " + dtype_name(value.dtype) + ")\n";
         return name;
     }
 
@@ -756,7 +458,7 @@ public:
             const std::string low =
                 define("F.linear(F.linear(" + name(0) + ", " + a + "), " + b + ")");
             return define(product + " + " + low + " * " +
-                          python_float(lora_alpha_ / static_cast<double>(lora_rank_)));
+                          python_float(lora_.alpha / static_cast<double>(lora_.rank)));
         }
         // `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and
         // bf16 inputs themselves, so their results are bit-identical to the
@@ -1169,20 +871,8 @@ public:
         }
         lines.push_back(tail);
         const auto mentions = [](const std::string& line, const std::string& name) {
-            for (std::size_t at = line.find(name); at != std::string::npos;
-                 at = line.find(name, at + 1)) {
-                const std::size_t end = at + name.size();
-                const bool starts =
-                    at == 0 || (!std::isalnum(static_cast<unsigned char>(line[at - 1])) &&
-                                line[at - 1] != '_');
-                const bool ends =
-                    end == line.size() ||
-                    (!std::isalnum(static_cast<unsigned char>(line[end])) && line[end] != '_');
-                if (starts && ends) {
-                    return true;
-                }
-            }
-            return false;
+            return std::ranges::any_of(words_of(line),
+                                       [&](const auto& word) { return word.second == name; });
         };
         std::string out;
         for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
@@ -1279,39 +969,13 @@ public:
         }
         // Only the constants the entry reads cross the boundary; the rest
         // are intermediates of `constants` itself.
-        const std::set<std::string> used = mentioned_values_in(out.body + tail);
+        const std::set<std::string> used = value_names(out.body + tail);
         for (const std::string& name : hoisted_names) {
             if (used.contains(name)) {
                 out.names.push_back(name);
             }
         }
         return out;
-    }
-
-    static std::set<std::string> mentioned_values_in(const std::string& text) {
-        std::set<std::string> names;
-        for (std::size_t i = 0; i < text.size(); ++i) {
-            const bool boundary =
-                i == 0 ||
-                (!std::isalnum(static_cast<unsigned char>(text[i - 1])) && text[i - 1] != '_');
-            if (text[i] != 'v' || !boundary) {
-                continue;
-            }
-            std::size_t j = i + 1;
-            while (j < text.size() && std::isdigit(static_cast<unsigned char>(text[j]))) {
-                ++j;
-            }
-            const bool ends =
-                j == text.size() ||
-                (!std::isalnum(static_cast<unsigned char>(text[j])) && text[j] != '_');
-            // Definitions (`vN = `) count too when they are in a nested region
-            // (loop bodies rebind nothing hoisted), so mentions anywhere qualify.
-            if (j > i + 1 && ends) {
-                names.insert(text.substr(i, j - i));
-            }
-            i = j;
-        }
-        return names;
     }
 
     // An expression is constant when every identifier it mentions is a
@@ -1424,10 +1088,7 @@ private:
             }
         }
         const auto parameter_index = [&](const std::string& word) -> std::optional<std::size_t> {
-            if (word.size() < 2 || word[0] != 'p' ||
-                !std::all_of(word.begin() + 1, word.end(), [](char c) {
-                    return std::isdigit(static_cast<unsigned char>(c)) != 0;
-                })) {
+            if (!numbered(word, 'p')) {
                 return std::nullopt;
             }
             const std::size_t index = std::stoul(word.substr(1));
@@ -1437,20 +1098,8 @@ private:
         const std::string prefix = "    ";
         for (std::size_t i = 0; i < lines.size(); ++i) {
             const std::string& line = lines[i];
-            for (std::size_t at = 0; at + 1 < line.size(); ++at) {
-                if (line[at] == 'v' &&
-                    (at == 0 || !std::isalnum(static_cast<unsigned char>(line[at - 1])))) {
-                    std::size_t end = at + 1;
-                    while (end < line.size() &&
-                           std::isdigit(static_cast<unsigned char>(line[end])) != 0) {
-                        ++end;
-                    }
-                    if (end > at + 1) {
-                        highest = std::max(highest,
-                                           static_cast<std::size_t>(
-                                               std::stoul(line.substr(at + 1, end - at - 1))));
-                    }
-                }
+            for (const std::string& name : value_names(line)) {
+                highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
             }
             // `    vN = F.linear(x, pW, pB | None)`, at the top level.
             const std::string call = " = F.linear(";
@@ -1787,54 +1436,6 @@ private:
 
     // `std.nn.loss`'s output-head forms: `linnet.torch.loss` a block of rows
     // at a time; without it, the logits whole, as the bodies compute.
-    // The parameter path of `argument` when it names a weight an adapter
-    // pattern matches.
-    std::optional<std::string> lora_target(const std::string& name) const {
-        // A sharded weight is used as the value gathered from its parameter.
-        const auto gathered = gathered_.find(name);
-        const std::string& argument = gathered != gathered_.end() ? gathered->second : name;
-        if (lora_.empty() || argument.size() < 2 || argument[0] != 'p' ||
-            !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
-                return std::isdigit(static_cast<unsigned char>(c)) != 0;
-            })) {
-            return std::nullopt;
-        }
-        const std::size_t index = std::stoul(argument.substr(1));
-        if (index >= parameters_.size() || !parameters_[index].ends_with(".weight")) {
-            return std::nullopt;
-        }
-        const std::string& path = parameters_[index];
-        if (std::any_of(lora_.begin(), lora_.end(), [&](const std::string& pattern) {
-                return glob_match(pattern, path);
-            })) {
-            return path;
-        }
-        return std::nullopt;
-    }
-
-    // The adapter parameters of the weight at `path` ([out, in]): `lora_a`
-    // [rank, in] and `lora_b` [out, rank] of its block, made once. They go
-    // after the other parameters among `main`'s arguments.
-    std::pair<std::string, std::string>
-    adapters(const std::string& path, const Dims& weight, ScalarKind dtype) {
-        if (const auto found = adapters_.find(path); found != adapters_.end()) {
-            return found->second;
-        }
-        const std::string block = path.substr(0, path.size() - std::string_view(".weight").size());
-        const auto add = [&](const std::string& adapter, const Dims& shape) {
-            const std::string argument = "p" + std::to_string(parameters_.size());
-            parameters_.push_back(block + "." + adapter);
-            parameter_types_.emplace_back(shape, dtype);
-            arguments_.insert(arguments_.begin() + static_cast<std::ptrdiff_t>(parameters_end_),
-                              argument);
-            ++parameters_end_;
-            return argument;
-        };
-        const std::string a = add("lora_a", {lora_rank_, weight[1]});
-        const std::string b = add("lora_b", {weight[0], lora_rank_});
-        return adapters_.emplace(path, std::make_pair(a, b)).first->second;
-    }
-
     static std::string loss_helper() {
         return "try:\n"
                "    from linnet.torch.loss import linear_cross_entropy as _linear_cross_entropy\n"
@@ -2106,65 +1707,27 @@ private:
         return placed_ ? "_dev[" + std::to_string(slot_) + "]" : std::string("_device");
     }
 
-    // Every value is immutable, so an expression already computed in this
-    // scope (or an enclosing one) names the same tensor: identical rotary
-    // tables or masks across inlined layers are emitted once.
-    std::string define(const std::string& expression) {
-        for (auto scope = cse_.rbegin(); scope != cse_.rend(); ++scope) {
-            const auto found = scope->find(expression);
-            if (found != scope->end()) {
-                return found->second;
-            }
-        }
-        const std::string name = "v" + std::to_string(next_++);
-        body_ += indent_ + name + " = " + expression + "\n";
-        cse_.back()[expression] = name;
-        return name;
+    // The torch spellings of what `PythonTarget` writes.
+    std::string constant_expression(const std::string& text, ScalarKind dtype) override {
+        return "torch.tensor(" + text + ", dtype=" + dtype_name(dtype) + ", device=" + device() +
+               ")";
     }
-
-    static std::string string_list(const std::vector<std::string>& items) {
-        std::string out = "[";
-        for (std::size_t i = 0; i < items.size(); ++i) {
-            out += (i == 0 ? "\"" : ", \"") + items[i] + "\"";
-        }
-        return out + "]";
+    std::string divide_integers(const std::string& a, const std::string& b) override {
+        return "torch.div(" + a + ", " + b + ", rounding_mode=\"trunc\")";
     }
-
-    static std::string literal_text(const Literal& literal, ScalarKind dtype) {
-        switch (literal.kind) {
-        case Literal::Kind::Integer:
-            return sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
-                                         : std::to_string(literal.integer);
-        case Literal::Kind::Real:
-            return python_float(literal.real);
-        case Literal::Kind::Boolean:
-            return literal.integer != 0 ? "True" : "False";
-        case Literal::Kind::Lowest:
-            if (sema::is_float(dtype)) {
-                return "float(\"-inf\")";
-            }
-            return dtype == ScalarKind::Bool ? "False"
-                                             : "torch.iinfo(" + torch_dtype(dtype) + ").min";
-        case Literal::Kind::Highest:
-            if (sema::is_float(dtype)) {
-                return "float(\"inf\")";
-            }
-            return dtype == ScalarKind::Bool ? "True"
-                                             : "torch.iinfo(" + torch_dtype(dtype) + ").max";
-        }
-        return "0";
+    std::string shift(const std::string& a, const std::string& b, bool left) override {
+        return a + (left ? " << " : " >> ") + b;
     }
+    std::string reciprocal_sqrt(const std::string& a) override { return "torch.rsqrt(" + a + ")"; }
+    std::string expand(const std::string& value, const Dims& shape) override {
+        return value + ".expand(" + python_tuple(shape) + ")";
+    }
+    std::string infinity() const override { return "float(\"inf\")"; }
 
-    bool placed_ = false;  // with placement, `main` and `constants` take `_dev`
-    bool prepare_ = false; // split weight-only work into `prepare`
-    bool fuse_ = true;     // with `prepare`, join sibling linear layers
+    bool placed_ = false; // with placement, `main` and `constants` take `_dev`
+    bool fuse_ = true;    // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
-    std::vector<std::string> arguments_;
-    std::vector<std::string> parameters_;            // paths, in argument order
-    std::vector<std::string> states_;                // paths, in argument order
-    std::map<std::string, std::string> literals_;    // constant name -> Python literal
-    std::set<std::string> causal_masks_;             // square masks from `causal_mask`
     bool int4_helpers_ = false;                      // `_int4_pack` and `_int4_linear` are used
     bool experts_helper_ = false;                    // `_linear_experts` is used
     bool flex_helpers_ = false;                      // `_flex_blocks` and `_attend` are used
@@ -2175,26 +1738,10 @@ private:
     bool loss_helper_ = false;                       // `_linear_cross_entropy` is used
     bool gather_helper_ = false;                     // `_gather` joins sharded parameters
     bool paged_helper_ = false;                      // `_paged_attend` is used
-    std::map<std::string, std::string> gathered_;    // a gathered value's parameter argument
     std::map<std::string, std::string> flex_blocks_; // mask and sizes -> its `_flex_blocks`
-    std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
-    std::map<std::string, double> values_;                   // constant name -> folded scalar value
-    std::map<ScalarKind, std::string> zeros_;                // per-dtype zero constants
-    std::string body_;
-    std::string indent_ = "    ";
+    std::map<ScalarKind, std::string> zeros_;        // per-dtype zero constants
     std::vector<std::vector<std::string>> loop_names_;
     std::size_t loops_ = 0;
-    std::size_t next_ = 0;
-    std::vector<std::pair<Dims, ScalarKind>> parameter_types_; // shape and dtype, PARAMETERS order
-
-    // Adapters (`TorchSourceOptions::lora`): the patterns over weight paths,
-    // where the parameters end among `arguments_`, and each adapted weight's
-    // `A` and `B` arguments.
-    std::vector<std::string> lora_;
-    std::int64_t lora_rank_ = 0;
-    double lora_alpha_ = 0.0;
-    std::size_t parameters_end_ = 0;
-    std::map<std::string, std::pair<std::string, std::string>> adapters_;
 };
 
 } // namespace

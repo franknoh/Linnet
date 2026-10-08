@@ -1,6 +1,9 @@
 #include "linnet/backend/graph_export.hpp"
 
+#include "linnet/support/text.hpp"
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cstdio>
@@ -198,47 +201,15 @@ private:
                 return std::nullopt;
             }
         }
-        std::vector<EntityId> candidates;
-        for (EntityId id = 0; id < model_.entities.size(); ++id) {
-            const Entity& entity = model_.entities[id];
-            if (entity.kind != EntityKind::Block || entity.parent != no_entity ||
-                entity.module != options_.root_module) {
-                continue;
-            }
-            if (!options_.root.empty()) {
-                if (entity.name == options_.root) {
-                    return id;
-                }
-                continue;
-            }
-            for (const ir::Function& function : module_.functions()) {
-                if (function.is_entry && model_.entities[function.entity].parent == id) {
-                    candidates.push_back(id);
-                    break;
-                }
-            }
+        const auto root = find_root_block(module_, options_.root_module, options_.root);
+        if (!root) {
+            fail(root.error());
         }
-        if (!options_.root.empty()) {
-            fail("no block named `" + options_.root + "` in this file");
-        }
-        if (candidates.size() != 1) {
-            fail(candidates.empty() ? "no block with an `entry`; name one with --root"
-                                    : "several blocks have entries; name one with --root");
-        }
-        return candidates.front();
+        return *root;
     }
 
-    // Whether `owner` (a block, or `no_entity` for the root module itself)
-    // declares an entry called `name`; any entry for an empty `name`.
     bool has_entry_named(EntityId owner, std::string_view name) const {
-        for (const ir::Function& function : module_.functions()) {
-            const Entity& entity = model_.entities[function.entity];
-            if (function.is_entry && entity.parent == owner &&
-                entity.module == options_.root_module && (name.empty() || entity.name == name)) {
-                return true;
-            }
-        }
-        return false;
+        return declares_entry(module_, options_.root_module, owner, name);
     }
 
     bool is_module_entry(std::string_view name) const { return has_entry_named(no_entity, name); }
@@ -620,15 +591,7 @@ private:
     // ------------------------------------------------------- parameters
 
     void collect_parameters(EntityId block, const Substitution& subst, const std::string& prefix) {
-        const DeclInfo& decl = model_.decls.at(block);
-        std::vector<std::pair<EntityId, std::string_view>> members;
-        for (const auto& [name, entity] : decl.scope) {
-            if (model_.entities[entity].kind == EntityKind::Member) {
-                members.emplace_back(entity, name);
-            }
-        }
-        std::sort(members.begin(), members.end());
-        for (const auto& [entity, name] : members) {
+        for (const auto& [entity, name] : block_members(model_, block)) {
             const TypeId type = types_.substitute(model_.entities[entity].type, subst);
             const TypeData& data = types_.get(type);
             const std::string path = prefix + std::string(name);
@@ -716,23 +679,7 @@ private:
     }
 
     Substitution block_substitution(const TypeData& block_type) const {
-        Substitution subst;
-        const DeclInfo& decl = model_.decls.at(block_type.decl);
-        for (std::size_t i = 0; i < decl.generics.size() && i < block_type.args.size(); ++i) {
-            const GenericInfo& generic = decl.generics[i];
-            switch (generic.kind) {
-            case GenericKind::Dim:
-                subst.dims[generic.symbol] = block_type.args[i].dim;
-                break;
-            case GenericKind::Pack:
-                subst.packs[generic.symbol] = block_type.args[i].shape;
-                break;
-            case GenericKind::DType:
-                subst.dtypes[generic.dtype_var] = block_type.args[i].dtype;
-                break;
-            }
-        }
-        return subst;
+        return sema::substitution_of(model_.decls.at(block_type.decl), block_type);
     }
 
     // ------------------------------------------------------------ types
@@ -1566,16 +1513,7 @@ private:
         }
         const ir::Function& callee = *found->second;
         Frame inner;
-        inner.subst = op.attributes.substitution;
-        for (auto& [symbol, dim] : inner.subst.dims) {
-            dim = types_.substitute(dim, frame().subst);
-        }
-        for (auto& [symbol, shape] : inner.subst.packs) {
-            shape = types_.substitute(shape, frame().subst);
-        }
-        for (auto& [var, dtype] : inner.subst.dtypes) {
-            dtype = types_.substitute(dtype, frame().subst);
-        }
+        inner.subst = types_.substitute(op.attributes.substitution, frame().subst);
         std::vector<Val> arguments;
         arguments.reserve(op.operands.size());
         for (const ir::ValueId id : op.operands) {
@@ -2040,31 +1978,53 @@ export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget&
     }
 }
 
+bool word_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+bool numbered(std::string_view word, char prefix) {
+    return word.size() > 1 && word[0] == prefix &&
+           word.find_first_not_of("0123456789", 1) == std::string_view::npos;
+}
+
+std::vector<std::pair<std::size_t, std::string>> words_of(std::string_view text) {
+    std::vector<std::pair<std::size_t, std::string>> words;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (word_char(text[i]) && (i == 0 || !word_char(text[i - 1]))) {
+            std::size_t j = i;
+            while (j < text.size() && word_char(text[j])) {
+                ++j;
+            }
+            if (std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
+                words.emplace_back(i, text.substr(i, j - i));
+            }
+            i = j;
+            continue;
+        }
+        ++i;
+    }
+    return words;
+}
+
+std::set<std::string> value_names(std::string_view text) {
+    std::set<std::string> names;
+    for (auto& [at, word] : words_of(text)) {
+        if (numbered(word, 'v')) {
+            names.insert(std::move(word));
+        }
+    }
+    return names;
+}
+
 namespace {
 
 // The `vN` names a generated line mentions on its right-hand side.
 std::set<std::string> mentioned_values(const std::string& line) {
-    std::set<std::string> names;
     const std::size_t assignment = line.find(" = ");
-    const std::size_t begin = assignment == std::string::npos ? 0 : assignment + 3;
-    for (std::size_t i = begin; i < line.size(); ++i) {
-        const bool boundary = i == 0 || (!std::isalnum(static_cast<unsigned char>(line[i - 1])) &&
-                                         line[i - 1] != '_');
-        if (line[i] != 'v' || !boundary) {
-            continue;
-        }
-        std::size_t j = i + 1;
-        while (j < line.size() && std::isdigit(static_cast<unsigned char>(line[j]))) {
-            ++j;
-        }
-        const bool ends = j == line.size() ||
-                          (!std::isalnum(static_cast<unsigned char>(line[j])) && line[j] != '_');
-        if (j > i + 1 && ends) {
-            names.insert(line.substr(i, j - i));
-        }
-        i = j;
-    }
-    return names;
+    return value_names(assignment == std::string::npos
+                           ? std::string_view(line)
+                           : std::string_view(line).substr(assignment + 3));
 }
 
 } // namespace
@@ -2184,38 +2144,6 @@ std::vector<std::string> split_lines(const std::string& text) {
         lines.push_back(current);
     }
     return lines;
-}
-
-bool word_char(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-}
-
-// `vN`, `pN`, `sN`, `wN`: a generated name with this prefix.
-bool numbered(const std::string& word, char prefix) {
-    return word.size() > 1 && word[0] == prefix &&
-           word.find_first_not_of("0123456789", 1) == std::string::npos;
-}
-
-// Every identifier-like word in `text`, in order, with its position.
-std::vector<std::pair<std::size_t, std::string>> words_of(const std::string& text) {
-    std::vector<std::pair<std::size_t, std::string>> words;
-    std::size_t i = 0;
-    while (i < text.size()) {
-        if (word_char(text[i]) && (i == 0 || !word_char(text[i - 1]))) {
-            std::size_t j = i;
-            while (j < text.size() && word_char(text[j])) {
-                ++j;
-            }
-            // Numbers are not words.
-            if (std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
-                words.emplace_back(i, text.substr(i, j - i));
-            }
-            i = j;
-            continue;
-        }
-        ++i;
-    }
-    return words;
 }
 
 // `name = expr` of a top-level generated assignment, if `line` is one.
@@ -2672,14 +2600,73 @@ std::string python_tuple(const Dims& dims) {
     return out + (dims.size() == 1 ? ",)" : ")");
 }
 
-std::string python_float(double value) {
-    char buffer[64];
-    std::snprintf(buffer, sizeof buffer, "%.17g", value);
-    std::string text = buffer;
-    if (text.find_first_of(".einEIN") == std::string::npos) {
-        text += ".0";
+const DTypeNames& dtype_names(sema::ScalarKind dtype) {
+    // In `ScalarKind` order.
+    static constexpr std::array<DTypeNames, 13> names{{
+        {"i1", "bool", 9, "bool"},
+        {"i8", "int8", 3, "int8"},
+        {"i16", "int16", 5, "int16"},
+        {"i32", "int32", 6, "int32"},
+        {"i64", "int64", 7, "int64"},
+        {"ui8", "uint8", 2, "uint8"},
+        {"ui16", "uint16", 4, "uint16"},
+        {"ui32", "uint32", 12, "uint32"},
+        {"ui64", "uint64", 13, "uint64"},
+        {"f16", "float16", 10, "float16"},
+        {"bf16", "bfloat16", 16, "bfloat16"},
+        {"f32", "float", 1, "float32"},
+        {"f64", "double", 11, "float64"},
+    }};
+    return names[static_cast<std::size_t>(dtype)];
+}
+
+bool declares_entry(const ir::Module& module,
+                    std::uint32_t root_module,
+                    sema::EntityId owner,
+                    std::string_view name) {
+    const sema::Model& model = module.model();
+    return std::ranges::any_of(module.functions(), [&](const ir::Function& function) {
+        const sema::Entity& entity = model.entities[function.entity];
+        return function.is_entry && entity.parent == owner && entity.module == root_module &&
+               (name.empty() || entity.name == name);
+    });
+}
+
+std::expected<sema::EntityId, std::string> find_root_block(const ir::Module& module,
+                                                           std::uint32_t root_module,
+                                                           std::string_view root,
+                                                           std::string_view no_entry_hint) {
+    const sema::Model& model = module.model();
+    std::vector<sema::EntityId> candidates;
+    for (sema::EntityId id = 0; id < model.entities.size(); ++id) {
+        const sema::Entity& entity = model.entities[id];
+        if (entity.kind != sema::EntityKind::Block || entity.parent != sema::no_entity ||
+            entity.module != root_module) {
+            continue;
+        }
+        if (!root.empty()) {
+            if (entity.name == root) {
+                return id;
+            }
+            continue;
+        }
+        if (declares_entry(module, root_module, id)) {
+            candidates.push_back(id);
+        }
     }
-    return text;
+    if (!root.empty()) {
+        return std::unexpected("no block named `" + std::string(root) + "` in this file");
+    }
+    if (candidates.size() != 1) {
+        return std::unexpected(
+            candidates.empty() ? "no block with an `entry`; " + std::string(no_entry_hint)
+                               : std::string("several blocks have entries; name one with --root"));
+    }
+    return candidates.front();
+}
+
+std::string python_float(double value) {
+    return shortest_float(value);
 }
 
 } // namespace linnet::backend

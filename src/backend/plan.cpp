@@ -1,5 +1,6 @@
 #include "linnet/backend/plan.hpp"
 
+#include "linnet/backend/graph_export.hpp"
 #include "linnet/diagnostic/json.hpp"
 
 #include <algorithm>
@@ -67,49 +68,18 @@ private:
     // ------------------------------------------------------------------ root
 
     std::expected<EntityId, std::string> find_root() const {
-        std::vector<EntityId> candidates;
-        for (EntityId id = 0; id < model_.entities.size(); ++id) {
-            const Entity& entity = model_.entities[id];
-            if (entity.kind != EntityKind::Block || entity.parent != no_entity ||
-                entity.module != options_.root_module) {
-                continue;
-            }
-            if (!options_.root.empty()) {
-                if (entity.name == options_.root) {
-                    return id;
-                }
-                continue;
-            }
-            if (has_entry(id)) {
-                candidates.push_back(id);
-            }
-        }
-        if (!options_.root.empty()) {
-            return std::unexpected("no block named `" + options_.root + "` in this file");
-        }
-        if (candidates.size() != 1) {
-            return std::unexpected(
-                candidates.empty()
-                    ? has_entry(no_entity)
-                          ? "no block with an `entry`; the module-level entries are in "
-                            "`plan --functions`"
-                          : "no block with an `entry`; name one with --root"
-                    : "several blocks have entries; name one with --root");
-        }
-        return candidates.front();
+        return find_root_block(module_,
+                               options_.root_module,
+                               options_.root,
+                               has_entry(no_entity)
+                                   ? "the module-level entries are in `plan --functions`"
+                                   : "name one with --root");
     }
 
     // Whether `block` (or the root module itself, for `no_entity`) declares
     // an entry.
     bool has_entry(EntityId block) const {
-        for (const ir::Function& function : module_.functions()) {
-            const Entity& entity = model_.entities[function.entity];
-            if (function.is_entry && entity.parent == block &&
-                entity.module == options_.root_module) {
-                return true;
-            }
-        }
-        return false;
+        return declares_entry(module_, options_.root_module, block);
     }
 
     // ------------------------------------------------------------ dimensions
@@ -346,15 +316,7 @@ private:
                 continue;
             }
             const DeclInfo& info = model_.decls.at(id);
-            std::vector<std::pair<EntityId, std::string_view>> members;
-            for (const auto& [name, member] : info.scope) {
-                if (model_.entities[member].kind == EntityKind::Member) {
-                    members.emplace_back(member, name);
-                }
-            }
-            std::sort(members.begin(), members.end(), [](const auto& a, const auto& b) {
-                return a.first < b.first;
-            });
+            const auto members = block_members(model_, id);
             out += is_first ? "" : ",";
             is_first = false;
             out += json_string(entity.name) +
@@ -379,114 +341,19 @@ private:
     // bindings, mirroring sema's manifest but with structured dimensions.
     std::string manifest(EntityId root) const {
         std::string out = "[";
-        bool is_first = true;
-        std::vector<EntityId> active;
-        std::vector<std::string> repeat;
-        walk_block(root, {}, "", repeat, active, out, is_first, false);
-        return out + "]";
-    }
-
-    void walk_block(EntityId block,
-                    const Substitution& substitution,
-                    const std::string& prefix,
-                    std::vector<std::string>& repeat,
-                    std::vector<EntityId>& active,
-                    std::string& out,
-                    bool& is_first,
-                    bool within_optional) const {
-        if (std::find(active.begin(), active.end(), block) != active.end()) {
-            return;
-        }
-        active.push_back(block);
-        const DeclInfo& info = model_.decls.at(block);
-        // Members appear in the scope in hash order; use declaration order.
-        std::vector<std::pair<EntityId, std::string_view>> members;
-        for (const auto& [name, entity] : info.scope) {
-            if (model_.entities[entity].kind == EntityKind::Member) {
-                members.emplace_back(entity, name);
-            }
-        }
-        std::sort(members.begin(), members.end(), [](const auto& a, const auto& b) {
-            return a.first < b.first;
-        });
-        for (const auto& [entity, name] : members) {
-            const Entity& member = model_.entities[entity];
-            if (member.type == no_type) {
-                continue;
-            }
-            const TypeId type = types_.substitute(member.type, substitution);
-            const TypeData& data = model_.types.get(type);
-            const std::string path = prefix + std::string(name);
-            // An optional `sub` is present or absent as a whole: everything
-            // in it is optional.
-            const bool is_optional_sub =
-                data.kind == TypeKind::Optional &&
-                model_.types.get(data.elements.front()).kind == TypeKind::Block;
-            const bool is_sub =
-                data.kind == TypeKind::Block || data.kind == TypeKind::Array || is_optional_sub;
-            if (is_sub) {
-                const TypeData* element =
-                    is_optional_sub ? &model_.types.get(data.elements.front()) : &data;
-                std::string inner_prefix = path;
-                bool is_array = false;
-                if (data.kind == TypeKind::Array) {
-                    is_array = true;
-                    repeat.push_back(dim(data.value));
-                    inner_prefix += "[*]";
-                    element = &model_.types.get(data.elements.front());
-                }
-                if (element->kind == TypeKind::Block) {
-                    Substitution inner;
-                    const DeclInfo& inner_info = model_.decls.at(element->decl);
-                    for (std::size_t i = 0;
-                         i < inner_info.generics.size() && i < element->args.size();
-                         ++i) {
-                        const GenericInfo& generic = inner_info.generics[i];
-                        switch (generic.kind) {
-                        case GenericKind::Dim:
-                            inner.dims[generic.symbol] = element->args[i].dim;
-                            break;
-                        case GenericKind::Pack:
-                            inner.packs[generic.symbol] = element->args[i].shape;
-                            break;
-                        case GenericKind::DType:
-                            inner.dtypes[generic.dtype_var] = element->args[i].dtype;
-                            break;
-                        }
-                    }
-                    walk_block(element->decl,
-                               inner,
-                               inner_prefix + ".",
-                               repeat,
-                               active,
-                               out,
-                               is_first,
-                               within_optional || is_optional_sub);
-                }
-                if (is_array) {
-                    repeat.pop_back();
-                }
-                continue;
-            }
-            const bool is_optional = data.kind == TypeKind::Optional;
-            const TypeData& tensor = is_optional ? model_.types.get(data.elements.front()) : data;
-            if (tensor.kind != TypeKind::Tensor) {
-                continue;
-            }
-            const auto& decl = std::get<ast::MemberDecl>(module_ast_item(member));
-            out += is_first ? "" : ",";
-            is_first = false;
-            out += "{\"path\":" + json_string(path) + ",\"kind\":\"" +
+        walk_manifest(model_, types_, root, [&](const ManifestTensor& found) {
+            const auto& decl = std::get<ast::MemberDecl>(module_ast_item(*found.member));
+            out += out.size() == 1 ? "" : ",";
+            out += "{\"path\":" + json_string(found.path) + ",\"kind\":\"" +
                    std::string(ast::member_keyword(decl.kind)) +
-                   "\",\"dtype\":" + dtype_json(tensor.dtype) +
-                   ",\"shape\":" + shape_json(tensor.shape) + ",\"repeat\":[";
-            for (std::size_t i = 0; i < repeat.size(); ++i) {
-                out += (i == 0 ? "" : ",") + repeat[i];
+                   "\",\"dtype\":" + dtype_json(found.tensor->dtype) +
+                   ",\"shape\":" + shape_json(found.tensor->shape) + ",\"repeat\":[";
+            for (std::size_t i = 0; i < found.repeat->size(); ++i) {
+                out += (i == 0 ? "" : ",") + dim((*found.repeat)[i]);
             }
-            out += std::string("],\"optional\":") +
-                   (is_optional || within_optional ? "true" : "false") + "}";
-        }
-        active.pop_back();
+            out += std::string("],\"optional\":") + (found.is_optional ? "true" : "false") + "}";
+        });
+        return out + "]";
     }
 
     const ast::ItemData& module_ast_item(const Entity& entity) const {

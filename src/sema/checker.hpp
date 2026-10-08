@@ -105,13 +105,6 @@ private:
     void check_function_body(EntityId entity);
     void report_recursion();
     void collect_manifests();
-    void collect_manifest(EntityId block,
-                          const Substitution& substitution,
-                          const std::string& prefix,
-                          const std::vector<std::string>& repeat,
-                          std::vector<EntityId>& active,
-                          ManifestBlock& out,
-                          bool within_optional);
 
     // ------------------------------------------------------------------- names
     EntityId lookup(const ast::Name& name);

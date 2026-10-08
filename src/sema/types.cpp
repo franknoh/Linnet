@@ -209,6 +209,19 @@ GenericValue TypeStore::substitute(const GenericValue& value, const Substitution
     return result;
 }
 
+Substitution TypeStore::substitute(Substitution inner, const Substitution& outer) {
+    for (auto& [symbol, dim] : inner.dims) {
+        dim = substitute(dim, outer);
+    }
+    for (auto& [symbol, shape] : inner.packs) {
+        shape = substitute(shape, outer);
+    }
+    for (auto& [var, dtype] : inner.dtypes) {
+        dtype = substitute(dtype, outer);
+    }
+    return inner;
+}
+
 TypeId TypeStore::substitute(TypeId type, const Substitution& substitution) {
     if (substitution.empty()) {
         return type;

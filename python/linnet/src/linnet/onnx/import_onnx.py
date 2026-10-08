@@ -25,7 +25,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import onnx  # type: ignore[import-untyped]
@@ -33,8 +33,15 @@ from onnx import numpy_helper, shape_inference  # type: ignore[import-untyped]
 
 from ..compiler import LinnetError
 from ..dtypes import BY_NUMPY, BY_ONNX, DTYPES
-from ..importing import Block, Hierarchy, Member, identifier, write_source
-from ..weights import write_bindings
+from ..importing import (
+    Block,
+    Hierarchy,
+    Member,
+    PlanBuilder,
+    identifier,
+    refuse_unsupported,
+    write_source,
+)
 
 
 class OnnxImportError(LinnetError):
@@ -98,13 +105,22 @@ class _Symbols:
         return {"sym": self.ids[dim], "name": identifier(dim)}
 
 
-class _Builder:
-    def __init__(self, symbols: _Symbols) -> None:
-        self.symbols = symbols
-        self.next_id = 0
-        self.regions: list[list[dict[str, Any]]] = [[]]
+class _Builder(PlanBuilder[_Value, _Type, str, Dim]):
+    """The plan's operations, in Linnet dtypes and the graph's dimensions."""
 
-    def type_json(self, kind: _Type) -> dict[str, Any]:
+    error = OnnxImportError
+
+    def __init__(self, symbols: _Symbols) -> None:
+        super().__init__()
+        self.symbols = symbols
+
+    def kind(self, dtype: str, shape: tuple[Dim, ...] | None) -> _Type:
+        return _Type(shape or (), dtype)
+
+    def make(self, id: int, kind: _Type, type_json: dict[str, Any] | None) -> _Value:
+        return _Value(id, kind)
+
+    def kind_json(self, kind: _Type) -> dict[str, Any]:
         if kind.is_scalar:
             return {"kind": "scalar", "dtype": kind.dtype}
         return {
@@ -113,99 +129,23 @@ class _Builder:
             "dtype": kind.dtype,
         }
 
-    def fresh(self, kind: _Type) -> _Value:
-        self.next_id += 1
-        return _Value(self.next_id - 1, kind)
+    def kind_of(self, value: _Value) -> _Type:
+        return value.type
 
-    def value_json(
-        self, value: _Value, name: str = "", type_json: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        return {"id": value.id, "name": name, "type": type_json or self.type_json(value.type)}
+    def dtype_of(self, value: _Value) -> str:
+        return value.type.dtype
 
-    def op(
-        self,
-        kind: str,
-        operands: Sequence[_Value],
-        result: _Type | None,
-        attrs: dict[str, Any] | None = None,
-        regions: Sequence[dict[str, Any]] = (),
-        name: str = "",
-        type_json: dict[str, Any] | None = None,
-    ) -> _Value:
-        results = [self.fresh(result)] if result is not None else []
-        self.regions[-1].append(
-            {
-                "kind": kind,
-                "operands": [v.id for v in operands],
-                "results": [self.value_json(v, name, type_json) for v in results],
-                "attrs": attrs or {},
-                "regions": list(regions),
-            }
-        )
-        return results[0] if results else _Value(-1, _Type((), "f32"))
-
-    def const(self, value: float | int | bool, dtype: str) -> _Value:
-        kind = _Type((), dtype)
+    def literal(self, dtype: str) -> Literal["bool", "int", "float"]:
         if dtype == "bool":
-            return self.op("const.bool", [], kind, {"value": 1 if value else 0})
-        if dtype.startswith("f") or dtype == "bf16":
-            return self.op("const.float", [], kind, {"value": float(value)})
-        return self.op("const.int", [], kind, {"value": int(value)})
+            return "bool"
+        return "float" if DTYPES[dtype].is_float else "int"
 
-    def const_dim(self, dim: Dim) -> _Value:
-        return self.op("const.dim", [], _Type((), "i64"), {"value": self.symbols.json(dim)})
+    def dim_json(self, dim: Dim) -> int | dict[str, Any]:
+        return self.symbols.json(dim)
 
-    def region(
-        self, arguments: Sequence[tuple[str, _Type]], body: Callable[[list[_Value]], _Value]
-    ) -> dict[str, Any]:
-        values = [self.fresh(kind) for _, kind in arguments]
-        self.regions.append([])
-        yielded = body(values)
-        self.op("yield", [yielded], None)
-        ops = self.regions.pop()
-        return {
-            "args": [self.value_json(v, n) for v, (n, _) in zip(values, arguments, strict=True)],
-            "ops": ops,
-        }
-
-    def comprehension(
-        self,
-        indices: Sequence[tuple[str, Dim]],
-        dtype: str,
-        body: Callable[[list[_Value]], _Value],
-        name: str = "",
-    ) -> _Value:
-        region = self.region([(n, _Type((), "i64")) for n, _ in indices], body)
-        return self.op(
-            "comprehension",
-            [],
-            _Type(tuple(d for _, d in indices), dtype),
-            {"indices": [{"name": n, "domain": [self.symbols.json(d)]} for n, d in indices]},
-            [region],
-            name,
-        )
-
-    def reduce(
-        self,
-        kind: str,
-        indices: Sequence[tuple[str, Dim]],
-        dtype: str,
-        body: Callable[[list[_Value]], _Value],
-    ) -> _Value:
-        region = self.region([(n, _Type((), "i64")) for n, _ in indices], body)
-        return self.op(
-            "reduce",
-            [],
-            _Type((), dtype),
-            {
-                "indices": [{"name": n, "domain": [self.symbols.json(d)]} for n, d in indices],
-                "reduce": kind,
-            },
-            [region],
-        )
-
-    def element(self, tensor: _Value, indices: Sequence[_Value]) -> _Value:
-        return self.op("tensor.element", [tensor, *indices], _Type((), tensor.type.dtype))
+    @property
+    def index_dtype(self) -> str:
+        return "i64"
 
     def call(
         self, callee: str, generics: list[dict[str, Any]], operands: list[_Value], kind: _Type
@@ -336,16 +276,11 @@ def import_onnx(
     if weights is not None:
         from safetensors.numpy import save_file  # type: ignore[import-untyped]
 
-        weights_dir = Path(weights)
-        weights_dir.mkdir(parents=True, exist_ok=True)
-        weights_path = weights_dir / "model.safetensors"
+        weights_path, bindings_path = translator.hierarchy.weights_files(weights)
         save_file(
             {name: np.ascontiguousarray(array) for name, array in translator.parameters.items()},
             str(weights_path),
         )
-        if translator.hierarchy.renamed:
-            renamed = dict(sorted(translator.hierarchy.renamed.items()))
-            bindings_path = write_bindings(weights_dir / "bindings.json", renamed)
     return ImportResult(
         output_path,
         module,
@@ -418,9 +353,9 @@ class _Translator:
         for name in leaves:
             if name in self.constants:
                 self.parameters[name] = self.constants[name]
-                self.values[name] = self._member_value(root, name)
+                self.values[name] = self._member_value(root, name, leaves[name])
         for input_name, path in declared.items():
-            self.values[input_name] = self._member_value(root, path)
+            self.values[input_name] = self._member_value(root, path, leaves[path])
 
         inputs: list[tuple[str, _Value]] = []
         for info in self.graph.input:
@@ -441,11 +376,7 @@ class _Translator:
                 self.producers[output] = node
         for node in self.graph.node:
             self._translate(node)
-        if self.unsupported:
-            raise OnnxImportError(
-                "the graph uses operations without a Linnet mapping:\n  "
-                + "\n  ".join(sorted(set(self.unsupported)))
-            )
+        refuse_unsupported(self.unsupported, "the graph", OnnxImportError)
         outputs = [self._materialized(o.name) for o in self.graph.output]
         if len(outputs) != 1:
             raise OnnxImportError("the graph must have exactly one output")
@@ -456,45 +387,16 @@ class _Translator:
             {"name": identifier(name), "kind": "dim", "sym": i}
             for name, i in self.symbols.ids.items()
         ]
-        blocks = {
-            name: {
-                "module": self.module,
-                "pub": True,
-                "generics": [],
-                "constraints": [],
-                "members": block.members,
-            }
-            for name, block in self.hierarchy.blocks.items()
-        }
-        body = {
-            "args": [
-                self.builder.value_json(
-                    self.self_value, "self", self.hierarchy.block_type(root_block)
-                )
-            ]
-            + [self.builder.value_json(v, n) for n, v in inputs],
-            "ops": self.builder.regions[0],
-        }
-        return {
-            "version": 1,
-            "module": self.module,
-            "root": {"name": root_block.name, "generics": [], "constraints": []},
-            "manifest": [],
-            "blocks": blocks,
-            "functions": [
-                {
-                    "name": f"{self.module}::{root_block.name}.forward",
-                    "kind": "entry",
-                    "block": root_block.name,
-                    "pub": True,
-                    "generics": generics,
-                    "constraints": [],
-                    "results": [self.builder.type_json(result.type)],
-                    "body": body,
-                }
-            ],
-            "constants": [],
-        }
+        root_type = self.hierarchy.block_type(root_block)
+        args = [self.builder.value_json(self.self_value, "self", root_type)]
+        args += [self.builder.value_json(v, n) for n, v in inputs]
+        return self.hierarchy.plan(
+            root_block.name,
+            args,
+            self.builder.regions[0],
+            self.builder.type_of(result),
+            generics,
+        )
 
     def _value_type(self, info: Any) -> _Type | None:
         tensor = info.type.tensor_type
@@ -510,41 +412,10 @@ class _Translator:
                 return None
         return _Type(tuple(shape), _dtype_name(tensor.elem_type))
 
-    def _member_value(self, root: Member, name: str) -> _Value:
-        member = root
-        current = self.self_value
-        parts = re.split(r"[./]", name)
-        linnet_parts: list[str] = []
-        for i, part in enumerate(parts):
-            child = member.children[part]
-            is_last = i == len(parts) - 1
-            if member.length is not None:
-                index = self.builder.const(int(part), "i64")
-                current = self.builder.op(
-                    "array.get", [current, index], _Type((), "f32"),
-                    type_json=self.hierarchy.block_type(cast(Block, member.element)),
-                )  # fmt: skip
-                linnet_parts.append(part)
-                member = child
-                continue
-            linnet_parts.append(child.name)
-            if is_last:
-                linnet_path = ".".join(linnet_parts)
-                if linnet_path != name:
-                    self.hierarchy.renamed[linnet_path] = name
-                return self.builder.op(
-                    "block.param",
-                    [current],
-                    cast(_Type, child.leaf),
-                    {"name": child.name},
-                    name=child.name,
-                )
-            current = self.builder.op(
-                "block.sub", [current], _Type((), "f32"), {"name": child.name},
-                type_json=self.hierarchy.member_type(child),
-            )  # fmt: skip
-            member = child
-        raise OnnxImportError(f"cannot resolve `{name}`")
+    def _member_value(self, root: Member, name: str, kind: _Type) -> _Value:
+        return self.builder.member_value(
+            self.hierarchy, root, self.self_value, name, kind, separators="./"
+        )
 
     # ---- values
 
@@ -1200,7 +1071,7 @@ def _layer_norm(t: _Translator, node: Any) -> None:
     width = x.type.shape[-1]
     optional_type = {
         "kind": "optional",
-        "inner": t.builder.type_json(_Type((width,), x.type.dtype)),
+        "inner": t.builder.kind_json(_Type((width,), x.type.dtype)),
     }
     if len(node.input) > 2 and node.input[2]:
         bias = t.builder.op(
@@ -1637,34 +1508,18 @@ def _reduction(kind: str, divide: bool) -> Handler:
         reduced = sorted(int(a) % rank for a in axes_attr) if axes_attr else list(range(rank))
         keepdims = int(t.attr(node, "keepdims", 1)) == 1
         result = t.result(node)
-        kept = [i for i in range(rank) if i not in reduced]
-
-        def body(out: list[_Value]) -> _Value:
-            def inner(red: list[_Value]) -> _Value:
-                indices: list[_Value] = []
-                outer_iter, inner_iter = iter(out), iter(red)
-                for axis in range(rank):
-                    indices.append(next(inner_iter) if axis in reduced else next(outer_iter))
-                return t.builder.element(x, indices)
-
-            total = t.builder.reduce(
-                kind, [(f"r{a}", shape[a]) for a in reduced], result.dtype, inner
-            )
-            if divide:
-                count = 1
-                for a in reduced:
-                    size = shape[a]
-                    if not isinstance(size, int):
-                        raise OnnxImportError("mean over a symbolic axis is not supported")
-                    count *= size
-                divisor = t.builder.op(
-                    "cast", [t.builder.const_dim(count)], _Type((), result.dtype)
-                )
-                total = t.builder.op("div", [total, divisor], _Type((), result.dtype))
-            return total
-
-        if not kept:
-            value = body([])
+        divisor: int | None = None
+        if divide:
+            divisor = 1
+            for a in reduced:
+                size = shape[a]
+                if not isinstance(size, int):
+                    raise OnnxImportError("mean over a symbolic axis is not supported")
+                divisor *= size
+        value = t.builder.reduce_axes(
+            x, shape, reduced, kind, result.dtype, divisor, "" if keepdims else node.output[0]
+        )
+        if len(reduced) == rank:
             if result.is_scalar:
                 t.define(node, value)
             else:
@@ -1678,14 +1533,7 @@ def _reduction(kind: str, divide: bool) -> Handler:
                         name=node.output[0],
                     ),
                 )
-            return
-        value = t.builder.comprehension(
-            [(f"o{a}", shape[a]) for a in kept],
-            result.dtype,
-            body,
-            name="" if keepdims else node.output[0],
-        )
-        if keepdims:
+        elif keepdims:
             _reshape_to(t, node, value, result)
         else:
             t.define(node, value)

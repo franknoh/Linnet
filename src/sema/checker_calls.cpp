@@ -347,17 +347,7 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                 is_valid = false;
                 continue;
             }
-            switch (param.kind) {
-            case GenericKind::Dim:
-                inference.bound.dims[param.symbol] = value->dim;
-                break;
-            case GenericKind::Pack:
-                inference.bound.packs[param.symbol] = value->shape;
-                break;
-            case GenericKind::DType:
-                inference.bound.dtypes[param.dtype_var] = value->dtype;
-                break;
-            }
+            bind(inference.bound, param, *value);
         }
     }
 
@@ -454,18 +444,7 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                 .help("pass it explicitly: `" + name + "<...>(...)`");
             return types_.error();
         }
-        const GenericValue value = types_.substitute(*generic.default_value, inference.bound);
-        switch (generic.kind) {
-        case GenericKind::Dim:
-            inference.bound.dims[generic.symbol] = value.dim;
-            break;
-        case GenericKind::Pack:
-            inference.bound.packs[generic.symbol] = value.shape;
-            break;
-        case GenericKind::DType:
-            inference.bound.dtypes[generic.dtype_var] = value.dtype;
-            break;
-        }
+        bind(inference.bound, generic, types_.substitute(*generic.default_value, inference.bound));
     }
 
     for (const auto& [param, arg] : inference.deferred_dims) {

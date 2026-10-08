@@ -21,14 +21,20 @@ import operator
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import torch
 from torch import nn
 
-from ..importing import Block, Hierarchy, Member, identifier, write_source
+from ..importing import (
+    Hierarchy,
+    Member,
+    PlanBuilder,
+    identifier,
+    refuse_unsupported,
+    write_source,
+)
 from ..plan import PlanError
-from ..weights import write_bindings
 from .dtypes import LINNET_DTYPES
 
 
@@ -123,15 +129,50 @@ class _Value:
         return self.shape is not None and self.type_json is None
 
 
-class _Builder:
-    """Accumulates the operations of the entry body and its regions."""
+# A value's type: its dtype, and its shape (None for a scalar).
+_Kind = tuple[torch.dtype, tuple[Dim, ...] | None]
+
+
+class _Builder(PlanBuilder[_Value, _Kind, torch.dtype, Dim]):
+    """The operations of the entry body and its regions, in PyTorch dtypes
+    and symbolic dimensions."""
+
+    error = ExportError
 
     def __init__(self, symbols: _Symbols) -> None:
+        super().__init__()
         self.symbols = symbols
-        self.next_id = 0
-        self.regions: list[list[dict[str, Any]]] = [[]]
 
-    # ---- types
+    def kind(self, dtype: torch.dtype, shape: tuple[Dim, ...] | None) -> _Kind:
+        return (dtype, shape)
+
+    def make(self, id: int, kind: _Kind, type_json: dict[str, Any] | None) -> _Value:
+        return _Value(id, kind[0], kind[1], type_json)
+
+    def kind_json(self, kind: _Kind) -> dict[str, Any]:
+        dtype, shape = kind
+        return self.scalar_type(dtype) if shape is None else self.tensor_type(shape, dtype)
+
+    def kind_of(self, value: _Value) -> _Kind:
+        return (value.dtype, value.shape)
+
+    def type_of(self, value: _Value) -> dict[str, Any]:
+        return value.type_json if value.type_json is not None else super().type_of(value)
+
+    def dtype_of(self, value: _Value) -> torch.dtype:
+        return value.dtype
+
+    def literal(self, dtype: torch.dtype) -> Literal["bool", "int", "float"]:
+        if dtype == torch.bool:
+            return "bool"
+        return "float" if dtype.is_floating_point else "int"
+
+    def dim_json(self, dim: Dim) -> int | dict[str, Any]:
+        return self.symbols.json(dim)
+
+    @property
+    def index_dtype(self) -> torch.dtype:
+        return torch.int64
 
     def tensor_type(self, shape: Sequence[Dim], dtype: torch.dtype) -> dict[str, Any]:
         return {
@@ -142,120 +183,6 @@ class _Builder:
 
     def scalar_type(self, dtype: torch.dtype) -> dict[str, Any]:
         return {"kind": "scalar", "dtype": _dtype_name(dtype)}
-
-    def type_of(self, value: _Value) -> dict[str, Any]:
-        if value.type_json is not None:
-            return value.type_json
-        if value.shape is None:
-            return self.scalar_type(value.dtype)
-        return self.tensor_type(value.shape, value.dtype)
-
-    # ---- values and operations
-
-    def fresh(
-        self,
-        dtype: torch.dtype,
-        shape: tuple[Dim, ...] | None,
-        type_json: dict[str, Any] | None = None,
-    ) -> _Value:
-        self.next_id += 1
-        return _Value(self.next_id - 1, dtype, shape, type_json)
-
-    def value_json(self, value: _Value, name: str = "") -> dict[str, Any]:
-        return {"id": value.id, "name": name, "type": self.type_of(value)}
-
-    def op(
-        self,
-        kind: str,
-        operands: Sequence[_Value],
-        result: tuple[torch.dtype, tuple[Dim, ...] | None] | None,
-        attrs: dict[str, Any] | None = None,
-        regions: Sequence[dict[str, Any]] = (),
-        name: str = "",
-        type_json: dict[str, Any] | None = None,
-    ) -> _Value:
-        results: list[_Value] = []
-        if result is not None:
-            results.append(self.fresh(result[0], result[1], type_json))
-        self.regions[-1].append(
-            {
-                "kind": kind,
-                "operands": [v.id for v in operands],
-                "results": [self.value_json(v, name) for v in results],
-                "attrs": attrs or {},
-                "regions": list(regions),
-            }
-        )
-        return results[0] if results else _Value(-1, torch.float32, None)
-
-    def const(self, value: float | int | bool, dtype: torch.dtype) -> _Value:
-        if dtype == torch.bool:
-            return self.op("const.bool", [], (dtype, None), {"value": 1 if value else 0})
-        if dtype.is_floating_point:
-            return self.op("const.float", [], (dtype, None), {"value": float(value)})
-        return self.op("const.int", [], (dtype, None), {"value": int(value)})
-
-    def const_dim(self, dim: Dim) -> _Value:
-        return self.op("const.dim", [], (torch.int64, None), {"value": self.symbols.json(dim)})
-
-    def region(
-        self,
-        arguments: Sequence[tuple[str, torch.dtype]],
-        body: Callable[[list[_Value]], _Value],
-    ) -> dict[str, Any]:
-        """Runs `body` in a new region whose arguments are scalars; the value
-        it returns is yielded."""
-        values = [self.fresh(dtype, None) for _, dtype in arguments]
-        self.regions.append([])
-        yielded = body(values)
-        self.op("yield", [yielded], None)
-        ops = self.regions.pop()
-        return {
-            "args": [
-                self.value_json(v, name) for v, (name, _) in zip(values, arguments, strict=True)
-            ],
-            "ops": ops,
-        }
-
-    def comprehension(
-        self,
-        indices: Sequence[tuple[str, Dim]],
-        dtype: torch.dtype,
-        body: Callable[[list[_Value]], _Value],
-        name: str = "",
-    ) -> _Value:
-        """`let out[i, j, ...] = body(i, j, ...)` over the given index domains."""
-        region = self.region([(n, torch.int64) for n, _ in indices], body)
-        return self.op(
-            "comprehension",
-            [],
-            (dtype, tuple(d for _, d in indices)),
-            {"indices": [{"name": n, "domain": [self.symbols.json(d)]} for n, d in indices]},
-            [region],
-            name,
-        )
-
-    def reduce(
-        self,
-        kind: str,
-        indices: Sequence[tuple[str, Dim]],
-        dtype: torch.dtype,
-        body: Callable[[list[_Value]], _Value],
-    ) -> _Value:
-        region = self.region([(n, torch.int64) for n, _ in indices], body)
-        return self.op(
-            "reduce",
-            [],
-            (dtype, None),
-            {
-                "indices": [{"name": n, "domain": [self.symbols.json(d)]} for n, d in indices],
-                "reduce": kind,
-            },
-            [region],
-        )
-
-    def element(self, tensor: _Value, indices: Sequence[_Value]) -> _Value:
-        return self.op("tensor.element", [tensor, *indices], (tensor.dtype, None))
 
 
 # -------------------------------------------------------------- hierarchy
@@ -374,16 +301,11 @@ def export_linnet(
     if weights is not None:
         from safetensors.torch import save_file  # type: ignore[import-untyped]
 
-        weights_dir = Path(weights)
-        weights_dir.mkdir(parents=True, exist_ok=True)
+        weights_path, bindings_path = exporter.hierarchy.weights_files(weights)
         tensors = {
             name: tensor.detach().contiguous().cpu() for name, tensor in exporter.tensors().items()
         }
-        weights_path = weights_dir / "model.safetensors"
         save_file(tensors, str(weights_path))
-        if exporter.hierarchy.renamed:
-            renamed = dict(sorted(exporter.hierarchy.renamed.items()))
-            bindings_path = write_bindings(weights_dir / "bindings.json", renamed)
     return ExportResult(
         output_path, module, exporter.root_name, "forward", weights_path, bindings_path, plan
     )
@@ -398,7 +320,7 @@ class _Exporter:
         self.symbols = _Symbols()
         self.builder = _Builder(self.symbols)
         self.hierarchy = _Hierarchy(self.symbols, module)
-        self.self_value = self.builder.fresh(torch.float32, None)
+        self.self_value = self.builder.fresh((torch.float32, None))
         self.values: dict[str, _Value] = {}  # graph node name -> IR value
         self.dims: dict[str, Dim] = {}  # graph node name -> symbolic integer
         self.tuples: dict[str, list[_Value]] = {}  # graph node name -> tuple elements
@@ -443,11 +365,7 @@ class _Exporter:
                 self._translate(node)
             elif node.op == "output" and not self.unsupported:
                 outputs = [self.value_of(arg) for arg in _flatten(node.args[0])]
-        if self.unsupported:
-            raise ExportError(
-                "the model uses operations without a Linnet mapping:\n  "
-                + "\n  ".join(sorted(set(self.unsupported)))
-            )
+        refuse_unsupported(self.unsupported, "the model", ExportError)
         if len(outputs) == 1:
             result = outputs[0]
         else:
@@ -456,47 +374,20 @@ class _Exporter:
                 "tuple.make", outputs, (torch.float32, None), type_json=tuple_type
             )
         self.builder.op("return", [result], None)
-        body_ops = self.builder.regions[0]
-        result_type = self.builder.type_of(result)
-
         generics = [
             {"name": self.symbols.names[s], "kind": "dim", "sym": i}
             for s, i in self.symbols.ids.items()
         ]
-        body = {
-            "args": [self.builder.value_json(self.self_value, "self")]
-            + [self.builder.value_json(v, identifier(n)) for n, v in inputs],
-            "ops": body_ops,
-        }
-        blocks = {
-            name: {
-                "module": self.module,
-                "pub": True,
-                "generics": [],
-                "constraints": [],
-                "members": block.members,
-            }
-            for name, block in self.hierarchy.blocks.items()
-        }
-        return {
-            "version": 1,
-            "module": self.module,
-            "root": {"name": self.root_name, "generics": [], "constraints": []},
-            "manifest": [],
-            "blocks": blocks,
-            "functions": [
-                {
-                    "name": f"{self.module}::{self.root_name}.forward",
-                    "kind": "entry",
-                    "block": self.root_name,
-                    "pub": True,
-                    "generics": generics,
-                    "constraints": self._constraints(),
-                    "results": [result_type],
-                    "body": body,
-                }
-            ],
-        }
+        args = [self.builder.value_json(self.self_value, "self")]
+        args += [self.builder.value_json(v, identifier(n)) for n, v in inputs]
+        return self.hierarchy.plan(
+            self.root_name,
+            args,
+            self.builder.regions[0],
+            self.builder.type_of(result),
+            generics,
+            self._constraints(),
+        )
 
     # ---- inputs and members
 
@@ -601,43 +492,10 @@ class _Exporter:
         root = self.hierarchy.root
         assert root is not None
         tensor = node.meta["val"]
-        member = root
-        current = self.self_value
-        parts = path.split(".")
-        for i, part in enumerate(parts):
-            child = member.children[part]
-            is_last = i == len(parts) - 1
-            if member.length is not None:
-                # An element of a sub array, indexed by position.
-                index = self.builder.const(int(part), torch.int64)
-                current = self.builder.op(
-                    "array.get",
-                    [current, index],
-                    (torch.float32, None),
-                    type_json=self.hierarchy.block_type(cast(Block, member.element)),
-                )
-                member = child
-                continue
-            if is_last:
-                if child.kind == "sub":
-                    raise ExportError(f"`{path}` names a block, not a tensor")
-                # Buffers load exactly like parameters.
-                return self.builder.op(
-                    "block.param",
-                    [current],
-                    (tensor.dtype, tuple(tensor.shape)),
-                    {"name": child.name},
-                    name=node.name,
-                )
-            current = self.builder.op(
-                "block.sub",
-                [current],
-                (torch.float32, None),
-                {"name": child.name},
-                type_json=self.hierarchy.member_type(child),
-            )
-            member = child
-        raise ExportError(f"cannot resolve `{path}`")
+        kind = (tensor.dtype, tuple(tensor.shape))
+        return self.builder.member_value(
+            self.hierarchy, root, self.self_value, path, kind, node.name
+        )
 
     def _input_value(self, node: Any) -> _Value:
         tensor = node.meta.get("val")
@@ -645,7 +503,7 @@ class _Exporter:
             raise ExportError(f"input `{node.name}` is not a tensor")
         if tensor.dim() == 0:
             raise ExportError(f"input `{node.name}` is a rank-0 tensor; Linnet inputs are tensors")
-        return self.builder.fresh(tensor.dtype, tuple(tensor.shape))
+        return self.builder.fresh((tensor.dtype, tuple(tensor.shape)))
 
     # ---- translation
 
@@ -1318,39 +1176,18 @@ def _reduction(exporter: _Exporter, node: Any, kind: str, divide: bool) -> _Valu
         reduced = sorted(int(d) % rank for d in raw)
     keepdim = bool(node.args[2]) if len(node.args) > 2 else bool(node.kwargs.get("keepdim", False))
     dtype, result_shape = exporter.result_of(node)
-    kept = [i for i in range(rank) if i not in reduced]
-    accumulate = dtype
-
-    def body(outputs: list[_Value]) -> _Value:
-        def inner(inner_indices: list[_Value]) -> _Value:
-            indices: list[_Value] = []
-            outer_iter = iter(outputs)
-            inner_iter = iter(inner_indices)
-            for axis in range(rank):
-                indices.append(next(inner_iter) if axis in reduced else next(outer_iter))
-            element = exporter.builder.element(x, indices)
-            if element.dtype != accumulate:
-                element = exporter.builder.op("cast", [element], (accumulate, None))
-            return element
-
-        total = exporter.builder.reduce(
-            kind, [(f"r{axis}", shape[axis]) for axis in reduced], accumulate, inner
-        )
-        if divide:
-            count: Dim = 1
-            for axis in reduced:
-                count = count * shape[axis]
-            divisor = exporter.builder.op(
-                "cast", [exporter.builder.const_dim(count)], (accumulate, None)
-            )
-            total = exporter.builder.op("div", [total, divisor], (accumulate, None))
-        return total
-
-    if not kept:
+    divisor: Dim | None = None
+    if divide:
+        divisor = 1
+        for axis in reduced:
+            divisor = divisor * shape[axis]
+    value = exporter.builder.reduce_axes(
+        x, shape, reduced, kind, dtype, divisor, "" if keepdim else node.name
+    )
+    if len(reduced) == rank:
         # Reducing everything gives a scalar; keepdim reshapes it into a
         # rank-`rank` tensor of ones, which Linnet cannot fill from a scalar
-        # without a comprehension over nothing — express it as fill.
-        value = body([])
+        # without a comprehension over nothing -- express it as fill.
         if result_shape is None:
             return value
         return exporter.builder.op(
@@ -1360,13 +1197,9 @@ def _reduction(exporter: _Exporter, node: Any, kind: str, divide: bool) -> _Valu
             {"shape": [_dim_json(exporter, d) for d in result_shape]},
             name=node.name,
         )
-    result = exporter.builder.comprehension(
-        [(f"o{axis}", shape[axis]) for axis in kept], dtype, body,
-        name="" if keepdim else node.name,
-    )  # fmt: skip
     if keepdim and result_shape is not None:
-        return exporter.reshape(result, result_shape, node.name)
-    return result
+        return exporter.reshape(value, result_shape, node.name)
+    return value
 
 
 @_handles("aten.sum.dim_IntList", "aten.sum.default")
