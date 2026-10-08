@@ -157,8 +157,8 @@ class Interpreter:
             found = self._read[(id(op), key)] = read(op.attrs[key])
         return found
 
-    def _shape_attr(self, op: ir.Op, key: str = "shape") -> ir.Shape:
-        return cast(ir.Shape, self._attr(op, key, ir.parse_shape))
+    def _shape_attr(self, op: ir.Op) -> ir.Shape:
+        return cast(ir.Shape, self._attr(op, "shape", ir.parse_shape))
 
     def _substitution(self, op: ir.Op) -> ir.Substitution:
         return cast(ir.Substitution, self._attr(op, "substitution", ir.parse_substitution))

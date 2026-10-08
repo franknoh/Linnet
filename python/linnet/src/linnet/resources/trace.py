@@ -171,11 +171,6 @@ class SymEnv:
         dtypes.update({k: self.dtype(v) for k, v in substitution.dtypes.items()})
         return SymEnv(dims, packs, dtypes)
 
-    def generic(self, generic: ir.Generic, arg: ir.GenericArg) -> SymEnv:
-        """These bindings plus one generic bound to `arg`, evaluated here."""
-        dims, packs, dtypes = dict(self.dims), dict(self.packs), dict(self.dtypes)
-        return self._with(generic, arg, dims, packs, dtypes)
-
     def _with(
         self,
         generic: ir.Generic,
@@ -542,8 +537,6 @@ class _Tracer:
             if isinstance(whole, TupleValue):
                 return [whole.items[index]]
             return [ScalarValue()]
-        if kind == "struct.make":
-            return [TupleValue(tuple(operands))]
         if kind == "option.some":
             return [OptionValue(operands[0])]
         if kind == "option.none":

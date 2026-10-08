@@ -145,18 +145,3 @@ class PagedLayout:
             Confidence.MODELED,
             f"{blocks} blocks of {self.block_tokens} positions",
         )
-
-
-def bytes_per_token(
-    caches: list[MemoryObject], env: Mapping[str, int], axes: tuple[int, ...] = (0, 2)
-) -> int:
-    """Cache bytes one more position of one more sequence costs: every
-    cache's size divided by its token axes."""
-    total = 0
-    for cache in caches:
-        shape = [ex.evaluate(d, env) for d in cache.shape]
-        if len(shape) <= max(axes):
-            continue
-        tokens = math.prod(shape[a] for a in axes)
-        total += ex.evaluate(cache.nbytes, env) // max(tokens, 1)
-    return total

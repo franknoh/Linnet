@@ -32,12 +32,10 @@ _FREE = -2  # statements of the inputs and constants alone
 
 @dataclass(frozen=True, slots=True)
 class Regions:
-    """The rewritten module source, the names of the shared functions, and
-    how many calls of them one step makes."""
+    """The rewritten module source and the names of the shared functions."""
 
     source: str
     functions: tuple[str, ...]
-    calls: int
 
 
 def regional(source: str) -> Regions | None:
@@ -276,11 +274,7 @@ def regional(source: str) -> Regions | None:
     main.body = _released(rebuilt, rebuilt_reads, arguments, returned)
     module.body = [n for n in module.body if n is not main] + [*kinds, main]
     ast.fix_missing_locations(module)
-    return Regions(
-        ast.unparse(module) + "\n",
-        tuple(f.name for f in kinds),
-        len(functions),
-    )
+    return Regions(ast.unparse(module) + "\n", tuple(f.name for f in kinds))
 
 
 def _function(body: list[ast.stmt], needed: Sequence[str], sends: Sequence[str]) -> ast.FunctionDef:
