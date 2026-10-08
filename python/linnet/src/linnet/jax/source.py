@@ -11,8 +11,6 @@ trained in JAX — and `jax.jit`/`jax.vmap` compose with it as usual.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -21,6 +19,7 @@ from typing import Any
 import jax
 
 from ..compiler import LinnetError
+from ..generated import import_generated
 from .load import CompiledEntry, LinnetFunction, load
 
 
@@ -83,14 +82,8 @@ class SourceFunction(LinnetFunction):
         # the JAX source supplies the function that runs.
         compiled = super()._compile(bindings)
         text = self._export("jax", bindings)
-        path = self._work / f"{self.entry}_{len(self._cache)}.py"
-        path.write_text(text, encoding="utf-8")
-        spec = importlib.util.spec_from_file_location(f"linnet_jax_generated_{path.stem}", path)
-        if spec is None or spec.loader is None:
-            raise LinnetError(f"cannot load the generated module at {path}")
-        module: Any = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = import_generated(self._work, f"{self.entry}_{len(self._cache)}", text)
+        path: Path = module.__linnet_path__
         # Adapters come after the parameters both exports share.
         shared = list(module.PARAMETERS)[: len(compiled.parameters)]
         if shared != compiled.parameters or list(module.STATES) != compiled.state_inputs:

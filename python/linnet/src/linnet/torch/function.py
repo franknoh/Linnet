@@ -14,8 +14,6 @@ model's parameters.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,6 +25,7 @@ import torch
 from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
 from ..dtypes import CLASSES
+from ..generated import import_generated
 from ..plan import PlanError, compile_plan
 from .dtypes import torch_dtype
 from .interp import Interpreter
@@ -191,14 +190,8 @@ class Function:
         )
         if self._work is None:
             self._work = Path(tempfile.mkdtemp(prefix="linnet-function-"))
-        path = self._work / f"{self.name}_{len(self._generated)}.py"
-        path.write_text(text, encoding="utf-8")
-        spec = importlib.util.spec_from_file_location(f"linnet_function_{path.stem}", path)
-        if spec is None or spec.loader is None:
-            raise PlanError(f"cannot load the generated module at {path}")
-        module: Any = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = import_generated(self._work, f"{self.name}_{len(self._generated)}", text)
+        path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise PlanError(f"internal: `{self.name}` compiled with parameters or state")
         main: Callable[..., Any] = module.main
