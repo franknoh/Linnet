@@ -86,8 +86,8 @@ TEST("ir: literals take the dtype of their context") {
     const std::string text =
         lower_text("module m\nfn f(x: Tensor[4; f16], n: i32) -> Tensor[4; f16] {\n"
                    "    let a = x * 2 + 0.5\n    let b = n + 1\n    let c = 1\n    return a\n}\n");
-    CHECK(text.find("const.float 2.000000 : f16") != std::string::npos);
-    CHECK(text.find("const.float 0.500000 : f16") != std::string::npos);
+    CHECK(text.find("const.float 2.0 : f16") != std::string::npos);
+    CHECK(text.find("const.float 0.5 : f16") != std::string::npos);
     CHECK(text.find("const.int 1 : i32") != std::string::npos);
     CHECK(text.find("%c") != std::string::npos &&
           text.find("const.int 1 : i64") != std::string::npos);
@@ -134,7 +134,7 @@ TEST("ir: if, enums, tuples, defaults, and builtins") {
     for (const char* needle : {"if %",
                                "enum.match None Causal",
                                "enum.const \"Causal\"",
-                               "const.float 2.000000 : f32",
+                               "const.float 2.0 : f32",
                                "call @m::scale<T = f32>",
                                "permute [1, 0]",
                                "reshape [6]",

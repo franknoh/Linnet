@@ -1,5 +1,7 @@
 #include "linnet/ir/ir.hpp"
 
+#include "linnet/support/text.hpp"
+
 #include <array>
 #include <set>
 #include <utility>
@@ -355,10 +357,8 @@ private:
             return " " + std::to_string(a.integer);
         case OpKind::ConstBool:
             return a.integer != 0 ? " true" : " false";
-        case OpKind::ConstFloat: {
-            const std::string number = std::to_string(a.number);
-            return " " + number;
-        }
+        case OpKind::ConstFloat:
+            return " " + shortest_float(a.number);
         case OpKind::ConstDim:
             return " " + module_.model().dims.to_string(a.dim);
         case OpKind::EnumConst:
