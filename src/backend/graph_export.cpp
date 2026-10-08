@@ -201,47 +201,15 @@ private:
                 return std::nullopt;
             }
         }
-        std::vector<EntityId> candidates;
-        for (EntityId id = 0; id < model_.entities.size(); ++id) {
-            const Entity& entity = model_.entities[id];
-            if (entity.kind != EntityKind::Block || entity.parent != no_entity ||
-                entity.module != options_.root_module) {
-                continue;
-            }
-            if (!options_.root.empty()) {
-                if (entity.name == options_.root) {
-                    return id;
-                }
-                continue;
-            }
-            for (const ir::Function& function : module_.functions()) {
-                if (function.is_entry && model_.entities[function.entity].parent == id) {
-                    candidates.push_back(id);
-                    break;
-                }
-            }
+        const auto root = find_root_block(module_, options_.root_module, options_.root);
+        if (!root) {
+            fail(root.error());
         }
-        if (!options_.root.empty()) {
-            fail("no block named `" + options_.root + "` in this file");
-        }
-        if (candidates.size() != 1) {
-            fail(candidates.empty() ? "no block with an `entry`; name one with --root"
-                                    : "several blocks have entries; name one with --root");
-        }
-        return candidates.front();
+        return *root;
     }
 
-    // Whether `owner` (a block, or `no_entity` for the root module itself)
-    // declares an entry called `name`; any entry for an empty `name`.
     bool has_entry_named(EntityId owner, std::string_view name) const {
-        for (const ir::Function& function : module_.functions()) {
-            const Entity& entity = model_.entities[function.entity];
-            if (function.is_entry && entity.parent == owner &&
-                entity.module == options_.root_module && (name.empty() || entity.name == name)) {
-                return true;
-            }
-        }
-        return false;
+        return declares_entry(module_, options_.root_module, owner, name);
     }
 
     bool is_module_entry(std::string_view name) const { return has_entry_named(no_entity, name); }
@@ -623,15 +591,7 @@ private:
     // ------------------------------------------------------- parameters
 
     void collect_parameters(EntityId block, const Substitution& subst, const std::string& prefix) {
-        const DeclInfo& decl = model_.decls.at(block);
-        std::vector<std::pair<EntityId, std::string_view>> members;
-        for (const auto& [name, entity] : decl.scope) {
-            if (model_.entities[entity].kind == EntityKind::Member) {
-                members.emplace_back(entity, name);
-            }
-        }
-        std::sort(members.begin(), members.end());
-        for (const auto& [entity, name] : members) {
+        for (const auto& [entity, name] : block_members(model_, block)) {
             const TypeId type = types_.substitute(model_.entities[entity].type, subst);
             const TypeData& data = types_.get(type);
             const std::string path = prefix + std::string(name);
@@ -2658,6 +2618,51 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
         {"f64", "double", 11, "float64"},
     }};
     return names[static_cast<std::size_t>(dtype)];
+}
+
+bool declares_entry(const ir::Module& module,
+                    std::uint32_t root_module,
+                    sema::EntityId owner,
+                    std::string_view name) {
+    const sema::Model& model = module.model();
+    return std::ranges::any_of(module.functions(), [&](const ir::Function& function) {
+        const sema::Entity& entity = model.entities[function.entity];
+        return function.is_entry && entity.parent == owner && entity.module == root_module &&
+               (name.empty() || entity.name == name);
+    });
+}
+
+std::expected<sema::EntityId, std::string> find_root_block(const ir::Module& module,
+                                                           std::uint32_t root_module,
+                                                           std::string_view root,
+                                                           std::string_view no_entry_hint) {
+    const sema::Model& model = module.model();
+    std::vector<sema::EntityId> candidates;
+    for (sema::EntityId id = 0; id < model.entities.size(); ++id) {
+        const sema::Entity& entity = model.entities[id];
+        if (entity.kind != sema::EntityKind::Block || entity.parent != sema::no_entity ||
+            entity.module != root_module) {
+            continue;
+        }
+        if (!root.empty()) {
+            if (entity.name == root) {
+                return id;
+            }
+            continue;
+        }
+        if (declares_entry(module, root_module, id)) {
+            candidates.push_back(id);
+        }
+    }
+    if (!root.empty()) {
+        return std::unexpected("no block named `" + std::string(root) + "` in this file");
+    }
+    if (candidates.size() != 1) {
+        return std::unexpected(
+            candidates.empty() ? "no block with an `entry`; " + std::string(no_entry_hint)
+                               : std::string("several blocks have entries; name one with --root"));
+    }
+    return candidates.front();
 }
 
 std::string python_float(double value) {

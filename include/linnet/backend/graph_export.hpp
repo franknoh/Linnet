@@ -282,6 +282,22 @@ private:
 // `?` any one. LoRA patterns name the weights they adapt this way.
 bool glob_match(std::string_view pattern, std::string_view text);
 
+// Whether `owner` -- a top-level block, or `sema::no_entity` for the module
+// itself -- of module `root_module` declares an entry called `name` (any
+// entry when `name` is empty).
+bool declares_entry(const ir::Module& module,
+                    std::uint32_t root_module,
+                    sema::EntityId owner,
+                    std::string_view name = {});
+// The top-level block of module `root_module` called `root`, or with `root`
+// empty the only one that declares an entry; otherwise why not, ending with
+// `no_entry_hint` when no block has an entry.
+std::expected<sema::EntityId, std::string>
+find_root_block(const ir::Module& module,
+                std::uint32_t root_module,
+                std::string_view root,
+                std::string_view no_entry_hint = "name one with --root");
+
 struct GraphExportOptions {
     std::string root;  // root block; empty selects the only block with entries
     std::string entry; // entry to export; empty selects the block's only entry

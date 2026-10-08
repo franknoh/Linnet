@@ -20,85 +20,98 @@ void Checker::collect_manifests() {
             manifest.generics.push_back((generic.kind == GenericKind::Pack ? "*" : "") +
                                         std::string(generic.name));
         }
-        std::vector<EntityId> active;
-        collect_manifest(entity, {}, "", {}, active, manifest, false);
+        walk_manifest(*model_, types_, entity, [&](const ManifestTensor& found) {
+            ManifestEntry entry;
+            entry.path = found.path;
+            entry.kind = found.member->is_state    ? "state"
+                         : found.member->is_buffer ? "buffer"
+                                                   : "param";
+            for (const shape::Poly& length : *found.repeat) {
+                entry.repeat.push_back(dims_.to_string(length));
+            }
+            entry.is_optional = found.is_optional;
+            entry.dtype = types_.to_string(found.tensor->dtype);
+            for (const ShapeElem& unit : found.tensor->shape) {
+                entry.shape.push_back(unit.is_pack ? "*" + std::string(dims_.symbol_name(unit.pack))
+                                                   : dims_.to_string(unit.dim));
+            }
+            manifest.entries.push_back(std::move(entry));
+        });
         result_.manifests.push_back(std::move(manifest));
     }
 }
 
-void Checker::collect_manifest(EntityId block,
-                               const Substitution& substitution,
-                               const std::string& prefix,
-                               const std::vector<std::string>& repeat,
-                               std::vector<EntityId>& active,
-                               ManifestBlock& out,
-                               bool within_optional) {
-    // A block that contains itself, directly or through an array, has no
-    // finite manifest; the cycle is already an error elsewhere.
-    if (std::find(active.begin(), active.end(), block) != active.end()) {
-        return;
-    }
-    active.push_back(block);
-    const Entity& declaration = entities_[block];
-    const auto& decl =
-        std::get<ast::BlockDecl>(modules_[declaration.module]->item(declaration.item).data);
-    for (const ast::ItemId item_id : decl.members) {
-        const ast::Item& item = modules_[declaration.module]->item(item_id);
-        const auto* member = std::get_if<ast::MemberDecl>(&item.data);
-        if (member == nullptr) {
-            continue;
-        }
-        const Scope& scope = decls_[block].scope;
-        const auto found = scope.find(member->name.text);
-        if (found == scope.end() || entities_[found->second].type == no_type) {
-            continue;
-        }
-        const TypeId type = types_.substitute(entities_[found->second].type, substitution);
-        const TypeData& data = types_.get(type);
-        const std::string path = prefix + std::string(member->name.text);
+namespace {
 
-        if (member->kind == ast::MemberKind::Sub) {
-            std::vector<std::string> inner_repeat = repeat;
-            std::string inner_prefix = path;
-            // An optional sub is present or absent as a whole: everything in
-            // it is optional.
+struct ManifestWalk {
+    const Model& model;
+    TypeStore& types;
+    const std::function<void(const ManifestTensor&)>& visit;
+    std::vector<EntityId> active;
+    std::vector<shape::Poly> repeat;
+
+    void block(EntityId block,
+               const Substitution& substitution,
+               const std::string& prefix,
+               bool within_optional) {
+        if (std::ranges::find(active, block) != active.end()) {
+            return;
+        }
+        active.push_back(block);
+        for (const auto& [entity, name] : block_members(model, block)) {
+            const Entity& member = model.entities[entity];
+            if (member.type == no_type) {
+                continue;
+            }
+            const TypeData& data = types.get(types.substitute(member.type, substitution));
+            const std::string path = prefix + std::string(name);
+            // An optional `sub` is present or absent as a whole: everything
+            // in it is optional.
             const bool is_optional = data.kind == TypeKind::Optional;
-            const TypeData* element = is_optional ? &types_.get(data.elements.front()) : &data;
+            const TypeData& inner = is_optional ? types.get(data.elements.front()) : data;
             if (data.kind == TypeKind::Array) {
-                inner_repeat.push_back(dims_.to_string(data.value));
-                inner_prefix += "[*]";
-                element = &types_.get(data.elements.front());
+                const TypeData& element = types.get(data.elements.front());
+                if (element.kind == TypeKind::Block) {
+                    repeat.push_back(data.value);
+                    this->block(element.decl,
+                                substitution_of(model.decls.at(element.decl), element),
+                                path + "[*].",
+                                within_optional);
+                    repeat.pop_back();
+                }
+            } else if (inner.kind == TypeKind::Block) {
+                this->block(inner.decl,
+                            substitution_of(model.decls.at(inner.decl), inner),
+                            path + ".",
+                            within_optional || is_optional);
+            } else if (inner.kind == TypeKind::Tensor) {
+                visit({path, &member, &inner, &repeat, within_optional || is_optional});
             }
-            if (element->kind == TypeKind::Block) {
-                collect_manifest(element->decl,
-                                 substitution_of(*element),
-                                 inner_prefix + ".",
-                                 inner_repeat,
-                                 active,
-                                 out,
-                                 within_optional || is_optional);
-            }
-            continue;
         }
-
-        ManifestEntry entry;
-        entry.path = path;
-        entry.kind = std::string(ast::member_keyword(member->kind));
-        entry.repeat = repeat;
-        const bool declared_optional = data.kind == TypeKind::Optional;
-        entry.is_optional = within_optional || declared_optional;
-        const TypeData& tensor = declared_optional ? types_.get(data.elements.front()) : data;
-        if (tensor.kind != TypeKind::Tensor) {
-            continue;
-        }
-        entry.dtype = types_.to_string(tensor.dtype);
-        for (const ShapeElem& unit : tensor.shape) {
-            entry.shape.push_back(unit.is_pack ? "*" + std::string(dims_.symbol_name(unit.pack))
-                                               : dims_.to_string(unit.dim));
-        }
-        out.entries.push_back(std::move(entry));
+        active.pop_back();
     }
-    active.pop_back();
+};
+
+} // namespace
+
+std::vector<std::pair<EntityId, std::string_view>> block_members(const Model& model,
+                                                                 EntityId block) {
+    // The scope is in hash order; members were declared in id order.
+    std::vector<std::pair<EntityId, std::string_view>> members;
+    for (const auto& [name, entity] : model.decls.at(block).scope) {
+        if (model.entities[entity].kind == EntityKind::Member) {
+            members.emplace_back(entity, name);
+        }
+    }
+    std::ranges::sort(members, {}, &std::pair<EntityId, std::string_view>::first);
+    return members;
+}
+
+void walk_manifest(const Model& model,
+                   TypeStore& types,
+                   EntityId root,
+                   const std::function<void(const ManifestTensor&)>& visit) {
+    ManifestWalk{model, types, visit, {}, {}}.block(root, {}, "", false);
 }
 
 } // namespace linnet::sema

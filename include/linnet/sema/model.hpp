@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
@@ -170,5 +171,26 @@ struct Model {
     const ExprFacts& expr(std::uint32_t module, ast::ExprId id) const;
     const StmtFacts& stmt(std::uint32_t module, ast::StmtId id) const;
 };
+
+// The members of `block` in declaration order, with their names.
+std::vector<std::pair<EntityId, std::string_view>> block_members(const Model& model,
+                                                                 EntityId block);
+
+// A tensor of a block's manifest, as `walk_manifest` finds it.
+struct ManifestTensor {
+    std::string path;                       // `layers[*].attention.q.weight`
+    const Entity* member = nullptr;         // its `param`, `buffer` or `state`
+    const TypeData* tensor = nullptr;       // its type, the block's generics bound
+    const std::vector<shape::Poly>* repeat; // each `[*]`'s array length, outermost first
+    bool is_optional = false;               // declared optional, or in an optional `sub`
+};
+
+// Visits every tensor member of `root` and of the blocks it holds, through
+// arrays and optional subs, in declaration order. A block inside itself has
+// no finite manifest and is not entered again (the cycle is an error).
+void walk_manifest(const Model& model,
+                   TypeStore& types,
+                   EntityId root,
+                   const std::function<void(const ManifestTensor&)>& visit);
 
 } // namespace linnet::sema
