@@ -14,13 +14,15 @@ run's base model) are not saved: load the model as the run did.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
 import torch
 
-PREFIX = "step-"
+from ..runs import checkpoint_path, complete, prune
+
+# Written last by `torch.distributed.checkpoint`.
+_MARKER = ".metadata"
 
 
 def save_checkpoint(
@@ -38,12 +40,10 @@ def save_checkpoint(
     import torch.distributed.checkpoint as dcp
 
     root = Path(directory)
-    target = root / f"{PREFIX}{step:08d}"
+    target = checkpoint_path(root, step)
     dcp.save(_state(model, optimizer, schedule, step), checkpoint_id=str(target))
-    first = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
-    if first and keep is not None:
-        for old in _complete(root)[:-keep]:
-            shutil.rmtree(old, ignore_errors=True)
+    if not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0:
+        prune(root, _MARKER, keep)
     return target
 
 
@@ -55,7 +55,7 @@ def load_checkpoint(
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import set_optimizer_state_dict
 
-    found = _complete(Path(directory))
+    found = complete(Path(directory), _MARKER)
     if not found:
         return 0
     state = _state(model, optimizer, schedule, 0)
@@ -86,17 +86,6 @@ def _state(
             "schedule": schedule.state_dict() if schedule is not None else None,
         },
     }
-
-
-def _complete(root: Path) -> list[Path]:
-    """The checkpoints under `root` that finished writing, oldest first."""
-    if not root.is_dir():
-        return []
-    return sorted(
-        path
-        for path in root.iterdir()
-        if path.name.startswith(PREFIX) and (path / ".metadata").exists()
-    )
 
 
 __all__ = ["load_checkpoint", "save_checkpoint"]

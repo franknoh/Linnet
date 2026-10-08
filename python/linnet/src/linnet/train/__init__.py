@@ -35,6 +35,7 @@ import torch
 
 from .. import packing
 from ..packing import Example
+from ..runs import History, Step, unsaved
 from ..torch.fsdp import sharded
 from .checkpoints import load_checkpoint, save_checkpoint
 
@@ -108,27 +109,6 @@ def cosine_schedule(
         return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * progress))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
-
-
-@dataclass
-class Step:
-    """What one optimizer step did."""
-
-    step: int
-    loss: float  # the mean over the step's counted positions
-    tokens: int  # positions processed, padding included
-    seconds: float
-    learning_rate: float
-    grad_norm: float | None = None
-
-
-@dataclass
-class History:
-    steps: list[Step] = field(default_factory=lambda: list[Step]())
-
-    @property
-    def losses(self) -> list[float]:
-        return [step.loss for step in self.steps]
 
 
 def train(
@@ -241,11 +221,7 @@ def train(
     if saves and save_to is not None and history.steps:
         _save(model, Path(save_to))
     last = history.steps[-1].step if history.steps else 0
-    if (
-        checkpoint is not None
-        and history.steps
-        and not (checkpoint_every and last % checkpoint_every == 0)
-    ):
+    if checkpoint is not None and history.steps and unsaved(checkpoint_every, last):
         save_checkpoint(checkpoint, model, optimizer, step=last, schedule=schedule)
     return history
 

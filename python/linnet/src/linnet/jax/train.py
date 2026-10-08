@@ -27,7 +27,6 @@ from __future__ import annotations
 import contextlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,27 +37,8 @@ import numpy as np
 from .. import ir
 from ..dtypes import BY_NUMPY
 from ..packing import Packed
+from ..runs import History, Step, checkpoint_path, complete, prune, unsaved
 from ..weights import read_arrays, write_safetensors
-
-
-@dataclass
-class Step:
-    """What one optimizer step did."""
-
-    step: int
-    loss: float  # the mean over the step's counted positions
-    tokens: int  # positions processed, padding included
-    seconds: float
-    grad_norm: float | None = None
-
-
-@dataclass
-class History:
-    steps: list[Step] = field(default_factory=lambda: list[Step]())
-
-    @property
-    def losses(self) -> list[float]:
-        return [step.loss for step in self.steps]
 
 
 def train(
@@ -220,11 +200,7 @@ def train(
         if checkpoint is not None and checkpoint_every and step % checkpoint_every == 0:
             save_checkpoint(checkpoint, step, trained, state)
         group = take()
-    if (
-        checkpoint is not None
-        and history.steps
-        and not (checkpoint_every and step % checkpoint_every == 0)
-    ):
+    if checkpoint is not None and history.steps and unsaved(checkpoint_every, step):
         save_checkpoint(checkpoint, step, trained, state)
     learner.trained, learner.state = trained, state
     return learner.parameters(), history
@@ -637,7 +613,8 @@ def _placed(array: Any, mesh: Any) -> Any:
 
 # ------------------------------------------------------------------ files
 
-PREFIX = "step-"
+# Written last: a checkpoint without it did not finish.
+_MARKER = "progress.json"
 
 
 def _write(path: Path, arrays: dict[str, Any]) -> None:
@@ -671,19 +648,15 @@ def save_checkpoint(
     `step` to `directory/step-<step>` (from one host), then removes all but
     the `keep` latest."""
     import json
-    import shutil
 
     root = Path(directory)
-    target = root / f"{PREFIX}{step:08d}"
+    target = checkpoint_path(root, step)
     target.mkdir(parents=True, exist_ok=True)
     _write(target / "parameters.safetensors", trained)
     leaves = jax.tree.leaves(state)
     _write(target / "state.safetensors", {f"{i:06d}": leaf for i, leaf in enumerate(leaves)})
-    # Written last: a checkpoint without it did not finish.
-    (target / "progress.json").write_text(json.dumps({"step": step}), encoding="utf-8")
-    if keep is not None:
-        for old in _complete(root)[:-keep]:
-            shutil.rmtree(old, ignore_errors=True)
+    (target / _MARKER).write_text(json.dumps({"step": step}), encoding="utf-8")
+    prune(root, _MARKER, keep)
     return target
 
 
@@ -695,7 +668,7 @@ def load_checkpoint(
     `state` are. None when there is none."""
     import json
 
-    found = _complete(Path(directory))
+    found = complete(Path(directory), _MARKER)
     if not found:
         return None
     latest = found[-1]
@@ -704,18 +677,8 @@ def load_checkpoint(
     leaves, structure = jax.tree.flatten(state)
     kept = read_arrays(latest / "state.safetensors")
     leaves = [jax.device_put(kept[f"{i:06d}"], like.sharding) for i, like in enumerate(leaves)]
-    step = int(json.loads((latest / "progress.json").read_text(encoding="utf-8"))["step"])
+    step = int(json.loads((latest / _MARKER).read_text(encoding="utf-8"))["step"])
     return step, trained, jax.tree.unflatten(structure, leaves)
-
-
-def _complete(root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(
-        path
-        for path in root.iterdir()
-        if path.name.startswith(PREFIX) and (path / "progress.json").exists()
-    )
 
 
 def _chosen(

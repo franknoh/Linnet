@@ -29,48 +29,29 @@ import math
 import random
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from ..packing import Prompt, Reward, group_advantages
-from ..serve import Request
+from ..packing import Prompt, Reward, empty, group_advantages
+from ..runs import (
+    GrpoStep,
+    as_prompt,
+    check_grpo,
+    learned_positions,
+    sample_requests,
+    score,
+    unsaved,
+)
 from . import (
     Batch,
-    Example,
     clip_gradients,
     load_checkpoint,
     pack,
     reduce_gradients,
     save_checkpoint,
 )
-
-
-@dataclass
-class GrpoStep:
-    """What one step did: `reward` and `reward_std` over its completions,
-    `length` their mean token count, `clipped` the share of learned tokens
-    whose ratio was clipped, `kl` the mean estimate against `reference`,
-    `uniform` the share of groups whose rewards were all equal (no
-    advantage, so nothing to learn), `mismatch` the mean absolute
-    difference of the policy's and the engine's log-probabilities of the
-    sampled tokens (with `correction_cap`)."""
-
-    step: int
-    reward: float
-    reward_std: float
-    length: float
-    loss: float
-    clipped: float
-    kl: float | None
-    sample_seconds: float
-    train_seconds: float
-    learning_rate: float
-    grad_norm: float | None
-    uniform: float = 0.0
-    mismatch: float | None = None
 
 
 def grpo_loss(
@@ -181,13 +162,7 @@ def grpo(
     (`linnet.train.save_checkpoint`)."""
     import torch.distributed as dist
 
-    if beta and reference is None:
-        raise ValueError("a KL penalty (`beta`) needs a `reference` model")
-    if correction_cap is not None and (temperature != 1.0 or top_k or top_p < 1.0):
-        raise ValueError(
-            "the engine's log-probabilities are of the model's own distribution: correcting "
-            "for them takes temperature 1 and no top_k or top_p"
-        )
+    check_grpo(beta, reference, correction_cap, temperature, top_k, top_p)
     device = next(policy.parameters()).device
     if getattr(policy, "shard_group", None) is not None:
         raise ValueError(
@@ -208,7 +183,7 @@ def grpo(
                 for _ in range(group):
                     draws.getrandbits(32)
     for step in range(start + 1, steps + 1):
-        chosen = [_prompt(p) for p in itertools.islice(source, prompts_per_step)]
+        chosen = [as_prompt(p) for p in itertools.islice(source, prompts_per_step)]
         if distributed:
             ready = torch.tensor([float(bool(chosen))], device=device)
             dist.all_reduce(ready, op=dist.ReduceOp.MIN)
@@ -219,42 +194,31 @@ def grpo(
 
         begin = time.perf_counter()
         engine.load_weights(policy)
-        requests = [
-            Request(
-                prompt=list(prompt.tokens),
-                max_new_tokens=max_new_tokens,
-                eos=stop,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                seed=draws.getrandbits(32),
-                logprobs=0 if correction_cap is not None else None,
-            )
-            for prompt in chosen
-            for _ in range(group)
-        ]
+        requests = sample_requests(
+            chosen,
+            group,
+            draws,
+            max_new_tokens=max_new_tokens,
+            eos=stop,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            logprobs=correction_cap is not None,
+        )
         completions, _ = engine.run(requests)
         sampled = time.perf_counter() - begin
 
         begin = time.perf_counter()
-        rewards = [
-            float(reward(chosen[index // group], list(completion.tokens)))
-            for index, completion in enumerate(completions)
-        ]
-        advantages = group_advantages(rewards, group, scale=scale_rewards)
-        groups = [rewards[i : i + group] for i in range(0, len(rewards), group)]
-        uniform = [max(g) == min(g) for g in groups]
-        kept = [i for i in range(len(completions)) if not (drop_uniform and uniform[i // group])]
-        examples = [
-            Example.prompted(completions[i].request.prompt, completions[i].tokens) for i in kept
-        ]
-        advantages = [advantages[i] for i in kept]
+        scored = score(
+            chosen, completions, reward, group, scale=scale_rewards, drop_uniform=drop_uniform
+        )
+        rewards, uniform = scored.rewards, scored.uniform
         sampled_by = (
-            [(len(completions[i].request.prompt), completions[i].logprobs) for i in kept]
+            [(len(completions[i].request.prompt), completions[i].logprobs) for i in scored.kept]
             if correction_cap is not None
             else None
         )
-        batches = list(pack(examples, tokens))
+        batches = list(pack(scored.examples, tokens))
         count = float(sum(batch.count for batch in batches))
         if distributed:
             # The count over every process, and as many batches as the
@@ -264,9 +228,11 @@ def grpo(
             count = float(totals.item())
             most = torch.tensor([len(batches)], device=device)
             dist.all_reduce(most, op=dist.ReduceOp.MAX)
-            batches += [_empty(tokens)] * (int(most.item()) - len(batches))
+            batches += [Batch.of(empty(tokens))] * (int(most.item()) - len(batches))
         count = max(1.0, count)
-        prepared = [_Prepared(batch, advantages, count, device, sampled_by) for batch in batches]
+        prepared = [
+            _Prepared(batch, scored.advantages, count, device, sampled_by) for batch in batches
+        ]
         if iterations > 1 or reference is not None:
             with torch.no_grad():
                 for item in prepared:
@@ -328,7 +294,7 @@ def grpo(
             float(len(rewards)),
             float(sum(len(c.tokens) for c in completions)),
             float(sum(uniform)),
-            float(len(groups)),
+            float(len(uniform)),
         ]
         if distributed:
             summed = torch.tensor(moments, dtype=torch.float64, device=device)
@@ -357,23 +323,9 @@ def grpo(
         if checkpoint is not None and checkpoint_every and step % checkpoint_every == 0:
             save_checkpoint(checkpoint, policy, optimizer, step=step, schedule=schedule)
     last = history[-1].step if history else 0
-    if (
-        checkpoint is not None
-        and history
-        and not (checkpoint_every and last % checkpoint_every == 0)
-    ):
+    if checkpoint is not None and history and unsaved(checkpoint_every, last):
         save_checkpoint(checkpoint, policy, optimizer, step=last, schedule=schedule)
     return history
-
-
-def _prompt(value: Prompt | Sequence[int]) -> Prompt:
-    return value if isinstance(value, Prompt) else Prompt(value)
-
-
-def _empty(size: int) -> Batch:
-    """A batch that learns nothing, run so every process makes the same calls."""
-    zeros = torch.zeros(size, dtype=torch.int32)
-    return Batch(zeros, zeros, zeros, zeros.long(), torch.zeros(size))
 
 
 class _Prepared:
@@ -394,26 +346,20 @@ class _Prepared:
             value.to(device)
             for value in (batch.tokens, batch.positions, batch.segments, batch.targets)
         ]
-        self.weights = (batch.mask / count).to(device)
-        # Padding is the segment after the last sequence: no advantage.
-        per_sequence = torch.tensor([advantages[i] for i in batch.items] + [0.0])
-        self.advantages = per_sequence[batch.segments.long()].to(device)
+        weights, advantages_, engine = learned_positions(
+            batch.items,
+            batch.segments.numpy(),
+            batch.positions.numpy(),
+            batch.mask.numpy(),
+            advantages,
+            count,
+            sampled_by,
+        )
+        self.weights = torch.as_tensor(weights).to(device)
+        self.advantages = torch.as_tensor(advantages_).to(device)
         self.old: torch.Tensor | None = None
         self.reference: torch.Tensor | None = None
-        self.engine: torch.Tensor | None = None
-        if sampled_by is not None:
-            # Completion token k is the target of the position before it:
-            # the prompt's length - 1 + k within its sequence.
-            rows = [sampled_by[i] for i in batch.items]
-            width = max([len(values) for _, values in rows] + [1])
-            table = torch.zeros(len(rows) + 1, width)
-            for s, (_, values) in enumerate(rows):
-                table[s, : len(values)] = torch.tensor(values, dtype=torch.float32)
-            lengths = torch.tensor([length for length, _ in rows] + [1])
-            segments = batch.segments.long()
-            k = (batch.positions.long() - (lengths[segments] - 1)).clamp(0, width - 1)
-            values = torch.where(batch.mask > 0, table[segments, k], torch.zeros(()))
-            self.engine = values.to(device)
+        self.engine = torch.as_tensor(engine).to(device) if engine is not None else None
 
 
 __all__ = ["GrpoStep", "Prompt", "Reward", "group_advantages", "grpo", "grpo_loss"]
