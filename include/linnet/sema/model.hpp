@@ -10,6 +10,7 @@
 #include <deque>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +28,8 @@ inline constexpr EntityId no_entity = 0xFFFFFFFFU;
 
 // Names of the implicit, non-shadowable language prelude.
 bool is_prelude_name(std::string_view name);
+// The prelude's types and functions (dtype names aside), as source spells them.
+std::span<const std::string_view> prelude_names();
 
 enum class EntityKind : std::uint8_t {
     Module, // a module imported as a namespace

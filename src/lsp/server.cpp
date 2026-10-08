@@ -4,9 +4,12 @@
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/format/formatter.hpp"
 #include "linnet/sema/analysis.hpp"
+#include "linnet/sema/model.hpp"
+#include "linnet/sema/types.hpp"
 #include "linnet/source/source_manager.hpp"
 #include "linnet/syntax/lexer.hpp"
 #include "linnet/syntax/parser.hpp"
+#include "linnet/syntax/token.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,7 +17,9 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <span>
 #include <variant>
+#include <vector>
 
 namespace linnet::lsp {
 
@@ -30,17 +35,33 @@ Overloaded(Visitors...) -> Overloaded<Visitors...>;
 constexpr int error_method_not_found = -32601;
 constexpr int error_invalid_params = -32602;
 
-constexpr auto keywords = std::to_array<std::string_view>({
-    "module",       "use",    "pub",   "as",     "const",  "type",  "struct", "enum",    "fn",
-    "op",           "block",  "entry", "param",  "buffer", "state", "sub",    "let",     "var",
-    "return",       "if",     "else",  "match",  "static", "for",   "in",     "where",   "true",
-    "false",        "none",   "some",  "crate",  "Tensor", "Dim",   "Shape",  "DType",   "Numeric",
-    "Integer",      "Float",  "bool",  "i8",     "i16",    "i32",   "i64",    "u8",      "u16",
-    "u32",          "u64",    "f16",   "bf16",   "f32",    "f64",   "cast",   "reshape", "permute",
-    "broadcast_to", "concat", "iota",  "fill",   "exp",    "log",   "sqrt",   "rsqrt",   "sin",
-    "cos",          "tanh",   "abs",   "select", "min",    "max",   "sum",    "prod",    "any",
-    "all",
-});
+// The words completion offers besides the document's own names: keywords,
+// the prelude, dtypes and reductions, from the tables the compiler reads.
+std::vector<std::string_view> completion_words() {
+    std::vector<std::string_view> words;
+    for (auto i = static_cast<std::size_t>(TokenKind::KwModule);
+         i <= static_cast<std::size_t>(TokenKind::KwExtern);
+         ++i) {
+        words.push_back(token_kind_name(static_cast<TokenKind>(i)));
+    }
+    const std::span<const std::string_view> prelude = sema::prelude_names();
+    words.insert(words.end(), prelude.begin(), prelude.end());
+    for (auto i = static_cast<std::size_t>(sema::ScalarKind::Bool);
+         i <= static_cast<std::size_t>(sema::ScalarKind::F64);
+         ++i) {
+        words.push_back(sema::scalar_name(static_cast<sema::ScalarKind>(i)));
+    }
+    for (auto i = static_cast<std::size_t>(ast::ReductionKind::Sum);
+         i <= static_cast<std::size_t>(ast::ReductionKind::All);
+         ++i) {
+        const std::string_view spelling =
+            ast::reduction_kind_spelling(static_cast<ast::ReductionKind>(i));
+        if (std::ranges::find(words, spelling) == words.end()) {
+            words.push_back(spelling); // `min` and `max` are prelude functions too
+        }
+    }
+    return words;
+}
 
 // Semantic token legend, in the order announced to the client.
 constexpr auto token_types = std::to_array<std::string_view>({
@@ -519,8 +540,8 @@ struct Server::State {
                 add(symbol.name, kind, symbol.detail);
             }
         }
-        for (const std::string_view keyword : keywords) {
-            add(std::string(keyword), 14, "");
+        for (const std::string_view word : completion_words()) {
+            add(std::string(word), 14, "");
         }
         return items;
     }

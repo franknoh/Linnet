@@ -18,7 +18,7 @@ struct Overloaded : Visitors... {
 template <typename... Visitors>
 Overloaded(Visitors...) -> Overloaded<Visitors...>;
 
-constexpr auto prelude_names = std::to_array<std::string_view>({
+constexpr auto prelude = std::to_array<std::string_view>({
     "Tensor",  "Dim",     "Shape",        "DType",  "Numeric", "Integer", "Float", "cast",
     "reshape", "permute", "broadcast_to", "concat", "pad",     "iota",    "fill",  "gather",
     "scatter", "exp",     "log",          "sqrt",   "rsqrt",   "sin",     "cos",   "tanh",
@@ -61,7 +61,11 @@ std::optional<shape::Relation> relation_of(ast::BinaryOp op) {
 
 bool is_prelude_name(std::string_view name) {
     return scalar_from_name(name).has_value() ||
-           std::find(prelude_names.begin(), prelude_names.end(), name) != prelude_names.end();
+           std::find(prelude.begin(), prelude.end(), name) != prelude.end();
+}
+
+std::span<const std::string_view> prelude_names() {
+    return prelude;
 }
 
 // --------------------------------------------------------------------- reports
