@@ -355,10 +355,7 @@ std::optional<std::string> PythonTarget::lora_target(const std::string& name) co
     // A sharded weight is used as the value gathered from its parameter.
     const auto gathered = gathered_.find(name);
     const std::string& argument = gathered != gathered_.end() ? gathered->second : name;
-    if (lora_.patterns.empty() || argument.size() < 2 || argument[0] != 'p' ||
-        !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
-            return std::isdigit(static_cast<unsigned char>(c)) != 0;
-        })) {
+    if (lora_.patterns.empty() || !numbered(argument, 'p')) {
         return std::nullopt;
     }
     const std::size_t index = std::stoul(argument.substr(1));

@@ -388,4 +388,13 @@ std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Di
 std::string python_tuple(const Dims& dims);
 std::string python_float(double value);
 
+// Python text the source targets print, read back: whether `c` can be part
+// of an identifier; whether `word` is a generated name with `prefix` (`v3`,
+// `p0`); every identifier-like word of `text` with its position (numbers
+// are not words); and the `vN` values `text` mentions.
+bool word_char(char c);
+bool numbered(std::string_view word, char prefix);
+std::vector<std::pair<std::size_t, std::string>> words_of(std::string_view text);
+std::set<std::string> value_names(std::string_view text);
+
 } // namespace linnet::backend

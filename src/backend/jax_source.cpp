@@ -26,35 +26,6 @@ constexpr const char* loss_import = "import linnet.jax.loss as _loss\n\n";
 // What a module whose parameters are gathered from their parts imports.
 constexpr const char* gather_import = "from linnet.jax.fsdp import gather as _gather\n\n";
 
-bool identifier_char(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-}
-
-// Every identifier `text` mentions.
-std::set<std::string> identifiers(std::string_view text) {
-    std::set<std::string> out;
-    std::size_t i = 0;
-    while (i < text.size()) {
-        if (identifier_char(text[i]) && std::isdigit(static_cast<unsigned char>(text[i])) == 0 &&
-            (i == 0 || !identifier_char(text[i - 1]))) {
-            std::size_t end = i;
-            while (end < text.size() && identifier_char(text[end])) {
-                ++end;
-            }
-            out.emplace(text.substr(i, end - i));
-            i = end;
-        } else {
-            ++i;
-        }
-    }
-    return out;
-}
-
-// `body` with each region between `# remat N begin` and `# remat N end`
-// moved into a function the backward pass computes again: `jax.checkpoint`
-// keeps what the function reads and returns, and recomputes the rest. What
-// it returns is every value it defines that the code after it (or `tail`)
-// reads.
 std::string outline_remat(const std::string& body, const std::string& tail) {
     std::vector<std::string> lines;
     std::size_t start = 0;
@@ -96,7 +67,7 @@ std::string outline_remat(const std::string& body, const std::string& tail) {
             const std::string name = equals == std::string::npos
                                          ? std::string()
                                          : line.substr(indent.size(), equals - indent.size());
-            if (!name.empty() && std::ranges::all_of(name, identifier_char)) {
+            if (!name.empty() && std::ranges::all_of(name, word_char)) {
                 defined.push_back(name);
             }
         }
@@ -104,7 +75,10 @@ std::string outline_remat(const std::string& body, const std::string& tail) {
         for (std::size_t k = close + 1; k < lines.size(); ++k) {
             after += lines[k] + "\n";
         }
-        const std::set<std::string> read_after = identifiers(after);
+        std::set<std::string> read_after;
+        for (auto& [at, word] : words_of(after)) {
+            read_after.insert(std::move(word));
+        }
         std::vector<std::string> outputs;
         for (const std::string& name : defined) {
             if (read_after.contains(name)) {

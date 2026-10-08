@@ -871,20 +871,8 @@ public:
         }
         lines.push_back(tail);
         const auto mentions = [](const std::string& line, const std::string& name) {
-            for (std::size_t at = line.find(name); at != std::string::npos;
-                 at = line.find(name, at + 1)) {
-                const std::size_t end = at + name.size();
-                const bool starts =
-                    at == 0 || (!std::isalnum(static_cast<unsigned char>(line[at - 1])) &&
-                                line[at - 1] != '_');
-                const bool ends =
-                    end == line.size() ||
-                    (!std::isalnum(static_cast<unsigned char>(line[end])) && line[end] != '_');
-                if (starts && ends) {
-                    return true;
-                }
-            }
-            return false;
+            return std::ranges::any_of(words_of(line),
+                                       [&](const auto& word) { return word.second == name; });
         };
         std::string out;
         for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
@@ -981,39 +969,13 @@ public:
         }
         // Only the constants the entry reads cross the boundary; the rest
         // are intermediates of `constants` itself.
-        const std::set<std::string> used = mentioned_values_in(out.body + tail);
+        const std::set<std::string> used = value_names(out.body + tail);
         for (const std::string& name : hoisted_names) {
             if (used.contains(name)) {
                 out.names.push_back(name);
             }
         }
         return out;
-    }
-
-    static std::set<std::string> mentioned_values_in(const std::string& text) {
-        std::set<std::string> names;
-        for (std::size_t i = 0; i < text.size(); ++i) {
-            const bool boundary =
-                i == 0 ||
-                (!std::isalnum(static_cast<unsigned char>(text[i - 1])) && text[i - 1] != '_');
-            if (text[i] != 'v' || !boundary) {
-                continue;
-            }
-            std::size_t j = i + 1;
-            while (j < text.size() && std::isdigit(static_cast<unsigned char>(text[j]))) {
-                ++j;
-            }
-            const bool ends =
-                j == text.size() ||
-                (!std::isalnum(static_cast<unsigned char>(text[j])) && text[j] != '_');
-            // Definitions (`vN = `) count too when they are in a nested region
-            // (loop bodies rebind nothing hoisted), so mentions anywhere qualify.
-            if (j > i + 1 && ends) {
-                names.insert(text.substr(i, j - i));
-            }
-            i = j;
-        }
-        return names;
     }
 
     // An expression is constant when every identifier it mentions is a
@@ -1126,10 +1088,7 @@ private:
             }
         }
         const auto parameter_index = [&](const std::string& word) -> std::optional<std::size_t> {
-            if (word.size() < 2 || word[0] != 'p' ||
-                !std::all_of(word.begin() + 1, word.end(), [](char c) {
-                    return std::isdigit(static_cast<unsigned char>(c)) != 0;
-                })) {
+            if (!numbered(word, 'p')) {
                 return std::nullopt;
             }
             const std::size_t index = std::stoul(word.substr(1));
@@ -1139,20 +1098,8 @@ private:
         const std::string prefix = "    ";
         for (std::size_t i = 0; i < lines.size(); ++i) {
             const std::string& line = lines[i];
-            for (std::size_t at = 0; at + 1 < line.size(); ++at) {
-                if (line[at] == 'v' &&
-                    (at == 0 || !std::isalnum(static_cast<unsigned char>(line[at - 1])))) {
-                    std::size_t end = at + 1;
-                    while (end < line.size() &&
-                           std::isdigit(static_cast<unsigned char>(line[end])) != 0) {
-                        ++end;
-                    }
-                    if (end > at + 1) {
-                        highest = std::max(highest,
-                                           static_cast<std::size_t>(
-                                               std::stoul(line.substr(at + 1, end - at - 1))));
-                    }
-                }
+            for (const std::string& name : value_names(line)) {
+                highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
             }
             // `    vN = F.linear(x, pW, pB | None)`, at the top level.
             const std::string call = " = F.linear(";

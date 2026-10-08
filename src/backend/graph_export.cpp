@@ -2040,31 +2040,53 @@ export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget&
     }
 }
 
+bool word_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+bool numbered(std::string_view word, char prefix) {
+    return word.size() > 1 && word[0] == prefix &&
+           word.find_first_not_of("0123456789", 1) == std::string_view::npos;
+}
+
+std::vector<std::pair<std::size_t, std::string>> words_of(std::string_view text) {
+    std::vector<std::pair<std::size_t, std::string>> words;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (word_char(text[i]) && (i == 0 || !word_char(text[i - 1]))) {
+            std::size_t j = i;
+            while (j < text.size() && word_char(text[j])) {
+                ++j;
+            }
+            if (std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
+                words.emplace_back(i, text.substr(i, j - i));
+            }
+            i = j;
+            continue;
+        }
+        ++i;
+    }
+    return words;
+}
+
+std::set<std::string> value_names(std::string_view text) {
+    std::set<std::string> names;
+    for (auto& [at, word] : words_of(text)) {
+        if (numbered(word, 'v')) {
+            names.insert(std::move(word));
+        }
+    }
+    return names;
+}
+
 namespace {
 
 // The `vN` names a generated line mentions on its right-hand side.
 std::set<std::string> mentioned_values(const std::string& line) {
-    std::set<std::string> names;
     const std::size_t assignment = line.find(" = ");
-    const std::size_t begin = assignment == std::string::npos ? 0 : assignment + 3;
-    for (std::size_t i = begin; i < line.size(); ++i) {
-        const bool boundary = i == 0 || (!std::isalnum(static_cast<unsigned char>(line[i - 1])) &&
-                                         line[i - 1] != '_');
-        if (line[i] != 'v' || !boundary) {
-            continue;
-        }
-        std::size_t j = i + 1;
-        while (j < line.size() && std::isdigit(static_cast<unsigned char>(line[j]))) {
-            ++j;
-        }
-        const bool ends = j == line.size() ||
-                          (!std::isalnum(static_cast<unsigned char>(line[j])) && line[j] != '_');
-        if (j > i + 1 && ends) {
-            names.insert(line.substr(i, j - i));
-        }
-        i = j;
-    }
-    return names;
+    return value_names(assignment == std::string::npos
+                           ? std::string_view(line)
+                           : std::string_view(line).substr(assignment + 3));
 }
 
 } // namespace
@@ -2184,38 +2206,6 @@ std::vector<std::string> split_lines(const std::string& text) {
         lines.push_back(current);
     }
     return lines;
-}
-
-bool word_char(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-}
-
-// `vN`, `pN`, `sN`, `wN`: a generated name with this prefix.
-bool numbered(const std::string& word, char prefix) {
-    return word.size() > 1 && word[0] == prefix &&
-           word.find_first_not_of("0123456789", 1) == std::string::npos;
-}
-
-// Every identifier-like word in `text`, in order, with its position.
-std::vector<std::pair<std::size_t, std::string>> words_of(const std::string& text) {
-    std::vector<std::pair<std::size_t, std::string>> words;
-    std::size_t i = 0;
-    while (i < text.size()) {
-        if (word_char(text[i]) && (i == 0 || !word_char(text[i - 1]))) {
-            std::size_t j = i;
-            while (j < text.size() && word_char(text[j])) {
-                ++j;
-            }
-            // Numbers are not words.
-            if (std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
-                words.emplace_back(i, text.substr(i, j - i));
-            }
-            i = j;
-            continue;
-        }
-        ++i;
-    }
-    return words;
 }
 
 // `name = expr` of a top-level generated assignment, if `line` is one.
