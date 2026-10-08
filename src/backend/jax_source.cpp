@@ -1,5 +1,7 @@
 #include "linnet/backend/jax_source.hpp"
 
+#include "linnet/backend/python_target.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -16,38 +18,6 @@ namespace linnet::backend {
 using sema::ScalarKind;
 
 namespace {
-
-std::string jnp_dtype(ScalarKind dtype) {
-    switch (dtype) {
-    case ScalarKind::Bool:
-        return "jnp.bool_";
-    case ScalarKind::I8:
-        return "jnp.int8";
-    case ScalarKind::I16:
-        return "jnp.int16";
-    case ScalarKind::I32:
-        return "jnp.int32";
-    case ScalarKind::I64:
-        return "jnp.int64";
-    case ScalarKind::U8:
-        return "jnp.uint8";
-    case ScalarKind::U16:
-        return "jnp.uint16";
-    case ScalarKind::U32:
-        return "jnp.uint32";
-    case ScalarKind::U64:
-        return "jnp.uint64";
-    case ScalarKind::F16:
-        return "jnp.float16";
-    case ScalarKind::BF16:
-        return "jnp.bfloat16";
-    case ScalarKind::F32:
-        return "jnp.float32";
-    case ScalarKind::F64:
-        return "jnp.float64";
-    }
-    return "jnp.float32";
-}
 
 // What a module with routed experts imports (`native_call`).
 constexpr const char* experts_import = "import linnet.jax.moe as _moe\n\n";
@@ -161,110 +131,16 @@ std::string outline_remat(const std::string& body, const std::string& tail) {
 }
 
 // The generated module: straight-line `jax.numpy` over static shapes.
-class JaxTarget : public GraphTarget {
+class JaxTarget : public PythonTarget {
 public:
     explicit JaxTarget(const JaxSourceOptions& options)
-        : prepare_(options.prepare), full_precision_(options.full_precision), lora_(options.lora),
-          lora_rank_(options.lora_rank), lora_alpha_(options.lora_alpha) {}
+        : PythonTarget("jnp",
+                       "bool_",
+                       options.prepare,
+                       {options.lora, options.lora_rank, options.lora_alpha}),
+          full_precision_(options.full_precision) {}
 
-    std::string input(const std::string& name, const Dims& shape, ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        std::string clean;
-        for (const char c : name) {
-            clean += std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' ? c : '_';
-        }
-        const std::string argument = "in_" + clean;
-        arguments_.push_back(argument);
-        return argument;
-    }
-
-    std::string parameter(const std::string& path, const Dims& shape, ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        const std::string argument = "p" + std::to_string(parameters_.size());
-        parameters_.push_back(path);
-        arguments_.push_back(argument);
-        parameters_end_ = arguments_.size();
-        return argument;
-    }
-
-    // The path of the weight argument `argument` names when a `--lora`
-    // pattern matches it.
-    std::optional<std::string> lora_target(const std::string& given) const {
-        // A sharded weight is used gathered: its argument is what was gathered.
-        const auto gathered = gathered_.find(given);
-        const std::string& argument = gathered == gathered_.end() ? given : gathered->second;
-        if (lora_.empty() || argument.size() < 2 || argument[0] != 'p' ||
-            !std::all_of(argument.begin() + 1, argument.end(), [](char c) {
-                return std::isdigit(static_cast<unsigned char>(c)) != 0;
-            })) {
-            return std::nullopt;
-        }
-        const std::size_t index = std::stoul(argument.substr(1));
-        if (index >= parameters_.size() || !parameters_[index].ends_with(".weight")) {
-            return std::nullopt;
-        }
-        const std::string& path = parameters_[index];
-        if (std::ranges::any_of(
-                lora_, [&](const std::string& pattern) { return glob_match(pattern, path); })) {
-            return path;
-        }
-        return std::nullopt;
-    }
-
-    // The adapter parameters of the weight at `path`: `lora_a` and `lora_b`
-    // of its block, made once, after the other parameters among `main`'s
-    // arguments (and after them in PARAMETERS).
-    std::pair<std::string, std::string> adapters(const std::string& path) {
-        if (const auto found = adapters_.find(path); found != adapters_.end()) {
-            return found->second;
-        }
-        const std::string block = path.substr(0, path.size() - std::string_view(".weight").size());
-        const auto add = [&](const std::string& adapter) {
-            const std::string argument = "p" + std::to_string(parameters_.size());
-            parameters_.push_back(block + "." + adapter);
-            arguments_.insert(arguments_.begin() + static_cast<std::ptrdiff_t>(parameters_end_),
-                              argument);
-            ++parameters_end_;
-            return argument;
-        };
-        const std::string a = add("lora_a");
-        const std::string b = add("lora_b");
-        return adapters_.emplace(path, std::make_pair(a, b)).first->second;
-    }
-
-    std::string state(const std::string& path, const Dims& shape, ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        const std::string argument = "s" + std::to_string(states_.size());
-        states_.push_back(path);
-        arguments_.push_back(argument);
-        return argument;
-    }
-
-    std::string constant(const Literal& literal, ScalarKind dtype) override {
-        const std::string text = literal_text(literal, dtype);
-        const std::string name =
-            define("jnp.asarray(" + text + ", dtype=" + jnp_dtype(dtype) + ")");
-        literals_[name] = text;
-        if (literal.kind == Literal::Kind::Integer || literal.kind == Literal::Kind::Real) {
-            values_[name] = literal.kind == Literal::Kind::Real
-                                ? literal.real
-                                : static_cast<double>(literal.integer);
-        }
-        return name;
-    }
-
-    std::string elementwise(Elementwise kind,
-                            const std::vector<TensorInfo>& operands,
-                            const Dims& shape,
-                            ScalarKind dtype) override {
-        (void)shape;
-        const std::string name = spell(kind, operands);
-        fold(name, kind, operands, dtype);
-        return name;
-    }
+    using PythonTarget::gather;
 
     std::string compare(ir::CompareKind kind,
                         const TensorInfo& a,
@@ -280,19 +156,8 @@ public:
         return define(a.name + " " + op + " " + b.name);
     }
 
-    std::string select(const TensorInfo& condition,
-                       const TensorInfo& on_true,
-                       const TensorInfo& on_false,
-                       const Dims& shape,
-                       ScalarKind dtype) override {
-        (void)shape;
-        (void)dtype;
-        return define("jnp.where(" + condition.name + ", " + on_true.name + ", " + on_false.name +
-                      ")");
-    }
-
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
-        const std::string name = define(value.name + ".astype(" + jnp_dtype(dtype) + ")");
+        const std::string name = define(value.name + ".astype(" + dtype_name(dtype) + ")");
         const auto found = values_.find(value.name);
         if (found != values_.end()) {
             values_[name] = found->second;
@@ -303,63 +168,10 @@ public:
         return name;
     }
 
-    std::string reshape(const TensorInfo& value, const Dims& shape) override {
-        return define(value.name + ".reshape(" + python_tuple(shape) + ")");
-    }
-
     std::string
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) override {
         (void)shape;
         return define("jnp.transpose(" + value.name + ", " + python_tuple(permutation) + ")");
-    }
-
-    std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
-        Dims order(dims.size());
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            order[i] = static_cast<std::int64_t>(i);
-        }
-        std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-            return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
-        });
-        TensorInfo source = value;
-        Dims sorted_dims = dims;
-        bool is_identity = true;
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
-        }
-        if (!is_identity) {
-            Dims permuted;
-            for (const std::int64_t axis : order) {
-                permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
-                sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
-            }
-            source = {transpose(value, order, permuted), permuted, value.dtype};
-        }
-        Dims placed(shape.size(), 1);
-        for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
-            placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
-        }
-        if (placed != source.shape) {
-            source = {reshape(source, placed), placed, source.dtype};
-        }
-        if (placed == shape) {
-            return source.name;
-        }
-        return define("jnp.broadcast_to(" + source.name + ", " + python_tuple(shape) + ")");
-    }
-
-    std::string slice(const TensorInfo& value,
-                      const Dims& starts,
-                      const Dims& limits,
-                      const Dims& strides,
-                      const Dims& shape) override {
-        (void)shape;
-        std::string index;
-        for (std::size_t i = 0; i < starts.size(); ++i) {
-            index += (i == 0 ? "" : ", ") + std::to_string(starts[i]) + ":" +
-                     std::to_string(limits[i]) + ":" + std::to_string(strides[i]);
-        }
-        return define(value.name + "[" + index + "]");
     }
 
     std::string
@@ -374,16 +186,6 @@ public:
 
     std::string iota(std::int64_t length) override {
         return define("jnp.arange(" + std::to_string(length) + ", dtype=jnp.int64)");
-    }
-
-    std::string
-    gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
-        (void)shape;
-        std::string index;
-        for (std::size_t k = 0; k < static_cast<std::size_t>(indices.shape.back()); ++k) {
-            index += (k == 0 ? "" : ", ") + indices.name + "[..., " + std::to_string(k) + "]";
-        }
-        return define(source.name + "[" + index + "]");
     }
 
     std::string
@@ -405,20 +207,6 @@ public:
             return define("jnp.all(" + body.name + axes);
         }
         return body.name;
-    }
-
-    bool broadcasts_elementwise() const override { return true; }
-
-    std::optional<std::string> contract(const TensorInfo& lhs,
-                                        const Dims& lhs_axes,
-                                        const TensorInfo& rhs,
-                                        const Dims& rhs_axes,
-                                        const Dims& out_axes,
-                                        const Dims& shape,
-                                        ScalarKind dtype) override {
-        (void)shape, (void)dtype;
-        return define("jnp.einsum(\"" + einsum_equation(lhs_axes, rhs_axes, out_axes) + "\", " +
-                      lhs.name + ", " + rhs.name + ")");
     }
 
     std::optional<std::string> native_call(const std::string& implementation,
@@ -575,10 +363,10 @@ public:
             }
             // A low-rank adapter beside the weight (LoRA): `x @ A.T @ B.T`,
             // scaled by alpha / rank.
-            const auto [a, b] = adapters(*path);
+            const auto [a, b] = adapters(*path, at[1]->shape, at[1]->dtype);
             const std::string low = define("(" + name(0) + " @ " + a + ".T) @ " + b + ".T");
             return define(product + " + " + low + " * " +
-                          python_float(lora_alpha_ / static_cast<double>(lora_rank_)));
+                          python_float(lora_.alpha / static_cast<double>(lora_.rank)));
         }
         if (implementation_base == "torch.softmax" && at.size() == 1 && at[0] != nullptr) {
             return define(back("jax.nn.softmax(" + f32(0) + ", axis=-1)", 0));
@@ -678,7 +466,7 @@ public:
             }
             uses_experts_ = true;
             const std::string weight = define("_moe.mxfp4_weight(" + name(1) + ", " + name(2) +
-                                              ", " + jnp_dtype(dtype) + ")");
+                                              ", " + dtype_name(dtype) + ")");
             if (combine) {
                 return define("_moe.experts_combined(" + name(0) + ", " + weight + ", " + name(3) +
                               ", " + name(4) + ")");
@@ -758,7 +546,7 @@ public:
     std::string gather(const TensorInfo& value) override {
         uses_gather_ = true;
         const std::string name = define("_gather(" + value.name + ", " + python_tuple(value.shape) +
-                                        ", " + jnp_dtype(value.dtype) + ")");
+                                        ", " + dtype_name(value.dtype) + ")");
         gathered_.emplace(name, value.name);
         if (value.name.size() > 1 && value.name[0] == 'p') {
             const std::size_t index = std::stoul(value.name.substr(1));
@@ -901,153 +689,18 @@ private:
         return out;
     }
 
-    bool prepare_ = false;          // split weight-only work into `prepare`
-    bool full_precision_ = false;   // f32 products at full precision (`precise`)
-    std::vector<std::string> lora_; // weights given low-rank adapters (`--lora`)
-    std::int64_t lora_rank_ = 0;
-    double lora_alpha_ = 0.0;
-    std::map<std::string, std::pair<std::string, std::string>> adapters_; // weight -> a, b
-    bool uses_experts_ = false;                   // the module imports `linnet.jax.moe`
-    bool uses_loss_ = false;                      // the module imports `linnet.jax.loss`
-    bool uses_gather_ = false;                    // the module imports `linnet.jax.fsdp`
-    std::vector<std::string> gathered_paths_;     // parameters gathered (`GATHERED`)
-    std::map<std::string, std::string> gathered_; // gathered value -> its argument
-    std::size_t remats_ = 0;                      // recomputed regions so far
+    bool full_precision_ = false;             // f32 products at full precision (`precise`)
+    bool uses_experts_ = false;               // the module imports `linnet.jax.moe`
+    bool uses_loss_ = false;                  // the module imports `linnet.jax.loss`
+    bool uses_gather_ = false;                // the module imports `linnet.jax.fsdp`
+    std::vector<std::string> gathered_paths_; // parameters gathered (`GATHERED`)
+    std::size_t remats_ = 0;                  // recomputed regions so far
 
     struct Loop {
         std::size_t id = 0;
         std::vector<TensorInfo> initial;
         std::vector<std::string> names;
     };
-
-    // Values are immutable, so an expression already computed in this scope
-    // or an enclosing one names the same array (see the torch target).
-    std::string define(const std::string& expression) {
-        for (auto scope = cse_.rbegin(); scope != cse_.rend(); ++scope) {
-            const auto found = scope->find(expression);
-            if (found != scope->end()) {
-                return found->second;
-            }
-        }
-        const std::string name = "v" + std::to_string(next_++);
-        body_ += indent_ + name + " = " + expression + "\n";
-        cse_.back()[expression] = name;
-        return name;
-    }
-
-    std::string spell(Elementwise kind, const std::vector<TensorInfo>& operands) {
-        const std::string& a = operands[0].name;
-        const std::string b = operands.size() > 1 ? operands[1].name : "";
-        switch (kind) {
-        case Elementwise::Add:
-            return define(a + " + " + b);
-        case Elementwise::Sub:
-            return define(a + " - " + b);
-        case Elementwise::Mul:
-            return define(a + " * " + b);
-        case Elementwise::Div:
-            return define(sema::is_float(operands[0].dtype) ? a + " / " + b
-                                                            : "jax.lax.div(" + a + ", " + b + ")");
-        case Elementwise::Rem:
-            return define("jnp.fmod(" + a + ", " + b + ")");
-        case Elementwise::Min:
-            return define("jnp.minimum(" + a + ", " + b + ")");
-        case Elementwise::Max:
-            return define("jnp.maximum(" + a + ", " + b + ")");
-        case Elementwise::And:
-        case Elementwise::BitAnd:
-            return define(a + " & " + b);
-        case Elementwise::Or:
-        case Elementwise::BitOr:
-            return define(a + " | " + b);
-        case Elementwise::BitXor:
-            return define(a + " ^ " + b);
-        case Elementwise::Shl:
-            return define("jnp.left_shift(" + a + ", " + b + ")");
-        case Elementwise::Shr:
-            return define("jnp.right_shift(" + a + ", " + b + ")");
-        case Elementwise::Not:
-            return define("~" + a);
-        case Elementwise::Neg:
-            return define("-" + a);
-        case Elementwise::Exp:
-            return define("jnp.exp(" + a + ")");
-        case Elementwise::Log:
-            return define("jnp.log(" + a + ")");
-        case Elementwise::Sqrt:
-            return define("jnp.sqrt(" + a + ")");
-        case Elementwise::Rsqrt:
-            return define("jax.lax.rsqrt(" + a + ")");
-        case Elementwise::Sin:
-            return define("jnp.sin(" + a + ")");
-        case Elementwise::Cos:
-            return define("jnp.cos(" + a + ")");
-        case Elementwise::Tanh:
-            return define("jnp.tanh(" + a + ")");
-        case Elementwise::Abs:
-            return define("jnp.abs(" + a + ")");
-        }
-        return define(a);
-    }
-
-    // Scalar arithmetic on constants folds to a literal for kernel keywords.
-    void fold(const std::string& name,
-              Elementwise kind,
-              const std::vector<TensorInfo>& operands,
-              ScalarKind dtype) {
-        if (dtype == ScalarKind::Bool || operands.empty() || !operands[0].shape.empty()) {
-            return;
-        }
-        std::vector<double> values;
-        for (const TensorInfo& operand : operands) {
-            const auto found = values_.find(operand.name);
-            if (found == values_.end()) {
-                return;
-            }
-            values.push_back(found->second);
-        }
-        const double a = values[0];
-        const double b = values.size() > 1 ? values[1] : 0.0;
-        double result = 0.0;
-        switch (kind) {
-        case Elementwise::Add:
-            result = a + b;
-            break;
-        case Elementwise::Sub:
-            result = a - b;
-            break;
-        case Elementwise::Mul:
-            result = a * b;
-            break;
-        case Elementwise::Div:
-            if (b == 0.0) {
-                return;
-            }
-            result = sema::is_float(dtype) ? a / b : std::trunc(a / b);
-            break;
-        case Elementwise::Neg:
-            result = -a;
-            break;
-        case Elementwise::Sqrt:
-            result = std::sqrt(a);
-            break;
-        case Elementwise::Rsqrt:
-            result = 1.0 / std::sqrt(a);
-            break;
-        default:
-            return;
-        }
-        if (!sema::is_float(dtype)) {
-            values_[name] = result;
-            literals_[name] = std::to_string(static_cast<long long>(result));
-            return;
-        }
-        if (dtype == ScalarKind::F32) {
-            result = static_cast<double>(static_cast<float>(result));
-        }
-        values_[name] = result;
-        literals_[name] = python_float(result);
-    }
 
     static std::string unpack(const std::vector<std::string>& names) {
         std::string out;
@@ -1057,50 +710,26 @@ private:
         return names.size() == 1 ? out + "," : out;
     }
 
-    static std::string string_list(const std::vector<std::string>& items) {
-        std::string out = "[";
-        for (std::size_t i = 0; i < items.size(); ++i) {
-            out += (i == 0 ? "\"" : ", \"") + items[i] + "\"";
-        }
-        return out + "]";
+    // The jnp spellings of what `PythonTarget` writes.
+    std::string constant_expression(const std::string& text, ScalarKind dtype) override {
+        return "jnp.asarray(" + text + ", dtype=" + dtype_name(dtype) + ")";
     }
-
-    static std::string literal_text(const Literal& literal, ScalarKind dtype) {
-        switch (literal.kind) {
-        case Literal::Kind::Integer:
-            return sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
-                                         : std::to_string(literal.integer);
-        case Literal::Kind::Real:
-            return python_float(literal.real);
-        case Literal::Kind::Boolean:
-            return literal.integer != 0 ? "True" : "False";
-        case Literal::Kind::Lowest:
-            if (sema::is_float(dtype)) {
-                return "-jnp.inf";
-            }
-            return dtype == ScalarKind::Bool ? "False" : "jnp.iinfo(" + jnp_dtype(dtype) + ").min";
-        case Literal::Kind::Highest:
-            if (sema::is_float(dtype)) {
-                return "jnp.inf";
-            }
-            return dtype == ScalarKind::Bool ? "True" : "jnp.iinfo(" + jnp_dtype(dtype) + ").max";
-        }
-        return "0";
+    std::string divide_integers(const std::string& a, const std::string& b) override {
+        return "jax.lax.div(" + a + ", " + b + ")";
     }
+    std::string shift(const std::string& a, const std::string& b, bool left) override {
+        return std::string(left ? "jnp.left_shift(" : "jnp.right_shift(") + a + ", " + b + ")";
+    }
+    std::string reciprocal_sqrt(const std::string& a) override {
+        return "jax.lax.rsqrt(" + a + ")";
+    }
+    std::string expand(const std::string& value, const Dims& shape) override {
+        return "jnp.broadcast_to(" + value + ", " + python_tuple(shape) + ")";
+    }
+    std::string infinity() const override { return "jnp.inf"; }
 
-    std::vector<std::string> arguments_;
-    std::size_t parameters_end_ = 0; // `arguments_` past the last parameter
-    std::vector<std::string> parameters_;
-    std::vector<std::string> states_;
-    std::map<std::string, std::string> literals_;
-    std::map<std::string, double> values_;
     std::vector<Loop> loops_;
     std::size_t loops_made_ = 0;
-    std::string body_;
-    std::string indent_ = "    ";
-    std::set<std::string> causal_masks_;                     // square masks from `causal_mask`
-    std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
-    std::size_t next_ = 0;
 };
 
 } // namespace
