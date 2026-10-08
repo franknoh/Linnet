@@ -18,6 +18,7 @@ from typing import Any
 
 import jax
 
+from .. import lora
 from ..compiler import LinnetError
 from ..generated import import_generated
 from .load import CompiledEntry, LinnetFunction, load
@@ -134,9 +135,8 @@ class SourceFunction(LinnetFunction):
             block, adapter = path.rsplit(".", 1)
             weight = weights[block + ".weight"]
             out_features, in_features = weight.shape
-            if adapter == "lora_a":
-                bound = 1.0 / np.sqrt(in_features)
-                host = draws.uniform(-bound, bound, (rank, in_features)).astype(np.float32)
+            if adapter == lora.DOWN:
+                host = lora.initial_down(rank, in_features, draws)
             else:
                 host = np.zeros((out_features, rank), dtype=np.float32)
             value = jax.numpy.asarray(host, dtype=weight.dtype)

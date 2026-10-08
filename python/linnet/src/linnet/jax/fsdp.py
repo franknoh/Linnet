@@ -21,6 +21,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from .. import lora
 from ..parallel import units
 
 _axis: contextvars.ContextVar[str | None] = contextvars.ContextVar("linnet_fsdp_axis", default=None)
@@ -73,9 +74,7 @@ def gathered_by_code(path: str, sharded: Sequence[str]) -> bool:
     """Whether generated code gathers the parameter at `path` itself: it
     belongs to a sharded block and is not an adapter (adapters are added by
     the code generator, outside the blocks' gathering)."""
-    return not path.endswith((".lora_a", ".lora_b")) and any(
-        path.startswith(unit + ".") for unit in sharded
-    )
+    return not lora.is_adapter(path) and any(path.startswith(unit + ".") for unit in sharded)
 
 
 __all__ = ["gather", "gather_as", "gathered_by_code", "gathering", "units"]

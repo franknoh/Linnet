@@ -33,7 +33,7 @@ from typing import Any, cast
 
 import torch
 
-from .. import packing
+from .. import lora, packing
 from ..packing import Example
 from ..runs import History, Step, unsaved
 from ..torch.fsdp import sharded
@@ -352,7 +352,7 @@ def _save(model: Any, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if getattr(model, "lora", None) is not None:
         model.save_weights(
-            directory / "adapters.safetensors", names="linnet", include=["*.lora_a", "*.lora_b"]
+            directory / "adapters.safetensors", names="linnet", include=list(lora.PATTERNS)
         )
     else:
         model.save_weights(directory / "model.safetensors")

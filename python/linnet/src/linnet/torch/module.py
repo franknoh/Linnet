@@ -17,7 +17,7 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from .. import ir
+from .. import ir, lora
 from ..plan import PlanError
 from ..weights import check_problems, read_bindings, safetensors_index, tensor_problem
 from .dtypes import (
@@ -358,9 +358,9 @@ class LinnetModule(nn.Module):
         this."""
         adapted: set[str] = set()
         scale = 0.0
-        lora = getattr(source, "lora", None)
-        if lora is not None:
-            _, rank, alpha = lora
+        adapters = getattr(source, "lora", None)
+        if adapters is not None:
+            _, rank, alpha = adapters
             adapted = set(getattr(source, "lora_paths", []))
             scale = alpha / rank
         from .parallel import whole
@@ -379,8 +379,8 @@ class LinnetModule(nn.Module):
                 if absent:
                     continue
                 if path in adapted:
-                    down = their_owner.get_parameter("lora_a").float()
-                    up = their_owner.get_parameter("lora_b").float()
+                    down = their_owner.get_parameter(lora.DOWN).float()
+                    up = their_owner.get_parameter(lora.UP).float()
                     value = value.float() + (up @ down) * scale
                 if value.data_ptr() != tensor.data_ptr():
                     tensor.copy_(value)

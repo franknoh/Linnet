@@ -12,7 +12,6 @@ work unchanged.
 from __future__ import annotations
 
 import fnmatch
-import math
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -20,9 +19,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import torch
 
-from .. import ir
+from .. import ir, lora
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import import_generated
 from ..plan import PlanError
@@ -153,7 +153,7 @@ class CompiledLinnetModule(LinnetModule):
         if rank <= 0:
             raise PlanError("the adapter rank must be positive")
         chosen = [patterns] if isinstance(patterns, str) else list(patterns)
-        generator = torch.Generator().manual_seed(seed)
+        draws = np.random.default_rng(seed)
         adapted: list[str] = []
         # Listed first: registering adapters changes the blocks' parameters.
         for path, weight in list(self.root.named_parameters(remove_duplicate=False)):
@@ -167,21 +167,20 @@ class CompiledLinnetModule(LinnetModule):
             ):
                 continue
             out_features, in_features = weight.shape
-            bound = 1.0 / math.sqrt(in_features)
-            down = (torch.rand(rank, in_features, generator=generator) * 2 - 1) * bound
+            down = torch.as_tensor(lora.initial_down(rank, in_features, draws))
             owner.register_parameter(
-                "lora_a",
+                lora.DOWN,
                 torch.nn.Parameter(down.to(dtype=weight.dtype, device=weight.device)),
             )
             zero = torch.zeros(out_features, rank, dtype=weight.dtype, device=weight.device)
-            owner.register_parameter("lora_b", torch.nn.Parameter(zero))
+            owner.register_parameter(lora.UP, torch.nn.Parameter(zero))
             adapted.append(path)
         if not adapted:
             raise PlanError("no linear weight matches " + ", ".join(chosen))
         self.lora = (tuple(chosen), rank, alpha)
         self.lora_paths = adapted
         self._recompile()
-        self.set_trainable(["*.lora_a", "*.lora_b"])
+        self.set_trainable(list(lora.PATTERNS))
         return adapted
 
     def merge_lora(self) -> list[str]:
@@ -202,11 +201,11 @@ class CompiledLinnetModule(LinnetModule):
                 owner, _ = owner_of(self, path)
                 weight = owner.get_parameter("weight")
                 delta = (
-                    owner.get_parameter("lora_b").float() @ owner.get_parameter("lora_a").float()
+                    owner.get_parameter(lora.UP).float() @ owner.get_parameter(lora.DOWN).float()
                 )
                 weight.copy_((weight.float() + delta * (alpha / rank)).to(weight.dtype))
-                del owner._parameters["lora_a"]
-                del owner._parameters["lora_b"]
+                del owner._parameters[lora.DOWN]
+                del owner._parameters[lora.UP]
         merged = self.lora_paths
         self.lora = None
         self.lora_paths = []

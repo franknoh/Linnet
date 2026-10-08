@@ -45,6 +45,7 @@ from torch.utils.checkpoint import (
     create_selective_checkpoint_contexts,
 )
 
+from .. import lora
 from ..parallel import units as parallel_units
 from ..plan import PlanError
 from .module import LinnetModule, owner_of
@@ -101,7 +102,7 @@ def fully_shard(
     with torch.no_grad():
         for path, parameter in list(model.root.named_parameters(remove_duplicate=False)):
             owner, leaf = owner_of(model, path)
-            if "." not in path or leaf in owner.absent_params or leaf in ("lora_a", "lora_b"):
+            if "." not in path or leaf in owner.absent_params or leaf in (lora.DOWN, lora.UP):
                 continue
             if only is not None and not only(path):
                 continue

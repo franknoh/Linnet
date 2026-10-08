@@ -34,7 +34,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .. import ir
+from .. import ir, lora
 from ..dtypes import BY_NUMPY
 from ..packing import Packed
 from ..runs import History, Step, checkpoint_path, complete, prune, unsaved
@@ -242,7 +242,7 @@ class Learner:
         self.ties = ir.shared_paths(placed.items())
         if trainable is None:
             adapted = getattr(model, "lora", None) is not None
-            trainable = ["*.lora_a", "*.lora_b"] if adapted else True
+            trainable = list(lora.PATTERNS) if adapted else True
         chosen = _chosen(list(placed), placed, trainable, self.ties)
         self.dtypes = {path: placed[path].dtype for path in chosen}
         shardings = {path: placed[path].sharding for path in chosen}
@@ -560,17 +560,13 @@ def merge_lora(model: Any, parameters: dict[str, Any]) -> dict[str, Any]:
     if getattr(model, "lora", None) is None:
         return dict(parameters)
     _, rank, alpha = model.lora
-    merged = {
-        path: value
-        for path, value in parameters.items()
-        if not path.endswith((".lora_a", ".lora_b"))
-    }
+    merged = {path: value for path, value in parameters.items() if not lora.is_adapter(path)}
     for path, down in parameters.items():
-        if not path.endswith(".lora_a"):
+        if not path.endswith("." + lora.DOWN):
             continue
-        block = path.removesuffix(".lora_a")
+        block = path.removesuffix("." + lora.DOWN)
         weight = merged[block + ".weight"]
-        up = parameters[block + ".lora_b"]
+        up = parameters[f"{block}.{lora.UP}"]
         product = up.astype(jnp.float32) @ down.astype(jnp.float32)
         merged[block + ".weight"] = (weight.astype(jnp.float32) + product * (alpha / rank)).astype(
             weight.dtype
