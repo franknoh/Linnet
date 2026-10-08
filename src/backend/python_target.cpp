@@ -157,35 +157,8 @@ std::optional<std::string> PythonTarget::contract(const TensorInfo& lhs,
 }
 
 std::string PythonTarget::dtype_name(ScalarKind dtype) const {
-    switch (dtype) {
-    case ScalarKind::Bool:
-        return library_ + "." + bool_name_;
-    case ScalarKind::I8:
-        return library_ + ".int8";
-    case ScalarKind::I16:
-        return library_ + ".int16";
-    case ScalarKind::I32:
-        return library_ + ".int32";
-    case ScalarKind::I64:
-        return library_ + ".int64";
-    case ScalarKind::U8:
-        return library_ + ".uint8";
-    case ScalarKind::U16:
-        return library_ + ".uint16";
-    case ScalarKind::U32:
-        return library_ + ".uint32";
-    case ScalarKind::U64:
-        return library_ + ".uint64";
-    case ScalarKind::F16:
-        return library_ + ".float16";
-    case ScalarKind::BF16:
-        return library_ + ".bfloat16";
-    case ScalarKind::F32:
-        return library_ + ".float32";
-    case ScalarKind::F64:
-        return library_ + ".float64";
-    }
-    return library_ + ".float32";
+    return library_ + "." +
+           (dtype == ScalarKind::Bool ? bool_name_ : std::string(dtype_names(dtype).numpy));
 }
 
 std::string PythonTarget::define(const std::string& expression) {

@@ -388,6 +388,17 @@ std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Di
 std::string python_tuple(const Dims& dims);
 std::string python_float(double value);
 
+// How each format names a scalar dtype: MLIR (`bf16`, `ui8`), the ONNX text
+// format (`bfloat16`, `double`) and its `TensorProto.DataType` number, and
+// NumPy and the libraries that follow it (`bfloat16`, `float64`).
+struct DTypeNames {
+    std::string_view mlir;
+    std::string_view onnx;
+    int onnx_code = 0;
+    std::string_view numpy;
+};
+const DTypeNames& dtype_names(sema::ScalarKind dtype);
+
 // Python text the source targets print, read back: whether `c` can be part
 // of an identifier; whether `word` is a generated name with `prefix` (`v3`,
 // `p0`); every identifier-like word of `text` with its position (numbers

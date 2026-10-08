@@ -1,6 +1,9 @@
 #include "linnet/backend/graph_export.hpp"
 
+#include "linnet/support/text.hpp"
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cstdio>
@@ -2662,14 +2665,28 @@ std::string python_tuple(const Dims& dims) {
     return out + (dims.size() == 1 ? ",)" : ")");
 }
 
+const DTypeNames& dtype_names(sema::ScalarKind dtype) {
+    // In `ScalarKind` order.
+    static constexpr std::array<DTypeNames, 13> names{{
+        {"i1", "bool", 9, "bool"},
+        {"i8", "int8", 3, "int8"},
+        {"i16", "int16", 5, "int16"},
+        {"i32", "int32", 6, "int32"},
+        {"i64", "int64", 7, "int64"},
+        {"ui8", "uint8", 2, "uint8"},
+        {"ui16", "uint16", 4, "uint16"},
+        {"ui32", "uint32", 12, "uint32"},
+        {"ui64", "uint64", 13, "uint64"},
+        {"f16", "float16", 10, "float16"},
+        {"bf16", "bfloat16", 16, "bfloat16"},
+        {"f32", "float", 1, "float32"},
+        {"f64", "double", 11, "float64"},
+    }};
+    return names[static_cast<std::size_t>(dtype)];
+}
+
 std::string python_float(double value) {
-    char buffer[64];
-    std::snprintf(buffer, sizeof buffer, "%.17g", value);
-    std::string text = buffer;
-    if (text.find_first_of(".einEIN") == std::string::npos) {
-        text += ".0";
-    }
-    return text;
+    return shortest_float(value);
 }
 
 } // namespace linnet::backend
