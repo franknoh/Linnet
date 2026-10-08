@@ -197,6 +197,8 @@ def _prefill_mask(
     keeps one (common subexpressions are merged)."""
     from torch.nn.attention.flex_attention import BlockMask
 
+    from .flex import fresh_copy
+
     device = table.device
     count, pages = table.shape
     pool_pages = pool // size
@@ -237,6 +239,11 @@ def _prefill_mask(
         number = live.sum(-1).to(torch.int32).reshape(1, 1, blocks)
         order = torch.argsort(live, dim=-1, descending=True, stable=True).to(torch.int32)
         return number, order.reshape(1, 1, blocks, pool_pages)
+
+    # Inductor misreads a tensor the mask reads when the same graph computes
+    # it (PyTorch 2.14: wrong numbers, or a lowering error): each goes
+    # through a copy it cannot see into.
+    first, owner, at = fresh_copy(first), fresh_copy(owner), fresh_copy(at)
 
     def mask_mod(
         b: torch.Tensor, h: torch.Tensor, q: torch.Tensor, kv: torch.Tensor

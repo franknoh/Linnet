@@ -7,6 +7,9 @@ sees, and FlexAttention's numbers (eager, on the CPU) to the gathered path's."""
 
 from __future__ import annotations
 
+import random
+
+import pytest
 import torch
 
 from linnet.torch import paged
@@ -82,3 +85,53 @@ def test_flex_attention_gives_the_gathered_numbers() -> None:
     flexed = paged._flex_prefill(query, key, value, table, rows, positions, 0.25, SIZE)
     gathered = paged.prefill(query, key, value, table, rows, positions, 0.25, SIZE)
     torch.testing.assert_close(flexed, gathered, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.parametrize(("heads", "kv_heads", "size"), [(32, 4, 64), (32, 32, 64), (32, 4, 16)])
+def test_compiled_flex_attention_gives_the_gathered_numbers(
+    heads: int, kv_heads: int, size: int
+) -> None:
+    """Compiled for CUDA, the block lists and what the mask reads are built in
+    the pass's own graph: still the gathered path's numbers."""
+    rng = random.Random(0)
+    pool_pages, rows, pages, tokens = 4096 // size, 16, 512 // size, 512
+    free = list(range(1, pool_pages))
+    rng.shuffle(free)
+    table = torch.zeros(rows, pages, dtype=torch.int32)
+    lengths: list[int] = []
+    for row in range(rows):
+        count = rng.randint(1, pages)
+        listed = [free.pop() for _ in range(count)]
+        if row > 0 and count > 2:
+            listed[:2] = table[0, :2].tolist()  # a common start
+        table[row, :count] = torch.tensor(listed)
+        lengths.append(count * size)
+    owners: list[int] = []
+    positions: list[int] = []
+    while len(owners) < tokens:
+        row = rng.randrange(rows)
+        start = rng.randrange(lengths[row])
+        count = min(rng.randint(1, 300), lengths[row] - start, tokens - len(owners))
+        owners += [row] * count
+        positions += range(start, start + count)
+    generator = torch.Generator().manual_seed(0)
+    query = torch.randn(1, heads, tokens, 64, generator=generator).cuda()
+    key = torch.randn(1, kv_heads, pool_pages * size, 64, generator=generator).cuda()
+    value = torch.randn(1, kv_heads, pool_pages * size, 64, generator=generator).cuda()
+    inputs = (
+        query,
+        key,
+        value,
+        table.cuda(),
+        torch.tensor(owners, dtype=torch.int32).cuda(),
+        torch.tensor(positions, dtype=torch.int32).cuda(),
+    )
+
+    def attend(*args: torch.Tensor) -> torch.Tensor:
+        query, key, value, table, rows, positions = args
+        return paged.prefill(query, key, value, table, rows, positions, 0.125, size)
+
+    torch._dynamo.reset()
+    compiled = torch.compile(attend)
+    torch.testing.assert_close(compiled(*inputs), attend(*inputs), atol=1e-4, rtol=1e-4)
