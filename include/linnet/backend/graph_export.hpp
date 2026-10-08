@@ -80,6 +80,10 @@ struct Literal {
     Kind kind = Kind::Integer;
     std::int64_t integer = 0;
     double real = 0.0;
+
+    static Literal of_integer(std::int64_t value) { return {Kind::Integer, value, 0.0}; }
+    static Literal of_real(double value) { return {Kind::Real, 0, value}; }
+    static Literal of(Kind kind) { return {kind, 0, 0.0}; }
 };
 
 // One graph format. Each method appends an operation and returns the name
@@ -99,6 +103,18 @@ public:
     state(const std::string& path, const Dims& shape, sema::ScalarKind dtype) = 0;
 
     virtual std::string constant(const Literal& literal, sema::ScalarKind dtype) = 0;
+    // `value` broadcast to `shape` (its axis i to axis `dims[i]`) up to the
+    // expansion: its axes transposed into the order they take, then size-one
+    // axes inserted. What remains is expanding it to `shape`, if anything.
+    TensorInfo place_axes(const TensorInfo& value, const Dims& dims, const Dims& shape);
+    // `value` in `dtype`: itself when it already is, else converted.
+    TensorInfo cast_to(const TensorInfo& value, sema::ScalarKind dtype) {
+        return value.dtype == dtype ? value : TensorInfo{convert(value, dtype), value.shape, dtype};
+    }
+    // A scalar `constant`, as an operand.
+    TensorInfo scalar_constant(const Literal& literal, sema::ScalarKind dtype) {
+        return {constant(literal, dtype), {}, dtype};
+    }
     virtual std::string elementwise(Elementwise kind,
                                     const std::vector<TensorInfo>& operands,
                                     const Dims& shape,
@@ -175,10 +191,6 @@ public:
     // Reduces `body` over `dims` (trailing axes) to `shape`.
     virtual std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) = 0;
-    // A semantic call whose selected candidate (`opt::select_candidates`) is
-    // `implementation`, with its tensor operands (absent optionals as
-    // nullopt). A target that has the implementation returns the result's
-    // name; otherwise the call's canonical body is exported instead.
     // The dimension generics of the semantic call being lowered, by name
     // (`Stride`, `Pad`), set before each `native_call`. A kernel whose
     // arguments are not tensors reads them here instead of inferring them
@@ -221,12 +233,33 @@ public:
                           std::vector<std::int64_t>(spatial, *pad)};
     }
 
+    // A max pool's window from the call's own generics (`K`, `Stride`, `Pad`);
+    // without them, nothing.
+    struct PoolWindow {
+        std::int64_t size = 0;
+        std::int64_t stride = 0;
+        std::int64_t pad = 0;
+    };
+    std::optional<PoolWindow> pool_window() const {
+        const auto size = call_generic("K");
+        const auto stride = call_generic("Stride");
+        const auto pad = call_generic("Pad");
+        if (!size || !stride || !pad) {
+            return std::nullopt;
+        }
+        return PoolWindow{*size, *stride, *pad};
+    }
+
     static bool is_convolution(const std::string& implementation) {
         return implementation == "torch.nn.functional.conv2d" ||
                implementation == "torch.nn.functional.conv2d(rect)" ||
                implementation == "torch.nn.functional.conv1d";
     }
 
+    // A semantic call whose selected candidate (`opt::select_candidates`) is
+    // `implementation`, with its tensor operands (absent optionals as
+    // nullopt). A target that has the implementation returns the result's
+    // name; otherwise the call's canonical body is exported instead.
     virtual std::optional<std::string>
     native_call(const std::string& implementation,
                 const std::vector<std::optional<TensorInfo>>& operands,
@@ -281,6 +314,19 @@ private:
 // Whether `text` matches the glob `pattern`: `*` any run of characters,
 // `?` any one. LoRA patterns name the weights they adapt this way.
 bool glob_match(std::string_view pattern, std::string_view text);
+
+// A library call's name with its variant suffixes taken off: `(input dtype)`
+// (`fast`: in the operands' dtype rather than f32) and `(enable_gqa)`
+// (`grouped`: fewer key and value heads than query heads).
+struct CallName {
+    std::string base;
+    bool fast = false;
+    bool grouped = false;
+};
+CallName call_name(std::string_view implementation);
+// A `native_call`'s operands as pointers, null where one is absent.
+std::vector<const TensorInfo*>
+operand_pointers(const std::vector<std::optional<TensorInfo>>& operands);
 
 // Whether `owner` -- a top-level block, or `sema::no_entity` for the module
 // itself -- of module `root_module` declares an entry called `name` (any

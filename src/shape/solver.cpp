@@ -1,9 +1,29 @@
 #include "linnet/shape/solver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 
 namespace linnet::shape {
+
+namespace {
+
+constexpr std::array<std::string_view, 6> relation_spellings{"==", "!=", "<", "<=", ">", ">="};
+
+} // namespace
+
+std::string_view relation_spelling(Relation relation) {
+    return relation_spellings[static_cast<std::size_t>(relation)];
+}
+
+std::optional<Relation> parse_relation(std::string_view text) {
+    for (std::size_t i = 0; i < relation_spellings.size(); ++i) {
+        if (relation_spellings[i] == text) {
+            return static_cast<Relation>(i);
+        }
+    }
+    return std::nullopt;
+}
 
 namespace {
 

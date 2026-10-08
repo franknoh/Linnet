@@ -1,5 +1,7 @@
 #include "linnet/backend/onnx.hpp"
 
+#include "linnet/support/text.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -21,9 +23,7 @@ std::string tensor_type(const Dims& shape, ScalarKind dtype) {
         return text;
     }
     text += "[";
-    for (std::size_t i = 0; i < shape.size(); ++i) {
-        text += (i == 0 ? "" : ",") + std::to_string(shape[i]);
-    }
+    text += join(shape, ",", [&](const auto& item) { return std::to_string(item); });
     return text + "]";
 }
 
@@ -48,9 +48,7 @@ std::string float_text(double value) {
 
 std::string int_list(const Dims& values) {
     std::string text;
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        text += (i == 0 ? "" : ", ") + std::to_string(values[i]);
-    }
+    text += join(values, ", ", [&](const auto& item) { return std::to_string(item); });
     return text;
 }
 
@@ -114,11 +112,7 @@ public:
         if (dtype == ScalarKind::BF16) {
             // ONNX's Einsum takes no bf16: contract in f32 and round back,
             // which is what a bf16 matrix product accumulates in anyway.
-            const auto wide = [&](const TensorInfo& t) {
-                return t.dtype == ScalarKind::F32
-                           ? t
-                           : TensorInfo{convert(t, ScalarKind::F32), t.shape, ScalarKind::F32};
-            };
+            const auto wide = [&](const TensorInfo& t) { return cast_to(t, ScalarKind::F32); };
             const TensorInfo product{
                 node("Einsum", {wide(lhs), wide(rhs)}, equation, shape, ScalarKind::F32),
                 shape,
@@ -134,19 +128,12 @@ public:
                                            ScalarKind dtype) override {
         // Library operations with an ONNX operator of the same meaning;
         // `(input dtype)` variants skip the f32 casts.
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        const std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
+        const CallName parsed = call_name(implementation);
+        const std::string& implementation_base = parsed.base;
+        const bool fast = parsed.fast;
         const ScalarKind acc = fast ? dtype : ScalarKind::F32;
-        std::vector<const TensorInfo*> at;
-        at.reserve(operands.size());
-        for (const std::optional<TensorInfo>& operand : operands) {
-            at.push_back(operand.has_value() ? &*operand : nullptr);
-        }
-        const auto f32 = [&](const TensorInfo& t) -> TensorInfo {
-            return t.dtype == acc ? t : TensorInfo{convert(t, acc), t.shape, acc};
-        };
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
+        const auto f32 = [&](const TensorInfo& t) { return cast_to(t, acc); };
         const auto back = [&](const std::string& name, const Dims& s) -> std::string {
             return dtype == acc ? name : convert({name, s, acc}, dtype);
         };
@@ -171,9 +158,7 @@ public:
             // ONNX Runtime has no bf16 convolution: convolve in f32 and
             // round back, as the contraction does.
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const auto as_kind = [&](const TensorInfo& t) {
-                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-            };
+            const auto as_kind = [&](const TensorInfo& t) { return cast_to(t, kind); };
             std::vector<TensorInfo> inputs{as_kind(*at[0]), as_kind(*at[1])};
             if (at[2] != nullptr) {
                 inputs.push_back(as_kind(*at[2]));
@@ -201,8 +186,7 @@ public:
                 return std::nullopt;
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const TensorInfo x =
-                at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), input, kind};
+            const TensorInfo x = cast_to(*at[0], kind);
             const TensorInfo none{"", {}, ScalarKind::F32};
             const std::string out = node("Resize",
                                          {x, none, none, int64_vector(shape)},
@@ -222,9 +206,7 @@ public:
                 return std::nullopt;
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const auto as_kind = [&](const TensorInfo& t) {
-                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-            };
+            const auto as_kind = [&](const TensorInfo& t) { return cast_to(t, kind); };
             const std::string out = node("BatchNormalization",
                                          {as_kind(*at[0]),
                                           as_kind(*at[3]),
@@ -256,9 +238,7 @@ public:
                 return std::nullopt;
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const auto as_kind = [&](const TensorInfo& t) {
-                return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-            };
+            const auto as_kind = [&](const TensorInfo& t) { return cast_to(t, kind); };
             const Dims flat{out * groups};
             const TensorInfo& b = packed;
             const TensorInfo scales{reshape(as_kind(scale), flat), flat, kind};
@@ -278,25 +258,21 @@ public:
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             at[0] != nullptr) {
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad || 2 * *pad > *window) {
+            const auto pool = pool_window();
+            if (!pool || 2 * pool->pad > pool->size) {
                 return std::nullopt;
             }
+            const auto [window, stride, pad] = *pool;
             // No bf16 pooling in ONNX Runtime either: pool in f32.
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
-            const TensorInfo x = at[0]->dtype == kind
-                                     ? *at[0]
-                                     : TensorInfo{convert(*at[0], kind), at[0]->shape, kind};
-            const std::string out =
-                node("MaxPool",
-                     {x},
-                     "kernel_shape = [" + int_list({*window, *window}) + "], strides = [" +
-                         int_list({*stride, *stride}) + "], pads = [" +
-                         int_list({*pad, *pad, *pad, *pad}) + "]",
-                     shape,
-                     kind);
+            const TensorInfo x = cast_to(*at[0], kind);
+            const std::string out = node("MaxPool",
+                                         {x},
+                                         "kernel_shape = [" + int_list({window, window}) +
+                                             "], strides = [" + int_list({stride, stride}) +
+                                             "], pads = [" + int_list({pad, pad, pad, pad}) + "]",
+                                         shape,
+                                         kind);
             return kind == dtype ? out : convert({out, shape, kind}, dtype);
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3 &&
@@ -342,14 +318,8 @@ public:
             const Dims& full = at[0]->shape;
             Dims reduced = full;
             reduced.back() = 1;
-            const TensorInfo x =
-                at[0]->dtype == ScalarKind::F32
-                    ? *at[0]
-                    : TensorInfo{convert(*at[0], ScalarKind::F32), full, ScalarKind::F32};
-            Literal two;
-            two.kind = Literal::Kind::Real;
-            two.real = 2.0;
-            const TensorInfo exponent{constant(two, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo x = cast_to(*at[0], ScalarKind::F32);
+            const TensorInfo exponent = scalar_constant(Literal::of_real(2.0), ScalarKind::F32);
             const TensorInfo squares{
                 node("Pow", {x, exponent}, "", full, ScalarKind::F32), full, ScalarKind::F32};
             const TensorInfo mean{node("ReduceMean",
@@ -359,10 +329,8 @@ public:
                                        ScalarKind::F32),
                                   reduced,
                                   ScalarKind::F32};
-            Literal small;
-            small.kind = Literal::Kind::Real;
-            small.real = std::stod(epsilon);
-            const TensorInfo eps{constant(small, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo eps =
+                scalar_constant(Literal::of_real(std::stod(epsilon)), ScalarKind::F32);
             const TensorInfo shifted{
                 node("Add", {mean, eps}, "", reduced, ScalarKind::F32), reduced, ScalarKind::F32};
             const TensorInfo root{
@@ -372,9 +340,7 @@ public:
             if (dtype != ScalarKind::F32) {
                 normalized = {convert(normalized, dtype), full, dtype};
             }
-            const TensorInfo weight = at[1]->dtype == dtype
-                                          ? *at[1]
-                                          : TensorInfo{convert(*at[1], dtype), at[1]->shape, dtype};
+            const TensorInfo weight = cast_to(*at[1], dtype);
             return node("Mul", {normalized, weight}, "", shape, dtype);
         }
         if (implementation_base == "torch.nn.functional.group_norm" && operands.size() == 4 &&
@@ -393,29 +359,24 @@ public:
             }
             const ScalarKind kind = dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype;
             const Dims rows{full[0], *groups, full[1] / *groups * full[2] * full[3]};
-            const TensorInfo x =
-                at[0]->dtype == kind ? *at[0] : TensorInfo{convert(*at[0], kind), full, kind};
+            const TensorInfo x = cast_to(*at[0], kind);
             const TensorInfo grouped{reshape(x, rows), rows, kind};
-            Literal one;
-            one.kind = Literal::Kind::Real;
-            one.real = 1.0;
-            const Literal zero_value;
             const Dims per_group{*groups};
-            const TensorInfo ones{node("Expand",
-                                       {{constant(one, kind), {}, kind}, int64_vector(per_group)},
-                                       "",
-                                       per_group,
-                                       kind),
-                                  per_group,
-                                  kind};
-            const TensorInfo zeros{
+            const TensorInfo ones{
                 node("Expand",
-                     {{constant(zero_value, kind), {}, kind}, int64_vector(per_group)},
+                     {scalar_constant(Literal::of_real(1.0), kind), int64_vector(per_group)},
                      "",
                      per_group,
                      kind),
                 per_group,
                 kind};
+            const TensorInfo zeros{node("Expand",
+                                        {scalar_constant(Literal{}, kind), int64_vector(per_group)},
+                                        "",
+                                        per_group,
+                                        kind),
+                                   per_group,
+                                   kind};
             const TensorInfo normalized{node("InstanceNormalization",
                                              {grouped, ones, zeros},
                                              "epsilon = " + epsilon,
@@ -454,9 +415,7 @@ public:
         if (implementation_base == "torch.relu" && operands.size() == 1 && at[0] != nullptr) {
             return node("Relu", {*at[0]}, "", shape, dtype);
         }
-        if ((implementation_base == "torch.nn.functional.scaled_dot_product_attention" ||
-             implementation_base ==
-                 "torch.nn.functional.scaled_dot_product_attention(enable_gqa)") &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
             operands.size() == 5) {
             return attention(at, fast, shape, dtype);
         }
@@ -503,9 +462,7 @@ public:
         const std::int64_t rows = group * queries;
         const ScalarKind product =
             fast ? (dtype == ScalarKind::BF16 ? ScalarKind::F32 : dtype) : ScalarKind::F32;
-        const auto as = [&](const TensorInfo& t, ScalarKind kind) -> TensorInfo {
-            return t.dtype == kind ? t : TensorInfo{convert(t, kind), t.shape, kind};
-        };
+        const auto as = [&](const TensorInfo& t, ScalarKind kind) { return cast_to(t, kind); };
         TensorInfo q = as(*query, product);
         if (group > 1) {
             const Dims folded{batch, kv_heads, rows, width};
@@ -536,10 +493,7 @@ public:
                 const Dims flat{mask_batch, 1, rows, keys};
                 m = {reshape(m, flat), flat, mask->dtype};
             }
-            Literal lowest;
-            lowest.kind = Literal::Kind::Real;
-            lowest.real = -1e30;
-            const TensorInfo fill{constant(lowest, ScalarKind::F32), {}, ScalarKind::F32};
+            const TensorInfo fill = scalar_constant(Literal::of_real(-1e30), ScalarKind::F32);
             scores = {node("Where", {m, scores, fill}, "", scores_shape, ScalarKind::F32),
                       scores_shape,
                       ScalarKind::F32};
@@ -745,41 +699,11 @@ public:
     }
 
     std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
-        // A reshape only inserts axes, so the operand's axes are first put
-        // in the order they take in the result; then the rest expands.
-        Dims order(dims.size());
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            order[i] = static_cast<std::int64_t>(i);
+        const TensorInfo placed = place_axes(value, dims, shape);
+        if (placed.shape == shape) {
+            return placed.name;
         }
-        std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-            return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
-        });
-        TensorInfo source = value;
-        Dims sorted_dims = dims;
-        bool is_identity = true;
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
-        }
-        if (!is_identity) {
-            Dims permuted;
-            for (const std::int64_t axis : order) {
-                permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
-                sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
-            }
-            source = {transpose(value, order, permuted), permuted, value.dtype};
-        }
-        Dims placed(shape.size(), 1);
-        for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
-            placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
-        }
-        if (placed != source.shape) {
-            source = {reshape(source, placed), placed, source.dtype};
-        }
-        if (placed == shape) {
-            return source.name;
-        }
-        const TensorInfo target = int64_vector(shape);
-        return node("Expand", {source, target}, "", shape, value.dtype);
+        return node("Expand", {placed, int64_vector(shape)}, "", shape, value.dtype);
     }
 
     std::string slice(const TensorInfo& value,
@@ -804,14 +728,9 @@ public:
     }
 
     std::string iota(std::int64_t length) override {
-        const Literal zero;
-        Literal limit;
-        limit.integer = length;
-        Literal one;
-        one.integer = 1;
-        const TensorInfo start{constant(zero, ScalarKind::I64), {}, ScalarKind::I64};
-        const TensorInfo stop{constant(limit, ScalarKind::I64), {}, ScalarKind::I64};
-        const TensorInfo delta{constant(one, ScalarKind::I64), {}, ScalarKind::I64};
+        const TensorInfo start = scalar_constant(Literal::of_integer(0), ScalarKind::I64);
+        const TensorInfo stop = scalar_constant(Literal::of_integer(length), ScalarKind::I64);
+        const TensorInfo delta = scalar_constant(Literal::of_integer(1), ScalarKind::I64);
         return node("Range", {start, stop, delta}, "", {length}, ScalarKind::I64);
     }
 
@@ -838,9 +757,8 @@ public:
         TensorInfo position = column(0);
         std::int64_t flat = source.shape.front();
         for (std::size_t j = 1; j < depth; ++j) {
-            Literal extent;
-            extent.integer = source.shape[j];
-            const TensorInfo size{constant(extent, ScalarKind::I64), {}, ScalarKind::I64};
+            const TensorInfo size =
+                scalar_constant(Literal::of_integer(source.shape[j]), ScalarKind::I64);
             const TensorInfo scaled{
                 node("Mul", {position, size}, "", rows, ScalarKind::I64), rows, ScalarKind::I64};
             position = {
@@ -1006,19 +924,13 @@ public:
                           "\"";
         if (!metadata_.empty()) {
             out += ", metadata_props: [";
-            for (std::size_t i = 0; i < metadata_.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + metadata_[i];
-            }
+            out += join(metadata_, ", ");
             out += "]";
         }
         out += ">\nmain (";
-        for (std::size_t i = 0; i < inputs_.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + inputs_[i];
-        }
+        out += join(inputs_, ", ");
         out += ") => (";
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + outputs[i];
-        }
+        out += join(outputs, ", ");
         out += ") {\n";
         out += body_;
         out += "}\n";
@@ -1141,11 +1053,7 @@ private:
         const std::int64_t heads = value.shape[1];
         const std::int64_t span = value.shape[2];
         const Dims grid{rows, heads, span};
-        const auto as_i64 = [&](const TensorInfo& t) {
-            return t.dtype == ScalarKind::I64
-                       ? t
-                       : TensorInfo{convert(t, ScalarKind::I64), t.shape, ScalarKind::I64};
-        };
+        const auto as_i64 = [&](const TensorInfo& t) { return cast_to(t, ScalarKind::I64); };
         // `values` laid along `axis` of the grid and broadcast over the rest.
         const auto spread = [&](const TensorInfo& values, std::size_t axis) {
             Dims placed{1, 1, 1};
@@ -1218,9 +1126,7 @@ private:
             line += " <" + attributes + ">";
         }
         line += " (";
-        for (std::size_t i = 0; i < operands.size(); ++i) {
-            line += (i == 0 ? "" : ", ") + operands[i].name;
-        }
+        line += join(operands, ", ", [&](const auto& item) { return item.name; });
         body_ += line + ")\n";
         return name;
     }

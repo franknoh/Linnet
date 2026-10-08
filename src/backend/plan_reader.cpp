@@ -270,15 +270,11 @@ private:
         for (const Json& constraint : list.as_array()) {
             const std::string& relation = constraint["relation"].as_string();
             ConstraintInfo info;
-            info.relation = relation == "=="   ? shape::Relation::Equal
-                            : relation == "!=" ? shape::Relation::NotEqual
-                            : relation == "<"  ? shape::Relation::Less
-                            : relation == "<=" ? shape::Relation::LessEqual
-                            : relation == ">"  ? shape::Relation::Greater
-                            : relation == ">="
-                                ? shape::Relation::GreaterEqual
-                                : (fail("unknown constraint relation `" + relation + "`"),
-                                   shape::Relation::Equal);
+            const auto parsed = shape::parse_relation(relation);
+            if (!parsed) {
+                fail("unknown constraint relation `" + relation + "`");
+            }
+            info.relation = *parsed;
             info.lhs = dim(constraint["lhs"]);
             info.rhs = dim(constraint["rhs"]);
             out.push_back(std::move(info));

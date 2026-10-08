@@ -5,11 +5,16 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace linnet::shape {
 
 enum class Relation : std::uint8_t { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual };
+
+// `==`, `!=`, `<`, `<=`, `>`, `>=`, and back.
+std::string_view relation_spelling(Relation relation);
+std::optional<Relation> parse_relation(std::string_view text);
 
 // Proves relations between dimension expressions from declared constraints.
 //

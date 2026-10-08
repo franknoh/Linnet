@@ -7,6 +7,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Core Tensor IR: an SSA representation of checked programs.
@@ -173,6 +174,9 @@ struct Function {
     std::vector<sema::ConstraintInfo> constraints;
     RegionId body = no_id;
     std::vector<sema::TypeId> results;
+
+    // `op`, `entry` or `fn`, as source declares it.
+    std::string_view keyword() const { return is_op ? "op" : is_entry ? "entry" : "fn"; }
 };
 
 // A module-level constant: its initializer as a region yielding one value.

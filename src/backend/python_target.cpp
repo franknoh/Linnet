@@ -82,40 +82,8 @@ std::string PythonTarget::reshape(const TensorInfo& value, const Dims& shape) {
 }
 
 std::string PythonTarget::broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) {
-    // Axes first in the order they take in the result, then size-one axes
-    // inserted, then the expansion.
-    Dims order(dims.size());
-    for (std::size_t i = 0; i < order.size(); ++i) {
-        order[i] = static_cast<std::int64_t>(i);
-    }
-    std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-        return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
-    });
-    TensorInfo source = value;
-    Dims sorted_dims = dims;
-    bool is_identity = true;
-    for (std::size_t i = 0; i < order.size(); ++i) {
-        is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
-    }
-    if (!is_identity) {
-        Dims permuted;
-        for (const std::int64_t axis : order) {
-            permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
-            sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
-        }
-        source = {transpose(value, order, permuted), permuted, value.dtype};
-    }
-    Dims placed(shape.size(), 1);
-    for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
-        placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
-    }
-    if (placed != source.shape) {
-        source = {reshape(source, placed), placed, source.dtype};
-    }
-    if (placed == shape) {
-        return source.name;
-    }
-    return define(expand(source.name, shape));
+    const TensorInfo placed = place_axes(value, dims, shape);
+    return placed.shape == shape ? placed.name : define(expand(placed.name, shape));
 }
 
 std::string PythonTarget::slice(const TensorInfo& value,

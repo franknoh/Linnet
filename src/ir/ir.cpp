@@ -300,10 +300,7 @@ private:
     }
 
     void print_function(const Function& function) {
-        std::string header = std::string(function.is_op      ? "op "
-                                         : function.is_entry ? "entry "
-                                                             : "fn ") +
-                             "@" + function.name;
+        std::string header = std::string(function.keyword()) + " @" + function.name;
         if (!function.generics.empty()) {
             header += "<";
             for (std::size_t i = 0; i < function.generics.size(); ++i) {
@@ -327,13 +324,8 @@ private:
         }
         for (const sema::ConstraintInfo& constraint : function.constraints) {
             header += " where " + module_.model().dims.to_string(constraint.lhs) + " " +
-                      std::string(constraint.relation == shape::Relation::Equal       ? "=="
-                                  : constraint.relation == shape::Relation::NotEqual  ? "!="
-                                  : constraint.relation == shape::Relation::Less      ? "<"
-                                  : constraint.relation == shape::Relation::LessEqual ? "<="
-                                  : constraint.relation == shape::Relation::Greater   ? ">"
-                                                                                      : ">=") +
-                      " " + module_.model().dims.to_string(constraint.rhs);
+                      std::string(shape::relation_spelling(constraint.relation)) + " " +
+                      module_.model().dims.to_string(constraint.rhs);
         }
         line(header + " {");
         ++indent_;

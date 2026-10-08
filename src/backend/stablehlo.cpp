@@ -1,6 +1,7 @@
 #include "linnet/backend/stablehlo.hpp"
 
 #include "linnet/backend/graph_export.hpp"
+#include "linnet/support/text.hpp"
 
 #include <cstdio>
 #include <optional>
@@ -35,9 +36,7 @@ std::string i64_array(const Dims& values) {
 
 std::string index_list(const Dims& values) {
     std::string text = "[";
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        text += (i == 0 ? "" : ", ") + std::to_string(values[i]);
-    }
+    text += join(values, ", ", [&](const auto& item) { return std::to_string(item); });
     return text + "]";
 }
 
@@ -357,7 +356,7 @@ public:
             init.integer = 1;
             break;
         }
-        const TensorInfo initial{constant(init, body.dtype), {}, body.dtype};
+        const TensorInfo initial = scalar_constant(init, body.dtype);
         return emit("reduce",
                     {body, initial},
                     "dimensions = " + i64_array(dims),
@@ -386,15 +385,8 @@ public:
         // Contractions become `dot_general`; everything else keeps its
         // canonical body, which XLA fuses well on its own. `(input dtype)`
         // attention skips the f32 accumulation.
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        const std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
-        std::vector<const TensorInfo*> at;
-        at.reserve(operands.size());
-        for (const std::optional<TensorInfo>& operand : operands) {
-            at.push_back(operand.has_value() ? &*operand : nullptr);
-        }
+        const auto [implementation_base, fast, grouped] = call_name(implementation);
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
         if (implementation == "torch.nn.functional.embedding" && operands.size() == 2 &&
             at[0] != nullptr && at[1] != nullptr) {
             // Rows of the table by id: a gather along axis 0 with the ids as
@@ -419,10 +411,7 @@ public:
         if (implementation == "torch.Tensor.index_copy" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {
             // `dynamic_update_slice` takes one start index per dimension.
-            Literal zero;
-            zero.kind = Literal::Kind::Integer;
-            zero.integer = 0;
-            const TensorInfo origin{constant(zero, ScalarKind::I32), {}, ScalarKind::I32};
+            const TensorInfo origin = scalar_constant(Literal::of_integer(0), ScalarKind::I32);
             const std::vector<TensorInfo> arguments{*at[0], *at[1], origin, origin, *at[2], origin};
             return emit("dynamic_update_slice", arguments, "", shape, dtype);
         }
@@ -431,10 +420,7 @@ public:
             at[2]->shape.empty()) {
             // `write_slot`: one row's span as a `dynamic_update_slice`.
             // (`write_rows` would be a scatter; its canonical select stands.)
-            Literal zero;
-            zero.kind = Literal::Kind::Integer;
-            zero.integer = 0;
-            const TensorInfo origin{constant(zero, ScalarKind::I32), {}, ScalarKind::I32};
+            const TensorInfo origin = scalar_constant(Literal::of_integer(0), ScalarKind::I32);
             const std::vector<TensorInfo> arguments{*at[0], *at[1], *at[2], origin, *at[3], origin};
             return emit("dynamic_update_slice", arguments, "", shape, dtype);
         }
@@ -490,23 +476,19 @@ public:
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && operands.size() == 1 &&
             at[0] != nullptr) {
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad) {
+            const auto pool = pool_window();
+            if (!pool) {
                 return std::nullopt;
             }
+            const auto [window, stride, pad] = *pool;
             // The padding holds the initial value, the lowest there is, so
             // it never wins a window.
-            Literal lowest;
-            lowest.kind = Literal::Kind::Lowest;
-            const TensorInfo initial{constant(lowest, dtype), {}, dtype};
-            const std::string p = std::to_string(*pad);
+            const TensorInfo initial = scalar_constant(Literal::of(Literal::Kind::Lowest), dtype);
+            const std::string p = std::to_string(pad);
             const std::string attributes =
                 "padding = dense<[[0, 0], [0, 0], [" + p + ", " + p + "], [" + p + ", " + p +
-                "]]> : tensor<4x2xi64>, window_dimensions = " +
-                i64_array({1, 1, *window, *window}) +
-                ", window_strides = " + i64_array({1, 1, *stride, *stride});
+                "]]> : tensor<4x2xi64>, window_dimensions = " + i64_array({1, 1, window, window}) +
+                ", window_strides = " + i64_array({1, 1, stride, stride});
             return emit("reduce_window",
                         {*at[0], initial},
                         attributes,
@@ -528,7 +510,7 @@ public:
             }
             return out;
         }
-        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" &&
+        if (implementation_base == "torch.nn.functional.scaled_dot_product_attention" && !grouped &&
             operands.size() == 5 && at[0] != nullptr && at[1] != nullptr && at[2] != nullptr &&
             at[3] != nullptr) {
             return attention(*at[0], *at[1], *at[2], *at[3], at[4], shape, dtype, fast);
@@ -710,9 +692,7 @@ public:
         }
         out += "module @" + module_name + " {\n";
         out += "  func.func @main(";
-        for (std::size_t i = 0; i < arguments_.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments_[i];
-        }
+        out += join(arguments_, ", ");
         out += ") -> " + (outputs.size() == 1 ? types : "(" + types + ")");
         if (!states.empty()) {
             out += " attributes {linnet.states = [";
@@ -790,9 +770,7 @@ private:
 
     static std::string i64_list(const Dims& dims) {
         std::string out = "[";
-        for (std::size_t i = 0; i < dims.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
-        }
+        out += join(dims, ", ", [&](const auto& item) { return std::to_string(item); });
         return out + "]";
     }
 
@@ -808,9 +786,7 @@ private:
                           ScalarKind dtype,
                           bool fast) {
         const ScalarKind f32 = fast ? dtype : ScalarKind::F32;
-        const auto as_f32 = [&](const TensorInfo& t) -> TensorInfo {
-            return t.dtype == f32 ? t : TensorInfo{convert(t, f32), t.shape, f32};
-        };
+        const auto as_f32 = [&](const TensorInfo& t) { return cast_to(t, f32); };
         const TensorInfo q = as_f32(query);
         const TensorInfo k = as_f32(key);
         const TensorInfo v = as_f32(value);
@@ -824,10 +800,7 @@ private:
                   scores_shape,
                   f32};
         if (mask != nullptr) {
-            Literal lowest;
-            lowest.kind = Literal::Kind::Real;
-            lowest.real = -1e30;
-            const TensorInfo fill{constant(lowest, f32), {}, f32};
+            const TensorInfo fill = scalar_constant(Literal::of_real(-1e30), f32);
             // A shared [Q, K] mask, or one per sequence ([B, Q, K]).
             const Dims mask_axes = mask->shape.size() == 3 ? Dims{0, 2, 3} : Dims{2, 3};
             const TensorInfo spread_mask{

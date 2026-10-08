@@ -20,6 +20,7 @@
 #include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
+#include "linnet/support/text.hpp"
 #include "linnet/syntax/lexer.hpp"
 #include "linnet/syntax/parser.hpp"
 #include "linnet/version.hpp"
@@ -316,6 +317,38 @@ std::filesystem::path find_std_root(const std::string& option, const char* progr
     return {};
 }
 
+// Files and everything they import, parsed and checked: `analysis` is set
+// when both succeeded, and `sink` holds what they reported.
+struct Checked {
+    SourceManager sources;
+    DiagnosticSink sink;
+    Program program;
+    std::vector<const ast::Ast*> modules;
+    std::optional<sema::AnalysisResult> analysis;
+
+    Checked(const std::vector<std::filesystem::path>& files, const LoaderOptions& loader) {
+        program = load_program(sources, files, loader, sink);
+        // Semantic analysis assumes well-formed trees.
+        if (sink.has_errors()) {
+            return;
+        }
+        modules = program.module_pointers();
+        sema::AnalysisResult result = sema::analyze(sources, modules, sink, &program.imports);
+        if (!sink.has_errors()) {
+            analysis.emplace(std::move(result));
+        }
+    }
+};
+
+// Whether the IR verifier accepts `core`; it prints each problem it finds.
+bool verified(const ir::Module& core) {
+    const std::vector<std::string> problems = ir::verify(core);
+    for (const std::string& problem : problems) {
+        std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
+    }
+    return problems.empty();
+}
+
 int run_check(std::span<const std::string_view> args, Options options, const char* program) {
     std::vector<std::filesystem::path> paths;
     std::string std_option;
@@ -343,16 +376,8 @@ int run_check(std::span<const std::string_view> args, Options options, const cha
     }
     std::sort(paths.begin(), paths.end());
 
-    SourceManager sources;
-    DiagnosticSink sink;
-    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
-    const Program program_modules = load_program(sources, paths, loader_options, sink);
-    // Semantic analysis assumes well-formed trees.
-    if (!sink.has_errors()) {
-        const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
-        sema::analyze(sources, modules, sink, &program_modules.imports);
-    }
-    return report(sources, sink, options);
+    Checked checked(paths, {find_std_root(std_option, program), {}});
+    return report(checked.sources, checked.sink, options);
 }
 
 // Creates a package skeleton without touching files that already exist.
@@ -425,20 +450,13 @@ int run_explain(std::span<const std::string_view> args,
     if (path.empty()) {
         return usage_error("explain requires a file");
     }
-    SourceManager sources;
-    DiagnosticSink sink;
-    const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
-    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
-    const Program program_modules = load_program(sources, paths, loader_options, sink);
-    if (sink.has_errors()) {
-        return report(sources, sink, options);
+    Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+    if (!checked.analysis) {
+        return report(checked.sources, checked.sink, options);
     }
-    const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
-    const sema::AnalysisResult analysis =
-        sema::analyze(sources, modules, sink, &program_modules.imports);
-    if (sink.has_errors()) {
-        return report(sources, sink, options);
-    }
+    const SourceManager& sources = checked.sources;
+    const std::vector<const ast::Ast*>& modules = checked.modules;
+    const sema::AnalysisResult& analysis = *checked.analysis;
     const auto allowed = opt::parse_legality(numerics);
     if (!allowed) {
         return usage_error("--numerics must be `exact`, `equivalent`, or `fast`");
@@ -449,7 +467,7 @@ int run_explain(std::span<const std::string_view> args,
         opt::render_explanations(opt::explain(core, opt::torch_candidates(), *allowed), sources)
             .c_str(),
         stdout);
-    return report(sources, sink, options);
+    return report(checked.sources, checked.sink, options);
 }
 
 // `linnet stablehlo` and `linnet onnx`: one entry of a root block as a
@@ -583,20 +601,13 @@ int run_graph_export(std::span<const std::string_view> args,
     if (path.empty()) {
         return usage_error(std::string(format) + " requires a file");
     }
-    SourceManager sources;
-    DiagnosticSink sink;
-    const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
-    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
-    const Program program_modules = load_program(sources, paths, loader_options, sink);
-    if (sink.has_errors()) {
-        return report(sources, sink, options);
+    Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+    if (!checked.analysis) {
+        return report(checked.sources, checked.sink, options);
     }
-    const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
-    const sema::AnalysisResult analysis =
-        sema::analyze(sources, modules, sink, &program_modules.imports);
-    if (sink.has_errors()) {
-        return report(sources, sink, options);
-    }
+    const SourceManager& sources = checked.sources;
+    const std::vector<const ast::Ast*>& modules = checked.modules;
+    const sema::AnalysisResult& analysis = *checked.analysis;
     ir::Module core = ir::lower(sources, modules, analysis.model);
     opt::run_pipeline(core, opt::optimizing_passes(opt::Legality::Exact));
     // Library calls the target has an operator for (contractions as
@@ -623,7 +634,7 @@ int run_graph_export(std::span<const std::string_view> args,
         return exit_failure;
     }
     std::fputs(text->c_str(), stdout);
-    return report(sources, sink, options);
+    return report(checked.sources, checked.sink, options);
 }
 
 // `linnet emit`: a plan document (as `linnet plan` prints, or as a framework
@@ -715,26 +726,15 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     if (functions && !root.empty()) {
         return usage_error("plan takes --root or --functions, not both");
     }
-    SourceManager sources;
-    DiagnosticSink sink;
-    const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
-    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
-    const Program program_modules = load_program(sources, paths, loader_options, sink);
-    if (sink.has_errors()) {
-        return report(sources, sink, options);
+    Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+    if (!checked.analysis) {
+        return report(checked.sources, checked.sink, options);
     }
-    const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
-    const sema::AnalysisResult analysis =
-        sema::analyze(sources, modules, sink, &program_modules.imports);
-    if (sink.has_errors()) {
-        return report(sources, sink, options);
-    }
+    const SourceManager& sources = checked.sources;
+    const std::vector<const ast::Ast*>& modules = checked.modules;
+    const sema::AnalysisResult& analysis = *checked.analysis;
     ir::Module core = ir::lower(sources, modules, analysis.model);
-    const std::vector<std::string> problems = ir::verify(core);
-    for (const std::string& problem : problems) {
-        std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
-    }
-    if (!problems.empty()) {
+    if (!verified(core)) {
         return exit_failure;
     }
     const auto allowed = opt::parse_legality(numerics);
@@ -751,7 +751,7 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
         return exit_failure;
     }
     std::fputs(plan->c_str(), stdout);
-    return report(sources, sink, options);
+    return report(checked.sources, checked.sink, options);
 }
 
 // Runs every case of a spec-tests directory through the frontend and compares
@@ -789,14 +789,9 @@ int run_spec_test(std::span<const std::string_view> args,
     const LoaderOptions loader_options{find_std_root(std_option, program), {}};
     std::size_t failures = 0;
     for (const SpecCase& spec_case : *cases) {
-        SourceManager sources;
-        DiagnosticSink sink;
-        const std::vector<std::filesystem::path> files{root / spec_case.file};
-        const Program program_modules = load_program(sources, files, loader_options, sink);
-        if (!sink.has_errors()) {
-            const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
-            sema::analyze(sources, modules, sink, &program_modules.imports);
-        }
+        Checked checked({root / spec_case.file}, loader_options);
+        const SourceManager& sources = checked.sources;
+        DiagnosticSink& sink = checked.sink;
         sink.sort_by_location();
 
         std::string rendered;
@@ -861,9 +856,7 @@ std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool a
             out += b == 0 ? "" : ",";
             out += "{\"name\":" + json_string(block.name) +
                    ",\"module\":" + json_string(block.module) + ",\"generics\":[";
-            for (std::size_t i = 0; i < block.generics.size(); ++i) {
-                out += (i == 0 ? "" : ",") + json_string(block.generics[i]);
-            }
+            out += join(block.generics, ",", [&](const auto& item) { return json_string(item); });
             out += "],\"entries\":[";
             for (std::size_t e = 0; e < block.entries.size(); ++e) {
                 const sema::ManifestEntry& entry = block.entries[e];
@@ -871,13 +864,9 @@ std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool a
                 out += "{\"path\":" + json_string(entry.path) +
                        ",\"kind\":" + json_string(entry.kind) +
                        ",\"dtype\":" + json_string(entry.dtype) + ",\"shape\":[";
-                for (std::size_t i = 0; i < entry.shape.size(); ++i) {
-                    out += (i == 0 ? "" : ",") + json_string(entry.shape[i]);
-                }
+                out += join(entry.shape, ",", [&](const auto& item) { return json_string(item); });
                 out += "],\"repeat\":[";
-                for (std::size_t i = 0; i < entry.repeat.size(); ++i) {
-                    out += (i == 0 ? "" : ",") + json_string(entry.repeat[i]);
-                }
+                out += join(entry.repeat, ",", [&](const auto& item) { return json_string(item); });
                 out +=
                     std::string("],\"optional\":") + (entry.is_optional ? "true" : "false") + "}";
             }
@@ -889,17 +878,13 @@ std::string render_manifests(std::span<const sema::ManifestBlock> blocks, bool a
         out += block.module + "::" + block.name;
         if (!block.generics.empty()) {
             out += "<";
-            for (std::size_t i = 0; i < block.generics.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + block.generics[i];
-            }
+            out += join(block.generics, ", ");
             out += ">";
         }
         out += "\n";
         for (const sema::ManifestEntry& entry : block.entries) {
             out += "  " + entry.kind + " " + entry.path + ": Tensor[";
-            for (std::size_t i = 0; i < entry.shape.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + entry.shape[i];
-            }
+            out += join(entry.shape, ", ");
             out += "; " + entry.dtype + "]" + (entry.is_optional ? "?" : "");
             for (const std::string& count : entry.repeat) {
                 out += " x " + count;
@@ -947,27 +932,16 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
         return usage_error("--json is only available with --parameters");
     }
 
-    SourceManager sources;
     if (view == "--parameters" || view == "--core-ir" || view == "--emit") {
-        DiagnosticSink sink;
-        const std::vector<std::filesystem::path> paths{std::filesystem::path(path)};
-        const LoaderOptions loader_options{find_std_root(std_option, program), {}};
-        const Program program_modules = load_program(sources, paths, loader_options, sink);
-        if (sink.has_errors()) {
-            return report(sources, sink, options);
+        Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+        if (!checked.analysis) {
+            return report(checked.sources, checked.sink, options);
         }
-        const std::vector<const ast::Ast*> modules = program_modules.module_pointers();
-        const sema::AnalysisResult analysis =
-            sema::analyze(sources, modules, sink, &program_modules.imports);
-        if (sink.has_errors()) {
-            return report(sources, sink, options);
-        }
+        const std::vector<const ast::Ast*>& modules = checked.modules;
+        const sema::AnalysisResult& analysis = *checked.analysis;
         if (view == "--core-ir" || view == "--emit") {
-            ir::Module core = ir::lower(sources, modules, analysis.model);
-            for (const std::string& problem : ir::verify(core)) {
-                std::fprintf(stderr, "linnet: IR verifier: %s\n", problem.c_str());
-            }
-            if (!ir::verify(core).empty()) {
+            ir::Module core = ir::lower(checked.sources, modules, analysis.model);
+            if (!verified(core)) {
                 return exit_failure;
             }
             if (is_optimized) {
@@ -999,9 +973,10 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
         }
         std::fputs(render_manifests(blocks, options.json).c_str(), stdout);
         options.json = false; // diagnostics stay on stderr as text
-        return report(sources, sink, options);
+        return report(checked.sources, checked.sink, options);
     }
 
+    SourceManager sources;
     const auto file = sources.load_file(path);
     if (!file) {
         std::fprintf(stderr, "linnet: %s\n", file.error().c_str());

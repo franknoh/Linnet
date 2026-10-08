@@ -743,15 +743,11 @@ private:
     }
 
     Val constant_int(std::int64_t value, ScalarKind dtype) {
-        Literal literal;
+        Literal literal = Literal::of_integer(value);
         if (dtype == ScalarKind::Bool) {
-            literal.kind = Literal::Kind::Boolean;
-            literal.integer = value != 0 ? 1 : 0;
+            literal = {Literal::Kind::Boolean, value != 0 ? 1 : 0, 0.0};
         } else if (is_float(dtype)) {
-            literal.kind = Literal::Kind::Real;
-            literal.real = static_cast<double>(value);
-        } else {
-            literal.integer = value;
+            literal = Literal::of_real(static_cast<double>(value));
         }
         return constant_scalar(literal, dtype);
     }
@@ -1122,10 +1118,7 @@ private:
             define(op, constant_int(a.integer, ScalarKind::Bool));
             return;
         case ir::OpKind::ConstFloat: {
-            Literal literal;
-            literal.kind = Literal::Kind::Real;
-            literal.real = a.number;
-            define(op, constant_scalar(literal, result_dtype(op)));
+            define(op, constant_scalar(Literal::of_real(a.number), result_dtype(op)));
             return;
         }
         case ir::OpKind::ConstDim:
@@ -2118,9 +2111,7 @@ std::string release_dead_values(const std::string& body, const std::string& live
         }
         if (!after[g].empty()) {
             std::string line = "    del ";
-            for (std::size_t i = 0; i < after[g].size(); ++i) {
-                line += (i == 0 ? "" : ", ") + after[g][i];
-            }
+            line += join(after[g], ", ");
             out += line + "\n";
         }
     }
@@ -2594,9 +2585,7 @@ std::string prune_python_assignments(const std::string& body, const std::string&
 
 std::string python_tuple(const Dims& dims) {
     std::string out = "(";
-    for (std::size_t i = 0; i < dims.size(); ++i) {
-        out += (i == 0 ? "" : ", ") + std::to_string(dims[i]);
-    }
+    out += join(dims, ", ", [&](const auto& item) { return std::to_string(item); });
     return out + (dims.size() == 1 ? ",)" : ")");
 }
 
@@ -2618,6 +2607,63 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
         {"f64", "double", 11, "float64"},
     }};
     return names[static_cast<std::size_t>(dtype)];
+}
+
+TensorInfo GraphTarget::place_axes(const TensorInfo& value, const Dims& dims, const Dims& shape) {
+    Dims order(dims.size());
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i] = static_cast<std::int64_t>(i);
+    }
+    std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
+        return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
+    });
+    TensorInfo source = value;
+    Dims sorted_dims = dims;
+    bool is_identity = true;
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
+    }
+    if (!is_identity) {
+        Dims permuted;
+        for (const std::int64_t axis : order) {
+            permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
+            sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
+        }
+        source = {transpose(value, order, permuted), permuted, value.dtype};
+    }
+    Dims placed(shape.size(), 1);
+    for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
+        placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
+    }
+    if (placed != source.shape) {
+        source = {reshape(source, placed), placed, source.dtype};
+    }
+    return source;
+}
+
+CallName call_name(std::string_view implementation) {
+    CallName name;
+    const auto strip = [&](std::string_view suffix) {
+        const bool found = implementation.ends_with(suffix);
+        if (found) {
+            implementation.remove_suffix(suffix.size());
+        }
+        return found;
+    };
+    name.fast = strip("(input dtype)");
+    name.grouped = strip("(enable_gqa)");
+    name.base = std::string(implementation);
+    return name;
+}
+
+std::vector<const TensorInfo*>
+operand_pointers(const std::vector<std::optional<TensorInfo>>& operands) {
+    std::vector<const TensorInfo*> at;
+    at.reserve(operands.size());
+    for (const std::optional<TensorInfo>& operand : operands) {
+        at.push_back(operand.has_value() ? &*operand : nullptr);
+    }
+    return at;
 }
 
 bool declares_entry(const ir::Module& module,

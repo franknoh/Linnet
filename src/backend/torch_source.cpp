@@ -1,6 +1,7 @@
 #include "linnet/backend/torch_source.hpp"
 
 #include "linnet/backend/python_target.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -63,9 +64,7 @@ public:
     std::string zero_name(ScalarKind dtype) {
         auto& cached = zeros_[dtype];
         if (cached.empty()) {
-            Literal zero;
-            zero.kind = Literal::Kind::Real;
-            cached = constant(zero, dtype);
+            cached = constant(Literal::of_real(0.0), dtype);
         }
         return cached;
     }
@@ -80,9 +79,7 @@ public:
     concat(const std::vector<TensorInfo>& parts, std::int64_t axis, const Dims& shape) override {
         (void)shape;
         std::string list;
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-            list += (i == 0 ? "" : ", ") + parts[i].name;
-        }
+        list += join(parts, ", ", [&](const auto& item) { return item.name; });
         return define("torch.cat([" + list + "], dim=" + std::to_string(axis) + ")");
     }
 
@@ -132,9 +129,7 @@ public:
     }
     void release(const std::vector<std::string>& names) override {
         std::string line = indent_ + "del ";
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            line += (i == 0 ? "" : ", ") + names[i];
-        }
+        line += join(names, ", ");
         body_ += line + "\n";
     }
 
@@ -156,15 +151,8 @@ public:
                                            ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
-        const std::string gqa = "(enable_gqa)";
-        const bool grouped = implementation_base.ends_with(gqa);
-        if (grouped) {
-            implementation_base.resize(implementation_base.size() - gqa.size());
-        }
+        const auto [implementation_base, fast, grouped] = call_name(implementation);
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
         // `fast`: the kernel runs in the tensor's dtype; otherwise in f32 as
         // the canonical body does.
         const auto up = [&](const std::string& x) { return fast ? x : x + ".float()"; };
@@ -206,11 +194,6 @@ public:
             return mask;
         }
         if (implementation_base == "torch.Tensor.index_copy" && operands.size() == 3) {
-            std::vector<const TensorInfo*> at;
-            at.reserve(operands.size());
-            for (const std::optional<TensorInfo>& operand : operands) {
-                at.push_back(operand.has_value() ? &*operand : nullptr);
-            }
             if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
                 return std::nullopt;
             }
@@ -302,11 +285,6 @@ public:
         }
         if (implementation_base == "torch.Tensor.index_put" &&
             (operands.size() == 3 || operands.size() == 4)) {
-            std::vector<const TensorInfo*> at;
-            at.reserve(operands.size());
-            for (const std::optional<TensorInfo>& operand : operands) {
-                at.push_back(operand.has_value() ? &*operand : nullptr);
-            }
             if (at[0] == nullptr || at[1] == nullptr || at[2] == nullptr) {
                 return std::nullopt;
             }
@@ -408,14 +386,13 @@ public:
             // The geometry is the call's own, as for the convolution;
             // `F.max_pool2d` pads with minus infinity and takes at most half
             // a window of it.
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad || 2 * *pad > *window) {
+            const auto pool = pool_window();
+            if (!pool || 2 * pool->pad > pool->size) {
                 return std::nullopt;
             }
-            return define("F.max_pool2d(" + name(0) + ", " + std::to_string(*window) + ", stride=" +
-                          std::to_string(*stride) + ", padding=" + std::to_string(*pad) + ")");
+            const auto [window, stride, pad] = *pool;
+            return define("F.max_pool2d(" + name(0) + ", " + std::to_string(window) + ", stride=" +
+                          std::to_string(stride) + ", padding=" + std::to_string(pad) + ")");
         }
         if (implementation_base == "torch.nn.functional.interpolate(nearest)" &&
             operands.size() == 1 && shape.size() == 4) {
@@ -567,11 +544,6 @@ public:
             operands.size() == 5) {
             // A square causal mask becomes `is_causal=True`, which lets PyTorch
             // pick its fused causal kernels; other masks are passed as they are.
-            std::vector<const TensorInfo*> at;
-            at.reserve(operands.size());
-            for (const std::optional<TensorInfo>& operand : operands) {
-                at.push_back(operand.has_value() ? &*operand : nullptr);
-            }
             const TensorInfo* query = at[0];
             const TensorInfo* key = at[1];
             const TensorInfo* attn_mask = at[4];
@@ -745,9 +717,7 @@ public:
         for (const auto& [path, value] : states) {
             outputs.push_back(value.name);
         }
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            tail += (i == 0 ? "" : ", ") + outputs[i];
-        }
+        tail += join(outputs, ", ");
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
         // Sibling linear layers become one product only where their joined
@@ -776,9 +746,7 @@ public:
             // Parameters `_adjacent` joins, which the runtime lays out one
             // after another so that the joined weight is a view of them.
             out += "FUSED = [";
-            for (std::size_t i = 0; i < fused.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + string_list(fused[i]);
-            }
+            out += join(fused, ", ", [&](const auto& item) { return string_list(item); });
             out += "]\n";
         }
         // The states `main` writes into the tensor it was given: CUDA graphs
@@ -804,9 +772,7 @@ public:
         }
         out += hoisted.constants;
         out += "    return (";
-        for (std::size_t i = 0; i < hoisted.names.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + hoisted.names[i];
-        }
+        out += join(hoisted.names, ", ");
         out += hoisted.names.size() == 1 ? ",)\n\n\n" : ")\n\n\n";
         if (!prepared.outputs.empty()) {
             // `PREPARE_INPUTS` names parameters (`pN`, PARAMETERS order) and
@@ -817,9 +783,7 @@ public:
                 out += input + ", ";
             }
             std::string returned = "    return (";
-            for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
-                returned += (i == 0 ? "" : ", ") + prepared.outputs[i];
-            }
+            returned += join(prepared.outputs, ", ");
             returned += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
             // Intermediates are released as soon as they are dead: a model's
             // worth of dequantization scratch at once would not fit.
@@ -833,9 +797,7 @@ public:
         if (placed_) {
             arguments.emplace_back("_dev");
         }
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments[i];
-        }
+        out += join(arguments, ", ");
         out += "):\n";
         if (placed_) {
             out += "    _device = _dev[0]\n";

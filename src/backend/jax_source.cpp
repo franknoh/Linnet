@@ -1,6 +1,7 @@
 #include "linnet/backend/jax_source.hpp"
 
 #include "linnet/backend/python_target.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -152,9 +153,7 @@ public:
     concat(const std::vector<TensorInfo>& parts, std::int64_t axis, const Dims& shape) override {
         (void)shape;
         std::string list;
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-            list += (i == 0 ? "" : ", ") + parts[i].name;
-        }
+        list += join(parts, ", ", [&](const auto& item) { return item.name; });
         return define("jnp.concatenate([" + list + "], axis=" + std::to_string(axis) + ")");
     }
 
@@ -189,19 +188,10 @@ public:
                                            ScalarKind dtype) override {
         (void)shape;
         (void)dtype;
-        std::vector<const TensorInfo*> at;
-        at.reserve(operands.size());
-        for (const std::optional<TensorInfo>& operand : operands) {
-            at.push_back(operand.has_value() ? &*operand : nullptr);
-        }
-        const std::string suffix = "(input dtype)";
-        const bool fast = implementation.ends_with(suffix);
-        std::string implementation_base =
-            fast ? implementation.substr(0, implementation.size() - suffix.size()) : implementation;
-        const std::string gqa = "(enable_gqa)";
-        if (implementation_base.ends_with(gqa)) {
-            implementation_base.resize(implementation_base.size() - gqa.size());
-        }
+        const std::vector<const TensorInfo*> at = operand_pointers(operands);
+        const CallName parsed = call_name(implementation);
+        const std::string& implementation_base = parsed.base;
+        const bool fast = parsed.fast;
         const auto name = [&](std::size_t i) -> std::string {
             return i < at.size() && at[i] != nullptr ? at[i]->name : "None";
         };
@@ -309,17 +299,16 @@ public:
         }
         if (implementation_base == "torch.nn.functional.max_pool2d" && at.size() == 1 &&
             at[0] != nullptr) {
-            const auto window = call_generic("K");
-            const auto stride = call_generic("Stride");
-            const auto pad = call_generic("Pad");
-            if (!window || !stride || !pad) {
+            const auto pool = pool_window();
+            if (!pool) {
                 return std::nullopt;
             }
+            const auto [window, stride, pad] = *pool;
             // Padding takes the initial value, minus infinity, which no
             // window's maximum is.
-            const std::string k = std::to_string(*window);
-            const std::string s = std::to_string(*stride);
-            const std::string p = std::to_string(*pad);
+            const std::string k = std::to_string(window);
+            const std::string s = std::to_string(stride);
+            const std::string p = std::to_string(pad);
             return define("jax.lax.reduce_window(" + name(0) + ", jnp.array(-jnp.inf, " + name(0) +
                           ".dtype), jax.lax.max, (1, 1, " + k + ", " + k + "), (1, 1, " + s + ", " +
                           s + "), ((0, 0), (0, 0), (" + p + ", " + p + "), (" + p + ", " + p +
@@ -605,9 +594,7 @@ public:
         for (const auto& [path, value] : states) {
             outputs.push_back(value.name);
         }
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            tail += (i == 0 ? "" : ", ") + outputs[i];
-        }
+        tail += join(outputs, ", ");
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
         // Weight-only work, run once per loaded model (`--prepare`).
         PreparedSplit prepared;
@@ -622,22 +609,16 @@ public:
             out += "PREPARED = " + string_list(prepared.keys) + "\n";
             out += "PREPARE_INPUTS = " + string_list(prepared.inputs) + "\n\n\n";
             out += "def prepare(";
-            for (std::size_t i = 0; i < prepared.inputs.size(); ++i) {
-                out += (i == 0 ? "" : ", ") + prepared.inputs[i];
-            }
+            out += join(prepared.inputs, ", ");
             std::string returned = "    return (";
-            for (std::size_t i = 0; i < prepared.outputs.size(); ++i) {
-                returned += (i == 0 ? "" : ", ") + prepared.outputs[i];
-            }
+            returned += join(prepared.outputs, ", ");
             returned += prepared.outputs.size() == 1 ? ",)\n" : ")\n";
             out += "):\n" + precise(prepared.prepare + returned);
         }
         out += "\n\ndef main(";
         std::vector<std::string> arguments = arguments_;
         arguments.insert(arguments.end(), prepared.outputs.begin(), prepared.outputs.end());
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + arguments[i];
-        }
+        out += join(arguments, ", ");
         out += "):\n" + precise(prepared.body + tail);
         return out;
     }
@@ -678,9 +659,7 @@ private:
 
     static std::string unpack(const std::vector<std::string>& names) {
         std::string out;
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            out += (i == 0 ? "" : ", ") + names[i];
-        }
+        out += join(names, ", ");
         return names.size() == 1 ? out + "," : out;
     }
 
