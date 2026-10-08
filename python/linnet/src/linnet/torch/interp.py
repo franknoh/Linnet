@@ -17,9 +17,9 @@ This follows the canonical semantics exactly; it is not the fast path.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, TypeAlias, TypeVar, cast
 
 import torch
 
@@ -28,7 +28,8 @@ from ..plan import PlanError
 from .dtypes import torch_dtype
 from .native import NATIVE, causal_mask, convolution, group_norm, max_pool2d, upsample_nearest2d
 
-Value = Any
+_A = TypeVar("_A")
+_R = TypeVar("_R")
 
 
 @dataclass
@@ -51,6 +52,18 @@ class IndexValue:
     """An index variable: the grid axes its domain occupies."""
 
     axes: list[tuple[int, int]]  # (position in the grid, size)
+
+
+# A Linnet value as the interpreter holds it (see above).
+Value: TypeAlias = (
+    torch.Tensor
+    | tuple["Value", ...]
+    | str
+    | BlockInstance
+    | list[BlockInstance]
+    | IndexValue
+    | None
+)
 
 
 @dataclass
@@ -119,11 +132,11 @@ class Interpreter:
         self.device = device
         # What an operation's attributes say, read once: a shape, a slice's
         # axes, the domains of index notation, a call's substitution.
-        self._read: dict[tuple[int, str], Any] = {}
+        self._read: dict[tuple[int, str], object] = {}
 
     # ------------------------------------------------------------ functions
 
-    def call(self, function: ir.Function, env: ir.Bindings, arguments: list[Value]) -> Value:
+    def call(self, function: ir.Function, env: ir.Bindings, arguments: Sequence[Value]) -> Value:
         for constraint in function.constraints:
             if not env.holds(constraint):
                 raise PlanError(f"constraint of `{function.name}` does not hold at runtime")
@@ -151,17 +164,19 @@ class Interpreter:
 
     # ------------------------------------------------------------ attributes
 
-    def _attr(self, op: ir.Op, key: str, read: Callable[[Any], Any]) -> Any:
+    def _attr(self, op: ir.Op, key: str, read: Callable[[_A], _R]) -> _R:
+        """`op`'s attribute `key` as `read` reads it, read once. The
+        attribute holds what `read` takes."""
         found = self._read.get((id(op), key))
         if found is None:
-            found = self._read[(id(op), key)] = read(op.attrs[key])
-        return found
+            found = self._read[(id(op), key)] = read(cast(_A, op.attrs[key]))
+        return cast(_R, found)
 
     def _shape_attr(self, op: ir.Op) -> ir.Shape:
-        return cast(ir.Shape, self._attr(op, "shape", ir.parse_shape))
+        return self._attr(op, "shape", ir.parse_shape)
 
     def _substitution(self, op: ir.Op) -> ir.Substitution:
-        return cast(ir.Substitution, self._attr(op, "substitution", ir.parse_substitution))
+        return self._attr(op, "substitution", ir.parse_substitution)
 
     # ------------------------------------------------------------ operations
 
@@ -191,7 +206,7 @@ class Interpreter:
         if kind == "const.bool":
             return [torch.tensor(bool(attrs["value"]), device=self.device)]
         if kind == "const.dim":
-            value = env.dim(cast(ir.Dim, self._attr(op, "value", ir.parse_dim)))
+            value = env.dim(self._attr(op, "value", ir.parse_dim))
             return [torch.tensor(value, dtype=torch.int64, device=self.device)]
         if kind == "enum.const":
             return [attrs["name"]]
@@ -364,7 +379,7 @@ class Interpreter:
         if kind == "array.get":
             return [cast(list[BlockInstance], operands[0])[int(tensor(1).item())]]
         if kind == "static_for":
-            carried: list[Any] = list(operands[1:])
+            carried: list[Value] = list(operands[1:])
             region = op.regions[0]
             for element in cast(list[BlockInstance], operands[0]):
                 inner = dict(values)
@@ -380,7 +395,9 @@ class Interpreter:
                 inner = dict(values)
                 for arg, value in zip(condition.args, carried, strict=True):
                     inner[arg.id] = value
-                if not bool(self.run_region(condition, env, inner, grid)[0].item()):
+                if not bool(
+                    cast(torch.Tensor, self.run_region(condition, env, inner, grid)[0]).item()
+                ):
                     break
                 inner = dict(values)
                 for arg, value in zip(body.args, carried, strict=True):
@@ -413,7 +430,7 @@ class Interpreter:
 
     @staticmethod
     def _slice(base: torch.Tensor, axes: tuple[_Axis, ...], env: ir.Bindings) -> torch.Tensor:
-        index: list[Any] = []
+        index: list[slice | int] = []
         for axis in axes:
             if axis.whole is not None:
                 # A whole axis stands for every axis of a shape pack.
@@ -424,7 +441,7 @@ class Interpreter:
                 index.append(slice(env.dim(axis.start), env.dim(axis.stop), axis.step))
         return base[tuple(index)]
 
-    def _element(self, base: torch.Tensor, indices: list[Value], grid: Grid) -> torch.Tensor:
+    def _element(self, base: torch.Tensor, indices: Sequence[Value], grid: Grid) -> torch.Tensor:
         positions: list[torch.Tensor] = []
         for index in indices:
             if isinstance(index, IndexValue):
@@ -432,11 +449,11 @@ class Interpreter:
                     grid.position(axis, size, self.device) for axis, size in index.axes
                 )
             else:
-                positions.append(grid.pad(index.to(torch.int64)))
+                positions.append(grid.pad(cast(torch.Tensor, index).to(torch.int64)))
         return grid.pad(base[tuple(positions)])
 
     def _index_sizes(self, op: ir.Op, env: ir.Bindings) -> list[list[int]]:
-        domains = cast(tuple[ir.Shape, ...], self._attr(op, "indices", _domains))
+        domains = self._attr(op, "indices", _domains)
         return [list(env.shape(domain)) for domain in domains]
 
     def _comprehension(
@@ -506,7 +523,7 @@ class _Axis:
     step: int = 1
 
 
-def _slice_axes(data: Any) -> tuple[_Axis, ...]:
+def _slice_axes(data: object) -> tuple[_Axis, ...]:
     axes: list[_Axis] = []
     for axis in cast(list[dict[str, Any]], data):
         if "whole" in axis:
@@ -524,5 +541,5 @@ def _slice_axes(data: Any) -> tuple[_Axis, ...]:
     return tuple(axes)
 
 
-def _domains(data: Any) -> tuple[ir.Shape, ...]:
+def _domains(data: object) -> tuple[ir.Shape, ...]:
     return tuple(ir.parse_shape(index["domain"]) for index in cast(list[dict[str, Any]], data))

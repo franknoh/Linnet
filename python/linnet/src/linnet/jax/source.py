@@ -7,14 +7,14 @@ ordinary JAX, `jax.grad` differentiates it — this is how a Linnet model is
 trained in JAX — and `jax.jit`/`jax.vmap` compose with it as usual.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import jax
 
@@ -22,6 +22,14 @@ from .. import lora
 from ..compiler import LinnetError
 from ..generated import import_generated
 from .load import CompiledEntry, LinnetFunction, load
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    import numpy as np
+    from jax.typing import ArrayLike
+
+    from .. import ir
 
 
 class SourceFunction(LinnetFunction):
@@ -32,9 +40,22 @@ class SourceFunction(LinnetFunction):
     trains it; `parameters` holds the loaded weights as device arrays.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.parameters: dict[str, Any] = {}
+    def __init__(
+        self,
+        source: Path,
+        program: ir.Program,
+        generics: Mapping[str, int | str],
+        weights: dict[str, ArrayLike],
+        std_root: str | Path | None,
+        root: str,
+        entry: str,
+        numerics: str = "equivalent",
+        cast_dtype: bool = False,
+    ) -> None:
+        super().__init__(
+            source, program, generics, weights, std_root, root, entry, numerics, cast_dtype
+        )
+        self.parameters: dict[str, jax.Array] = {}
         self._work = Path(tempfile.mkdtemp(prefix="linnet-jax-"))
         # Low-rank adapters (`add_lora`): patterns, rank, alpha; and the seed
         # their first values are drawn from.
@@ -108,7 +129,7 @@ class SourceFunction(LinnetFunction):
         compiled.module = module
         compiled.prepared = self._prepared_values(module, compiled.arrays)
 
-        def call(*arguments: Any) -> Any:
+        def call(*arguments: ArrayLike) -> jax.Array | tuple[jax.Array, ...]:
             # A lone result is returned bare, as the StableHLO path does. The
             # prepared values are read here: new weights replace them.
             outputs = jitted(*arguments, *compiled.prepared)
@@ -120,7 +141,9 @@ class SourceFunction(LinnetFunction):
             self.parameters.setdefault(name, array)
         return compiled
 
-    def _adapters(self, paths: list[str], compiled: CompiledEntry) -> tuple[list[Any], list[Any]]:
+    def _adapters(
+        self, paths: list[str], compiled: CompiledEntry
+    ) -> tuple[list[jax.Array], list[np.dtype[np.generic]]]:
         """First values of the adapters at `paths`: `lora_a` uniform in
         +-1/sqrt(in), `lora_b` zero, in their weight's dtype."""
         import numpy as np
@@ -129,8 +152,8 @@ class SourceFunction(LinnetFunction):
         rank = self.lora[1]
         weights = dict(zip(compiled.parameters, compiled.arrays, strict=True))
         draws = np.random.default_rng(self._lora_seed)
-        values: list[Any] = []
-        dtypes: list[Any] = []
+        values: list[jax.Array] = []
+        dtypes: list[np.dtype[np.generic]] = []
         for path in paths:
             block, adapter = path.rsplit(".", 1)
             weight = weights[block + ".weight"]
@@ -146,7 +169,7 @@ class SourceFunction(LinnetFunction):
             dtypes.append(weight.dtype)
         return values, dtypes
 
-    def _prepared_values(self, module: Any, arrays: list[Any]) -> list[Any]:
+    def _prepared_values(self, module: ModuleType, arrays: Sequence[jax.Array]) -> list[jax.Array]:
         """The entry's weight-only values (`prepare`), computed once and kept
         by key in `self.prepared`, which `LinnetModel` shares across entries."""
         keys = list(getattr(module, "PREPARED", []))
@@ -159,7 +182,7 @@ class SourceFunction(LinnetFunction):
             # (a mixture's dequantized experts) is never made.
             inputs = [arrays[int(name[1:])] for name in module.PREPARE_INPUTS]
 
-            def only_missing(*values: Any) -> tuple[Any, ...]:
+            def only_missing(*values: jax.Array) -> tuple[jax.Array, ...]:
                 prepared = module.prepare(*values)
                 return tuple(prepared[i] for i in missing)
 
@@ -180,7 +203,7 @@ def load_source(
     source: str | Path,
     *,
     generics: Mapping[str, int | str],
-    weights: str | Path | Mapping[str, Any],
+    weights: str | Path | Mapping[str, ArrayLike],
     root: str | None = None,
     entry: str | None = None,
     bindings: str | Path | None = None,

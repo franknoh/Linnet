@@ -17,15 +17,28 @@ Both accumulate the weight's gradient in f32. The PyTorch backend's
 `linnet.torch.loss` computes the same.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, TypeAlias
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    # What `linear_cross_entropy`'s forward pass keeps for backward: the
+    # hidden states' and the weight's gradients, each row's loss, the
+    # targets, and empty arrays of the weight's and the weights' dtypes.
+    _CrossEntropySaved: TypeAlias = tuple[
+        jax.Array, jax.Array, jax.Array, jax.Array, tuple[jax.Array, jax.Array]
+    ]
+    # What `linear_token_log_probs`'s forward pass keeps: its inputs and each
+    # row's log-sum-exp.
+    _LogProbsSaved: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
 
 # The f32 logits of one block of rows.
 BLOCK_BYTES = 1 << 30
@@ -48,7 +61,7 @@ def _logits(block: jax.Array, weight: jax.Array) -> jax.Array:
     return (block @ weight.T).astype(jnp.float32)
 
 
-def _zero_like_integers(value: jax.Array) -> Any:
+def _zero_like_integers(value: jax.Array) -> NDArray[np.void]:
     return np.zeros(value.shape, dtype=jax.dtypes.float0)
 
 
@@ -77,7 +90,9 @@ def _cross_entropy(
         _split(weights.astype(jnp.float32), rows, count),
     )
 
-    def body(carry: Any, block: Any) -> Any:
+    def body(
+        carry: tuple[jax.Array, jax.Array], block: tuple[jax.Array, jax.Array, jax.Array]
+    ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array]]:
         total, grad_weight = carry
         x, target, weight_of = block
         logits = _logits(x, weight)
@@ -108,7 +123,7 @@ def _cross_entropy(
 
 def _cross_entropy_forward(
     hidden: jax.Array, weight: jax.Array, targets: jax.Array, weights: jax.Array
-) -> tuple[jax.Array, Any]:
+) -> tuple[jax.Array, _CrossEntropySaved]:
     total, found = _cross_entropy(hidden, weight, targets, weights, grads=True)
     assert found is not None
     grad_hidden, grad_weight, losses = found
@@ -117,7 +132,9 @@ def _cross_entropy_forward(
     return total, (grad_hidden, grad_weight, losses, targets, dtypes)
 
 
-def _cross_entropy_backward(saved: Any, grad: jax.Array) -> tuple[Any, ...]:
+def _cross_entropy_backward(
+    saved: _CrossEntropySaved, grad: jax.Array
+) -> tuple[jax.Array, jax.Array, NDArray[np.void], jax.Array]:
     grad_hidden, grad_weight, losses, targets, (weight_like, weights_like) = saved
     scale = grad.astype(jnp.float32)
     return (
@@ -149,7 +166,9 @@ def _log_probs(
     rows, count = _blocks(n, weight.shape[0])
     blocks = (_split(hidden, rows, count), _split(targets.astype(jnp.int32), rows, count))
 
-    def body(carry: Any, block: Any) -> Any:
+    def body(
+        carry: None, block: tuple[jax.Array, jax.Array]
+    ) -> tuple[None, tuple[jax.Array, jax.Array]]:
         x, target = block
         logits = _logits(x, weight)
         norm = jax.nn.logsumexp(logits, axis=-1)
@@ -162,12 +181,14 @@ def _log_probs(
 
 def _log_probs_forward(
     hidden: jax.Array, weight: jax.Array, targets: jax.Array
-) -> tuple[jax.Array, Any]:
+) -> tuple[jax.Array, _LogProbsSaved]:
     out, norms = _log_probs(hidden, weight, targets)
     return out, (hidden, weight, targets, norms)
 
 
-def _log_probs_backward(saved: Any, grad: jax.Array) -> tuple[Any, ...]:
+def _log_probs_backward(
+    saved: _LogProbsSaved, grad: jax.Array
+) -> tuple[jax.Array, jax.Array, NDArray[np.void]]:
     hidden, weight, targets, norms = saved
     n, width = hidden.shape
     vocab = weight.shape[0]
@@ -179,7 +200,9 @@ def _log_probs_backward(saved: Any, grad: jax.Array) -> tuple[Any, ...]:
         _split(grad.astype(jnp.float32), rows, count),
     )
 
-    def body(grad_weight: jax.Array, block: Any) -> Any:
+    def body(
+        grad_weight: jax.Array, block: tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+    ) -> tuple[jax.Array, jax.Array]:
         x, target, norm, scale = block
         # d/dlogits of logit[t] - logsumexp = onehot(t) - softmax.
         probs = -jnp.exp(_logits(x, weight) - norm[:, None])

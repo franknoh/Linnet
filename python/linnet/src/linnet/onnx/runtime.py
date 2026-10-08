@@ -18,13 +18,11 @@ session keeps its own device copy.
     logits = model.run_entry("prefill", [tokens, np.int32(0)])
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict, cast
 
 import numpy as np
 
@@ -33,12 +31,160 @@ from ..compiler import LinnetError
 from ..dtypes import BY_ONNX, DTYPES
 from ..dtypes import dtype as dtype_info
 from ..plan import compile_plan
+from ..results import Result
 from ..weights import from_bf16_bits, to_bf16_bits
 from .export import export_model
 
+# A compiled session's key: entry, its generics, `argmax`, and whether it is
+# replayed as a CUDA graph.
+_SessionKey: TypeAlias = "tuple[str, tuple[tuple[str, int | str], ...], bool, bool]"
+# What ONNX Runtime takes as an execution provider: its name, or the name
+# and its options.
+Provider: TypeAlias = "str | tuple[str, Mapping[str, object]]"
+# A host array, of numbers or booleans.
+_Array: TypeAlias = "NDArray[np.number | np.bool]"
+# Results on the host: one bare, several as a tuple.
+_HostResult: TypeAlias = "_Array | tuple[_Array, ...]"
+
+if TYPE_CHECKING:
+    import onnx
+    from numpy.typing import ArrayLike, NDArray
+
+    from .export import Exported
+
+    # ONNX Runtime ships no types: what follows describes what this module
+    # uses of it.
+
+    class _OrtValue:
+        """`onnxruntime.OrtValue`: a tensor where ONNX Runtime keeps it. A
+        class, not a protocol, so `isinstance(v, ort.OrtValue)` tells it from
+        a NumPy array either way."""
+
+        @staticmethod
+        def ortvalue_from_numpy(
+            array: _Array, device_type: str, device_id: int, /
+        ) -> _OrtValue: ...
+
+        @staticmethod
+        def ortvalue_from_numpy_with_onnx_type(
+            array: _Array, onnx_element_type: int, /
+        ) -> _OrtValue: ...
+
+        @staticmethod
+        def ortvalue_from_shape_and_type(
+            shape: Sequence[int], element_type: int, device_type: str, device_id: int, /
+        ) -> _OrtValue: ...
+
+        def numpy(self) -> _Array: ...
+
+        def shape(self) -> list[int]: ...
+
+        def update_inplace(self, array: _Array, /) -> None: ...
+
+    class _IOBinding(Protocol):
+        """`onnxruntime.IOBinding`: a session's inputs and outputs, bound ahead."""
+
+        def bind_cpu_input(self, name: str, array: _Array, /) -> None: ...
+
+        def bind_ortvalue_input(self, name: str, value: _OrtValue, /) -> None: ...
+
+        def bind_output(
+            self, name: str, device_type: str = ..., device_id: int = ..., /
+        ) -> None: ...
+
+        def bind_ortvalue_output(self, name: str, value: _OrtValue, /) -> None: ...
+
+        def get_outputs(self) -> Sequence[_OrtValue]: ...
+
+    class _SessionOptions(Protocol):
+        """`onnxruntime.SessionOptions`."""
+
+        graph_optimization_level: object
+        intra_op_num_threads: int
+
+        def add_session_config_entry(self, key: str, value: str, /) -> None: ...
+
+        def add_external_initializers(
+            self, names: list[str], values: list[_OrtValue], /
+        ) -> None: ...
+
+    class _RunOptions(Protocol):
+        """`onnxruntime.RunOptions`."""
+
+        def add_run_config_entry(self, key: str, value: str, /) -> None: ...
+
+    class _InferenceSession(Protocol):
+        """`onnxruntime.InferenceSession`, run by I/O binding."""
+
+        def io_binding(self) -> _IOBinding: ...
+
+        def run_with_iobinding(
+            self, binding: _IOBinding, run_options: _RunOptions | None = ..., /
+        ) -> None: ...
+
+    class _NewSession(Protocol):
+        """`onnxruntime.InferenceSession`'s constructor."""
+
+        def __call__(
+            self, model: bytes, options: _SessionOptions, /, *, providers: Sequence[Provider]
+        ) -> _InferenceSession: ...
+
+    class _GraphOptimizationLevel(Protocol):
+        ORT_ENABLE_ALL: object
+
+    class _OrtAllocatorType(Protocol):
+        ORT_ARENA_ALLOCATOR: object
+
+    class _OrtMemType(Protocol):
+        DEFAULT: object
+
+    class _NewMemoryInfo(Protocol):
+        """`onnxruntime.OrtMemoryInfo`'s constructor."""
+
+        def __call__(
+            self, name: str, allocator: object, device_id: int, memory: object, /
+        ) -> object: ...
+
+    class _NewArenaCfg(Protocol):
+        """`onnxruntime.OrtArenaCfg`'s constructor."""
+
+        def __call__(self, config: Mapping[str, int], /) -> object: ...
+
+    class _Ort(Protocol):
+        """The `onnxruntime` module."""
+
+        OrtValue = _OrtValue
+        InferenceSession: _NewSession
+        SessionOptions: type[_SessionOptions]
+        RunOptions: type[_RunOptions]
+        GraphOptimizationLevel: _GraphOptimizationLevel
+        OrtAllocatorType: _OrtAllocatorType
+        OrtMemType: _OrtMemType
+        OrtMemoryInfo: _NewMemoryInfo
+        OrtArenaCfg: _NewArenaCfg
+
+        def create_and_register_allocator_v2(
+            self, provider: str, memory: object, options: Mapping[str, str], arena: object, /
+        ) -> None: ...
+
+        def get_available_providers(self) -> list[str]: ...
+
+
+class _Options(TypedDict):
+    """`load_model`'s arguments that each entry's export takes."""
+
+    generics: dict[str, int | str]
+    weights: str | Path
+    root: str | None
+    bindings: str | Path | None
+    std_root: str | Path | None
+    numerics: str
+    cast_dtype: bool
+
+
 # ONNX element types and the NumPy dtypes their bytes are read as. bf16 has
 # no NumPy type; its bytes travel as uint16.
-_NUMPY: dict[int, Any] = {
+_NUMPY: dict[int, type[np.number | np.bool]] = {
     code: np.uint16 if info.name == "bf16" else np.dtype(info.numpy).type
     for code, info in BY_ONNX.items()
 }
@@ -65,12 +211,12 @@ class OnnxModel:
         self,
         source: Path,
         program: ir.Program,
-        options: dict[str, Any],
-        providers: Sequence[Any],
+        options: _Options,
+        providers: Sequence[Provider],
     ) -> None:
         import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
 
-        self._ort = onnxruntime
+        self._ort = cast("_Ort", onnxruntime)
         self._source = source
         self.program = program
         self._options = options
@@ -84,22 +230,24 @@ class OnnxModel:
         self.entries = list(self._signatures)
         self.generics = dict(options["generics"])
         self._root = ir.bind_generics(program.root.generics, self.generics)
-        self._sessions: dict[tuple[Any, ...], _Session] = {}
-        self._weights: dict[str, Any] = {}  # path -> OrtValue on the device
-        self._host: dict[str, tuple[np.ndarray, Any]] = {}  # path -> (bytes, CPU OrtValue)
-        self._prepared: dict[str, Any] = {}  # key -> weight-only value on the device
-        self.state: dict[str, Any] = {}  # path -> OrtValue on the device
+        self._sessions: dict[_SessionKey, _Session] = {}
+        self._weights: dict[str, _OrtValue] = {}  # path -> OrtValue on the device
+        self._host: dict[str, tuple[_Array, _OrtValue]] = {}  # path -> (bytes, CPU OrtValue)
+        self._prepared: dict[str, _OrtValue] = {}  # key -> weight-only value on the device
+        self.state: dict[str, _OrtValue] = {}  # path -> OrtValue on the device
 
     # ---- entries
 
     def run_entry(
         self,
         name: str,
-        inputs: Sequence[Any],
+        inputs: Sequence[ArrayLike | _OrtValue],
         keep_on_device: bool = False,
         argmax: bool = False,
         cuda_graph: bool = False,
-    ) -> Any:
+    ) -> Result:
+        """Runs entry `name`: its results as NumPy arrays, or with
+        `keep_on_device` as `OrtValue`s on the device."""
         if name not in self._signatures:
             raise LinnetError(f"the block has no entry `{name}`")
         arrays = [v if isinstance(v, self._ort.OrtValue) else np.asarray(v) for v in inputs]
@@ -131,7 +279,7 @@ class OnnxModel:
         self._bind_held(session, binding)
         # bf16 results land in host buffers of their bits: ONNX Runtime has
         # no NumPy type to hand them back as.
-        buffers: dict[int, np.ndarray] = {}
+        buffers: dict[int, _Array] = {}
         for i, port in enumerate(session.results):
             if keep_on_device:
                 binding.bind_output(port, self._device, 0)
@@ -165,19 +313,19 @@ class OnnxModel:
     def reset_state(self) -> None:
         self.state = {}
 
-    def _state_buffer(self, session: _Session, port: str, path: str) -> Any:
+    def _state_buffer(self, session: _Session, port: str, path: str) -> _OrtValue:
         """The buffer state `path` lives in, made (zeros) for one an entry
         writes before any entry has read it."""
         return self._state_of(path, *session.next_specs[port])
 
-    def _state_of(self, path: str, shape: tuple[int, ...], element: int) -> Any:
+    def _state_of(self, path: str, shape: tuple[int, ...], element: int) -> _OrtValue:
         """State `path` on the device, zeros until an entry writes it."""
         if path not in self.state:
             zeros = np.zeros(shape, dtype=_NUMPY[element])
             self.state[path] = _to_device(self._ort, zeros, element, self._device)
         return self.state[path]
 
-    def _bind_held(self, session: _Session, binding: Any) -> dict[str, Any]:
+    def _bind_held(self, session: _Session, binding: _IOBinding) -> dict[str, _OrtValue]:
         """Binds what the model holds rather than the caller passes: the
         weights, the values `prepare` computed, and the state, which it
         returns by path."""
@@ -185,13 +333,13 @@ class OnnxModel:
             binding.bind_ortvalue_input(port, self._weights[path])
         for port, key in session.prepared.items():
             binding.bind_ortvalue_input(port, self._prepared[key])
-        states: dict[str, Any] = {}
+        states: dict[str, _OrtValue] = {}
         for port, (path, shape, element) in session.states.items():
             states[path] = self._state_of(path, shape, element)
             binding.bind_ortvalue_input(port, states[path])
         return states
 
-    def _replay(self, session: _Session, arrays: list[Any]) -> Any:
+    def _replay(self, session: _Session, arrays: Sequence[_Array | _OrtValue]) -> _HostResult:
         """One call of a session captured as a CUDA graph: the first binds
         every value where it stays; later ones copy the inputs into place."""
         if session.fixed is None:
@@ -206,9 +354,9 @@ class OnnxModel:
         results = [value.numpy() for value in session.fixed.outputs]
         return results[0] if len(results) == 1 else tuple(results)
 
-    def _fix(self, session: _Session, arrays: list[Any]) -> _Fixed:
+    def _fix(self, session: _Session, arrays: Sequence[_Array | _OrtValue]) -> _Fixed:
         binding = session.session.io_binding()
-        inputs: list[Any] = []
+        inputs: list[_OrtValue] = []
         for port, array in zip(session.inputs, arrays, strict=True):
             element = session.elements[port]
             host = array.numpy() if isinstance(array, self._ort.OrtValue) else array
@@ -216,7 +364,7 @@ class OnnxModel:
             binding.bind_ortvalue_input(port, value)
             inputs.append(value)
         states = self._bind_held(session, binding)
-        outputs: list[Any] = []
+        outputs: list[_OrtValue] = []
         for port, shape, element in zip(
             session.results, session.result_shapes, session.result_elements, strict=True
         ):
@@ -231,7 +379,7 @@ class OnnxModel:
             states[path] = self.state[path]
         return _Fixed(binding, inputs, outputs, states)
 
-    def place(self, array: Any, dtype: str) -> Any:
+    def place(self, array: ArrayLike, dtype: str) -> _OrtValue:
         """`array` as an `OrtValue` on the model's device in `dtype` (`f32`,
         `f16`, `bf16`, `i32`, ...): an input reused call after call, bound
         without a copy from the host each time."""
@@ -307,7 +455,7 @@ class OnnxModel:
             graph.input.extend(kept)
             parameters = {port: path for port, path in parameters.items() if port in used}
         graph_inputs = {i.name: i.type.tensor_type for i in exported.model.graph.input}
-        states = {}
+        states: dict[str, tuple[str, tuple[int, ...], int]] = {}
         for key, path in metadata.items():
             if key.startswith("linnet.state."):
                 port = key.removeprefix("linnet.state.")
@@ -368,7 +516,7 @@ class OnnxModel:
             next_specs,
         )
 
-    def _prepare(self, exported: Any, parameters: Mapping[str, str]) -> dict[str, str]:
+    def _prepare(self, exported: Exported, parameters: Mapping[str, str]) -> dict[str, str]:
         """Runs what reads only weights -- a dequantizer's unpacking of
         every expert -- once, in a session of its own, and makes each such
         value an input of the entry's graph instead. Values are keyed by
@@ -404,11 +552,11 @@ class OnnxModel:
 
     def _run_prepare(
         self,
-        model: Any,
+        model: onnx.ModelProto,
         split: _WeightOnly,
         missing: Sequence[str],
         parameters: Mapping[str, str],
-        types: Mapping[str, Any],
+        types: Mapping[str, onnx.TypeProto],
     ) -> None:
         import onnx
 
@@ -429,7 +577,7 @@ class OnnxModel:
         # import, and it runs once. The session's arena grows only by what
         # it is asked for and gives back what the run no longer holds, so
         # only the prepared values stay.
-        providers: list[Any] = []
+        providers: list[Provider] = []
         for provider in self.providers:
             name = provider if isinstance(provider, str) else provider[0]
             if name == "TensorrtExecutionProvider":
@@ -457,7 +605,7 @@ class OnnxModel:
         for name, value in zip(missing, binding.get_outputs(), strict=True):
             self._prepared[split.keys[name]] = value
 
-    def _quiet(self, settings: Any) -> None:
+    def _quiet(self, settings: _SessionOptions) -> None:
         """On a GPU, one CPU thread that sleeps when idle. The GPU does the
         work; ONNX Runtime's default is a spinning thread per visible core,
         which in a container allowed fewer cores than it sees spends the
@@ -467,7 +615,9 @@ class OnnxModel:
             settings.intra_op_num_threads = 1
             settings.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
-    def _fold_weights(self, exported: Any, parameters: Mapping[str, str], settings: Any) -> None:
+    def _fold_weights(
+        self, exported: Exported, parameters: Mapping[str, str], settings: _SessionOptions
+    ) -> None:
         """Makes the graph's parameters initializers, their bytes the shared
         host copy: ONNX Runtime folds and fuses what reads only constants,
         which it cannot do for inputs bound at run time."""
@@ -480,7 +630,7 @@ class OnnxModel:
         del graph.input[:]
         graph.input.extend(kept)
         names: list[str] = []
-        values: list[Any] = []
+        values: list[_OrtValue] = []
         for port, path in parameters.items():
             if port not in used:
                 continue
@@ -509,7 +659,7 @@ class OnnxModel:
         if names:
             settings.add_external_initializers(names, values)
 
-    def _bindings(self, name: str, inputs: Sequence[Any]) -> dict[str, int | str]:
+    def _bindings(self, name: str, inputs: Sequence[_Array | _OrtValue]) -> dict[str, int | str]:
         """The entry's own generics, from the shapes of its inputs."""
         arguments = self._signatures[name].params
         if len(arguments) != len(inputs):
@@ -527,7 +677,7 @@ class OnnxModel:
 class _Session:
     def __init__(
         self,
-        session: Any,
+        session: _InferenceSession,
         inputs: list[str],
         elements: dict[str, int],
         parameters: dict[str, str],
@@ -561,7 +711,11 @@ class _Fixed:
     """What a CUDA graph session binds, at addresses its replays reuse."""
 
     def __init__(
-        self, binding: Any, inputs: list[Any], outputs: list[Any], states: dict[str, Any]
+        self,
+        binding: _IOBinding,
+        inputs: list[_OrtValue],
+        outputs: list[_OrtValue],
+        states: dict[str, _OrtValue],
     ) -> None:
         self.binding = binding
         self.inputs = inputs  # device copies of the data inputs, in order
@@ -603,7 +757,7 @@ class _WeightOnly:
         self.main_nodes = main_nodes
 
 
-def _split_weight_only(graph: Any, parameters: Mapping[str, str]) -> _WeightOnly:
+def _split_weight_only(graph: onnx.GraphProto, parameters: Mapping[str, str]) -> _WeightOnly:
     import hashlib
 
     weight_only: set[str] = set(parameters)
@@ -652,14 +806,14 @@ def _split_weight_only(graph: Any, parameters: Mapping[str, str]) -> _WeightOnly
     return _WeightOnly(boundary, keys, needed)
 
 
-def _host_array(tensor: Any) -> np.ndarray:
+def _host_array(tensor: onnx.TensorProto) -> _Array:
     """An exported weight's bytes as a host array, without a copy."""
     return np.frombuffer(tensor.raw_data, dtype=_NUMPY[tensor.data_type]).reshape(
         tuple(tensor.dims)
     )
 
 
-def _producers(graph: Any, outputs: Sequence[str], stop: set[str]) -> set[int]:
+def _producers(graph: onnx.GraphProto, outputs: Sequence[str], stop: set[str]) -> set[int]:
     """The indices of the nodes `outputs` are computed by, back to `stop`."""
     nodes = list(graph.node)
     producer = {output: index for index, node in enumerate(nodes) for output in node.output}
@@ -679,7 +833,7 @@ def _producers(graph: Any, outputs: Sequence[str], stop: set[str]) -> set[int]:
 _SHARED_ARENA: list[bool] = []
 
 
-def _share_cuda_arena(ort: Any) -> None:
+def _share_cuda_arena(ort: _Ort) -> None:
     """Registers one CUDA arena for the process, growing only by what is
     asked (not to the next power of two); sessions opt in to it."""
     if _SHARED_ARENA:
@@ -692,7 +846,7 @@ def _share_cuda_arena(ort: Any) -> None:
     _SHARED_ARENA.append(True)
 
 
-def _argmax_output(model: Any, result: str) -> str:
+def _argmax_output(model: onnx.ModelProto, result: str) -> str:
     """Replaces graph output `result` (logits, `[..., vocab]`) by its argmax
     over the last axis, as int64: a greedy decoder then moves token ids off
     the device rather than every row's scores."""
@@ -718,7 +872,7 @@ def _argmax_output(model: Any, result: str) -> str:
 
 
 def _written_in_place(
-    graph: Any,
+    graph: onnx.GraphProto,
     states: Mapping[str, tuple[str, tuple[int, ...], int]],
     next_states: Mapping[str, str],
 ) -> frozenset[str]:
@@ -732,7 +886,7 @@ def _written_in_place(
     ports = {path: port for port, (path, _, _) in states.items()}
     reads: dict[str, int] = {}
 
-    def count(g: Any) -> None:
+    def count(g: onnx.GraphProto) -> None:
         for node in g.node:
             for name in node.input:
                 reads[name] = reads.get(name, 0) + 1
@@ -760,7 +914,7 @@ def _written_in_place(
     return frozenset(shared)
 
 
-def _consumed(graph: Any) -> set[str]:
+def _consumed(graph: onnx.GraphProto) -> set[str]:
     """Every name a node of `graph` or of its subgraphs reads."""
     names: set[str] = set()
     for node in graph.node:
@@ -773,21 +927,21 @@ def _consumed(graph: Any) -> set[str]:
     return names
 
 
-def _encode(array: np.ndarray, element: int) -> np.ndarray:
+def _encode(array: _Array, element: int) -> _Array:
     """An input as the graph's element type; bf16 as its rounded bits."""
     if element == DTYPES["bf16"].onnx:
         return to_bf16_bits(array)
     return np.ascontiguousarray(array.astype(_NUMPY[element]))
 
 
-def _decode(array: np.ndarray, element: int) -> np.ndarray:
+def _decode(array: _Array, element: int) -> _Array:
     """A result as NumPy can hold it: bf16 bits widened to f32."""
     if element == DTYPES["bf16"].onnx:
         return from_bf16_bits(array)
     return array
 
 
-def _to_device(ort: Any, array: np.ndarray, element: int, device: str) -> Any:
+def _to_device(ort: _Ort, array: _Array, element: int, device: str) -> _OrtValue:
     """`array` as an OrtValue on `device`; bf16 arrives as its uint16 bytes
     and is typed as bf16."""
     array = np.ascontiguousarray(array)
@@ -810,7 +964,7 @@ def load_model(
     std_root: str | Path | None = None,
     numerics: str = "fast",
     cast_dtype: bool = False,
-    providers: Sequence[Any] | None = None,
+    providers: Sequence[Provider] | None = None,
 ) -> OnnxModel:
     """Every entry of the root block on ONNX Runtime over one copy of the
     weights, with its state kept on the device. `providers` defaults to CUDA
@@ -828,13 +982,13 @@ def load_model(
 
     program = compile_plan(source, root=root, std_root=std_root, optimize=False)
     if providers is None:
-        available = onnxruntime.get_available_providers()
+        available = cast("_Ort", onnxruntime).get_available_providers()
         providers = (
             ["CUDAExecutionProvider", "CPUExecutionProvider"]
             if "CUDAExecutionProvider" in available
             else ["CPUExecutionProvider"]
         )
-    options = {
+    options: _Options = {
         "generics": dict(generics),
         "weights": weights,
         "root": root,

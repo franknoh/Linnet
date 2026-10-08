@@ -11,16 +11,21 @@ the inputs) are taken as replicated, and results come back whole.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict, TypeVar, Unpack, overload
 
 import torch
 
 from ..parallel import split_axis, state_axis
 from .module import LinnetModule, owner_of
 
+if TYPE_CHECKING:
+    from torch.distributed.device_mesh import DeviceMesh
+
+_T = TypeVar("_T")
+
 
 def distribute(
-    module: LinnetModule, mesh: Any, rules: Mapping[str, int | None] | None = None
+    module: LinnetModule, mesh: DeviceMesh, rules: Mapping[str, int | None] | None = None
 ) -> None:
     """Splits `module`'s weights and states over `mesh`, in place."""
     from torch.distributed.tensor import Replicate, Shard, distribute_tensor
@@ -42,6 +47,15 @@ def distribute(
     module.tensor_parallel = mesh
 
 
+class _AttentionOptions(TypedDict, total=False):
+    """`scaled_dot_product_attention`'s keyword arguments past the mask."""
+
+    dropout_p: float
+    is_causal: bool
+    scale: float | None
+    enable_gqa: bool
+
+
 class SplitFunctional:
     """`torch.nn.functional` for a generated module whose weights are split.
 
@@ -51,13 +65,17 @@ class SplitFunctional:
     no copy), so axis 1 is the heads. Everything else is `F` itself.
     """
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(torch.nn.functional, name)
 
     @staticmethod
     def scaled_dot_product_attention(
-        query: Any, key: Any, value: Any, attn_mask: Any = None, **options: Any
-    ) -> Any:
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        **options: Unpack[_AttentionOptions],
+    ) -> torch.Tensor:
         if attn_mask is not None and attn_mask.dim() < query.dim():
             attn_mask = attn_mask.expand(*query.shape[:-1], key.shape[-2])
         return torch.nn.functional.scaled_dot_product_attention(
@@ -65,13 +83,17 @@ class SplitFunctional:
         )
 
 
-def whole(value: Any) -> Any:
+@overload
+def whole(value: torch.Tensor) -> torch.Tensor: ...
+@overload
+def whole(value: _T) -> _T: ...
+def whole(value: object) -> object:
     """A DTensor result as a whole tensor on every process; anything else as it is."""
     from torch.distributed.tensor import DTensor
 
     if isinstance(value, DTensor):
         return value.full_tensor()
     if isinstance(value, tuple):
-        parts: tuple[Any, ...] = value  # pyright: ignore[reportUnknownVariableType]
+        parts: tuple[object, ...] = value  # pyright: ignore[reportUnknownVariableType]
         return tuple(whole(part) for part in parts)
     return value

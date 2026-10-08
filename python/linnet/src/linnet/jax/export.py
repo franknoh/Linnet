@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, cast
 
 import jax
 import numpy as np
@@ -41,6 +41,27 @@ from ..importing import (
     write_source,
 )
 from .dtypes import NUMPY_TYPES
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
+    from jaxlib.mlir import ir
+
+    # An operation as a block lists it (`OpView`) or as its own (`Operation`).
+    _Op: TypeAlias = ir.Operation | ir.OpView
+    # A value of the module: a block argument or an operation result.
+    _MlirValue: TypeAlias = ir.Value[ir.Type]
+    # A constant of the module, saved with the weights.
+    _Array: TypeAlias = npt.NDArray[np.generic]
+
+
+class _ShapeDtype(Protocol):
+    """A parameter leaf: an array, or a `jax.ShapeDtypeStruct`."""
+
+    @property
+    def shape(self) -> tuple[int, ...]: ...
+
+    @property
+    def dtype(self) -> npt.DTypeLike: ...
 
 
 class ExportError(LinnetError):
@@ -78,7 +99,7 @@ class _Value:
     splat: float | int | bool | None = None
 
 
-def _type_json(kind: _Type) -> dict[str, Any]:
+def _type_json(kind: _Type) -> dict[str, object]:
     if kind.is_scalar:
         return {"kind": "scalar", "dtype": kind.dtype}
     return {"kind": "tensor", "shape": list(kind.shape), "dtype": kind.dtype}
@@ -92,10 +113,10 @@ class _Builder(PlanBuilder[_Value, _Type, str, int]):
     def kind(self, dtype: str, shape: tuple[int, ...] | None) -> _Type:
         return _Type(shape or (), dtype)
 
-    def make(self, id: int, kind: _Type, type_json: dict[str, Any] | None) -> _Value:
+    def make(self, id: int, kind: _Type, type_json: dict[str, object] | None) -> _Value:
         return _Value(id, kind)
 
-    def kind_json(self, kind: _Type) -> dict[str, Any]:
+    def kind_json(self, kind: _Type) -> dict[str, object]:
         return _type_json(kind)
 
     def kind_of(self, value: _Value) -> _Type:
@@ -121,10 +142,10 @@ class _Builder(PlanBuilder[_Value, _Type, str, int]):
         kind: str,
         operands: Sequence[_Value],
         result: _Type | None,
-        attrs: dict[str, Any] | None = None,
-        regions: Sequence[dict[str, Any]] = (),
+        attrs: dict[str, object] | None = None,
+        regions: Sequence[dict[str, object]] = (),
         name: str = "",
-        type_json: dict[str, Any] | None = None,
+        type_json: dict[str, object] | None = None,
     ) -> _Value:
         for operand in operands:
             if operand.id < 0:
@@ -144,14 +165,14 @@ class ExportResult:
     root: str
     weights: Path | None
     bindings: Path | None
-    plan: dict[str, Any]
+    plan: dict[str, object]
     notes: list[str]  # what the translation had to drop, if anything
 
 
 def export_linnet(
-    function: Callable[..., Any],
-    params: Any,
-    example_inputs: Sequence[Any],
+    function: Callable[..., object],
+    params: object,
+    example_inputs: Sequence[object],
     *,
     output: str | Path,
     module_name: str | None = None,
@@ -184,7 +205,7 @@ def export_linnet(
 
 def import_stablehlo(
     text: str,
-    params: Any,
+    params: object,
     *,
     output: str | Path,
     module_name: str | None = None,
@@ -213,7 +234,7 @@ def import_stablehlo(
     weights_path: Path | None = None
     bindings_path: Path | None = None
     if weights is not None:
-        from safetensors.numpy import save_file  # type: ignore[import-untyped]
+        from safetensors.numpy import save_file
 
         weights_path, bindings_path = hierarchy.weights_files(weights)
         tensors = {
@@ -235,14 +256,15 @@ def import_stablehlo(
     )
 
 
-def _flatten_with_paths(tree: Any) -> list[tuple[str, Any]]:
+def _flatten_with_paths(tree: object) -> list[tuple[str, object]]:
     """Leaves of a pytree with dotted paths, in the order `jax.export`
     flattens them (dict keys sorted)."""
     from jax.tree_util import DictKey, GetAttrKey, SequenceKey, tree_flatten_with_path
 
-    out: list[tuple[str, Any]] = []
+    out: list[tuple[str, object]] = []
     leaves, _ = tree_flatten_with_path(tree)
-    for key_path, leaf in cast(list[tuple[tuple[Any, ...], Any]], leaves):
+    # jax types the key entries (`DictKey` and friends) as `Any`.
+    for key_path, leaf in leaves:
         parts: list[str] = []
         for key in key_path:
             if isinstance(key, DictKey):
@@ -257,7 +279,7 @@ def _flatten_with_paths(tree: Any) -> list[tuple[str, Any]]:
     return out
 
 
-def _is_indexed(node: dict[Any, Any]) -> bool:
+def _is_indexed(node: Mapping[object, object]) -> bool:
     keys = [str(k) for k in node]
     return (
         bool(keys)
@@ -266,36 +288,37 @@ def _is_indexed(node: dict[Any, Any]) -> bool:
     )
 
 
-def _leaf_type(node: Any) -> _Type:
+def _leaf_type(node: object) -> _Type:
     """The tensor type of a parameter leaf: an array, or anything with
     `shape` and `dtype` such as `jax.ShapeDtypeStruct`."""
     if hasattr(node, "shape") and hasattr(node, "dtype"):
-        return _Type(tuple(int(d) for d in node.shape), _dtype_name(np.dtype(node.dtype)))
+        leaf = cast(_ShapeDtype, node)
+        return _Type(tuple(int(d) for d in leaf.shape), _dtype_name(np.dtype(leaf.dtype)))
     return _leaf_type(np.asarray(node))
 
 
 class _Hierarchy(Hierarchy):
-    def leaf_type(self, member: Member) -> dict[str, Any] | None:
+    def leaf_type(self, member: Member) -> dict[str, object] | None:
         return _type_json(cast(_Type, member.leaf))
 
-    def describe(self, params: Any, root_name: str) -> Member:
+    def describe(self, params: object, root_name: str) -> Member:
         signature, member = self._describe(params, root_name)
         if member is None:
             raise ExportError("the parameter tree has no arrays")
         member.block = self.block_for(root_name, signature, member)
         return member
 
-    def _describe(self, node: Any, name_hint: str) -> tuple[Any, Member | None]:
+    def _describe(self, node: object, name_hint: str) -> tuple[Hashable, Member | None]:
         if isinstance(node, dict) and _is_indexed(node):
             # A dict keyed 0..n-1 (Flax and Haiku layer stacks) is a sub array,
             # so `layers.0.q` names the same member either way.
-            keys = sorted(cast(dict[Any, Any], node), key=lambda k: int(str(k)))
+            keys = sorted(cast(dict[object, object], node), key=lambda k: int(str(k)))
             return self._describe([node[k] for k in keys], name_hint)
         if isinstance(node, dict):
-            entries: list[Any] = []
+            entries: list[tuple[str, Hashable]] = []
             children: dict[str, Member] = {}
             # Members in the order `jax.tree_util` flattens a dict (sorted keys).
-            for key in sorted(cast(dict[Any, Any], node), key=str):
+            for key in sorted(cast(dict[object, object], node), key=str):
                 signature, child = self._describe(node[key], str(key))
                 if child is None:
                     continue
@@ -309,7 +332,7 @@ class _Hierarchy(Hierarchy):
                 return (), None
             return tuple(entries), Member("sub", "", children=children)
         if isinstance(node, list | tuple):
-            described = [self._describe(child, name_hint) for child in cast(Sequence[Any], node)]
+            described = [self._describe(child, name_hint) for child in cast(Sequence[object], node)]
             if not described or any(m is None for _, m in described):
                 return (), None
             signatures = {s for s, _ in described}
@@ -341,20 +364,19 @@ class _Translator:
         self.module = module
         self.builder = _Builder()
         self.self_value = self.builder.fresh(_Type((), "f32"))
-        self.functions: dict[str, Any] = {}
-        self.values: dict[Any, _Value] = {}
+        self.functions: dict[str, ir.OpView] = {}
+        self.values: dict[_MlirValue, _Value] = {}
         self.unsupported: list[str] = []
         self.notes: list[str] = []  # information lost on the way, reported to the caller
-        self.constants: dict[str, Any] = {}
+        self.constants: dict[str, _Array] = {}
         self.imports: set[str] = set()
 
-    def run(self) -> dict[str, Any]:
+    def run(self) -> dict[str, object]:
         from jax._src.interpreters import mlir as jax_mlir  # pyright: ignore[reportPrivateUsage]
         from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateUsage]
 
-        mlir: Any = jax_mlir
-        with mlir.make_ir_context():
-            module = cast(Any, ir.Module).parse(self.text)
+        with jax_mlir.make_ir_context():
+            module = ir.Module.parse(self.text)
             functions = {
                 str(f.attributes["sym_name"]).strip('"'): f
                 for f in module.body.operations
@@ -411,7 +433,7 @@ class _Translator:
 
     # ---- translation
 
-    def _translate_block(self, block: Any) -> list[_Value]:
+    def _translate_block(self, block: ir.Block) -> list[_Value]:
         """Translates a block's operations; returns what it returns."""
         outputs: list[_Value] = []
         for op in block.operations:
@@ -423,7 +445,7 @@ class _Translator:
             self._translate(operation)
         return outputs
 
-    def _call(self, operation: Any) -> None:
+    def _call(self, operation: ir.Operation) -> None:
         """Inlines a call to another function of the module."""
         callee = (self.attribute(operation, "callee") or "").lstrip("@")
         function = self.functions.get(callee)
@@ -437,7 +459,7 @@ class _Translator:
         for result, value in zip(operation.results, outputs, strict=False):
             self.values[_key(result)] = value
 
-    def _translate(self, operation: Any) -> None:
+    def _translate(self, operation: ir.Operation) -> None:
         name = str(operation.name)
         for operand in operation.operands:
             if _key(operand) not in self.values:
@@ -461,22 +483,22 @@ class _Translator:
         if value is not None and len(operation.results) == 1:
             self.values[_key(operation.results[0])] = value
 
-    def operand(self, operation: Any, index: int) -> _Value:
+    def operand(self, operation: ir.Operation, index: int) -> _Value:
         return self.values[_key(operation.operands[index])]
 
     @staticmethod
-    def result_type(operation: Any) -> _Type:
+    def result_type(operation: ir.Operation) -> _Type:
         return _parse_type(str(operation.results[0].type))
 
     @staticmethod
-    def attribute(operation: Any, name: str) -> str | None:
+    def attribute(operation: _Op, name: str) -> str | None:
         for i in range(len(operation.attributes)):
             named = operation.attributes[i]
             if named.name == name:
                 return str(named.attr)
         return None
 
-    def int_array(self, operation: Any, name: str) -> list[int]:
+    def int_array(self, operation: _Op, name: str) -> list[int]:
         text = self.attribute(operation, name)
         if text is None:
             return []
@@ -487,7 +509,11 @@ class _Translator:
         return [int(x) for x in body.split(",") if x.strip()]
 
     def call(
-        self, callee: str, generics: list[dict[str, Any]], operands: list[_Value], kind: _Type
+        self,
+        callee: str,
+        generics: Sequence[Mapping[str, object]],
+        operands: list[_Value],
+        kind: _Type,
     ) -> _Value:
         """A call to a standard-library operation with explicit generics."""
         return self.builder.op(
@@ -502,24 +528,24 @@ class _Translator:
         )
 
 
-def _key(value: Any) -> Any:
+def _key(value: _MlirValue) -> _MlirValue:
     """MLIR values hash by identity, so they key the value map directly;
     names like `%arg0` repeat across functions."""
     return value
 
 
-def _numpy_dtype_name(array: Any) -> str:
+def _numpy_dtype_name(array: npt.ArrayLike) -> str:
     return _dtype_name(np.asarray(array).dtype)
 
 
-def _dtype_name(dtype: Any) -> str:
+def _dtype_name(dtype: npt.DTypeLike) -> str:
     found = BY_NUMPY.get(np.dtype(dtype).name)
     if found is None:
         raise ExportError(f"dtype {dtype} has no Linnet equivalent")
     return found.name
 
 
-Handler = Callable[[_Translator, Any], _Value | None]
+Handler = Callable[[_Translator, "ir.Operation"], _Value | None]
 _HANDLERS: dict[str, Handler] = {}
 
 
@@ -533,7 +559,7 @@ def _handles(*names: str) -> Callable[[Handler], Handler]:
 
 
 @_handles("stablehlo.constant")
-def _constant(t: _Translator, operation: Any) -> _Value:
+def _constant(t: _Translator, operation: ir.Operation) -> _Value:
     kind = t.result_type(operation)
     text = t.attribute(operation, "value") or ""
     match = re.fullmatch(r"dense<(.*)> : tensor<.*>", text, re.DOTALL)
@@ -579,7 +605,7 @@ def _hex_float(literal: str, dtype: str) -> float:
     raise ExportError(f"hexadecimal literal for {dtype}")
 
 
-def _dense_to_numpy(literal: str, kind: _Type) -> Any:
+def _dense_to_numpy(literal: str, kind: _Type) -> _Array:
     numbers = [x for x in re.split(r"[\[\],\s]+", literal) if x]
     if kind.dtype == "bool":
         values = [x == "true" for x in numbers]
@@ -636,17 +662,17 @@ class _Const:
     name: str | None = None
 
 
-_Pattern = str | _Const | tuple[Any, ...]
+_Pattern: TypeAlias = "str | _Const | tuple[str, *tuple[_Pattern, ...]]"
 _COMMUTATIVE = {"add", "multiply", "maximum", "minimum"}
 
 
-def _owner(value: Any) -> Any:
+def _owner(value: _MlirValue) -> _Op | None:
     """The operation producing an MLIR value, or None for block arguments."""
     owner = value.owner
-    return owner if hasattr(owner, "operands") else None
+    return cast("_Op", owner) if hasattr(owner, "operands") else None
 
 
-def _strip_broadcasts(t: _Translator, value: Any) -> Any:
+def _strip_broadcasts(t: _Translator, value: _MlirValue) -> _MlirValue:
     """Skips `broadcast_in_dim` chains that keep the axis order (adding
     size-one axes or broadcasting them), returning the source value."""
     while True:
@@ -659,7 +685,7 @@ def _strip_broadcasts(t: _Translator, value: Any) -> Any:
         value = owner.operands[0]
 
 
-def _reduce_over_last(t: _Translator, value: Any, combine: str) -> Any | None:
+def _reduce_over_last(t: _Translator, value: _MlirValue, combine: str) -> _MlirValue | None:
     """The operand of a `reduce` with the given body over the last axis, or None."""
     owner = _owner(value)
     if owner is None:
@@ -685,7 +711,7 @@ def _reduce_over_last(t: _Translator, value: Any, combine: str) -> Any | None:
 class _Matcher:
     def __init__(self, t: _Translator) -> None:
         self.t = t
-        self.bound: dict[str, Any] = {}
+        self.bound: dict[str, _MlirValue] = {}
 
     def value(self, name: str) -> _Value | None:
         return self.t.values.get(_key(self.bound[name]))
@@ -694,7 +720,7 @@ class _Matcher:
         value = self.value(name)
         return None if value is None else value.splat
 
-    def match(self, value: Any, pattern: _Pattern) -> bool:
+    def match(self, value: _MlirValue, pattern: _Pattern) -> bool:
         value = _strip_broadcasts(self.t, value)
         if isinstance(pattern, str):
             if pattern in self.bound:
@@ -717,7 +743,7 @@ class _Matcher:
             return True
         name, *operands = pattern
         if name == "reduce":
-            source = _reduce_over_last(self.t, value, operands[0])
+            source = _reduce_over_last(self.t, value, cast(str, operands[0]))
             return source is not None and self.match(source, operands[1])
         owner = _owner(value)
         if owner is None or str(owner.name) != f"stablehlo.{name}":
@@ -791,7 +817,11 @@ _ACTIVATIONS: dict[str, list[tuple[str, _Pattern]]] = {
 
 
 def _recovered(
-    t: _Translator, name: str, generics: list[dict[str, Any]], operands: list[_Value], kind: _Type
+    t: _Translator,
+    name: str,
+    generics: Sequence[Mapping[str, object]],
+    operands: list[_Value],
+    kind: _Type,
 ) -> _Value:
     t.notes.append(f"recovered {name} from its decomposition")
     module = {"softmax": "std.nn.softmax", "rms_norm": "std.nn.norm"}.get(
@@ -800,7 +830,7 @@ def _recovered(
     return t.call(f"{module}::{name}", generics, operands, kind)
 
 
-def _recover(t: _Translator, operation: Any) -> _Value | None:
+def _recover(t: _Translator, operation: ir.Operation) -> _Value | None:
     """The library operation whose decomposition `operation` completes, if any."""
     result = operation.results[0]
     kind = t.result_type(operation)
@@ -837,7 +867,7 @@ def _recover(t: _Translator, operation: Any) -> _Value | None:
 
 
 @_handles(*_ELEMENTWISE)
-def _elementwise(t: _Translator, operation: Any) -> _Value:
+def _elementwise(t: _Translator, operation: ir.Operation) -> _Value:
     recovered = _recover(t, operation)
     if recovered is not None:
         return recovered
@@ -855,7 +885,7 @@ def _elementwise(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.and", "stablehlo.or")
-def _logical(t: _Translator, operation: Any) -> _Value:
+def _logical(t: _Translator, operation: ir.Operation) -> _Value:
     kind = t.result_type(operation)
     left, right = t.operand(operation, 0), t.operand(operation, 1)
     if kind.dtype != "bool":
@@ -870,7 +900,7 @@ def _logical(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.not")
-def _not(t: _Translator, operation: Any) -> _Value:
+def _not(t: _Translator, operation: ir.Operation) -> _Value:
     kind = t.result_type(operation)
     x = t.operand(operation, 0)
     if kind.dtype != "bool":
@@ -883,7 +913,7 @@ def _not(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.compare")
-def _compare(t: _Translator, operation: Any) -> _Value:
+def _compare(t: _Translator, operation: ir.Operation) -> _Value:
     direction = t.attribute(operation, "comparison_direction") or ""
     match = re.search(r"comparison_direction (\w+)", direction)
     if match is None:
@@ -898,7 +928,7 @@ def _compare(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.select")
-def _select(t: _Translator, operation: Any) -> _Value:
+def _select(t: _Translator, operation: ir.Operation) -> _Value:
     condition, on_true, on_false = (t.operand(operation, i) for i in range(3))
     # `take` guards out-of-bounds rows with NaN; Linnet indexing is checked
     # instead, so the guard is dropped and the export says so.
@@ -912,7 +942,7 @@ def _select(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.convert")
-def _convert(t: _Translator, operation: Any) -> _Value:
+def _convert(t: _Translator, operation: ir.Operation) -> _Value:
     source = t.operand(operation, 0)
     kind = t.result_type(operation)
     if kind.dtype == source.type.dtype:
@@ -921,7 +951,7 @@ def _convert(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.reshape")
-def _reshape(t: _Translator, operation: Any) -> _Value:
+def _reshape(t: _Translator, operation: ir.Operation) -> _Value:
     source = t.operand(operation, 0)
     kind = t.result_type(operation)
     if kind.shape == source.type.shape:
@@ -932,7 +962,7 @@ def _reshape(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.transpose")
-def _transpose(t: _Translator, operation: Any) -> _Value:
+def _transpose(t: _Translator, operation: ir.Operation) -> _Value:
     axes = t.int_array(operation, "permutation")
     if axes == list(range(len(axes))):
         return t.operand(operation, 0)
@@ -942,7 +972,7 @@ def _transpose(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.broadcast_in_dim")
-def _broadcast(t: _Translator, operation: Any) -> _Value:
+def _broadcast(t: _Translator, operation: ir.Operation) -> _Value:
     source = t.operand(operation, 0)
     kind = t.result_type(operation)
     dims = t.int_array(operation, "broadcast_dimensions")
@@ -972,7 +1002,7 @@ def _broadcast(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.iota")
-def _iota(t: _Translator, operation: Any) -> _Value:
+def _iota(t: _Translator, operation: ir.Operation) -> _Value:
     kind = t.result_type(operation)
     axis_text = t.attribute(operation, "iota_dimension") or "0"
     axis = int(axis_text.split(":")[0])
@@ -991,7 +1021,7 @@ def _iota(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.slice")
-def _slice(t: _Translator, operation: Any) -> _Value:
+def _slice(t: _Translator, operation: ir.Operation) -> _Value:
     source = t.operand(operation, 0)
     starts = t.int_array(operation, "start_indices")
     limits = t.int_array(operation, "limit_indices")
@@ -1004,14 +1034,14 @@ def _slice(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.concatenate")
-def _concatenate(t: _Translator, operation: Any) -> _Value:
+def _concatenate(t: _Translator, operation: ir.Operation) -> _Value:
     axis = int((t.attribute(operation, "dimension") or "0").split(":")[0])
     parts = [t.operand(operation, i) for i in range(len(operation.operands))]
     return t.builder.op("concat", parts, t.result_type(operation), {"axis": axis})
 
 
 @_handles("stablehlo.dot_general")
-def _dot_general(t: _Translator, operation: Any) -> _Value:
+def _dot_general(t: _Translator, operation: ir.Operation) -> _Value:
     text = t.attribute(operation, "dot_dimension_numbers") or ""
 
     def dims(name: str) -> list[int]:
@@ -1106,7 +1136,7 @@ def _dot_general(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.reduce")
-def _reduce(t: _Translator, operation: Any) -> _Value:
+def _reduce(t: _Translator, operation: ir.Operation) -> _Value:
     if len(operation.operands) != 2:
         raise ExportError("reductions of several operands are not supported")
     source = t.operand(operation, 0)
@@ -1138,7 +1168,7 @@ def _reduce(t: _Translator, operation: Any) -> _Value:
 
 
 @_handles("stablehlo.gather")
-def _gather(t: _Translator, operation: Any) -> _Value:
+def _gather(t: _Translator, operation: ir.Operation) -> _Value:
     """The row-lookup form `table[ids]`: one collapsed leading axis, the
     remaining axes offset dimensions, unit slice sizes on the index axis."""
     table, ids = t.operand(operation, 0), t.operand(operation, 1)

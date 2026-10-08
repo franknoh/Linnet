@@ -27,7 +27,7 @@ import itertools
 import time
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch.nn import functional
@@ -42,6 +42,11 @@ from . import (
     reduce_gradients,
     save_checkpoint,
 )
+
+if TYPE_CHECKING:
+    from torch.optim.lr_scheduler import LRScheduler
+
+    from ..torch.module import LinnetModule
 
 
 def dpo_loss(
@@ -67,18 +72,18 @@ def dpo_loss(
 
 
 def dpo(
-    model: Any,
+    model: LinnetModule,
     pairs: Iterable[Pair],
     *,
     optimizer: torch.optim.Optimizer,
-    reference: Any = None,
+    reference: LinnetModule | None = None,
     steps: int | None = None,
     pairs_per_step: int = 32,
     beta: float = 0.1,
     label_smoothing: float = 0.0,
     tokens: int = 4096,
     clip_grad: float | None = 1.0,
-    schedule: Any = None,
+    schedule: LRScheduler | None = None,
     entry: str = "log_probs_packed",
     checkpoint: str | Path | None = None,
     checkpoint_every: int | None = None,
@@ -143,7 +148,8 @@ def dpo(
                 ref_rejected = torch.tensor([r for _, r in known], device=device)
             else:
                 with torch.no_grad():
-                    theirs = _answers(reference, entry, batch, device)
+                    # `precomputed` is None only when there is a reference.
+                    theirs = _answers(cast("LinnetModule", reference), entry, batch, device)
                 ref_chosen, ref_rejected, _ = _paired(batch, theirs)
             losses, good, bad = dpo_loss(
                 first,
@@ -194,7 +200,7 @@ def dpo(
 
 
 def _reference(
-    model: Any,
+    model: LinnetModule,
     pairs: Sequence[Pair],
     per_round: int,
     tokens: int,
@@ -246,12 +252,12 @@ def _rounds(
     return batches, total
 
 
-def _answers(model: Any, entry: str, batch: Batch, device: torch.device) -> torch.Tensor:
+def _answers(model: LinnetModule, entry: str, batch: Batch, device: torch.device) -> torch.Tensor:
     """Each packed answer's summed log-probability, `[sequences]`."""
     inputs = [
         value.to(device) for value in (batch.tokens, batch.positions, batch.segments, batch.targets)
     ]
-    per_token = model.run_entry(entry, inputs)
+    per_token = cast(torch.Tensor, model.run_entry(entry, inputs))
     segments = inputs[2].long()
     sums = per_token.new_zeros(batch.sequences + 1)
     return sums.scatter_add(0, segments, per_token * batch.mask.to(device))[: batch.sequences]

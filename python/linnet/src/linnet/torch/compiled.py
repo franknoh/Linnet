@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 import numpy as np
 import torch
@@ -26,9 +26,45 @@ from .. import ir, lora
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import import_generated
 from ..plan import PlanError
-from .module import BlockModule, LinnetModule, bind_input, owner_of
+from .module import BlockModule, LinnetModule, Result, bind_input, owner_of
 from .placement import Placement
 from .regions import regional
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from torch.distributed import ProcessGroup
+
+    class GeneratedModule(ModuleType):
+        """A module of generated source: what it defines is read by name, and
+        the runtime sets some of it (`_GROUP`, `F`)."""
+
+        def __setattr__(self, name: str, value: object, /) -> None: ...
+
+    class _CompileOptions(TypedDict, total=False):
+        """What `torch.compile` is given for each region besides the function."""
+
+        backend: str
+
+
+# A weight-only value `prepare` computes, passed to every call after the
+# constants: a tensor, or a tuple of tensors and the numbers that go with
+# them (packed int4 weights, their scales, and the group size).
+PreparedValue: TypeAlias = torch.Tensor | tuple[torch.Tensor | int, ...]
+
+# What a compiled entry is kept under: the entry, the generics bound, the
+# optional parameters left out, the backend, and whether the model trains.
+_CompiledKey: TypeAlias = tuple[str, tuple[tuple[str, str], ...], tuple[str, ...], str | None, bool]
+
+# A call signature: the entry, its inputs' shapes and dtypes, the generics
+# given, the backend, and whether the model trains.
+_CallKey: TypeAlias = tuple[
+    str,
+    tuple[tuple[tuple[int, ...], torch.dtype], ...],
+    tuple[tuple[str, int | str], ...],
+    str | None,
+    bool,
+]
 
 
 class CompiledLinnetModule(LinnetModule):
@@ -59,14 +95,14 @@ class CompiledLinnetModule(LinnetModule):
         # The process group of a sharded model (`load(tensor_parallel=...)` on
         # a card with `Shards`), which each generated module's `_all_reduce`
         # sums over.
-        self.shard_group: Any = None
+        self.shard_group: ProcessGroup | None = None
         self._generic_arguments = dict(generics)
-        self._compiled: dict[tuple[Any, ...], _Generated] = {}
+        self._compiled: dict[_CompiledKey, _Generated] = {}
         # Per call signature (entry, input shapes and dtypes, generics,
         # backend, whether the model trains): the compiled entry and where its
         # parameters and states live, so a decoding step does not re-derive
         # them. `bind_weights` clears it.
-        self._fast: dict[tuple[Any, ...], _Prepared] = {}
+        self._fast: dict[_CallKey, _Prepared] = {}
         # The parameters, listed once: whether any requires gradients is
         # asked on every call. Cleared when a parameter object is replaced.
         self._parameter_list: list[torch.nn.Parameter] | None = None
@@ -85,9 +121,10 @@ class CompiledLinnetModule(LinnetModule):
         self.regional = True
         # Weight-only work the generated entries share (`prepare`), by key:
         # computed once per bound weights, whichever entry asks first.
-        self._prepared: dict[str, Any] = {}  # a tensor, or a tuple of them
-        # The memory every hand-captured CUDA graph allocates from.
-        self._graph_pool: Any = None
+        self._prepared: dict[str, PreparedValue] = {}
+        # The memory every hand-captured CUDA graph allocates from (its type,
+        # `torch.cuda._POOL_HANDLE`, is private).
+        self._graph_pool = None
         self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
 
     def _run_entry(
@@ -96,7 +133,7 @@ class CompiledLinnetModule(LinnetModule):
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
         compile: bool | str | None = None,
-    ) -> Any:
+    ) -> Result:
         """Runs entry `name`. `compile` overrides the module's own setting for
         this entry (`True`: the generated source as it is; a backend or mode
         name: through `torch.compile`), so a server can replay its decoding
@@ -106,7 +143,7 @@ class CompiledLinnetModule(LinnetModule):
         )
         cuda_graphs = backend in ("reduce-overhead", "cudagraphs")
         trains = self.trains()
-        signature = (
+        signature: _CallKey = (
             name,
             tuple((tuple(value.shape), value.dtype) for value in inputs),
             tuple(sorted((generics or {}).items())),
@@ -227,7 +264,7 @@ class CompiledLinnetModule(LinnetModule):
             keys = generated.prepared_keys
             if not keys or all(key in done for key in keys) or generated.prepare is None:
                 continue
-            inputs: list[Any] = []
+            inputs: list[torch.Tensor] = []
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
                     owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
@@ -258,12 +295,12 @@ class CompiledLinnetModule(LinnetModule):
         group joined into one buffer)."""
         self._parameter_list = None
 
-    def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Any:
+    def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Result:
         generated = prepared.generated
         if self.placement is not None:
             # Inputs enter where the first unit runs.
             inputs = [value.to(self.placement.devices[0]) for value in inputs]
-        arguments: list[Any] = list(inputs)
+        arguments: list[object] = list(inputs)
         arguments += [getattr(owner, leaf) for owner, leaf in prepared.parameters]
         arguments += [getattr(owner, leaf) for owner, leaf in prepared.states]
         arguments += generated.constants
@@ -271,7 +308,10 @@ class CompiledLinnetModule(LinnetModule):
         if generated.placed:
             assert self.placement is not None
             arguments.append(self.placement.devices)
-        states = arguments[len(inputs) + len(generated.parameters) :][: len(generated.states)]
+        states = cast(
+            "list[torch.Tensor]",
+            arguments[len(inputs) + len(generated.parameters) :][: len(generated.states)],
+        )
         by_path = dict(zip(generated.states, states, strict=True))
         if cuda_graphs:
             # A state written in place is an input the graph mutates, which
@@ -318,7 +358,7 @@ class CompiledLinnetModule(LinnetModule):
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
 
-    def _replay(self, prepared: _Prepared, inputs: list[torch.Tensor]) -> Any:
+    def _replay(self, prepared: _Prepared, inputs: list[torch.Tensor]) -> Result:
         """A call of an entry replayed as one CUDA graph captured by hand: the
         first call runs as it is (compiling what it needs), the second
         captures the step and replays it, and every later one copies its
@@ -419,14 +459,14 @@ class CompiledLinnetModule(LinnetModule):
             self._prepared_values(generated),
         )
 
-    def _prepared_values(self, generated: _Generated) -> list[Any]:
+    def _prepared_values(self, generated: _Generated) -> list[PreparedValue]:
         """The entry's weight-only values: shared with every entry that
         computes the same thing, and computed here when none has yet."""
         if not generated.prepared_keys:
             return []
         if not all(key in self._prepared for key in generated.prepared_keys):
             self._lay_out(generated.fused)
-            inputs: list[Any] = []
+            inputs: list[torch.Tensor] = []
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
                     owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
@@ -544,10 +584,10 @@ class CompiledLinnetModule(LinnetModule):
         absent = "".join(f"{path}\n" for path in self._absent_optionals())
         return run_compiler(*command, str(self._source), stdin=absent, error=PlanError)
 
-    def import_source(self, source: str, name: str) -> Any:
+    def import_source(self, source: str, name: str) -> GeneratedModule:
         """Writes generated `source` into this module's work directory and
         imports it."""
-        return import_generated(self._work, name, source)
+        return cast("GeneratedModule", import_generated(self._work, name, source))
 
     def _compile(
         self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
@@ -597,11 +637,12 @@ class CompiledLinnetModule(LinnetModule):
             from .parallel import SplitFunctional
 
             module.F = SplitFunctional()
-        main: Callable[..., Any] = module.main
+        main: Callable[..., tuple[torch.Tensor, ...]] = module.main
         if regions is not None:
             # Each kind of layer compiles on its first call; `main` runs the
             # rest eagerly (and is captured whole by hand when `captured`).
-            options: dict[str, Any] = {} if captured else {"backend": backend}
+            # Uncaptured, regions compile only with a backend (`compiles`).
+            options: _CompileOptions = {} if captured else {"backend": cast(str, backend)}
             for name in regions.functions:
                 setattr(module, name, torch.compile(getattr(module, name), **options))
         elif captured:
@@ -655,10 +696,10 @@ class _Prepared:
     """A compiled entry and where its arguments live, for one call signature."""
 
     generated: _Generated
-    parameters: list[tuple[Any, str]]  # (module, attribute) of each parameter
-    states: list[tuple[Any, str]]
-    next_states: list[tuple[Any, str]]
-    prepared: list[torch.Tensor]  # the entry's weight-only values, after the constants
+    parameters: list[tuple[BlockModule, str]]  # (module, attribute) of each parameter
+    states: list[tuple[BlockModule, str]]
+    next_states: list[tuple[BlockModule, str]]
+    prepared: list[PreparedValue]  # the entry's weight-only values, after the constants
     static: list[torch.Tensor] | None = None  # inputs a hand-captured graph reads
     graph: _Graph | None = None  # the step captured by hand, after one call
 
@@ -668,12 +709,12 @@ class _Graph:
     """One step captured as a CUDA graph: the results it writes, and the
     weights and states it was captured over."""
 
-    graph: Any  # torch.cuda.CUDAGraph
+    graph: torch.cuda.CUDAGraph
     results: list[torch.Tensor]
     # (a module's parameter or buffer table, name, tensor): checked on every
     # replay, which a lookup in the table itself keeps to a few microseconds
     # for hundreds of weights, where `getattr` on the module takes a hundred.
-    watched: list[tuple[dict[str, Any], str, torch.Tensor]]
+    watched: list[tuple[Mapping[str, torch.Tensor | None], str, torch.Tensor | None]]
 
     def current(self) -> bool:
         return all(table.get(leaf) is tensor for table, leaf, tensor in self.watched)
@@ -695,11 +736,11 @@ def _warm_blas(device: torch.device) -> None:
     _blas_threads.warm = True
 
 
-def _copy_into(kept: Any, value: Any) -> None:
+def _copy_into(kept: PreparedValue | int, value: PreparedValue | int) -> None:
     """Writes `value` into the tensors `kept` holds (a tensor, or a tuple of
     them); a tensor that is already `value`'s memory stays as it is."""
     if isinstance(kept, tuple):
-        for old, new in zip(cast(tuple[Any, ...], kept), cast(tuple[Any, ...], value), strict=True):
+        for old, new in zip(kept, cast("tuple[torch.Tensor | int, ...]", value), strict=True):
             _copy_into(old, new)
         return
     old_tensor = cast(torch.Tensor, kept)
@@ -713,16 +754,16 @@ def _copy_into(kept: Any, value: Any) -> None:
         old_tensor.copy_(new_tensor)
 
 
-def _table(owner: Any, leaf: str) -> tuple[dict[str, Any], str]:
+def _table(owner: BlockModule, leaf: str) -> tuple[Mapping[str, torch.Tensor | None], str]:
     """Where a module keeps `leaf`: its parameters, or its buffers (states)."""
-    parameters: dict[str, Any] = owner._parameters
-    return (parameters if leaf in parameters else owner._buffers), leaf
+    parameters: Mapping[str, torch.Tensor | None] = owner._parameters  # pyright: ignore[reportPrivateUsage]
+    return (parameters if leaf in parameters else owner._buffers), leaf  # pyright: ignore[reportPrivateUsage]
 
 
-def _mark_static(tensor: Any) -> None:
+def _mark_static(tensor: PreparedValue | int) -> None:
     # A prepared value can be a tuple (packed weights and their scales).
     if isinstance(tensor, tuple):
-        for part in tensor:  # pyright: ignore[reportUnknownVariableType]
+        for part in tensor:
             _mark_static(part)
         return
     if not isinstance(tensor, torch.Tensor):
@@ -765,7 +806,7 @@ class _Generated:
     """One entry compiled for one shape: the module `linnet torch` wrote."""
 
     path: Path
-    main: Callable[..., Any]
+    main: Callable[..., tuple[torch.Tensor, ...]]
     parameters: list[str]  # paths, in argument order after the inputs
     states: list[str]  # paths, after the parameters
     next_states: list[str]  # paths of the results after the entry's own
@@ -775,7 +816,7 @@ class _Generated:
     in_place: list[str] = field(default_factory=list[str])  # states `main` writes into
     prepared_keys: list[str] = field(default_factory=list[str])  # `PREPARED`
     prepare_inputs: list[str] = field(default_factory=list[str])  # `PREPARE_INPUTS`
-    prepare: Callable[..., Any] | None = None
+    prepare: Callable[..., tuple[PreparedValue, ...]] | None = None
     all_parameters: list[str] = field(default_factory=list[str])  # `PARAMETERS`
     constant_names: list[str] = field(default_factory=list[str])  # `CONSTANTS`
     captured: bool = False  # replayed as a CUDA graph captured by hand

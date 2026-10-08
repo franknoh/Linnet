@@ -73,11 +73,31 @@ from __future__ import annotations
 import random
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
 from .sampling import Sampling, draw_jax, draw_numpy, draw_torch, mode
+
+if TYPE_CHECKING:
+    import jax
+    import numpy as np
+    import torch
+    from jax.typing import ArrayLike
+    from numpy.typing import DTypeLike, NDArray
+
+    from ..jax.module import LinnetModel
+    from ..onnx.runtime import OnnxModel
+    from ..torch.module import LinnetModule
+
+    # What `Engine` serves: a `linnet.torch` module, a `linnet.jax`
+    # model, or a `linnet.onnx` model.
+    _Model: TypeAlias = LinnetModule | LinnetModel | OnnxModel
+    # Each row's temperature, top-k, top-p, and seed key, on the device (JAX).
+    _Held: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+    # A JAX pass's rows' next tokens and positions, the tokens it drew, and
+    # their log-probabilities (empty unless asked for).
+    _Moved: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, tuple[jax.Array, ...]]
 
 
 @dataclass
@@ -268,7 +288,7 @@ class Engine:
 
     def __init__(
         self,
-        model: Any,
+        model: _Model,
         *,
         buckets: Sequence[int] | None = None,
         graphs: bool = True,
@@ -379,7 +399,7 @@ class Engine:
         )
         return order, stats
 
-    def load_weights(self, source: Any) -> None:
+    def load_weights(self, source: LinnetModule | Mapping[str, ArrayLike]) -> None:
         """Copies `source`'s weights into the model this engine serves, in
         place, between runs: a policy in training sampled with its latest
         weights. Compiled passes and CUDA graphs stay. PyTorch models only
@@ -777,7 +797,9 @@ def _top(completions: Iterable[Completion]) -> int:
     return max(wanted, default=-1)
 
 
-def _logprobs_torch(logits: Any, produced: Any, top: int) -> tuple[Any, Any, Any]:
+def _logprobs_torch(
+    logits: torch.Tensor, produced: torch.Tensor, top: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Each row's token's log-probability and its `top` most likely tokens,
     from the model's logits, before temperature and filtering."""
     scores = logits.float().log_softmax(-1)
@@ -786,11 +808,11 @@ def _logprobs_torch(logits: Any, produced: Any, top: int) -> tuple[Any, Any, Any
     return chosen, ids[:, :top], values[:, :top]
 
 
-def _logprobs_numpy(logits: Any, produced: Any, top: int) -> _Logprobs:
+def _logprobs_numpy(logits: NDArray[np.generic], produced: ArrayLike, top: int) -> _Logprobs:
     import numpy as numpy_module
 
-    np: Any = numpy_module
-    scores = logits.astype(np.float32)
+    np = numpy_module
+    scores: np.ndarray[tuple[int, int], np.dtype[np.floating]] = logits.astype(np.float32)
     peak = scores.max(-1, keepdims=True)
     scores = scores - peak - np.log(np.exp(scores - peak).sum(-1, keepdims=True))
     rows = np.arange(scores.shape[0])
@@ -800,18 +822,31 @@ def _logprobs_numpy(logits: Any, produced: Any, top: int) -> _Logprobs:
     return chosen.tolist(), ids.tolist(), values.tolist()
 
 
+class _Generics(Protocol):
+    """A model, as far as `_cache_generics` reads it."""
+
+    @property
+    def generics(self) -> Mapping[str, int | str]: ...
+
+
 def _backend_for(
-    model: Any, graphs: bool, paged: bool | None, rows: int, max_len: int | None
+    model: _Model, graphs: bool, paged: bool | None, rows: int, max_len: int | None
 ) -> _Backend:
+    # Told apart by module rather than `isinstance`, which would import every
+    # framework: hence the casts.
     module = type(model).__module__
     if module.startswith(("linnet.jax", "linnet.onnx")):
         if paged:
             raise ValueError("serving from pages runs with the PyTorch backend")
-        return _JaxBackend(model) if module.startswith("linnet.jax") else _OnnxBackend(model)
-    return _TorchBackend(model, graphs, paged, rows, max_len)
+        return (
+            _JaxBackend(cast("LinnetModel", model))
+            if module.startswith("linnet.jax")
+            else _OnnxBackend(cast("OnnxModel", model))
+        )
+    return _TorchBackend(cast("LinnetModule", model), graphs, paged, rows, max_len)
 
 
-def _root_dim(model: Any, name: str) -> int | None:
+def _root_dim(model: LinnetModule, name: str) -> int | None:
     """The value of the root block's dimension generic `name`, its default
     when the model was loaded without one."""
     for generic in model.program.root.generics:
@@ -820,7 +855,7 @@ def _root_dim(model: Any, name: str) -> int | None:
     return None
 
 
-def _cache_generics(model: Any) -> tuple[int, int]:
+def _cache_generics(model: _Generics) -> tuple[int, int]:
     generics = dict(model.generics)
     try:
         return int(generics["Batch"]), int(generics["MaxSeq"])
@@ -832,7 +867,12 @@ def _cache_generics(model: Any) -> tuple[int, int]:
 
 class _TorchBackend:
     def __init__(
-        self, model: Any, graphs: bool, paged: bool | None, rows: int, max_len: int | None
+        self,
+        model: LinnetModule,
+        graphs: bool,
+        paged: bool | None,
+        rows: int,
+        max_len: int | None,
     ) -> None:
         import torch
 
@@ -883,15 +923,17 @@ class _TorchBackend:
         self.tokens = torch.zeros(self.slots, 1, dtype=torch.int32, device=self.device)
         self.positions = torch.zeros(self.slots, dtype=torch.int32, device=self.device)
         self.sampling = [Sampling()] * self.slots
-        self._row_states: list[tuple[Any, str]] | None = None
+        self._row_states: list[tuple[torch.nn.Module, str]] | None = None
         self._hold([], [])
         # Compiled, drawing reads the logits a few times, not once for each
         # step of the hash; the batch dimension varies without recompiling.
-        self._draw: Any = draw_torch
+        self._draw = draw_torch
         if self.device.type == "cuda":
             self._draw = torch.compile(draw_torch, dynamic=None)
 
-    def _put(self, values: list[Any], dtype: Any = None) -> Any:
+    def _put(
+        self, values: Sequence[float] | Sequence[Sequence[int]], dtype: torch.dtype | None = None
+    ) -> torch.Tensor:
         host = self.torch.tensor(values, dtype=dtype or self.torch.int32)
         if self.device.type != "cuda":
             return host.to(self.device)
@@ -919,11 +961,17 @@ class _TorchBackend:
         top: int = -1,
     ) -> _Tokens:
         rows, at = self._put(slots), self._put(lengths)
-        logits = self.model.run_entry("prefill_slots", [self._put(tokens), rows, at], compile=True)
+        # A serving entry has one result: the logits.
+        logits = cast(
+            "torch.Tensor",
+            self.model.run_entry("prefill_slots", [self._put(tokens), rows, at], compile=True),
+        )
         first = self._admit(logits, rows, at, slots, sampling)
         return _TorchTokens(first, _logprobs_torch(logits, first, top) if top >= 0 else None)
 
-    def _pack(self, prompts: list[list[int]], slots: list[int], size: int, pad: int) -> list[Any]:
+    def _pack(
+        self, prompts: list[list[int]], slots: list[int], size: int, pad: int
+    ) -> list[torch.Tensor]:
         """A packed pass's `tokens`, `rows`, `positions`, `segments` and
         `last`, on the device; paged, `tokens`, `positions`, `segments`,
         each token's place in the pool, and `last`."""
@@ -967,7 +1015,7 @@ class _TorchBackend:
             self._pages[row] = list(pages)
             self._changed.add(row)
 
-    def _table(self) -> Any:
+    def _table(self) -> torch.Tensor:
         """The page table on the device, its changed rows written first, in
         the order of the passes queued."""
         if self._changed:
@@ -978,13 +1026,20 @@ class _TorchBackend:
             self._changed.clear()
         return self.table
 
-    def _lengths(self, prompts: list[list[int]], slots: list[int]) -> tuple[Any, Any]:
+    def _lengths(
+        self, prompts: list[list[int]], slots: list[int]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Prompts' rows and lengths, on the device."""
         return self._put(slots), self._put([len(prompt) for prompt in prompts])
 
     def _admit(
-        self, logits: Any, rows: Any, at: Any, slots: list[int], sampling: list[Sampling]
-    ) -> Any:
+        self,
+        logits: torch.Tensor,
+        rows: torch.Tensor,
+        at: torch.Tensor,
+        slots: list[int],
+        sampling: list[Sampling],
+    ) -> torch.Tensor:
         """Draws the token after each prompt from its logits and sets its row
         (`rows`, `slots` on the device) to it, at the position after the
         prompt (`at`)."""
@@ -1017,10 +1072,13 @@ class _TorchBackend:
         # A few pass sizes, each compiled like the step (and replayed as a CUDA
         # graph): FlexAttention runs only under `torch.compile`, and a pass
         # of thousands of tokens has as many kernels as the step.
-        logits = self.model.run_entry(
-            "prefill_paged" if self.paged else "prefill_packed",
-            self._pack(prompts, slots, size, pad),
-            compile=self.step_compile,
+        logits = cast(
+            "torch.Tensor",
+            self.model.run_entry(
+                "prefill_paged" if self.paged else "prefill_packed",
+                self._pack(prompts, slots, size, pad),
+                compile=self.step_compile,
+            ),
         )[: len(prompts)]
         logits, prompts, slots, sampling = self._share(logits, prompts, slots, sampling, copies)
         first = self._admit(logits, *self._lengths(prompts, slots), slots, sampling)
@@ -1050,7 +1108,9 @@ class _TorchBackend:
             entry, inputs = "step_paged", [*packed, self.tokens, positions, self._table()]
         else:
             entry, inputs = "step_packed", [*packed, self.tokens, positions]
-        logits = self.model.run_entry(entry, inputs, compile=self.step_compile)
+        logits = cast(
+            "torch.Tensor", self.model.run_entry(entry, inputs, compile=self.step_compile)
+        )
         stepped = self._advance(logits[self.slots :], need)
         prompted, prompts, slots, sampling = self._share(
             logits[: len(prompts)], prompts, slots, sampling, copies
@@ -1066,12 +1126,12 @@ class _TorchBackend:
 
     def _share(
         self,
-        logits: Any,
+        logits: torch.Tensor,
         prompts: list[list[int]],
         slots: list[int],
         sampling: list[Sampling],
         copies: _Copies | None,
-    ) -> tuple[Any, list[list[int]], list[int], list[Sampling]]:
+    ) -> tuple[torch.Tensor, list[list[int]], list[int], list[Sampling]]:
         """The pass's prompts, then the rows that share them: each copies its
         prompt's cache rows and takes its logits."""
         if not copies or not any(copies):
@@ -1137,7 +1197,7 @@ class _TorchBackend:
             state = getattr(module, leaf)
             state.index_copy_(2, target_at, state.index_select(2, source_at))
 
-    def _advance(self, logits: Any, need: int) -> Any:
+    def _advance(self, logits: torch.Tensor, need: int) -> torch.Tensor:
         """Draws every row's next token from its step's logits and moves the
         row on to it."""
         produced = self._draw(
@@ -1154,16 +1214,22 @@ class _TorchBackend:
             entry, inputs = "decode_paged", [self.tokens, self.positions, self._table()]
         else:
             entry, inputs = "decode_rows", [self.tokens, self.positions]
-        logits = self.model.run_entry(entry, inputs, compile=self.step_compile)
+        logits = cast(
+            "torch.Tensor", self.model.run_entry(entry, inputs, compile=self.step_compile)
+        )
         produced = self._advance(logits, need)
         return _TorchTokens(produced, _logprobs_torch(logits, produced, top) if top >= 0 else None)
 
 
 class _TorchTokens:
-    def __init__(self, values: Any, logprobs: tuple[Any, Any, Any] | None = None) -> None:
+    def __init__(
+        self,
+        values: torch.Tensor,
+        logprobs: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+    ) -> None:
         import torch
 
-        self.ready: Any = None
+        self.ready: torch.cuda.Event | None = None
         parts = [values, *(logprobs or ())]
         if values.device.type == "cuda":
             host = [torch.empty(p.shape, dtype=p.dtype, pin_memory=True) for p in parts]
@@ -1172,13 +1238,14 @@ class _TorchTokens:
             parts = host
             self.ready = torch.cuda.Event()
             self.ready.record()
-        self.values: Any = parts[0]
-        self.extra: list[Any] = parts[1:]
+        self.values: torch.Tensor = parts[0]
+        self.extra: list[torch.Tensor] = parts[1:]
 
     def tolist(self) -> list[int]:
         if self.ready is not None:
             self.ready.synchronize()
-        return self.values.tolist()
+        # PyTorch's stubs give `tolist` an unparameterized `list`.
+        return self.values.tolist()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     def logprobs(self) -> _Logprobs | None:
         if not self.extra:
@@ -1186,7 +1253,7 @@ class _TorchTokens:
         if self.ready is not None:
             self.ready.synchronize()
         chosen, ids, values = self.extra
-        return chosen.tolist(), ids.tolist(), values.tolist()
+        return chosen.tolist(), ids.tolist(), values.tolist()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
 
 class _Grouped:
@@ -1231,7 +1298,7 @@ class _Grouped:
 
 
 class _JaxBackend(_Grouped):
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: LinnetModel) -> None:
         import jax as jax_module
         import jax.numpy as jnp_module
         import numpy as np
@@ -1239,19 +1306,20 @@ class _JaxBackend(_Grouped):
         for entry in ("prefill_slots", "decode_rows"):
             if entry not in model.entries:
                 raise ValueError(f"the model has no `{entry}` entry, which serving needs")
-        jax: Any = jax_module
-        jnp: Any = jnp_module
-        self.jnp: Any = jnp
-        self.np: Any = np
+        jax = jax_module
+        jnp = jnp_module
+        self.jnp = jnp
+        self.np = np
         self.model = model
         self.slots, self.max_seq = _cache_generics(model)
-        self.tokens: Any = jnp.zeros((self.slots, 1), jnp.int32)
-        self.positions: Any = jnp.zeros((self.slots,), jnp.int32)
+        # JAX's stubs leave `zeros`, `asarray` and `jit` partially unknown.
+        self.tokens: jax.Array = jnp.zeros((self.slots, 1), jnp.int32)  # pyright: ignore[reportUnknownMemberType]
+        self.positions: jax.Array = jnp.zeros((self.slots,), jnp.int32)  # pyright: ignore[reportUnknownMemberType]
         self.sampling = [Sampling()] * self.slots
         self._hold([], [])
         last = self.max_seq - 1
 
-        def logprobs(logits: Any, produced: Any, top: int) -> Any:
+        def logprobs(logits: jax.Array, produced: jax.Array, top: int) -> tuple[jax.Array, ...]:
             if top < 0:
                 return ()
             scores = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
@@ -1261,15 +1329,15 @@ class _JaxBackend(_Grouped):
 
         # `held` is each row's temperature, top-k, top-p, and seed key.
         def admit(
-            tokens: Any,
-            positions: Any,
-            logits: Any,
-            rows: Any,
-            lengths: Any,
-            held: Any,
+            tokens: jax.Array,
+            positions: jax.Array,
+            logits: jax.Array,
+            rows: jax.Array,
+            lengths: jax.Array,
+            held: _Held,
             need: int,
             top: int,
-        ) -> Any:
+        ) -> _Moved:
             temperature, top_k, top_p, keys = held
             first = draw_jax(
                 logits, temperature[rows], top_k[rows], top_p[rows], keys[rows], lengths, need
@@ -1281,7 +1349,9 @@ class _JaxBackend(_Grouped):
                 logprobs(logits, first, top),
             )
 
-        def advance(logits: Any, positions: Any, held: Any, need: int, top: int) -> Any:
+        def advance(
+            logits: jax.Array, positions: jax.Array, held: _Held, need: int, top: int
+        ) -> _Moved:
             temperature, top_k, top_p, keys = held
             produced = draw_jax(logits, temperature, top_k, top_p, keys, positions + 1, need)
             return (
@@ -1291,11 +1361,14 @@ class _JaxBackend(_Grouped):
                 logprobs(logits, produced, top),
             )
 
-        self._admit: Any = jax.jit(admit, static_argnames=("need", "top"))
-        self._advance: Any = jax.jit(advance, static_argnames=("need", "top"))
+        # Jitted, each takes the arguments of the function it wraps.
+        self._admit: Callable[..., _Moved] = jax.jit(admit, static_argnames=("need", "top"))  # pyright: ignore[reportUnknownMemberType]
+        self._advance: Callable[..., _Moved] = jax.jit(advance, static_argnames=("need", "top"))  # pyright: ignore[reportUnknownMemberType]
 
-    def _put(self, values: list[Any], dtype: Any = None) -> Any:
-        return self.jnp.asarray(self.np.asarray(values, dtype=dtype or self.np.int32))
+    def _put(
+        self, values: Sequence[float] | Sequence[Sequence[int]], dtype: DTypeLike | None = None
+    ) -> jax.Array:
+        return self.jnp.asarray(self.np.asarray(values, dtype=dtype or self.np.int32))  # pyright: ignore[reportUnknownMemberType]
 
     def _hold(self, slots: list[int], sampling: list[Sampling]) -> None:
         """Puts rows' sampling on the device, all of it, when any changed."""
@@ -1335,7 +1408,7 @@ class _JaxBackend(_Grouped):
 
 
 class _JaxTokens:
-    def __init__(self, values: Any, logprobs: tuple[Any, ...] = ()) -> None:
+    def __init__(self, values: jax.Array, logprobs: tuple[jax.Array, ...] = ()) -> None:
         self.values = values
         self.extra = logprobs
         for part in (values, *logprobs):
@@ -1362,17 +1435,17 @@ class _OnnxBackend(_Grouped):
     graph, so only each row's token leaves the device; a pass that samples
     takes the logits to the host and draws there."""
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: OnnxModel) -> None:
         import numpy as np
 
         for entry in ("prefill_slots", "decode_rows"):
             if entry not in model.entries:
                 raise ValueError(f"the model has no `{entry}` entry, which serving needs")
-        self.np: Any = np
+        self.np = np
         self.model = model
         self.slots, self.max_seq = _cache_generics(model)
-        self.tokens: Any = np.zeros((self.slots, 1), dtype=np.int32)
-        self.positions: Any = np.zeros(self.slots, dtype=np.int32)
+        self.tokens: NDArray[np.integer] = np.zeros((self.slots, 1), dtype=np.int32)
+        self.positions: NDArray[np.integer] = np.zeros(self.slots, dtype=np.int32)
         self.sampling = [Sampling()] * self.slots
 
     def prefill(
@@ -1387,16 +1460,24 @@ class _OnnxBackend(_Grouped):
         need = mode(sampling)
         # The argmax in the graph unless the logits themselves are needed.
         on_device = not need and top < 0
-        out = self.model.run_entry(
-            "prefill_slots",
-            [
-                np.asarray(tokens, dtype=np.int32),
-                np.asarray(slots, dtype=np.int32),
-                np.asarray(lengths, dtype=np.int32),
-            ],
-            argmax=on_device,
+        # One result: the logits, or with `argmax` each row's token.
+        out = cast(
+            "NDArray[np.generic]",
+            self.model.run_entry(
+                "prefill_slots",
+                [
+                    np.asarray(tokens, dtype=np.int32),
+                    np.asarray(slots, dtype=np.int32),
+                    np.asarray(lengths, dtype=np.int32),
+                ],
+                argmax=on_device,
+            ),
         )
-        first = out.reshape(-1) if on_device else draw_numpy(out, sampling, lengths, need)
+        first = (
+            out.reshape(-1)
+            if on_device
+            else draw_numpy(cast("NDArray[np.floating]", out), sampling, lengths, need)
+        )
         for slot, row in zip(slots, sampling, strict=True):
             self.sampling[slot] = row
         self.tokens[slots, 0] = first
@@ -1406,13 +1487,18 @@ class _OnnxBackend(_Grouped):
     def decode(self, need: int, top: int = -1) -> _Tokens:
         np = self.np
         on_device = not need and top < 0
-        out = self.model.run_entry(
-            "decode_rows", [self.tokens, self.positions], argmax=on_device, cuda_graph=True
+        out = cast(
+            "NDArray[np.generic]",
+            self.model.run_entry(
+                "decode_rows", [self.tokens, self.positions], argmax=on_device, cuda_graph=True
+            ),
         )
         if on_device:
             produced = out.reshape(-1)
         else:
-            produced = draw_numpy(out, self.sampling, self.positions + 1, need)
+            produced = draw_numpy(
+                cast("NDArray[np.floating]", out), self.sampling, self.positions + 1, need
+            )
         self.tokens = produced.astype(np.int32).reshape(self.slots, 1)
         self.positions = np.minimum(self.positions + 1, self.max_seq - 1)
         return _HostTokens(produced, _logprobs_numpy(out, produced, top) if top >= 0 else None)
@@ -1422,7 +1508,7 @@ class _HostTokens:
     """A pass's tokens already on the host, and its log-probabilities when
     it computed them."""
 
-    def __init__(self, values: Any, logprobs: _Logprobs | None) -> None:
+    def __init__(self, values: NDArray[np.generic], logprobs: _Logprobs | None) -> None:
         self.values = values
         self.computed = logprobs
 

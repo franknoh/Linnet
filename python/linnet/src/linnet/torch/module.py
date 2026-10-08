@@ -12,13 +12,14 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 from torch import nn
 
 from .. import ir, lora
 from ..plan import PlanError
+from ..results import Result
 from ..weights import check_problems, read_bindings, safetensors_index, tensor_problem
 from .dtypes import (
     LINNET_DTYPES,
@@ -27,6 +28,13 @@ from .dtypes import (
     torch_dtype,
 )
 from .interp import BlockInstance, Interpreter
+
+if TYPE_CHECKING:
+    from torch.distributed.device_mesh import DeviceMesh
+
+    from ..train import Copies
+
+# What an entry returns: its one result, or a tuple of its results.
 
 
 class BlockModule(nn.Module):
@@ -172,6 +180,11 @@ def _instantiate_sub(
 class LinnetModule(nn.Module):
     """The root block as a PyTorch module."""
 
+    if TYPE_CHECKING:
+        # How processes hold the model as they train it, once `linnet.train`
+        # has worked it out (`linnet.train.copies`).
+        copies_layout: Copies
+
     def __init__(
         self, program: ir.Program, generics: Mapping[str, int | str], device: torch.device
     ) -> None:
@@ -182,7 +195,7 @@ class LinnetModule(nn.Module):
         # the weights staying in theirs (`load(amp=...)`).
         self.amp: torch.dtype | None = None
         # The DeviceMesh weights are split over (`load(tensor_parallel=...)`).
-        self.tensor_parallel: Any = None
+        self.tensor_parallel: DeviceMesh | None = None
         # The checkpoint tensor each parameter path was bound from
         # (`bind_weights`), for writing the weights back under those names.
         self.weight_names: dict[str, str] = {}
@@ -235,8 +248,8 @@ class LinnetModule(nn.Module):
         for name in self.entries:
             setattr(self, name, self._entry_callable(name))
 
-    def _entry_callable(self, name: str) -> Callable[..., Any]:
-        def run(*inputs: torch.Tensor) -> Any:
+    def _entry_callable(self, name: str) -> Callable[..., Result]:
+        def run(*inputs: torch.Tensor) -> Result:
             return self.run_entry(name, list(inputs))
 
         run.__name__ = name
@@ -247,8 +260,8 @@ class LinnetModule(nn.Module):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
-        **options: Any,
-    ) -> Any:
+        **options: bool | str | None,
+    ) -> Result:
         """Runs the entry `name`. Its generic parameters are bound from the
         input shapes, or from `generics` by name for those the inputs do not
         determine (an output length such as `Steps`). With `amp` set (see
@@ -269,8 +282,8 @@ class LinnetModule(nn.Module):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None,
-        **options: Any,
-    ) -> Any:
+        **options: bool | str | None,
+    ) -> Result:
         if self.amp is None:
             return self._run_entry(name, inputs, generics, **options)
         with torch.autocast(self.interpreter.device.type, dtype=self.amp):
@@ -281,7 +294,7 @@ class LinnetModule(nn.Module):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
-    ) -> Any:
+    ) -> Result:
         function = self.entries[name]
         params = function.params  # after `self`
         if len(params) != len(inputs):
@@ -291,9 +304,11 @@ class LinnetModule(nn.Module):
         for param, value in zip(params, inputs, strict=True):
             bind_input(env, param, value)
         ir.require_bound(env, function)
+        # An entry returns tensors, never the interpreter's other values
+        # (blocks, indices, strings).
         return self.interpreter.call(function, env, [self.root.instance(), *inputs])
 
-    def forward(self, *inputs: torch.Tensor) -> Any:
+    def forward(self, *inputs: torch.Tensor) -> Result:
         name = "forward" if "forward" in self.entries else next(iter(self.entries))
         return self.run_entry(name, list(inputs))
 
@@ -418,7 +433,7 @@ class LinnetModule(nn.Module):
             if sub in parent.absent_subs
         ]
         written: dict[str, tuple[str, torch.Tensor]] = {}
-        entries: list[tuple[str, str, tuple[int, ...], Any]] = []
+        entries: list[tuple[str, str, tuple[int, ...], LazyBytes]] = []
         split: list[torch.Tensor] = []
         for tensor_path, tensor in _all_tensors(self):
             owner, leaf = owner_of(self, tensor_path)
@@ -566,16 +581,16 @@ def bind_weights(
             owner.absent_params.discard(leaf)
             if only is not None and not only(path):
                 continue
-            with cast(Any, safe_open(str(file), framework="pt")) as handle:
+            with cast(_SafeTensorsFile, safe_open(str(file), framework="pt")) as handle:
                 if path in parts:
                     assert shard is not None
                     axis, extent = parts[path]
                     index = (slice(None),) * axis + (
                         slice(shard[0] * extent, (shard[0] + 1) * extent),
                     )
-                    loaded = cast(torch.Tensor, handle.get_slice(source)[index])
+                    loaded = handle.get_slice(source)[index]
                 else:
-                    loaded = cast(torch.Tensor, handle.get_tensor(source))
+                    loaded = handle.get_tensor(source)
             getattr(owner, leaf).copy_(loaded)
             module.weight_names[path] = source
     # The paths bound to a part of their tensor: split across processes.
@@ -609,6 +624,25 @@ def bind_weights(
     if callable(forget):
         forget()  # tying replaced parameters
     return {path: source for path, source, _ in assignments}
+
+
+class _SafeTensorsSlice(Protocol):
+    """Part of a tensor in a SafeTensors file, read when indexed."""
+
+    def __getitem__(self, index: tuple[slice, ...], /) -> torch.Tensor: ...
+
+
+class _SafeTensorsFile(Protocol):
+    """`safetensors.safe_open(..., framework="pt")`, which its stubs leave
+    untyped."""
+
+    def __enter__(self) -> _SafeTensorsFile: ...
+
+    def __exit__(self, *exc: object) -> None: ...
+
+    def get_slice(self, name: str, /) -> _SafeTensorsSlice: ...
+
+    def get_tensor(self, name: str, /) -> torch.Tensor: ...
 
 
 def _tie(module: LinnetModule, bound: list[tuple[str, str, tuple[int, int] | None]]) -> None:

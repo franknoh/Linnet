@@ -18,12 +18,15 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeAlias, TypeVar, cast
 
 from .compiler import LinnetError, PlanError
 from .dtypes import CLASSES, DTYPES
 
 T = TypeVar("T")
+
+# A value as `json.loads` returns it: what the plan and an operation's attributes hold.
+JsonValue: TypeAlias = "bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None"
 
 # ---------------------------------------------------------------- dimensions
 
@@ -306,10 +309,10 @@ class Program:
 
     @staticmethod
     def from_json(text: str) -> Program:
-        document: object = json.loads(text)
+        document: JsonValue = json.loads(text)
         if not isinstance(document, dict):
             raise LinnetError("a plan is a JSON object")
-        return _Reader().program(cast(dict[str, Any], document), text)
+        return _Reader().program(document, text)
 
     @property
     def root_block(self) -> Block:
@@ -389,15 +392,19 @@ def load_program(
 
 
 class _Reader:
-    def program(self, document: dict[str, Any], text: str = "") -> Program:
+    """Reads the plan's JSON. A node is read as a `dict[str, Any]`: each
+    field is checked or converted (`int`, `str`) where it is read."""
+
+    def program(self, plan: dict[str, JsonValue], text: str = "") -> Program:
+        document = cast(dict[str, Any], plan)
         version = int(document.get("version", 0))
         if version != 1:
             raise LinnetError(f"unsupported plan version {version!r}")
         blocks = {
-            str(name): self.block(str(name), cast(dict[str, Any], data))
-            for name, data in cast(dict[str, Any], document["blocks"]).items()
+            str(name): self.block(str(name), data)
+            for name, data in cast(dict[str, JsonValue], document["blocks"]).items()
         }
-        functions = [self.function(cast(dict[str, Any], f)) for f in document["functions"]]
+        functions = [self.function(f) for f in document["functions"]]
         # A plan of functions (`--functions`) has no root block.
         root = cast(dict[str, Any], document["root"] or {"name": ""})
         return Program(
@@ -408,20 +415,16 @@ class _Reader:
                 generics=self.generics(root.get("generics", [])),
                 constraints=self.constraints(root.get("constraints", [])),
             ),
-            manifest=tuple(
-                self.manifest_entry(cast(dict[str, Any], e)) for e in document["manifest"]
-            ),
+            manifest=tuple(self.manifest_entry(e) for e in document["manifest"]),
             blocks=MappingProxyType(blocks),
             functions=MappingProxyType({f.name: f for f in functions}),
-            constants=tuple(
-                self.constant(cast(dict[str, Any], c)) for c in document.get("constants", [])
-            ),
+            constants=tuple(self.constant(c) for c in document.get("constants", [])),
             text=text,
         )
 
     # ---- dimensions and types
 
-    def dim(self, data: Any) -> Dim:
+    def dim(self, data: JsonValue) -> Dim:
         if isinstance(data, bool):
             raise LinnetError("a dimension cannot be a boolean")
         if isinstance(data, int):
@@ -436,29 +439,30 @@ class _Reader:
             raise LinnetError(f"unknown dimension operator `{op}`")
         return DimExpr(op, tuple(self.dim(arg) for arg in node["args"]))
 
-    def unit(self, data: Any) -> Unit:
+    def unit(self, data: JsonValue) -> Unit:
         if isinstance(data, dict) and "pack" in data:
             node = cast(dict[str, Any], data)
             return Pack(int(node["pack"]), str(node.get("name", "")))
         return self.dim(data)
 
-    def shape(self, data: Sequence[Any]) -> Shape:
+    def shape(self, data: Sequence[JsonValue]) -> Shape:
         return tuple(self.unit(unit) for unit in data)
 
-    def dtype(self, data: Any) -> DType:
+    def dtype(self, data: JsonValue) -> DType:
         if isinstance(data, str):
             return data
         node = cast(dict[str, Any], data)
         return DTypeVar(int(node["var"]), str(node.get("name", "")))
 
-    def generic_arg(self, data: dict[str, Any]) -> GenericArg:
-        if "dim" in data:
-            return DimArg(self.dim(data["dim"]))
-        if "shape" in data:
-            return ShapeArg(self.shape(data["shape"]))
-        return DTypeArg(self.dtype(data["dtype"]))
+    def generic_arg(self, data: JsonValue) -> GenericArg:
+        node = cast(dict[str, Any], data)
+        if "dim" in node:
+            return DimArg(self.dim(node["dim"]))
+        if "shape" in node:
+            return ShapeArg(self.shape(node["shape"]))
+        return DTypeArg(self.dtype(node["dtype"]))
 
-    def type(self, data: Any) -> Type:
+    def type(self, data: JsonValue) -> Type:
         node = cast(dict[str, Any], data)
         kind = str(node["kind"])
         if kind == "scalar":
@@ -476,7 +480,7 @@ class _Reader:
                 kind,
                 str(node["name"]),
                 str(node.get("module", "")),
-                tuple(self.generic_arg(cast(dict[str, Any], a)) for a in node.get("args", [])),
+                tuple(self.generic_arg(a) for a in node.get("args", [])),
             )
         if kind == "shape":
             return ShapeType(self.shape(node["shape"]))
@@ -486,7 +490,7 @@ class _Reader:
 
     # ---- declarations
 
-    def generics(self, data: Sequence[Any]) -> tuple[Generic, ...]:
+    def generics(self, data: Sequence[JsonValue]) -> tuple[Generic, ...]:
         out: list[Generic] = []
         for item in data:
             node = cast(dict[str, Any], item)
@@ -500,9 +504,7 @@ class _Reader:
                     name=str(node["name"]),
                     kind=kind,
                     id=int(node["var"] if kind == "dtype" else node["sym"]),
-                    default=None
-                    if default is None
-                    else self.generic_arg(cast(dict[str, Any], default)),
+                    default=None if default is None else self.generic_arg(default),
                     dtype_class=None
                     if dtype_class is None
                     else cast(Literal["float", "integer", "numeric", "any"], str(dtype_class)),
@@ -510,7 +512,7 @@ class _Reader:
             )
         return tuple(out)
 
-    def constraints(self, data: Sequence[Any]) -> tuple[Constraint, ...]:
+    def constraints(self, data: Sequence[JsonValue]) -> tuple[Constraint, ...]:
         out: list[Constraint] = []
         for item in data:
             node = cast(dict[str, Any], item)
@@ -526,9 +528,10 @@ class _Reader:
             )
         return tuple(out)
 
-    def block(self, name: str, data: dict[str, Any]) -> Block:
+    def block(self, name: str, data: JsonValue) -> Block:
+        block = cast(dict[str, Any], data)
         members: list[Member] = []
-        for item in data.get("members", []):
+        for item in block.get("members", []):
             node = cast(dict[str, Any], item)
             kind = str(node["kind"])
             if kind not in ("param", "buffer", "state", "sub"):
@@ -536,97 +539,101 @@ class _Reader:
             members.append(Member(str(node["name"]), kind, self.type(node["type"])))
         return Block(
             name=name,
-            module=str(data.get("module", "")),
-            pub=bool(data.get("pub", False)),
-            generics=self.generics(data.get("generics", [])),
-            constraints=self.constraints(data.get("constraints", [])),
+            module=str(block.get("module", "")),
+            pub=bool(block.get("pub", False)),
+            generics=self.generics(block.get("generics", [])),
+            constraints=self.constraints(block.get("constraints", [])),
             members=tuple(members),
         )
 
-    def manifest_entry(self, data: dict[str, Any]) -> ManifestEntry:
-        kind = str(data["kind"])
+    def manifest_entry(self, data: JsonValue) -> ManifestEntry:
+        node = cast(dict[str, Any], data)
+        kind = str(node["kind"])
         if kind not in ("param", "buffer", "state"):
             raise LinnetError(f"unknown manifest kind `{kind}`")
         return ManifestEntry(
-            path=str(data["path"]),
+            path=str(node["path"]),
             kind=kind,
-            dtype=self.dtype(data["dtype"]),
-            shape=self.shape(data["shape"]),
-            repeat=tuple(self.dim(d) for d in data.get("repeat", [])),
-            optional=bool(data.get("optional", False)),
+            dtype=self.dtype(node["dtype"]),
+            shape=self.shape(node["shape"]),
+            repeat=tuple(self.dim(d) for d in node.get("repeat", [])),
+            optional=bool(node.get("optional", False)),
         )
 
-    def substitution(self, data: Any) -> Substitution:
+    def substitution(self, data: JsonValue) -> Substitution:
         node = cast(dict[str, Any], data or {})
-        dims = cast(dict[str, Any], node.get("dims", {}))
-        packs = cast(dict[str, Any], node.get("packs", {}))
-        dtypes = cast(dict[str, Any], node.get("dtypes", {}))
+        dims = cast(dict[str, JsonValue], node.get("dims", {}))
+        packs = cast(dict[str, list[JsonValue]], node.get("packs", {}))
+        dtypes = cast(dict[str, JsonValue], node.get("dtypes", {}))
         return Substitution(
             dims=MappingProxyType({int(k): self.dim(v) for k, v in dims.items()}),
             packs=MappingProxyType({int(k): self.shape(v) for k, v in packs.items()}),
             dtypes=MappingProxyType({int(k): self.dtype(v) for k, v in dtypes.items()}),
         )
 
-    def value(self, data: Any) -> Value:
+    def value(self, data: JsonValue) -> Value:
         node = cast(dict[str, Any], data)
         return Value(int(node["id"]), str(node.get("name", "")), self.type(node["type"]))
 
-    def region(self, data: Any) -> Region:
+    def region(self, data: JsonValue) -> Region:
         node = cast(dict[str, Any], data)
         return Region(
             args=tuple(self.value(v) for v in node.get("args", [])),
-            ops=tuple(self.op(cast(dict[str, Any], o)) for o in node.get("ops", [])),
+            ops=tuple(self.op(o) for o in node.get("ops", [])),
         )
 
-    def op(self, data: dict[str, Any]) -> Op:
-        attrs = cast(dict[str, Any], data.get("attrs") or {})
+    def op(self, data: JsonValue) -> Op:
+        node = cast(dict[str, Any], data)
+        attrs = cast(dict[str, JsonValue], node.get("attrs") or {})
         return Op(
-            kind=str(data["kind"]),
-            operands=tuple(int(i) for i in data.get("operands", [])),
-            results=tuple(self.value(v) for v in data.get("results", [])),
+            kind=str(node["kind"]),
+            operands=tuple(int(i) for i in node.get("operands", [])),
+            results=tuple(self.value(v) for v in node.get("results", [])),
             attrs=MappingProxyType(dict(attrs)),
-            regions=tuple(self.region(r) for r in data.get("regions", [])),
+            regions=tuple(self.region(r) for r in node.get("regions", [])),
         )
 
-    def function(self, data: dict[str, Any]) -> Function:
-        kind = str(data["kind"])
+    def function(self, data: JsonValue) -> Function:
+        node = cast(dict[str, Any], data)
+        kind = str(node["kind"])
         if kind not in ("fn", "op", "entry"):
             raise LinnetError(f"unknown function kind `{kind}`")
-        block = data.get("block")
+        block = node.get("block")
         return Function(
-            name=str(data["name"]),
+            name=str(node["name"]),
             kind=kind,
             block=None if block is None else str(block),
-            pub=bool(data.get("pub", False)),
-            generics=self.generics(data.get("generics", [])),
-            constraints=self.constraints(data.get("constraints", [])),
-            results=tuple(self.type(t) for t in data.get("results", [])),
-            states=tuple(str(s) for s in data.get("states", [])),
-            body=self.region(data["body"]),
+            pub=bool(node.get("pub", False)),
+            generics=self.generics(node.get("generics", [])),
+            constraints=self.constraints(node.get("constraints", [])),
+            results=tuple(self.type(t) for t in node.get("results", [])),
+            states=tuple(str(s) for s in node.get("states", [])),
+            body=self.region(node["body"]),
         )
 
-    def constant(self, data: dict[str, Any]) -> Constant:
-        type_data = data.get("type")
+    def constant(self, data: JsonValue) -> Constant:
+        node = cast(dict[str, Any], data)
+        type_data = node.get("type")
         return Constant(
-            name=str(data["name"]),
-            pub=bool(data.get("pub", False)),
+            name=str(node["name"]),
+            pub=bool(node.get("pub", False)),
             type=None if type_data is None else self.type(type_data),
-            contextual=bool(data.get("contextual", False)),
-            body=self.region(data["body"]),
+            contextual=bool(node.get("contextual", False)),
+            body=self.region(node["body"]),
         )
 
 
-def parse_substitution(data: Any) -> Substitution:
+def parse_substitution(data: JsonValue) -> Substitution:
     """Reads a call's `substitution` attribute."""
     return _Reader().substitution(data)
 
 
-def parse_dim(data: Any) -> Dim:
+def parse_dim(data: JsonValue) -> Dim:
     """Reads a dimension as an attribute spells it (a slice bound, say)."""
     return _Reader().dim(data)
 
 
-def parse_shape(data: Sequence[Any]) -> Shape:
+def parse_shape(data: Sequence[JsonValue]) -> Shape:
     """Reads a shape as an attribute spells it (an index domain, say)."""
     return _Reader().shape(data)
 

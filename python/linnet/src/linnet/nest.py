@@ -34,11 +34,38 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    Unpack,
+    cast,
+    overload,
+)
 
 from . import diagram, ir
 from .compiler import LinnetError, bind_arguments, parse_binding, run_compiler, std_arguments
 from .weights import header_tensors, match_checkpoint, read_bindings, read_header
+
+if TYPE_CHECKING:
+    from datetime import date, datetime, time
+
+    import torch
+    from flax import nnx
+    from huggingface_hub import HfApi as _HfApi
+    from jax.sharding import Mesh
+    from torch.distributed.device_mesh import DeviceMesh
+
+    from .jax import LinnetFunction, LinnetModel, SourceFunction
+    from .onnx.runtime import OnnxModel, Provider
+    from .torch import LinnetModule
+
+# A value in a TOML document, as `tomllib` reads it.
+TomlValue: TypeAlias = (
+    "str | int | float | bool | datetime | date | time | list[TomlValue] | dict[str, TomlValue]"
+)
 
 REGISTRY = "https://raw.githubusercontent.com/franknoh/nest/main"
 # A Hugging Face Hub repo: `org/name`, or `hf://org/name`, with an optional
@@ -88,7 +115,7 @@ class Card:
     generics: Mapping[str, int | str]
     check: Mapping[str, int | str]
     weights: Weights | None
-    extra: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    extra: Mapping[str, TomlValue] = field(default_factory=lambda: MappingProxyType({}))
     # The published parameter count, when counting the checkpoint's tensors
     # would get it wrong: 4-bit weights packed two to a byte (gpt-oss's
     # MXFP4) count half their parameters as elements.
@@ -110,11 +137,11 @@ class Card:
         weights_table = document.get("weights")
         weights = None
         if isinstance(weights_table, dict):
-            table = cast(dict[str, Any], weights_table)
+            table = cast(dict[str, TomlValue], weights_table)
             files = table.get("files", [])
             weights = Weights(
                 repo=str(table.get("repo", "")),
-                files=tuple(str(f) for f in cast(list[Any], files)),
+                files=tuple(str(f) for f in cast(list[TomlValue], files)),
                 revision=_optional_str(table, "revision"),
                 bindings=_optional_str(table, "bindings"),
             )
@@ -125,7 +152,7 @@ class Card:
             summary=str(model.get("summary", "")),
             license=str(model.get("license", "")),
             family=_optional_str(model, "family"),
-            tags=tuple(str(t) for t in cast(list[Any], model.get("tags", []))),
+            tags=tuple(str(t) for t in cast(list[TomlValue], model.get("tags", []))),
             links=Links(
                 huggingface=_optional_str(links, "huggingface"),
                 github=_optional_str(links, "github"),
@@ -139,7 +166,7 @@ class Card:
             check=MappingProxyType(_generic_values(_table(document, "check"))),
             weights=weights,
             extra=MappingProxyType({k: v for k, v in document.items() if k not in _KNOWN_TABLES}),
-            parameters=int(model["parameters"]) if "parameters" in model else None,
+            parameters=int(cast(int, model["parameters"])) if "parameters" in model else None,
         )
 
     @property
@@ -161,19 +188,19 @@ class Card:
 _KNOWN_TABLES = {"model", "links", "source", "generics", "check", "weights"}
 
 
-def _table(document: Mapping[str, Any], name: str) -> dict[str, Any]:
+def _table(document: Mapping[str, TomlValue], name: str) -> dict[str, TomlValue]:
     value = document.get(name, {})
     if not isinstance(value, dict):
         raise NestError(f"`[{name}]` must be a table")
-    return cast(dict[str, Any], value)
+    return cast(dict[str, TomlValue], value)
 
 
-def _optional_str(table: Mapping[str, Any], key: str) -> str | None:
+def _optional_str(table: Mapping[str, TomlValue], key: str) -> str | None:
     value = table.get(key)
     return None if value is None else str(value)
 
 
-def _generic_values(table: Mapping[str, Any]) -> dict[str, int | str]:
+def _generic_values(table: Mapping[str, TomlValue]) -> dict[str, int | str]:
     out: dict[str, int | str] = {}
     for key, value in table.items():
         if isinstance(value, bool) or not isinstance(value, int | str):
@@ -255,7 +282,22 @@ def check(
     return problems
 
 
-def hub_safetensors_header(repo: str, filename: str, revision: str | None = None) -> dict[str, Any]:
+class TensorHeader(TypedDict):
+    """One tensor's entry in a SafeTensors header."""
+
+    dtype: str
+    shape: list[int]
+    data_offsets: list[int]
+
+
+# A SafeTensors header: each tensor's entry by name, and `__metadata__`'s
+# strings.
+SafeTensorsHeader: TypeAlias = "dict[str, TensorHeader | dict[str, str]]"
+
+
+def hub_safetensors_header(
+    repo: str, filename: str, revision: str | None = None
+) -> SafeTensorsHeader:
     """The SafeTensors header of one file in a Hub repository.
 
     Read with two ranged requests: the eight bytes holding the header's
@@ -278,7 +320,7 @@ def hub_safetensors_header(repo: str, filename: str, revision: str | None = None
     (size,) = struct.unpack("<Q", prefix.content)
     body = session.get(url, headers={"Range": f"bytes=8-{7 + size}"}, timeout=60)
     body.raise_for_status()
-    return cast(dict[str, Any], json.loads(body.content.decode("utf-8")))
+    return cast("SafeTensorsHeader", json.loads(body.content.decode("utf-8")))
 
 
 def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> list[str]:
@@ -333,7 +375,56 @@ def _check_exports(
 # ------------------------------------------------------------ index/preview
 
 
-def describe(card: Card, std_root: str | Path | None = None) -> dict[str, Any]:
+class EntryDescription(TypedDict):
+    """An entry of a model, as `describe` lists it."""
+
+    name: str
+    signature: str
+    inputs: list[dict[str, str]]  # each input's `name` and `type`
+    results: list[str]
+    states: list[str]
+
+
+class WeightsDescription(TypedDict):
+    """A card's `[weights]`, as `describe` gives it."""
+
+    repo: str
+    files: list[str]
+    revision: str | None
+    bindings: str | None
+
+
+class ModelDescription(TypedDict):
+    """A model in the registry document (`describe`)."""
+
+    name: str
+    title: str
+    summary: str
+    license: str
+    family: str | None
+    tags: list[str]
+    links: dict[str, str]
+    source: str
+    root: str
+    module: str
+    entry: str
+    generics: dict[str, int | str]
+    check: dict[str, int | str]
+    parameters: int | None
+    entries: list[EntryDescription]
+    blocks: dict[str, str]
+    weights: WeightsDescription | None
+    files: list[str]
+
+
+class IndexDocument(TypedDict):
+    """The registry document (`index`)."""
+
+    version: int
+    models: list[ModelDescription]
+
+
+def describe(card: Card, std_root: str | Path | None = None) -> ModelDescription:
     """The card plus what the compiler knows: entries, parameter count, files."""
     program = card.program(std_root)
     parameters: int | None = card.parameters
@@ -395,7 +486,7 @@ def parameter_count(card: Card, program: ir.Program) -> int:
     return ir.parameter_count(program, card.generics, mapping)
 
 
-def index(root: str | Path, std_root: str | Path | None = None) -> dict[str, Any]:
+def index(root: str | Path, std_root: str | Path | None = None) -> IndexDocument:
     """The registry document: every model under `root/models`, described."""
     base = Path(root)
     models_dir = base / "models" if (base / "models").is_dir() else base
@@ -454,13 +545,10 @@ def fetch(name: str, *, registry: str = REGISTRY, cache: str | Path | None = Non
     directory = target / name
     try:
         document = json.loads(_get(f"{registry}/index.json").decode("utf-8"))
-        models = cast(list[dict[str, Any]], cast(dict[str, Any], document)["models"])
+        models = cast(IndexDocument, document)["models"]
         match = next((m for m in models if m["name"] == name), None)
         files = (
-            {
-                relative: _get(f"{registry}/models/{name}/{relative}")
-                for relative in cast(list[str], match["files"])
-            }
+            {relative: _get(f"{registry}/models/{name}/{relative}") for relative in match["files"]}
             if match is not None
             else {}
         )
@@ -486,7 +574,25 @@ def _get(url: str) -> bytes:
         return cast(bytes, response.read())
 
 
-def huggingface_hub() -> Any:
+class HubModule(Protocol):
+    """`huggingface_hub`, as far as Nest and `linnet.convert` use it."""
+
+    HfApi: type[_HfApi]
+
+    def hf_hub_download(
+        self, repo_id: str, filename: str, *, revision: str | None = None
+    ) -> str: ...
+
+    def snapshot_download(
+        self,
+        repo_id: str,
+        *,
+        revision: str | None = None,
+        allow_patterns: list[str] | str | None = None,
+    ) -> str: ...
+
+
+def huggingface_hub() -> HubModule:
     try:
         import huggingface_hub  # type: ignore[import-untyped]
     except ImportError:
@@ -525,7 +631,14 @@ def fetch_hub(repo: str, *, revision: str | None = None) -> Path:
     return Path(hub.snapshot_download(repo, revision=revision, allow_patterns=patterns))
 
 
-def resolve(name_or_dir: str | Path, **fetch_options: Any) -> Card:
+class _FetchOptions(TypedDict, total=False):
+    """`fetch`'s keywords, as `resolve` passes them on."""
+
+    registry: str
+    cache: str | Path | None
+
+
+def resolve(name_or_dir: str | Path, **fetch_options: Unpack[_FetchOptions]) -> Card:
     """A model directory on disk; a Hugging Face Hub repo with a card at its
     root (`org/name`, or `hf://org/name@revision`); or a Nest name, fetched
     from the registry into the cache."""
@@ -742,6 +855,142 @@ def push(directory: str | Path, repo: str, *, private: bool = False) -> str:
     return f"https://huggingface.co/{repo}"
 
 
+class _Common(TypedDict):
+    """What `load` passes every backend's loader."""
+
+    generics: dict[str, int | str]
+    root: str | None
+    std_root: str | Path | None
+    weights: str | Path
+    bindings: str | None
+
+
+class _NumericsOptions(TypedDict, total=False):
+    numerics: str
+
+
+class _CastOptions(_NumericsOptions, total=False):
+    cast_dtype: bool
+
+
+class _TorchOptions(_CastOptions, total=False):
+    """`linnet.torch.load`'s own keywords."""
+
+    device: str | torch.device
+    strict: bool
+    optimize: bool
+    compile: bool | str | None
+    trainable: bool | str | Sequence[str]
+    device_map: str | Mapping[str, str | int] | None
+    max_memory: Mapping[int | str, int | str] | None
+    offload: bool
+    amp: str | None
+    tensor_parallel: DeviceMesh | None
+    tp_rules: Mapping[str, int | None] | None
+
+
+class _OnnxOptions(_CastOptions, total=False):
+    """`linnet.onnx.load_model`'s own keywords."""
+
+    providers: Sequence[Provider] | None
+
+
+class _JaxModelOptions(_CastOptions, total=False):
+    """`linnet.jax.load_model`'s own keywords."""
+
+    generated: bool
+    mesh: Mesh | int | None
+    rules: Mapping[str, int | None] | None
+
+
+class _JaxOptions(_CastOptions, total=False):
+    """`linnet.jax.load`'s and `load_source`'s own keywords."""
+
+    entry: str | None
+
+
+class _NnxOptions(_NumericsOptions, total=False):
+    """`linnet.jax.load_nnx`'s own keywords."""
+
+    entry: str | None
+
+
+class _LoadOptions(_TorchOptions, _OnnxOptions, _JaxModelOptions, _JaxOptions, total=False):
+    """Every backend's own keywords: `load` passes on the chosen one's."""
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["torch"] = "torch",
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_TorchOptions],
+) -> LinnetModule: ...
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["onnx_model"],
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_OnnxOptions],
+) -> OnnxModel: ...
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["jax_model"],
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_JaxModelOptions],
+) -> LinnetModel: ...
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["jax"],
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_JaxOptions],
+) -> LinnetFunction: ...
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["jax_source"],
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_JaxOptions],
+) -> SourceFunction: ...
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["nnx"],
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_NnxOptions],
+) -> nnx.Module: ...
+
+
 def load(
     name_or_dir: str | Path,
     *,
@@ -749,8 +998,8 @@ def load(
     std_root: str | Path | None = None,
     generics: Mapping[str, int | str] | None = None,
     weights: str | Path | None = None,
-    **options: Any,
-) -> Any:
+    **options: Unpack[_LoadOptions],
+) -> LinnetModule | OnnxModel | LinnetModel | LinnetFunction | SourceFunction | nnx.Module:
     """Materializes a model in a backend with its weights.
 
     `name_or_dir` is a Nest name, a Hugging Face Hub repo with a card at its
@@ -769,7 +1018,7 @@ def load(
     if weights is None:
         weights = download_weights(card)
     bindings = card.bindings_path
-    common: dict[str, Any] = {
+    common: _Common = {
         "generics": values,
         "root": card.root,
         "std_root": std_root,
@@ -779,22 +1028,30 @@ def load(
     if backend == "torch":
         from . import torch as torch_backend
 
-        return torch_backend.load(card.source_path, **common, **options)
+        return torch_backend.load(card.source_path, **common, **cast("_TorchOptions", options))
     if backend == "onnx_model":
         from .onnx import load_model as load_onnx
 
-        return load_onnx(card.source_path, **common, **options)
+        return load_onnx(card.source_path, **common, **cast("_OnnxOptions", options))
     from . import jax as jax_backend
 
     if backend == "jax_model":
-        return jax_backend.load_model(card.source_path, **common, **options)
+        return jax_backend.load_model(
+            card.source_path, **common, **cast("_JaxModelOptions", options)
+        )
     entry = options.pop("entry", card.entry)
     if backend == "jax":
-        return jax_backend.load(card.source_path, entry=entry, **common, **options)
+        return jax_backend.load(
+            card.source_path, entry=entry, **common, **cast("_CastOptions", options)
+        )
     if backend == "jax_source":
-        return jax_backend.load_source(card.source_path, entry=entry, **common, **options)
+        return jax_backend.load_source(
+            card.source_path, entry=entry, **common, **cast("_CastOptions", options)
+        )
     if backend == "nnx":
-        return jax_backend.load_nnx(card.source_path, entry=entry, **common, **options)
+        return jax_backend.load_nnx(
+            card.source_path, entry=entry, **common, **cast("_NumericsOptions", options)
+        )
     raise NestError(f"unknown backend `{backend}`")
 
 

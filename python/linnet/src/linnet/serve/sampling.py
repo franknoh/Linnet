@@ -15,7 +15,13 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    import jax
+    import numpy as np
+    import torch
+    from numpy.typing import ArrayLike, NDArray
 
 GREEDY, SAMPLED, FILTERED = 0, 1, 2  # what a pass has to compute, by `mode`
 
@@ -77,7 +83,7 @@ def mix(x: int) -> int:
 # ---- PyTorch: int64 tensors holding 32-bit values
 
 
-def _mix_torch(x: Any) -> Any:
+def _mix_torch(x: torch.Tensor) -> torch.Tensor:
     x = x ^ (x >> 16)
     x = (x * _FIRST) & _MASK
     x = x ^ (x >> 15)
@@ -86,14 +92,14 @@ def _mix_torch(x: Any) -> Any:
 
 
 def draw_torch(
-    logits: Any,
-    temperature: Any,
-    top_k: Any,
-    top_p: Any,
-    keys: Any,
-    at: Any,
+    logits: torch.Tensor,
+    temperature: torch.Tensor,
+    top_k: torch.Tensor,
+    top_p: torch.Tensor,
+    keys: torch.Tensor,
+    at: torch.Tensor,
     need: int,
-) -> Any:
+) -> torch.Tensor:
     """Each row's token: `logits` `[N, Vocab]`, one temperature, top-k, top-p,
     seed key (int64), and position `at` for each row."""
     import torch
@@ -123,7 +129,13 @@ def draw_torch(
 # ---- JAX: uint32 arrays, which wrap as the hash wants
 
 
-def _mix_jax(jnp: Any, x: Any) -> Any:
+class _JaxNumPy(Protocol):
+    """`jax.numpy`, as `_mix_jax` uses it."""
+
+    def uint32(self, value: int, /) -> jax.Array: ...
+
+
+def _mix_jax(jnp: _JaxNumPy, x: jax.Array) -> jax.Array:
     x = x ^ (x >> 16)
     x = x * jnp.uint32(_FIRST)
     x = x ^ (x >> 15)
@@ -132,19 +144,19 @@ def _mix_jax(jnp: Any, x: Any) -> Any:
 
 
 def draw_jax(
-    logits: Any,
-    temperature: Any,
-    top_k: Any,
-    top_p: Any,
-    keys: Any,
-    at: Any,
+    logits: jax.Array,
+    temperature: jax.Array,
+    top_k: jax.Array,
+    top_p: jax.Array,
+    keys: jax.Array,
+    at: jax.Array,
     need: int,
-) -> Any:
+) -> jax.Array:
     """`draw_torch` for JAX, with `keys` as uint32; `need` is static."""
-    import jax as jax_module
+    import jax
     import jax.numpy as jnp_module
 
-    jax: Any = jax_module
+    # JAX's stubs leave `jnp.arange` partially unknown, which strict checking refuses.
     jnp: Any = jnp_module
     greedy = jnp.argmax(logits, -1).astype(jnp.int32)
     if need == GREEDY:
@@ -172,7 +184,14 @@ def draw_jax(
 # ---- NumPy, for logits on the host
 
 
-def _mix_numpy(np: Any, x: Any) -> Any:
+class _NumPy(Protocol):
+    """`numpy`, as `_mix_numpy` uses it."""
+
+    @property
+    def uint32(self) -> type[np.uint32]: ...
+
+
+def _mix_numpy(np: _NumPy, x: NDArray[np.uint32]) -> NDArray[np.uint32]:
     x = x ^ (x >> np.uint32(16))
     x = x * np.uint32(_FIRST)
     x = x ^ (x >> np.uint32(15))
@@ -180,19 +199,19 @@ def _mix_numpy(np: Any, x: Any) -> Any:
     return x ^ (x >> np.uint32(16))
 
 
-def draw_numpy(logits: Any, rows: list[Sampling], at: Any, need: int) -> Any:
+def draw_numpy(
+    logits: NDArray[np.floating], rows: list[Sampling], at: ArrayLike, need: int
+) -> NDArray[np.intp]:
     """`draw_torch` over NumPy, each row's sampling as it is."""
-    import numpy as numpy_module
+    import numpy as np
 
-    np: Any = numpy_module
-
-    greedy = np.argmax(logits, -1)
+    greedy: NDArray[np.intp] = np.argmax(logits, -1)
     if need == GREEDY:
         return greedy
     temperature = np.asarray([r.temperature for r in rows], dtype=np.float32)
     sampled = temperature > 0
     scores = logits.astype(np.float32) / np.where(sampled, temperature, 1.0)[:, None]
-    vocab = scores.shape[-1]
+    vocab: int = scores.shape[-1]
     if need == FILTERED:
         top_k = np.asarray([r.top_k for r in rows], dtype=np.int64)
         top_p = np.asarray([r.top_p for r in rows], dtype=np.float32)
@@ -209,5 +228,5 @@ def draw_numpy(logits: Any, rows: list[Sampling], at: Any, need: int) -> Any:
         mixed = _mix_numpy(np, keys ^ np.asarray(at).astype(np.uint32))
         bits = _mix_numpy(np, mixed[:, None] ^ np.arange(vocab, dtype=np.uint32)[None, :])
     uniform = ((bits >> np.uint32(9)).astype(np.float32) + 0.5) * np.float32(_STEP)
-    drawn = np.argmax(scores - np.log(-np.log(uniform)), -1)
+    drawn: NDArray[np.intp] = np.argmax(scores - np.log(-np.log(uniform)), -1)
     return np.where(sampled, drawn, greedy)

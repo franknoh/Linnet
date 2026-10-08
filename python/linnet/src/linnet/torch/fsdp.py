@@ -33,7 +33,7 @@ import inspect
 import weakref
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -49,6 +49,11 @@ from .. import lora
 from ..parallel import units as parallel_units
 from ..plan import PlanError
 from .module import LinnetModule, owner_of
+
+if TYPE_CHECKING:
+    from torch.distributed import ProcessGroup, Work
+    from torch.utils.checkpoint import SelectiveCheckpointContext
+    from typing_extensions import TypeIs
 
 
 def fully_shard(
@@ -167,7 +172,9 @@ def _whole(part: DTensor, dtype: torch.dtype) -> torch.Tensor:
     ).to_local(grad_placements=[Partial()] * part.device_mesh.ndim)
 
 
-def _gather_everything(ctx: Any, op: Any, *args: Any, **kwargs: Any) -> CheckpointPolicy:
+def _gather_everything(
+    ctx: SelectiveCheckpointContext, op: object, *args: object, **kwargs: object
+) -> CheckpointPolicy:
     return CheckpointPolicy.MUST_RECOMPUTE
 
 
@@ -190,7 +197,7 @@ class _Again:
     offset: int
 
 
-def _pack(value: torch.Tensor) -> Any:
+def _pack(value: torch.Tensor) -> torch.Tensor | _Again:
     if _held is None or isinstance(value, DTensor):
         return value
     try:
@@ -204,7 +211,7 @@ def _pack(value: torch.Tensor) -> Any:
     return _Again(part, dtype, value.size(), value.stride(), int(value.storage_offset()))
 
 
-def _unpack(saved: Any) -> torch.Tensor:
+def _unpack(saved: torch.Tensor | _Again) -> torch.Tensor:
     if not isinstance(saved, _Again):
         return saved
     with torch.no_grad():
@@ -225,7 +232,7 @@ def regathered() -> Generator[None]:
         _held = outer
 
 
-def sharded(parameter: torch.Tensor) -> bool:
+def sharded(parameter: torch.Tensor) -> TypeIs[DTensor]:
     return isinstance(parameter, DTensor)
 
 
@@ -299,7 +306,7 @@ def _rows(part: DTensor) -> tuple[int, int]:
     return rows, -(-rows // part.device_mesh.size())
 
 
-def _nccl(group: Any) -> bool:
+def _nccl(group: ProcessGroup) -> bool:
     import torch.distributed as dist
 
     return dist.get_backend(group) == "nccl"
@@ -328,7 +335,7 @@ def _joined(part: DTensor, dtype: torch.dtype) -> torch.Tensor:
 @dataclass
 class _Summing:
     part: DTensor
-    work: Any
+    work: Work
     out: torch.Tensor
     full: torch.Tensor  # kept until the sum is done
     rows: int | None  # of `out`, this process's; None: all of it

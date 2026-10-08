@@ -18,7 +18,7 @@ import functools
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -36,8 +36,23 @@ from ..compiler import (
     std_arguments,
 )
 from ..plan import compile_plan
+from ..results import Result
 from ..weights import apply_bindings, read_arrays
 from .dtypes import MLIR_TYPES
+
+if TYPE_CHECKING:
+    from types import ModuleType
+    from typing import TypeAlias
+
+    from jax._src.lib.mlir import ir as mlir_ir
+    from jax.core import ShapedArray
+    from jax.sharding import Sharding
+    from jax.typing import ArrayLike, DTypeLike
+
+    # A `state` value by path, as an entry that touches state takes and returns it.
+    State: TypeAlias = dict[str, jax.Array]
+    # The cache key of one compilation: its generic bindings, sorted.
+    _Key: TypeAlias = tuple[tuple[str, int | str], ...]
 
 
 class LinnetFunction:
@@ -48,7 +63,7 @@ class LinnetFunction:
         source: Path,
         program: ir.Program,
         generics: Mapping[str, int | str],
-        weights: dict[str, Any],
+        weights: dict[str, ArrayLike],
         std_root: str | Path | None,
         root: str,
         entry: str,
@@ -68,7 +83,7 @@ class LinnetFunction:
         self.entry = entry
         # How a weight goes to the devices when an entry first compiles:
         # `placement(path, host_array)`, or onto the default device.
-        self.placement: Callable[[str, Any], Any] | None = None
+        self.placement: Callable[[str, ArrayLike], jax.Array] | None = None
         matching = [f for f in program.functions.values() if f.name.endswith(f"::{root}.{entry}")]
         if not matching:
             raise LinnetError(f"block `{root}` has no entry `{entry}`")
@@ -76,7 +91,7 @@ class LinnetFunction:
         manifest = program.manifest
         self.parameter_paths: list[str] = [entry.path for entry in manifest]
         self.optional_paths: set[str] = {e.path for e in manifest if e.optional}
-        self._cache: dict[tuple[Any, ...], CompiledEntry] = {}
+        self._cache: dict[_Key, CompiledEntry] = {}
         # Set by `LinnetModel`, which runs several entries over one copy of
         # the weights and keeps their state on the device: the weights are
         # written back once placed (and cast), so the next entry finds them
@@ -86,7 +101,7 @@ class LinnetFunction:
         # Set by `LinnetModel` (inference only): weight-only work runs once, in
         # `prepare`, its results kept here by key and shared across entries.
         self.prepare_weights = False
-        self.prepared: dict[str, Any] = {}
+        self.prepared: dict[str, jax.Array] = {}
         self._check_weights(manifest)
 
     def _export(self, target: str, bindings: Mapping[str, int | str]) -> str:
@@ -146,7 +161,7 @@ class LinnetFunction:
 
     # ---- entry generics from input shapes
 
-    def _bindings_for(self, inputs: Sequence[Any]) -> dict[str, int | str]:
+    def _bindings_for(self, inputs: Sequence[ArrayLike]) -> dict[str, int | str]:
         arguments = self._signature.params
         if len(arguments) != len(inputs):
             raise LinnetError(
@@ -176,10 +191,10 @@ class LinnetFunction:
         call = jax.jit(exported.call, donate_argnums=donated)
         first = len(exported.in_avals) - len(state_inputs) - len(paths)
         declared = exported.in_avals[first : first + len(paths)]
-        arrays: list[Any] = []
+        arrays: list[jax.Array] = []
         # Paths bound to one checkpoint tensor (a tied embedding and output
         # head) share one device array.
-        uploaded: dict[int, Any] = {}
+        uploaded: dict[int, jax.Array] = {}
         for path, aval in zip(paths, declared, strict=True):
             host = self._weights[path]
             array = uploaded.get(id(host))
@@ -230,7 +245,7 @@ class LinnetFunction:
         first = arguments - len(state_inputs)
         return tuple(first + i for i, path in enumerate(state_inputs) if path in state_outputs)
 
-    def parameters_for(self, *inputs: Any) -> dict[str, Any]:
+    def parameters_for(self, *inputs: ArrayLike) -> dict[str, jax.Array]:
         """The weights the entry takes for inputs of these shapes, compiling
         it for them first: path -> device array, in the dtype the entry
         computes in. Paths bound to one checkpoint tensor share one array."""
@@ -241,7 +256,12 @@ class LinnetFunction:
         compiled = self._cache[key]
         return dict(zip(compiled.parameters, compiled.arrays, strict=True))
 
-    def apply(self, parameters: Mapping[str, Any], *inputs: Any, state: Any = None) -> Any:
+    def apply(
+        self,
+        parameters: Mapping[str, ArrayLike],
+        *inputs: ArrayLike,
+        state: Mapping[str, jax.Array] | None = None,
+    ) -> Result:
         """Runs the entry with `parameters` (path -> array) in place of the
         loaded weights, so a framework module can own the arrays. An entry
         that touches `state` members takes their values before the call in
@@ -277,9 +297,9 @@ class LinnetFunction:
                         compiled.parameters, arrays, compiled.dtypes, strict=True
                     )
                 ]
-        given: Mapping[str, Any] = state or {}
+        given: Mapping[str, jax.Array] = state or {}
         missing = [p for p in compiled.state_inputs if p not in given]
-        zeros: dict[str, Any] = {}
+        zeros: State = {}
         if missing:
             # Zeros placed where the weights are: a call's new state comes
             # back committed to that device, and jit compiles again for
@@ -287,7 +307,10 @@ class LinnetFunction:
             # Weights split over a mesh leave the placement to the model
             # (`shard`).
             shardings = {
-                a.sharding for a in arrays if isinstance(a, jax.Array) and not isinstance(a, Tracer)
+                a.sharding
+                for a in arrays
+                if isinstance(a, jax.Array)  # pyright: ignore[reportUnnecessaryIsInstance]
+                and not isinstance(a, Tracer)
             }
             placement = None
             if len(shardings) == 1 and isinstance(next(iter(shardings)), SingleDeviceSharding):
@@ -310,7 +333,7 @@ class LinnetFunction:
         new_state.update(zip(compiled.state_outputs, new_states, strict=True))
         return result, new_state
 
-    def __call__(self, *inputs: Any, state: Any = None) -> Any:
+    def __call__(self, *inputs: ArrayLike, state: Mapping[str, jax.Array] | None = None) -> Result:
         return self.apply(self._weights, *inputs, state=state)
 
 
@@ -329,18 +352,24 @@ class CompiledEntry:
     parameters: list[str]  # parameter paths, in argument order after the inputs
     state_inputs: list[str]  # state paths read before the call, after the parameters
     state_outputs: list[str]  # state paths assigned, as results after the entry's own
-    state_avals: dict[str, Any]
-    exported: Any
-    call: Any  # `exported.call` under `jax.jit`
-    arrays: list[Any]  # the loaded weights as device arrays, in `parameters` order
+    state_avals: dict[str, ShapedArray]
+    exported: jax.export.Exported
+    call: Callable[..., Result]  # `exported.call` under `jax.jit`
+    arrays: list[jax.Array]  # the loaded weights as device arrays, in `parameters` order
     source_path: Path | None = None  # generated JAX source, when the entry runs as code
-    dtypes: list[Any] = dataclasses.field(default_factory=lambda: list[Any]())  # declared, each
-    module: Any = None  # the generated module, when the entry runs as code
-    prepared: list[Any] = dataclasses.field(default_factory=lambda: list[Any]())  # `prepare`'s
+    dtypes: list[np.dtype[np.generic]] = dataclasses.field(  # declared, each
+        default_factory=lambda: list[np.dtype[np.generic]]()
+    )
+    module: ModuleType | None = None  # the generated module, when the entry runs as code
+    prepared: list[jax.Array] = dataclasses.field(  # `prepare`'s
+        default_factory=lambda: list[jax.Array]()
+    )
 
 
 @functools.cache
-def _zeros(shapes: tuple[tuple[tuple[int, ...], Any], ...], placement: Any) -> Any:
+def _zeros(
+    shapes: tuple[tuple[tuple[int, ...], DTypeLike], ...], placement: Sharding | None
+) -> Callable[[], tuple[jax.Array, ...]]:
     """One compiled function making every missing state member's zeros:
     one dispatch rather than one per cache."""
     return jax.jit(
@@ -349,12 +378,12 @@ def _zeros(shapes: tuple[tuple[tuple[int, ...], Any], ...], placement: Any) -> A
     )
 
 
-def _device_array(value: Any) -> Any:
+def _device_array(value: ArrayLike) -> jax.Array:
     """`value` as a JAX array; arrays already on a device pass through."""
     return value if isinstance(value, jax.Array) else jnp.asarray(value)
 
 
-def _wrap_module(text: str) -> Any:
+def _wrap_module(text: str) -> jax.export.Exported:
     """A `jax.export.Exported` around a StableHLO module whose function is
     `@main`, so JAX can call it like one of its own exports."""
     from jax import export
@@ -374,7 +403,7 @@ def _wrap_module(text: str) -> Any:
 
     from jax import core as jax_core
 
-    def aval(tensor_type: Any) -> Any:
+    def aval(tensor_type: mlir_ir.RankedTensorType) -> ShapedArray:
         element = str(tensor_type.element_type)
         if element not in MLIR_TYPES:
             raise LinnetError(f"unsupported element type {element}")
@@ -418,7 +447,7 @@ def load(
     source: str | Path,
     *,
     generics: Mapping[str, int | str],
-    weights: str | Path | Mapping[str, Any],
+    weights: str | Path | Mapping[str, ArrayLike],
     root: str | None = None,
     entry: str | None = None,
     bindings: str | Path | None = None,
@@ -456,7 +485,7 @@ def function_of(
     program: ir.Program,
     source: Path,
     generics: Mapping[str, int | str],
-    weights: str | Path | Mapping[str, Any],
+    weights: str | Path | Mapping[str, ArrayLike],
     bindings: str | Path | None,
     std_root: str | Path | None,
     entry: str | None,

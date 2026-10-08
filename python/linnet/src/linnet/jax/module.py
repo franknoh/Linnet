@@ -13,12 +13,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..compiler import LinnetError, check_numerics
 from ..plan import compile_plan
+from ..results import Result
 from .load import LinnetFunction, function_of
 from .source import SourceFunction
+
+if TYPE_CHECKING:
+    import jax
+    from jax.sharding import Mesh, Sharding
+    from jax.typing import ArrayLike
+
+    from .load import State
 
 
 class LinnetModel:
@@ -38,11 +46,11 @@ class LinnetModel:
         self.generics = first.generics
         self.weights = first.weights
         self.entries = [f.short_name for f in first.program.entries()]
-        self.state: dict[str, Any] = {}
+        self.state: State = {}
         # Weight-only values (`prepare`), shared by every entry by key.
-        self._prepared: dict[str, Any] = {}
+        self._prepared: dict[str, jax.Array] = {}
         self.mesh: Any = None  # set by `shard`
-        self._split_shardings: dict[int, Any] = {}  # id -> a state sharding known split right
+        self._split_shardings: dict[int, Sharding] = {}  # id -> a state sharding known split right
 
     def _function(self, name: str) -> LinnetFunction:
         if name not in self._functions:
@@ -74,7 +82,7 @@ class LinnetModel:
             self._functions[name] = function
         return self._functions[name]
 
-    def run_entry(self, name: str, inputs: Sequence[Any]) -> Any:
+    def run_entry(self, name: str, inputs: Sequence[ArrayLike]) -> Result:
         function = self._function(name)
         outcome = function.apply(function.weights, *inputs, state=self.state)
         if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):
@@ -85,7 +93,7 @@ class LinnetModel:
         self.state = state
         return result
 
-    def _shard_state(self, value: Any) -> Any:
+    def _shard_state(self, value: jax.Array) -> jax.Array:
         """A state array split by heads over the mesh, as the key and value
         projections that fill a KV cache are; others stay as XLA left them."""
         import jax
@@ -110,7 +118,7 @@ class LinnetModel:
             return value
         return jax.device_put(value, wanted)
 
-    def copy_weights(self, parameters: Mapping[str, Any]) -> None:
+    def copy_weights(self, parameters: Mapping[str, ArrayLike]) -> None:
         """Replaces the weights with `parameters` (path -> array): a policy
         being trained into the model a serving engine samples from, adapters
         merged in first (`linnet.jax.train.merge_lora`). Each is cast to the
@@ -123,7 +131,7 @@ class LinnetModel:
         # Every function that may hold the old arrays: the one the model was
         # made from too. One left holding them keeps a whole copy alive.
         functions = list({id(f): f for f in (self._first, *self._functions.values())}.values())
-        replaced: dict[str, Any] = {}
+        replaced: dict[str, jax.Array] = {}
         for function in functions:
             for compiled in function._cache.values():  # pyright: ignore[reportPrivateUsage]
                 for i, path in enumerate(compiled.parameters):
@@ -134,8 +142,9 @@ class LinnetModel:
                         new = jnp.asarray(parameters[path]).astype(compiled.dtypes[i])
                         # Placed already (the policy's own arrays, on the
                         # same device): taken as they are, not copied.
-                        if isinstance(old, jax.Array) and not new.sharding.is_equivalent_to(
-                            old.sharding, new.ndim
+                        if (
+                            isinstance(old, jax.Array)  # pyright: ignore[reportUnnecessaryIsInstance]
+                            and not new.sharding.is_equivalent_to(old.sharding, new.ndim)
                         ):
                             new = jax.device_put(new, old.sharding)
                         replaced[path] = new
@@ -162,7 +171,7 @@ class LinnetModel:
     def reset_state(self) -> None:
         self.state = {}
 
-    def shard(self, mesh: Any, rules: Mapping[str, int | None] | None = None) -> None:
+    def shard(self, mesh: Mesh | int, rules: Mapping[str, int | None] | None = None) -> None:
         """Splits the weights over `mesh` (a one-axis `Mesh`, or a device
         count) as `rules` say; entries then run partitioned across it."""
         import jax
@@ -195,14 +204,14 @@ def load_model(
     source: str | Path,
     *,
     generics: Mapping[str, int | str],
-    weights: str | Path | Mapping[str, Any],
+    weights: str | Path | Mapping[str, ArrayLike],
     root: str | None = None,
     bindings: str | Path | None = None,
     std_root: str | Path | None = None,
     numerics: str = "fast",
     cast_dtype: bool = False,
     generated: bool = True,
-    mesh: Any = None,
+    mesh: Mesh | int | None = None,
     rules: Mapping[str, int | None] | None = None,
 ) -> LinnetModel:
     """Every entry of the root block over one copy of the weights, with its

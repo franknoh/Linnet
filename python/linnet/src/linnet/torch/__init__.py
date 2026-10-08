@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -22,9 +22,12 @@ from .placement import apply as apply_placement
 from .placement import from_map as placement_from_map
 from .placement import plan as placement_plan
 
+if TYPE_CHECKING:
+    from torch.distributed.device_mesh import DeviceMesh
+
 
 def fully_shard(
-    model: LinnetModule, mesh: Any = None, *, dtype: torch.dtype = torch.float32
+    model: LinnetModule, mesh: DeviceMesh | None = None, *, dtype: torch.dtype = torch.float32
 ) -> list[str]:
     """Splits `model`'s parameters across processes, gathered a block at a
     time as it runs (FSDP): see `linnet.torch.fsdp.fully_shard`."""
@@ -72,7 +75,7 @@ def load(
     offload: bool = True,
     cast_dtype: bool = False,
     amp: str | None = None,
-    tensor_parallel: Any = None,
+    tensor_parallel: DeviceMesh | None = None,
     tp_rules: Mapping[str, int | None] | None = None,
 ) -> LinnetModule:
     """Compiles a Linnet source file and returns its root block as a module.
@@ -172,7 +175,7 @@ def load(
         compile = torch.device(device).type == "cuda"
     # A model that says how it splits (a `Shards` generic) runs one shard per
     # process; any other is split from the outside, as DTensors.
-    mesh: Any = (
+    mesh: DeviceMesh | None = (
         tensor_parallel
         if tensor_parallel is not None and any(g.name == "Shards" for g in plan.root.generics)
         else None

@@ -17,13 +17,13 @@ Without `reference` parameters, the reference log-probabilities are the
 model's own before training, computed for every pair first.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import jax
 import jax.numpy as jnp
@@ -31,18 +31,39 @@ import numpy as np
 
 from ..packing import Packed, Pair, empty, pack
 from ..runs import DpoStep, pair_examples, pair_slots
-from .train import Learner, add, prepare_blocks
+from .train import Learner, Optimizer, add, prepare_blocks
+
+if TYPE_CHECKING:
+    from jax.sharding import Mesh
+    from numpy.typing import NDArray
+
+    from .source import SourceFunction
+
+    # A compiled loss: its value and moments, and the trained parameters'
+    # gradients.
+    _Gradient: TypeAlias = Callable[..., tuple[tuple[jax.Array, jax.Array], dict[str, jax.Array]]]
+    # One device's arguments to the loss: its batch's inputs, the chosen and
+    # rejected answers' sequences, which pairs are real, their reference
+    # log-probabilities, and the step's count of pairs.
+    _Row: TypeAlias = tuple[
+        list[np.ndarray],
+        NDArray[np.int32],
+        NDArray[np.int32],
+        NDArray[np.float32],
+        NDArray[np.float32],
+        np.float32,
+    ]
 
 
 def dpo_loss(
-    chosen: Any,
-    rejected: Any,
-    reference_chosen: Any,
-    reference_rejected: Any,
+    chosen: jax.Array,
+    rejected: jax.Array,
+    reference_chosen: jax.Array,
+    reference_rejected: jax.Array,
     *,
     beta: float = 0.1,
     label_smoothing: float = 0.0,
-) -> tuple[Any, Any, Any]:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Per pair: the loss, and the chosen and rejected answers' rewards."""
     good = beta * (chosen - reference_chosen)
     bad = beta * (rejected - reference_rejected)
@@ -55,11 +76,11 @@ def dpo_loss(
 
 
 def dpo(
-    model: Any,
+    model: SourceFunction,
     pairs: Sequence[Pair],
     *,
-    optimizer: Any,
-    reference: dict[str, Any] | None = None,
+    optimizer: Optimizer,
+    reference: dict[str, jax.Array] | None = None,
     steps: int | None = None,
     pairs_per_step: int = 32,
     beta: float = 0.1,
@@ -67,11 +88,11 @@ def dpo(
     tokens: int = 4096,
     clip: float | None = 1.0,
     trainable: bool | str | Sequence[str] | None = None,
-    parameters: dict[str, Any] | None = None,
-    mesh: Any = None,
+    parameters: dict[str, jax.Array] | None = None,
+    mesh: Mesh | None = None,
     remat: bool = False,
     on_step: Callable[[DpoStep], None] | None = None,
-) -> tuple[dict[str, Any], list[DpoStep]]:
+) -> tuple[dict[str, jax.Array], list[DpoStep]]:
     """Trains `model` (the `log_probs_packed` entry as generated JAX) on
     preference `pairs`, `pairs_per_step` an optimizer step, for `steps` steps
     or until they run out; returns the parameters and the steps.
@@ -98,9 +119,10 @@ def dpo(
     )
     learner = Learner(model, dict(weights), optimizer, trainable=trainable, mesh=mesh)
 
-    def answers(values: Any, inputs: Any) -> Any:
+    def answers(values: dict[str, jax.Array], inputs: Sequence[jax.Array]) -> jax.Array:
         tokens_, positions, segments, targets, mask = inputs
-        per_token = model.apply(values, tokens_, positions, segments, targets)
+        # The `log_probs_packed` entry: one log-probability per position.
+        per_token = cast(jax.Array, model.apply(values, tokens_, positions, segments, targets))
         sums = jax.ops.segment_sum(per_token * mask, segments, num_segments=tokens + 1)
         return sums
 
@@ -108,8 +130,14 @@ def dpo(
     known = _reference(sums_of, learner, rounds, tokens, pairs_per_step)
 
     def loss(
-        values: Any, inputs: Any, chosen: Any, rejected: Any, valid: Any, refs: Any, total: Any
-    ) -> Any:
+        values: dict[str, jax.Array],
+        inputs: Sequence[jax.Array],
+        chosen: jax.Array,
+        rejected: jax.Array,
+        valid: jax.Array,
+        refs: jax.Array,
+        total: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
         sums = answers(values, inputs)
         losses, good, bad = dpo_loss(
             sums[chosen],
@@ -130,16 +158,16 @@ def dpo(
         )
         return jnp.sum(valid * losses) / total, moments
 
-    gradient = learner.gradient(loss)
+    gradient: _Gradient = learner.gradient(loss)
     history: list[DpoStep] = []
     for number, chosen_pairs in enumerate(rounds):
         begin = time.perf_counter()
         batches = first if number == 0 else _batches(chosen_pairs, tokens)
         total = float(len(chosen_pairs))
-        grads: Any = None
+        grads: dict[str, jax.Array] | None = None
         moments = np.zeros(5)
         for chunk in _chunks(batches, learner.width, tokens):
-            rows: list[tuple[Any, ...]] = []
+            rows: list[_Row] = []
             for batch in chunk:
                 inputs = [*batch.arrays(1.0)[:4], batch.mask]
                 chosen, rejected, valid, which = _paired(batch, pairs_per_step)
@@ -150,7 +178,8 @@ def dpo(
             (_, found), more = gradient(learner.trained, learner.frozen, *learner.stack(rows))
             grads = more if grads is None else add(grads, more)
             moments += np.asarray(found)
-        norm = learner.step(grads, clip)
+        # A round's pairs pack into a batch at least (`pack` leaves none out).
+        norm = learner.step(cast("dict[str, jax.Array]", grads), clip)
         loss_sum, right, margin, good, bad = (float(v) / total for v in moments)
         record = DpoStep(
             step=number + 1,
@@ -173,7 +202,9 @@ def _batches(chosen_pairs: list[Pair], tokens: int) -> list[Packed]:
     return list(pack(pair_examples(chosen_pairs), tokens, together=2))
 
 
-def _paired(batch: Packed, width: int) -> tuple[Any, Any, Any, list[int]]:
+def _paired(
+    batch: Packed, width: int
+) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float32], list[int]]:
     """The batch's chosen and rejected answers' sequences and their pairs,
     `width` long (unused ones marked invalid)."""
     first, which = pair_slots(batch.items)
@@ -196,7 +227,7 @@ def _chunks(batches: list[Packed], width: int, tokens: int) -> list[list[Packed]
 
 
 def _reference(
-    sums: Callable[..., Any],
+    sums: Callable[..., jax.Array],
     learner: Learner,
     rounds: list[list[Pair]],
     tokens: int,

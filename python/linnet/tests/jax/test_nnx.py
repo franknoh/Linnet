@@ -6,6 +6,7 @@ state under the parameter paths, and calls read the module's arrays."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +31,8 @@ def test_exported_model_as_nnx_module(tmp_path: Path) -> None:
         weights=tmp_path / "weights",
         std_root=STDLIB,
     )
-    model = load_nnx(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
+    # Its attributes are the model's members, made when it loads.
+    model: Any = load_nnx(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
 
     # The hierarchy: a sub array of layers, parameters at their paths.
     assert type(model).__name__ == "Model"
@@ -100,7 +102,7 @@ def test_nnx_module_trains_over_generated_source(tmp_path: Path) -> None:
         "layer.weight": jnp.zeros((1, 3), jnp.float32),
         "layer.bias": jnp.zeros((1,), jnp.float32),
     }
-    model = to_nnx(
+    model: Any = to_nnx(
         load_source(source, generics={"In": 3, "Out": 1}, weights=weights, std_root=STDLIB)
     )
     x = jax.random.normal(jax.random.PRNGKey(1), (128, 3), jnp.float32)

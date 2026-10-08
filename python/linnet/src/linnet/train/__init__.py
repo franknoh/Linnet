@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
 import torch
 
@@ -38,6 +38,12 @@ from ..packing import Example
 from ..runs import History, Step, unsaved
 from ..torch.fsdp import sharded
 from .checkpoints import load_checkpoint, save_checkpoint
+
+if TYPE_CHECKING:
+    from torch.distributed import ProcessGroup
+    from torch.optim.lr_scheduler import LRScheduler
+
+    from ..torch.module import LinnetModule
 
 
 @dataclass
@@ -112,14 +118,14 @@ def cosine_schedule(
 
 
 def train(
-    model: Any,
+    model: LinnetModule,
     batches: Iterable[Batch],
     *,
     optimizer: torch.optim.Optimizer,
     steps: int | None = None,
     accumulate: int = 1,
     clip: float | None = 1.0,
-    schedule: Any = None,
+    schedule: LRScheduler | None = None,
     entry: str = "loss_packed",
     device: torch.device | str | None = None,
     save_every: int | None = None,
@@ -190,8 +196,8 @@ def train(
         begin = time.perf_counter()
         total = torch.zeros((), dtype=torch.float64, device=device)
         for batch in group:
-            loss = model.run_entry(entry, batch.inputs(count, device))
-            loss.backward()
+            loss = cast(torch.Tensor, model.run_entry(entry, batch.inputs(count, device)))
+            loss.backward()  # pyright: ignore[reportUnknownMemberType]
             total += loss.detach().double()
         if distributed:
             reduce_gradients(trained, layout.copies)
@@ -233,17 +239,17 @@ class Copies:
     copy split across processes runs over; `split`, the ids of the
     parameters split across it."""
 
-    copies: Any = None
-    shards: Any = None
+    copies: ProcessGroup | None = None
+    shards: ProcessGroup | None = None
     split: frozenset[int] = frozenset()
 
 
-def copies(model: Any) -> Copies:
+def copies(model: LinnetModule) -> Copies:
     """The copies of a model under `torch.distributed`. Split across
     processes (`load(tensor_parallel=...)`), a copy is its group, and each
     of its processes sums with the same place in the other groups: every
     process makes those groups, in the same order, the first time."""
-    shards = getattr(model, "shard_group", None)
+    shards: ProcessGroup | None = getattr(model, "shard_group", None)
     if shards is None:
         return Copies()
     found = getattr(model, "copies_layout", None)
@@ -253,15 +259,16 @@ def copies(model: Any) -> Copies:
 
     from ..torch.module import owner_of
 
-    every: list[Any] = [None] * dist.get_world_size()
+    # Every process's group's ranks, filled in by `all_gather_object`.
+    every = cast("list[list[int]]", [None] * dist.get_world_size())
     dist.all_gather_object(every, dist.get_process_group_ranks(shards))
     groups = sorted({tuple(ranks) for ranks in every})
-    mine: Any = None
+    mine: ProcessGroup | None = None
     for place in range(len(groups[0])):
         ranks = [group[place] for group in groups]
         made = dist.new_group(ranks)
         if dist.get_rank() in ranks:
-            mine = made
+            mine = cast("ProcessGroup", made)  # a member's is the group itself
     split = frozenset(
         id(getattr(owner, leaf))
         for owner, leaf in (owner_of(model, path) for path in getattr(model, "shard_parts", {}))
@@ -271,7 +278,7 @@ def copies(model: Any) -> Copies:
     return layout
 
 
-def reduce_gradients(parameters: list[torch.Tensor], group: Any = None) -> None:
+def reduce_gradients(parameters: list[torch.Tensor], group: ProcessGroup | None = None) -> None:
     """Sums every gradient across the processes of `group` (all of
     `torch.distributed` by default): one collective per tensor, all in
     flight at once, so no buffer the size of the model is made. A parameter
@@ -304,7 +311,7 @@ def clip_gradients(
 
     # A part of a split gradient adds to the others; a scalar kept whole on
     # every process (`Replicate`) counts once.
-    split = [cast(Any, g) for g in grads if sharded(g)]
+    split = [g for g in grads if sharded(g)]
     local = [g.to_local() for g in split if g.placements[0].is_shard()]
     whole = [g for g in grads if not sharded(g)]
     whole += [g.to_local() for g in split if not g.placements[0].is_shard()]
@@ -348,7 +355,7 @@ def _clip_split(parameters: list[torch.Tensor], limit: float, layout: Copies) ->
     return float(norm)
 
 
-def _save(model: Any, directory: Path) -> None:
+def _save(model: LinnetModule, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if getattr(model, "lora", None) is not None:
         model.save_weights(

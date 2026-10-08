@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from . import ir, nest
 from .compiler import LinnetError
@@ -33,6 +33,11 @@ from .dtypes import from_safetensors
 from .hf import DECODER_KEYS, LLAMA3_SCALING
 from .weights import header_tensors, read_bindings, write_bindings
 
+if TYPE_CHECKING:
+    from huggingface_hub.hf_api import ModelInfo, RepoSibling
+
+# A `config.json`. Its values are `Any` because every read converts one
+# (`int(...)`, `float(...)`), which a JSON type would need a cast for.
 Config = Mapping[str, Any]
 
 # The cache length a converted card asks for when the checkpoint allows
@@ -59,7 +64,9 @@ class Family:
     embedding: str | None = "model.embed_tokens.weight"
 
 
-def _expect(config: Config, key: str, expected: Any, default: Any = None) -> list[str]:
+def _expect(
+    config: Config, key: str, expected: str | float, default: str | float | None = None
+) -> list[str]:
     value = config.get(key, default)
     if isinstance(expected, float) and isinstance(value, int | float):
         same = math.isclose(float(value), expected, rel_tol=1e-9)
@@ -90,7 +97,7 @@ def _rope_type(config: Config) -> str | None:
     scaling = config.get("rope_scaling")
     if not scaling:
         return None
-    table = cast(Mapping[str, Any], scaling)
+    table = cast(Mapping[str, object], scaling)
     return str(table.get("rope_type", table.get("type")))
 
 
@@ -112,7 +119,7 @@ def _llama_card(config: Config) -> str:
 def _llama_constants(config: Config) -> dict[str, dict[str, float]]:
     rope: dict[str, float] = {"THETA": _theta(config)}
     if _rope_type(config) == "llama3":
-        scaling = cast(Mapping[str, Any], config["rope_scaling"])
+        scaling = cast(Mapping[str, float | str], config["rope_scaling"])
         rope |= {name: float(scaling[key]) for key, name in LLAMA3_SCALING.items()}
     return {"src/rope.linnet": rope}
 
@@ -257,7 +264,7 @@ def convert(
         return target
     if output is not None and target.exists() and any(target.iterdir()):
         raise nest.NestError(f"{target} already exists")
-    siblings = cast(list[Any], info.siblings or [])
+    siblings: list[RepoSibling] = info.siblings or []
     files = {str(sibling.rfilename) for sibling in siblings}
     if "config.json" not in files:
         raise nest.NestError(f"`{repo}` has neither a nest.toml nor a transformers config.json")
@@ -323,7 +330,15 @@ def convert(
     return target
 
 
-def _checkpoint_files(hub: Any, repo: str, sha: str, files: set[str]) -> list[str]:
+class _Hub(Protocol):
+    """`huggingface_hub`, as `_checkpoint_files` uses it."""
+
+    def hf_hub_download(
+        self, repo_id: str, filename: str, *, revision: str | None = None
+    ) -> str: ...
+
+
+def _checkpoint_files(hub: _Hub, repo: str, sha: str, files: set[str]) -> list[str]:
     """The SafeTensors files `transformers` loads: the index's shards, or
     the single `model.safetensors`."""
     if "model.safetensors.index.json" in files:
@@ -402,7 +417,7 @@ def _bindings(base: nest.Card, layers: int) -> dict[str, str]:
     return out
 
 
-def _present(tensor: str, tensors: Mapping[str, Any]) -> str:
+def _present(tensor: str, tensors: Mapping[str, object]) -> str:
     """The checkpoint's own spelling of a tensor name: with or without the
     `model.` or `transformer.` prefix a family's checkpoints differ by."""
     if tensor in tensors:
@@ -428,7 +443,7 @@ def _complete_bindings(
     program: ir.Program,
     values: ir.Bindings,
     bindings: Mapping[str, str],
-    tensors: Mapping[str, Any],
+    tensors: Mapping[str, object],
 ) -> dict[str, str]:
     """Binds what the base card leaves to its path: a parameter whose tensor
     this checkpoint spells with a prefix (`transformer.ln_f.weight`), and an
@@ -460,7 +475,7 @@ def _complete_bindings(
 def _unbound(
     program: ir.Program,
     values: ir.Bindings,
-    tensors: Mapping[str, Any],
+    tensors: Mapping[str, object],
     bindings: Mapping[str, str],
 ) -> list[str]:
     """The checkpoint's tensors no parameter reads."""
@@ -479,7 +494,7 @@ def _card(
     base: nest.Card,
     generics: Mapping[str, int | str],
     files: list[str],
-    info: Any,
+    info: ModelInfo,
 ) -> str:
     card_data = getattr(info, "card_data", None)
     license_name = getattr(card_data, "license", None) or "unknown"
