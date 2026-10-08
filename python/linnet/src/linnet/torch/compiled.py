@@ -743,15 +743,17 @@ def _copy_into(kept: PreparedValue | int, value: PreparedValue | int) -> None:
         for old, new in zip(kept, cast("tuple[torch.Tensor | int, ...]", value), strict=True):
             _copy_into(old, new)
         return
-    old_tensor = cast(torch.Tensor, kept)
-    new_tensor = cast(torch.Tensor, value)
+    if not isinstance(kept, torch.Tensor) or not isinstance(value, torch.Tensor):
+        # A number beside packed weights (int4's group size): the weights'
+        # shapes fix it, so it is the same.
+        return
     same = (
-        old_tensor.data_ptr() == new_tensor.data_ptr()
-        and old_tensor.shape == new_tensor.shape
-        and old_tensor.stride() == new_tensor.stride()
+        kept.data_ptr() == value.data_ptr()
+        and kept.shape == value.shape
+        and kept.stride() == value.stride()
     )
     if not same:
-        old_tensor.copy_(new_tensor)
+        kept.copy_(value)
 
 
 def _table(owner: BlockModule, leaf: str) -> tuple[Mapping[str, torch.Tensor | None], str]:
