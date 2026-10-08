@@ -9,6 +9,7 @@ program computes. Everything else in `linnet` is typed exactly."""
 
 from typing import Any, TypeAlias
 
-Result: TypeAlias = Any
+# The package's one explicit `Any`: see above.
+Result: TypeAlias = Any  # pyright: ignore[reportExplicitAny]
 
 __all__ = ["Result"]

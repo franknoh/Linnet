@@ -382,6 +382,6 @@ mapping.
 ```bash
 uv run pytest                       # references, round trips, state, training
 LINNET_HF_TESTS=1 uv run pytest tests/torch/test_hf_checkpoints.py   # TinyLlama and GPT-2 vs transformers
-uv run pyright
+uv run basedpyright
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
