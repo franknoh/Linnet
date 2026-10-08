@@ -249,7 +249,7 @@ def test_floats_of_another_width_bind_only_when_asked(tmp_path: Path) -> None:
     source.write_text(CAST_SOURCE, encoding="utf-8")
     scale = torch.tensor([0.5, 1.5, -2.0, 3.25])
     save_file({"scale": scale}, str(tmp_path / "f32.safetensors"))
-    with pytest.raises(PlanError, match="dtype F32"):
+    with pytest.raises(PlanError, match="is F32"):
         load(source, generics={"T": "bf16"}, std_root=STDLIB, weights=tmp_path / "f32.safetensors")
     model = load(
         source,
@@ -262,7 +262,7 @@ def test_floats_of_another_width_bind_only_when_asked(tmp_path: Path) -> None:
     torch.testing.assert_close(got, scale.to(torch.bfloat16))
 
     save_file({"scale": torch.arange(4, dtype=torch.int32)}, str(tmp_path / "i32.safetensors"))
-    with pytest.raises(PlanError, match="dtype I32"):
+    with pytest.raises(PlanError, match="is I32"):
         load(
             source,
             generics={"T": "bf16"},
