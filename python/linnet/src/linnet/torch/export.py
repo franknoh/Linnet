@@ -364,6 +364,8 @@ class _Exporter:
         self.module = module
         self.dynamic_shapes = dynamic_shapes
         self.symbols = _Symbols()
+        # Each named dimension's bounds as its `Dim` gives them: at least, at most.
+        self.bounds: dict[sympy.Basic, tuple[int, int | None]] = {}
         self.builder = _Builder(self.symbols)
         self.hierarchy = _Hierarchy(self.symbols, module)
         self.self_value = self.builder.fresh((torch.float32, None))
@@ -469,20 +471,31 @@ class _Exporter:
                     axis_spec = cast(Sequence[object], spec)[axis]
                 if axis_spec is not None and isinstance(axis_spec, ExportDim):
                     name = identifier(str(getattr(axis_spec, "__name__", "")) or "D")
+                    if expr.is_Symbol:
+                        # Unbounded above is torch's `int_oo`, not an int.
+                        lower: object = getattr(axis_spec, "min", 0)
+                        upper: object = getattr(axis_spec, "max", None)
+                        self.bounds[expr] = (
+                            lower if isinstance(lower, int) else 0,
+                            upper if isinstance(upper, int) else None,
+                        )
                 if expr.is_Symbol:
                     self.symbols.declare(expr, name)
 
     def _constraints(self) -> list[dict[str, object]]:
+        """The bounds the `Dim`s of `dynamic_shapes` give, as `where`
+        constraints. torch's own ranges are not used: they hold its default
+        lower bound of 2 (it specializes sizes 0 and 1), which no model
+        asks for."""
         constraints: list[dict[str, object]] = []
-        for symbol, value_range in self.program.range_constraints.items():
+        for symbol, (lower, upper) in self.bounds.items():
             if symbol not in self.symbols.ids:
                 continue
-            lower, upper = value_range.lower, value_range.upper
             sym = {"sym": self.symbols.ids[symbol], "name": self.symbols.names[symbol]}
-            if isinstance(lower, int) and lower > 0:
-                constraints.append({"relation": ">=", "lhs": sym, "rhs": int(lower)})
-            if isinstance(upper, int) and upper < 2**62:
-                constraints.append({"relation": "<=", "lhs": sym, "rhs": int(upper)})
+            if lower > 0:
+                constraints.append({"relation": ">=", "lhs": sym, "rhs": lower})
+            if upper is not None and upper < 2**62:
+                constraints.append({"relation": "<=", "lhs": sym, "rhs": upper})
         return constraints
 
     def _fill_member_types(self, root: Member) -> None:
