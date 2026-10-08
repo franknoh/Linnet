@@ -14,6 +14,10 @@ class LinnetError(Exception):
     """The compiler rejected the request, or the toolchain is missing."""
 
 
+class PlanError(LinnetError):
+    """A plan could not be produced, read, or instantiated."""
+
+
 def find_compiler() -> str:
     """The `linnet` executable: LINNET_BIN, then the one this package's wheel
     installed, then PATH."""

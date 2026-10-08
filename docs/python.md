@@ -83,6 +83,13 @@ for op in entry.body.walk():         # every operation, nested regions included
 in the caller's generics. `format_dim`, `format_shape`, `format_type` and
 `format_signature` print Linnet syntax.
 
+`ir.bind_generics(program.root.generics, {"H": 64, ...})` gives the
+generics values (defaults fill the rest), and the `Bindings` it returns
+evaluate dimensions, shapes and dtypes: `bindings.shape(weight.shape)`.
+Every backend runs from the same `Program`; `compile_plan` is
+`load_program` with the backends' options (`functions=True` for the
+module-level entries).
+
 ## Diagrams
 
 ```bash
