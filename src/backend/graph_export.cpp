@@ -1781,27 +1781,7 @@ private:
             dimensions.push_back(static_cast<std::int64_t>(i));
         }
         grid_ = outer;
-        Reduction kind = Reduction::Sum;
-        switch (op.attributes.reduce) {
-        case ir::ReduceKind::Sum:
-            kind = Reduction::Sum;
-            break;
-        case ir::ReduceKind::Prod:
-            kind = Reduction::Prod;
-            break;
-        case ir::ReduceKind::Max:
-            kind = Reduction::Max;
-            break;
-        case ir::ReduceKind::Min:
-            kind = Reduction::Min;
-            break;
-        case ir::ReduceKind::Any:
-            kind = Reduction::Any;
-            break;
-        case ir::ReduceKind::All:
-            kind = Reduction::All;
-            break;
-        }
+        const Reduction kind = op.attributes.reduce;
         return tensor(target_.reduce(kind, info(body), dimensions, outer), outer, dtype);
     }
 

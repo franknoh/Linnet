@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -107,9 +108,14 @@ int op_operand_count(OpKind kind); // -1 when variadic
 int op_region_count(OpKind kind);  // -1 when variadic
 
 enum class CompareKind : std::uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
-enum class ReduceKind : std::uint8_t { Sum, Prod, Max, Min, Any, All };
+// What a reduction combines with: the source's own (`sum`, `max`, ...).
+using ReduceKind = ast::ReductionKind;
 
+// `eq`, `lt`, ... as the IR and plans spell a comparison, and back; and its
+// operator (`==`, `<`, ...).
 std::string_view compare_spelling(CompareKind kind);
+std::optional<CompareKind> parse_compare(std::string_view spelling);
+std::string_view compare_symbol(CompareKind kind);
 std::string_view reduce_spelling(ReduceKind kind);
 
 // Attributes an operation may carry; which ones matter depends on the kind.

@@ -20,6 +20,18 @@ std::string_view keyword_of(const ast::FunctionDecl& decl) {
 
 } // namespace
 
+std::string generic_text(const GenericInfo& generic) {
+    switch (generic.kind) {
+    case GenericKind::Dim:
+        return std::string(generic.name) + ": Dim";
+    case GenericKind::Pack:
+        return "*" + std::string(generic.name) + ": Shape";
+    case GenericKind::DType:
+        return std::string(generic.name) + ": " + std::string(dtype_class_name(generic.constraint));
+    }
+    return std::string(generic.name);
+}
+
 void bind(Substitution& substitution, const GenericInfo& generic, const GenericValue& value) {
     switch (generic.kind) {
     case GenericKind::Dim:
@@ -49,14 +61,7 @@ std::string Checker::describe(EntityId id) {
         std::string text;
         for (const GenericInfo& generic : info.generics) {
             text += text.empty() ? "<" : ", ";
-            text += generic.kind == GenericKind::Pack ? "*" : "";
-            text += generic.name;
-            text += generic.kind == GenericKind::Dim            ? ": Dim"
-                    : generic.kind == GenericKind::Pack         ? ": Shape"
-                    : generic.constraint == DTypeClass::Float   ? ": Float"
-                    : generic.constraint == DTypeClass::Integer ? ": Integer"
-                    : generic.constraint == DTypeClass::Numeric ? ": Numeric"
-                                                                : ": DType";
+            text += generic_text(generic);
         }
         return text.empty() ? text : text + ">";
     };
@@ -111,10 +116,7 @@ std::string Checker::describe(EntityId id) {
         return "*" + name + ": Shape";
     case EntityKind::GenericDType: {
         const DTypeClass constraint = types_.dtype_var(entity.dtype_var).constraint;
-        return name + (constraint == DTypeClass::Float     ? ": Float"
-                       : constraint == DTypeClass::Integer ? ": Integer"
-                       : constraint == DTypeClass::Numeric ? ": Numeric"
-                                                           : ": DType");
+        return name + ": " + std::string(dtype_class_name(constraint));
     }
     case EntityKind::Local:
         return std::string(entity.is_parameter ? ""

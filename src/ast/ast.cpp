@@ -54,6 +54,20 @@ std::string_view binary_op_spelling(BinaryOp op) {
     return "?";
 }
 
+std::optional<ReductionKind> parse_reduction_kind(std::string_view spelling) {
+    for (const ReductionKind kind : {ReductionKind::Sum,
+                                     ReductionKind::Prod,
+                                     ReductionKind::Max,
+                                     ReductionKind::Min,
+                                     ReductionKind::Any,
+                                     ReductionKind::All}) {
+        if (reduction_kind_spelling(kind) == spelling) {
+            return kind;
+        }
+    }
+    return std::nullopt;
+}
+
 std::string_view reduction_kind_spelling(ReductionKind kind) {
     switch (kind) {
     case ReductionKind::Sum:

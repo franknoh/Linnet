@@ -117,6 +117,10 @@ struct DeclInfo {
     TypeId aliased = no_type;
 };
 
+// A generic parameter as its declaration writes it: `N: Dim`, `*S: Shape`,
+// `T: Float` (its default aside).
+std::string generic_text(const GenericInfo& generic);
+
 // Binds `generic` to `value` in `substitution`.
 void bind(Substitution& substitution, const GenericInfo& generic, const GenericValue& value);
 // What a nominal type's arguments (a block's `<...>`) bind its

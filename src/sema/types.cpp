@@ -10,7 +10,29 @@ namespace {
 constexpr auto scalar_names = std::to_array<std::string_view>(
     {"bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "bf16", "f32", "f64"});
 
+// In `DTypeClass` order.
+constexpr auto class_names =
+    std::to_array<std::string_view>({"DType", "Numeric", "Integer", "Float"});
+constexpr auto class_keys = std::to_array<std::string_view>({"any", "numeric", "integer", "float"});
+
 } // namespace
+
+std::string_view dtype_class_name(DTypeClass dtype_class) {
+    return class_names[static_cast<std::size_t>(dtype_class)];
+}
+
+std::string_view dtype_class_key(DTypeClass dtype_class) {
+    return class_keys[static_cast<std::size_t>(dtype_class)];
+}
+
+std::optional<DTypeClass> parse_dtype_class_key(std::string_view key) {
+    for (std::size_t i = 0; i < class_keys.size(); ++i) {
+        if (class_keys[i] == key) {
+            return static_cast<DTypeClass>(i);
+        }
+    }
+    return std::nullopt;
+}
 
 std::string_view scalar_name(ScalarKind kind) {
     return scalar_names[static_cast<std::size_t>(kind)];

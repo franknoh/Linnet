@@ -3,6 +3,7 @@
 #include "linnet/backend/graph_export.hpp"
 #include "linnet/support/text.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -225,12 +226,10 @@ public:
                         const TensorInfo& a,
                         const TensorInfo& b,
                         const Dims& shape) override {
-        const char* direction = kind == ir::CompareKind::Eq   ? "EQ"
-                                : kind == ir::CompareKind::Ne ? "NE"
-                                : kind == ir::CompareKind::Lt ? "LT"
-                                : kind == ir::CompareKind::Le ? "LE"
-                                : kind == ir::CompareKind::Gt ? "GT"
-                                                              : "GE";
+        std::string direction(ir::compare_spelling(kind));
+        for (char& c : direction) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
         return emit("compare",
                     {a, b},
                     std::string("comparison_direction = #stablehlo<comparison_direction ") +

@@ -45,6 +45,11 @@ enum class DTypeClass : std::uint8_t { Any, Numeric, Integer, Float };
 
 bool class_contains(DTypeClass outer, ScalarKind kind);
 bool class_contains(DTypeClass outer, DTypeClass inner);
+// A dtype class as source bounds a generic with it (`DType`, `Float`), as
+// plans spell it (`any`, `float`), and back from a plan.
+std::string_view dtype_class_name(DTypeClass dtype_class);
+std::string_view dtype_class_key(DTypeClass dtype_class);
+std::optional<DTypeClass> parse_dtype_class_key(std::string_view key);
 
 using DTypeVarId = std::uint32_t;
 

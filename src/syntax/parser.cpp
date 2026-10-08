@@ -49,21 +49,6 @@ constexpr bool is_comparison(BinaryOp op) {
     return op >= BinaryOp::Equal && op <= BinaryOp::GreaterEqual;
 }
 
-std::optional<ReductionKind> reduction_kind(std::string_view word) {
-    constexpr auto kinds = std::to_array<ReductionKind>({ReductionKind::Sum,
-                                                         ReductionKind::Prod,
-                                                         ReductionKind::Max,
-                                                         ReductionKind::Min,
-                                                         ReductionKind::Any,
-                                                         ReductionKind::All});
-    for (const ReductionKind kind : kinds) {
-        if (reduction_kind_spelling(kind) == word) {
-            return kind;
-        }
-    }
-    return std::nullopt;
-}
-
 ConstraintKind constraint_kind(std::string_view word) {
     constexpr auto kinds = std::to_array<std::pair<std::string_view, ConstraintKind>>({
         {"Dim", ConstraintKind::Dim},
@@ -1394,7 +1379,7 @@ private:
     ExprId parse_name_or_reduction() {
         const std::uint32_t begin = here();
         const Token token = peek();
-        if (const std::optional<ReductionKind> kind = reduction_kind(text(token))) {
+        if (const std::optional<ReductionKind> kind = parse_reduction_kind(text(token))) {
             if (peek(1).kind == K::LBracket) {
                 advance();
                 return parse_reduction(*kind, no_id, begin);
