@@ -103,6 +103,10 @@ public:
     state(const std::string& path, const Dims& shape, sema::ScalarKind dtype) = 0;
 
     virtual std::string constant(const Literal& literal, sema::ScalarKind dtype) = 0;
+    // `value` broadcast to `shape` (its axis i to axis `dims[i]`) up to the
+    // expansion: its axes transposed into the order they take, then size-one
+    // axes inserted. What remains is expanding it to `shape`, if anything.
+    TensorInfo place_axes(const TensorInfo& value, const Dims& dims, const Dims& shape);
     // `value` in `dtype`: itself when it already is, else converted.
     TensorInfo cast_to(const TensorInfo& value, sema::ScalarKind dtype) {
         return value.dtype == dtype ? value : TensorInfo{convert(value, dtype), value.shape, dtype};

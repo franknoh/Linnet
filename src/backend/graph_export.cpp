@@ -2613,6 +2613,38 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
     return names[static_cast<std::size_t>(dtype)];
 }
 
+TensorInfo GraphTarget::place_axes(const TensorInfo& value, const Dims& dims, const Dims& shape) {
+    Dims order(dims.size());
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i] = static_cast<std::int64_t>(i);
+    }
+    std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
+        return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
+    });
+    TensorInfo source = value;
+    Dims sorted_dims = dims;
+    bool is_identity = true;
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
+    }
+    if (!is_identity) {
+        Dims permuted;
+        for (const std::int64_t axis : order) {
+            permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
+            sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
+        }
+        source = {transpose(value, order, permuted), permuted, value.dtype};
+    }
+    Dims placed(shape.size(), 1);
+    for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
+        placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
+    }
+    if (placed != source.shape) {
+        source = {reshape(source, placed), placed, source.dtype};
+    }
+    return source;
+}
+
 CallName call_name(std::string_view implementation) {
     CallName name;
     const auto strip = [&](std::string_view suffix) {

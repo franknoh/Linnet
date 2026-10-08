@@ -701,41 +701,11 @@ public:
     }
 
     std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
-        // A reshape only inserts axes, so the operand's axes are first put
-        // in the order they take in the result; then the rest expands.
-        Dims order(dims.size());
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            order[i] = static_cast<std::int64_t>(i);
+        const TensorInfo placed = place_axes(value, dims, shape);
+        if (placed.shape == shape) {
+            return placed.name;
         }
-        std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
-            return dims[static_cast<std::size_t>(a)] < dims[static_cast<std::size_t>(b)];
-        });
-        TensorInfo source = value;
-        Dims sorted_dims = dims;
-        bool is_identity = true;
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            is_identity = is_identity && order[i] == static_cast<std::int64_t>(i);
-        }
-        if (!is_identity) {
-            Dims permuted;
-            for (const std::int64_t axis : order) {
-                permuted.push_back(value.shape[static_cast<std::size_t>(axis)]);
-                sorted_dims[permuted.size() - 1] = dims[static_cast<std::size_t>(axis)];
-            }
-            source = {transpose(value, order, permuted), permuted, value.dtype};
-        }
-        Dims placed(shape.size(), 1);
-        for (std::size_t i = 0; i < sorted_dims.size(); ++i) {
-            placed[static_cast<std::size_t>(sorted_dims[i])] = source.shape[i];
-        }
-        if (placed != source.shape) {
-            source = {reshape(source, placed), placed, source.dtype};
-        }
-        if (placed == shape) {
-            return source.name;
-        }
-        const TensorInfo target = int64_vector(shape);
-        return node("Expand", {source, target}, "", shape, value.dtype);
+        return node("Expand", {placed, int64_vector(shape)}, "", shape, value.dtype);
     }
 
     std::string slice(const TensorInfo& value,
