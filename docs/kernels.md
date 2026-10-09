@@ -72,3 +72,5 @@ clause. Without one, it differentiates the op's body, run again.
 - A product of two tiles at least 16 a side becomes `tl.dot` (`jnp.dot` in
   Pallas), in `f32` at full precision unless `--numerics fast`.
 - Inputs are made contiguous, so strides are constants.
+- `@triton.jit` reads its function's source: import generated PyTorch from
+  a file, as the runtimes do, rather than `exec` it from a string.
