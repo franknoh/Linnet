@@ -102,9 +102,15 @@ struct KVPair<K: DType, V: DType> {
 }
 ```
 
-Struct fields are immutable and read with `value.field`.
+Calling a struct's name builds a value. Every field is given once, by name, in any order:
 
-No expression constructs a struct value, and a struct name is not callable. Construction syntax is reserved for a future version.
+```text
+let kv = KVPair(key = k, value = v)
+```
+
+Generic arguments are inferred from the fields or written out: `KVPair<f32, i32>(key = k, value = v)`. Struct fields are immutable and read with `value.field`.
+
+An entry's struct result crosses the backend boundary as a tuple of its fields, in declaration order.
 
 ## 3.8 Enums
 

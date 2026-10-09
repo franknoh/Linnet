@@ -304,7 +304,7 @@ class Interpreter:
         if kind == "reduce":
             return [self._reduce(op, env, values, grid)]
 
-        if kind == "tuple.make":
+        if kind in ("tuple.make", "struct.make"):  # a struct is its fields in order
             return [tuple(operands)]
         if kind == "tuple.get" or kind == "struct.get":
             return [cast(tuple[Value, ...], operands[0])[int(cast(int, attrs["value"]))]]

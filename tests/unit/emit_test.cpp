@@ -144,6 +144,25 @@ TEST("emit: static for over sub arrays and tuple destructuring") {
     check_round_trip(source);
 }
 
+TEST("emit: struct declarations and values") {
+    const std::string source = "module m\n"
+                               "struct Pair<N: Dim, T: Float> {\n"
+                               "    left: Tensor[N; T]\n"
+                               "    right: Tensor[N; T]\n"
+                               "}\n"
+                               "pub fn swap<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] {\n"
+                               "    let p = Pair(right = x, left = x * x)\n"
+                               "    let q = Pair(left = p.right, right = p.left)\n"
+                               "    return q.left - q.right\n"
+                               "}\n";
+    const std::string text = emitted(source);
+    // Fields one a line; values with their fields in declaration order and
+    // the generic arguments written out.
+    CHECK(contains(text, "struct Pair<N: Dim, T: Float> {\n    left: Tensor[N; T]\n"));
+    CHECK(contains(text, "Pair<N, f32>(left = p.right, right = p.left)"));
+    check_round_trip(source);
+}
+
 TEST("emit: values used inside a region keep their own binding") {
     const std::string source = "module m\n"
                                "pub fn f<N: Dim>() -> Tensor[N; i64] {\n"

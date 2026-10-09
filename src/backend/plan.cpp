@@ -39,6 +39,8 @@ public:
             out += ",\"manifest\":" + manifest(*root);
         }
         out += ",\"blocks\":" + blocks_json();
+        out += ",\"structs\":" + types_json(EntityKind::Struct);
+        out += ",\"enums\":" + types_json(EntityKind::Enum);
         out += ",\"functions\":[";
         bool is_first = true;
         for (const ir::Function& function : module_.functions()) {
@@ -278,6 +280,41 @@ private:
             is_first = false;
         }
         return out + "}}";
+    }
+
+    // --------------------------------------------------------- structs, enums
+
+    // Every struct (or enum) declaration: its generics and fields (or
+    // variants), so that a reader can type values of it.
+    std::string types_json(EntityKind kind) const {
+        std::string out = "{";
+        bool is_first = true;
+        for (EntityId id = 0; id < model_.entities.size(); ++id) {
+            const Entity& entity = model_.entities[id];
+            const auto info = model_.decls.find(id);
+            if (entity.kind != kind || info == model_.decls.end()) {
+                continue;
+            }
+            out += (is_first ? "" : ",") + json_string(entity.name) +
+                   ":{\"module\":" + json_string(model_.module_paths.at(entity.module)) +
+                   ",\"pub\":" + (entity.is_pub ? "true" : "false") +
+                   ",\"generics\":" + generics_json(info->second.generics);
+            is_first = false;
+            if (kind == EntityKind::Struct) {
+                out += ",\"fields\":[";
+                out += join(info->second.fields, ",", [&](const FieldInfo& field) {
+                    return "{\"name\":" + json_string(field.name) +
+                           ",\"type\":" + type_json(field.type) + "}";
+                });
+            } else {
+                out += ",\"variants\":[";
+                out += join(info->second.variants, ",", [&](const std::string_view variant) {
+                    return json_string(variant);
+                });
+            }
+            out += "]}";
+        }
+        return out + "}";
     }
 
     // ---------------------------------------------------------------- blocks

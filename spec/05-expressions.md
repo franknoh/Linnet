@@ -74,6 +74,8 @@ Arguments are positional or named (`name = value`), positional first. A paramete
 
 Every `where` constraint of the callee MUST be provable at the call site from the caller's own constraints.
 
+Calling a struct's name builds a struct value; its fields are named arguments (§3.7).
+
 `name<` begins a generic call only when the matching `>` is immediately followed by `(`; otherwise `<` is a comparison. In a generic argument list, a non-type argument is an arithmetic expression, and comparison and logical operators there MUST be parenthesized.
 
 ## 5.6 `if` expression

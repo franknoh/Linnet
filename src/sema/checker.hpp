@@ -158,6 +158,8 @@ private:
                            const ast::CallExpr& call,
                            EntityId callee,
                            const Substitution& receiver);
+    // `Name(field = value, ...)`: a struct value, its fields given by name.
+    TypeId check_struct_make(const ast::Expr& node, const ast::CallExpr& call, EntityId target);
     TypeId
     check_builtin_call(const ast::Expr& node, const ast::CallExpr& call, std::string_view name);
 
@@ -202,6 +204,19 @@ private:
     bool unify_shape(Inference& inference, const Shape& param, const Shape& arg);
     bool unify_dtype(Inference& inference, DType param, DType arg);
     bool unify_value(Inference& inference, const GenericValue& param, const GenericValue& arg);
+    // Binds explicit generic arguments of a call into `inference`; false when
+    // one does not evaluate.
+    bool bind_call_generics(const ast::Expr& node,
+                            const ast::CallExpr& call,
+                            const DeclInfo& info,
+                            Inference& inference);
+    // After the arguments unified: generics no argument determined take their
+    // defaults, and deferred dimensions, dtype constraints, literals and
+    // `where` constraints are checked. False after reporting a failure.
+    bool finish_inference(const ast::Expr& node,
+                          const std::string& name,
+                          const DeclInfo& info,
+                          Inference& inference);
 
     // -------------------------------------------------------------- statements
     void check_body(const std::vector<ast::StmtId>& body, bool is_function_body);

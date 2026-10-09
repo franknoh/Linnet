@@ -1236,7 +1236,9 @@ private:
         case ir::OpKind::Reduce:
             define(op, reduce(op));
             return;
-        case ir::OpKind::TupleMake: {
+        case ir::OpKind::TupleMake:
+        case ir::OpKind::StructMake: {
+            // A struct is its fields in order, as a tuple is its elements.
             Val tuple;
             tuple.kind = Val::Kind::Tuple;
             for (const ir::ValueId id : op.operands) {
@@ -1245,11 +1247,13 @@ private:
             define(op, tuple);
             return;
         }
-        case ir::OpKind::TupleGet: {
+        case ir::OpKind::TupleGet:
+        case ir::OpKind::StructGet: {
             const Val& tuple = operand(0);
             if (tuple.kind != Val::Kind::Tuple ||
                 static_cast<std::size_t>(a.integer) >= tuple.elements.size()) {
-                fail("internal: tuple.get on a non-tuple");
+                fail("internal: " + std::string(ir::op_spelling(op.kind)) +
+                     " on a value with no such element");
             }
             define(op, tuple.elements[static_cast<std::size_t>(a.integer)]);
             return;
@@ -1438,9 +1442,6 @@ private:
             }
             fail("no arm matches enum variant `" + subject.path + "`");
         }
-        case ir::OpKind::StructGet:
-            fail(std::string("`") + std::string(ir::op_spelling(op.kind)) +
-                 "` is not supported by graph exporters");
         default:
             return;
         }

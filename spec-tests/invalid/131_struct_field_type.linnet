@@ -1,0 +1,10 @@
+module m
+
+struct Box {
+    value: Tensor[4; f32]
+}
+
+pub entry run(x: Tensor[3; f32]) -> Tensor[4; f32] {
+    let b = Box(value = x)
+    return b.value
+}

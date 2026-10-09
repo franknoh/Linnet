@@ -247,6 +247,9 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
     };
     const auto call_entity = [&](EntityId entity, SourceSpan span, const Substitution& receiver) {
         current_expr_ = self; // checking the receiver moved it
+        if (entities_[entity].kind == EntityKind::Struct) {
+            return check_struct_make(node, call, entity);
+        }
         if (entities_[entity].kind != EntityKind::Function) {
             error(codes::not_callable,
                   span,
@@ -328,8 +331,6 @@ TypeId Checker::check_user_call(const ast::Expr& node,
     Inference inference;
     inference.callee = &info;
     inference.bound = receiver;
-    bool is_valid = true;
-
     if (call.generic_args.size() > info.generics.size()) {
         error(codes::bad_generic_arguments,
               node.span,
@@ -339,17 +340,8 @@ TypeId Checker::check_user_call(const ast::Expr& node,
             check_expr(arg.value);
         }
         return types_.error();
-    } else {
-        for (std::size_t i = 0; i < call.generic_args.size(); ++i) {
-            const GenericInfo& param = info.generics[i];
-            const auto value = eval_generic_arg(call.generic_args[i], param, node.span);
-            if (!value) {
-                is_valid = false;
-                continue;
-            }
-            bind(inference.bound, param, *value);
-        }
     }
+    bool is_valid = bind_call_generics(node, call, info, inference);
 
     // Match arguments to parameters: positional first, then by keyword.
     std::vector<const ast::Argument*> assigned(info.params.size(), nullptr);
@@ -423,10 +415,34 @@ TypeId Checker::check_user_call(const ast::Expr& node,
             is_valid = false;
         }
     }
-    if (!is_valid) {
+    if (!is_valid || !finish_inference(node, name, info, inference)) {
         return types_.error();
     }
+    facts(self).substitution = inference.bound;
+    return types_.substitute(info.result, inference.bound);
+}
 
+bool Checker::bind_call_generics(const ast::Expr& node,
+                                 const ast::CallExpr& call,
+                                 const DeclInfo& info,
+                                 Inference& inference) {
+    bool is_valid = true;
+    for (std::size_t i = 0; i < call.generic_args.size() && i < info.generics.size(); ++i) {
+        const GenericInfo& param = info.generics[i];
+        const auto value = eval_generic_arg(call.generic_args[i], param, node.span);
+        if (!value) {
+            is_valid = false;
+            continue;
+        }
+        bind(inference.bound, param, *value);
+    }
+    return is_valid;
+}
+
+bool Checker::finish_inference(const ast::Expr& node,
+                               const std::string& name,
+                               const DeclInfo& info,
+                               Inference& inference) {
     // Generics that no argument determined fall back to their defaults.
     for (const GenericInfo& generic : info.generics) {
         const bool is_bound = generic.kind == GenericKind::Dim
@@ -442,7 +458,7 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                   node.span,
                   "cannot infer `" + std::string(generic.name) + "` in call to `" + name + "`")
                 .help("pass it explicitly: `" + name + "<...>(...)`");
-            return types_.error();
+            return false;
         }
         bind(inference.bound, generic, types_.substitute(*generic.default_value, inference.bound));
     }
@@ -456,7 +472,7 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                 .note("expected `" + str(expected) + "`")
                 .note("found `" + str(arg) + "`")
                 .help("add a `where` constraint that proves they are equal");
-            return types_.error();
+            return false;
         }
     }
     for (const GenericInfo& generic : info.generics) {
@@ -472,14 +488,14 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                   node.span,
                   "`" + types_.to_string(bound) + "` does not satisfy the constraint on `" +
                       std::string(generic.name) + "` of `" + name + "`");
-            return types_.error();
+            return false;
         }
     }
     for (const DeferredLiteral& literal : inference.deferred_literals) {
         if (!literal_fits(types_.get(literal.literal),
                           types_.substitute(literal.dtype, inference.bound),
                           literal.span)) {
-            return types_.error();
+            return false;
         }
     }
     for (const ConstraintInfo& constraint : info.constraints) {
@@ -493,11 +509,130 @@ TypeId Checker::check_user_call(const ast::Expr& node,
                 .note("required: `" + std::string(text(constraint.span)) + "`")
                 .note("with `" + str(lhs) + "` on the left and `" + str(rhs) + "` on the right")
                 .help("state the same constraint in the calling function's `where` clause");
-            return types_.error();
+            return false;
         }
     }
+    return true;
+}
+
+TypeId
+Checker::check_struct_make(const ast::Expr& node, const ast::CallExpr& call, EntityId target) {
+    const ast::ExprId self = current_expr_;
+    facts(self).entity = target;
+    resolve(target);
+    const DeclInfo& info = decls_[target];
+    const std::string name(entities_[target].name);
+    const auto check_arguments_only = [&] {
+        for (const ast::Argument& arg : call.args) {
+            check_expr(arg.value);
+        }
+        return types_.error();
+    };
+    if (call.generic_args.size() > info.generics.size()) {
+        error(codes::bad_generic_arguments,
+              node.span,
+              "`" + name + "` takes " + std::to_string(info.generics.size()) +
+                  " generic arguments, found " + std::to_string(call.generic_args.size()));
+        return check_arguments_only();
+    }
+    Inference inference;
+    inference.callee = &info;
+    bool is_valid = bind_call_generics(node, call, info, inference);
+
+    // Every field once, by name.
+    std::vector<const ast::Argument*> assigned(info.fields.size(), nullptr);
+    bool is_positional = false;
+    for (const ast::Argument& arg : call.args) {
+        if (arg.keyword.text.empty()) {
+            if (is_positional) {
+                check_expr(arg.value);
+                continue;
+            }
+            is_positional = true;
+            error(codes::bad_arguments,
+                  ast().expr(arg.value).span,
+                  "the fields of `" + name + "` are given by name")
+                .help("write `field = value`");
+            check_expr(arg.value);
+            is_valid = false;
+            continue;
+        }
+        std::size_t slot = info.fields.size();
+        for (std::size_t i = 0; i < info.fields.size(); ++i) {
+            if (info.fields[i].name == arg.keyword.text) {
+                slot = i;
+            }
+        }
+        if (slot == info.fields.size() || assigned[slot] != nullptr) {
+            error(codes::bad_arguments,
+                  arg.keyword.span,
+                  slot == info.fields.size()
+                      ? "`" + name + "` has no field `" + std::string(arg.keyword.text) + "`"
+                      : "field `" + std::string(arg.keyword.text) + "` is given twice");
+            check_expr(arg.value);
+            is_valid = false;
+            continue;
+        }
+        assigned[slot] = &arg;
+        facts(self).argument_slots.push_back(static_cast<std::uint32_t>(slot));
+    }
+    for (std::size_t i = 0; i < info.fields.size(); ++i) {
+        const FieldInfo& field = info.fields[i];
+        if (assigned[i] == nullptr) {
+            if (!is_positional) {
+                error(codes::bad_arguments,
+                      node.span,
+                      "missing field `" + std::string(field.name) + "` of `" + name + "`");
+            }
+            is_valid = false;
+            continue;
+        }
+        const ast::ExprId value = assigned[i]->value;
+        const TypeId value_type = check_expr(value);
+        if (types_.is_error(value_type)) {
+            is_valid = false;
+            continue;
+        }
+        inference.span = ast().expr(value).span;
+        inference.failure.clear();
+        if (!unify(inference, field.type, value_type)) {
+            auto report =
+                error(codes::type_mismatch,
+                      inference.span,
+                      "field `" + std::string(field.name) + "` of `" + name + "` does not fit");
+            report.note("field type is `" + str(field.type) + "`")
+                .note("value type is `" + str(value_type) + "`");
+            if (!inference.failure.empty()) {
+                report.note(inference.failure);
+            }
+            is_valid = false;
+        }
+    }
+    if (!is_valid || !finish_inference(node, name, info, inference)) {
+        return types_.error();
+    }
     facts(self).substitution = inference.bound;
-    return types_.substitute(info.result, inference.bound);
+    std::vector<GenericValue> values;
+    values.reserve(info.generics.size());
+    for (const GenericInfo& generic : info.generics) {
+        GenericValue value;
+        switch (generic.kind) {
+        case GenericKind::Dim:
+            value.kind = GenericValue::Kind::Dim;
+            value.dim = inference.bound.dims.at(generic.symbol);
+            break;
+        case GenericKind::Pack:
+            value.kind = GenericValue::Kind::Pack;
+            value.shape = inference.bound.packs.at(generic.symbol);
+            break;
+        case GenericKind::DType:
+            value.kind = GenericValue::Kind::DType;
+            value.dtype = inference.bound.dtypes.at(generic.dtype_var);
+            break;
+        }
+        values.push_back(std::move(value));
+    }
+    return types_.nominal(TypeKind::Struct, target, std::move(values));
 }
 
 // -------------------------------------------------------------------- builtins
