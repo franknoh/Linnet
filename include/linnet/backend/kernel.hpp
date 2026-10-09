@@ -43,5 +43,8 @@ struct KernelError : std::runtime_error {
 // `@triton.jit` code, for generated PyTorch. Without `full_precision`, f32
 // tile products may run in TF32.
 std::unique_ptr<KernelTarget> make_triton_target(bool full_precision);
+// A Pallas kernel (`pl.pallas_call`, its GPU lowering through Triton), for
+// generated JAX.
+std::unique_ptr<KernelTarget> make_pallas_target(bool full_precision);
 
 } // namespace linnet::backend

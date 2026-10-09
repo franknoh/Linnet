@@ -50,7 +50,9 @@ add_library(linnet_core STATIC
     src/ast/ast.cpp
     src/ast/dump.cpp
     src/backend/graph_export.cpp
+    src/backend/pallas.cpp
     src/backend/gradient.cpp
+    src/backend/tile_target.cpp
     src/backend/triton.cpp
     src/backend/onnx.cpp
     src/backend/plan.cpp

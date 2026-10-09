@@ -1,5 +1,6 @@
 #include "linnet/backend/jax_source.hpp"
 
+#include "linnet/backend/kernel.hpp"
 #include "linnet/backend/python_target.hpp"
 #include "linnet/support/text.hpp"
 
@@ -167,6 +168,132 @@ public:
     std::string end_custom_gradient(const std::vector<TensorInfo>& arguments,
                                     const TensorInfo& result,
                                     const Pullback& pullback) override {
+        const std::string name = gradient_function(arguments, result, pullback);
+        std::vector<std::string> operands{result.name};
+        for (const TensorInfo& argument : arguments) {
+            operands.push_back(argument.name);
+        }
+        return define(name + "(" + join(operands, ", ") + ")");
+    }
+
+    std::unique_ptr<KernelTarget> kernel_target() const override {
+        return make_pallas_target(full_precision_);
+    }
+
+    // `_opN(...)`: the kernel through `pl.pallas_call` on a GPU (or in
+    // Pallas's interpreter, `LINNET_PALLAS_INTERPRET=1`), the op's body
+    // elsewhere. Its gradient is the op's `grad`, or else the body's.
+    std::optional<std::vector<std::string>> launch_kernel(const KernelLaunch& launch) override {
+        if (launch.arguments.empty()) {
+            return std::nullopt;
+        }
+        if (!uses_kernels_) {
+            uses_kernels_ = true;
+            helpers_ += kernel_helpers();
+        }
+        std::vector<std::string> operands;
+        operands.reserve(launch.arguments.size());
+        for (const TensorInfo& argument : launch.arguments) {
+            operands.push_back(argument.name);
+        }
+        // An op launched again at the same shapes reuses its `_opN`.
+        std::string key = launch.op;
+        for (const TensorInfo& argument : launch.arguments) {
+            key += ";" + python_tuple(argument.shape) + dtype_name(argument.dtype);
+        }
+        const auto [launched, is_first] = launched_.try_emplace(key, launches_);
+        if (!is_first) {
+            return results_of(launch,
+                              define("_op" + std::to_string(launched->second) + "(" +
+                                     join(operands, ", ") + ")"));
+        }
+        // The kernel, once a program.
+        const std::string program_key =
+            join(launch.program.parameters, ",") + "\n" + launch.program.body;
+        auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
+        if (is_new) {
+            kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+            definitions_ += "def " + kernel->second + "(" + join(launch.program.parameters, ", ") +
+                            "):  # " + launch.name + "\n" + launch.program.body + "\n\n";
+        }
+        const std::string id = std::to_string(launches_++);
+        std::vector<std::string> inputs;
+        std::vector<std::string> passed;
+        inputs.reserve(launch.arguments.size());
+        passed.reserve(launch.arguments.size());
+        for (std::size_t i = 0; i < launch.arguments.size(); ++i) {
+            inputs.push_back("a" + std::to_string(i));
+            // A scalar crosses as a one-element array.
+            passed.push_back(launch.arguments[i].shape.empty()
+                                 ? "jnp.reshape(" + inputs.back() + ", (1,))"
+                                 : inputs.back());
+        }
+        const std::string parameters = join(inputs, ", ");
+        std::vector<std::string> shapes;
+        shapes.reserve(launch.results.size());
+        for (const TensorInfo& result : launch.results) {
+            shapes.push_back("jax.ShapeDtypeStruct(" + python_tuple(result.shape) + ", " +
+                             dtype_name(result.dtype) + ")");
+        }
+        std::string text = "def _launch" + id + "(" + parameters + "):\n";
+        text += "    return pl.pallas_call(\n";
+        text += "        " + kernel->second + ",\n";
+        text += "        out_shape=" +
+                (shapes.size() == 1 ? shapes.front() : "(" + join(shapes, ", ") + ")") + ",\n";
+        text += "        grid=" + python_tuple(launch.grid) + ",\n";
+        text += "        interpret=_INTERPRET,\n";
+        text += "    )(" + join(passed, ", ") + ")\n\n\n";
+        // The op's body, for another device and for the backward pass.
+        const auto [body, results] = emit_body(launch.arguments, launch.body, "    ");
+        text += "def _body" + id + "(" + parameters + "):\n" + body;
+        text += "    return " + join(results, ", ") + "\n\n\n";
+        const std::string runs =
+            "pl is not None and (_INTERPRET or jax.default_backend() == \"gpu\")";
+        if (launch.pullback) {
+            std::vector<std::string> detached;
+            detached.reserve(inputs.size());
+            for (const std::string& input : inputs) {
+                detached.push_back("jax.lax.stop_gradient(" + input + ")");
+            }
+            const std::string name =
+                gradient_function(launch.arguments,
+                                  {"", launch.results.front().shape, launch.results.front().dtype},
+                                  launch.pullback);
+            text += "def _op" + id + "(" + parameters + "):\n";
+            text += "    if " + runs + ":\n";
+            text += "        out = _launch" + id + "(" + join(detached, ", ") + ")\n";
+            text += "    else:\n";
+            text += "        out = _body" + id + "(" + join(detached, ", ") + ")\n";
+            text += "    return " + name + "(out, " + parameters + ")\n\n\n";
+        } else {
+            text += "_call" + id + " = _kernel_call(_launch" + id + ", _body" + id + ")\n\n\n";
+            text += "def _op" + id + "(" + parameters + "):\n";
+            text += "    if " + runs + ":\n";
+            text += "        return _call" + id + "(" + parameters + ")\n";
+            text += "    return _body" + id + "(" + parameters + ")\n\n\n";
+        }
+        definitions_ += text;
+        return results_of(launch, define("_op" + id + "(" + join(operands, ", ") + ")"));
+    }
+
+    // The names of a launch's results: `value`, or its elements.
+    std::vector<std::string> results_of(const KernelLaunch& launch, const std::string& value) {
+        if (launch.results.size() == 1) {
+            return {value};
+        }
+        std::vector<std::string> names;
+        names.reserve(launch.results.size());
+        for (std::size_t i = 0; i < launch.results.size(); ++i) {
+            names.push_back(define(value + "[" + std::to_string(i) + "]"));
+        }
+        return names;
+    }
+
+    // The `jax.custom_vjp` function for an op's `grad` (see
+    // `end_custom_gradient`); its name.
+    std::string gradient_function(const std::vector<TensorInfo>& arguments,
+                                  const TensorInfo& result,
+                                  const Pullback& pullback) {
         const std::string name = "_grad" + std::to_string(custom_gradients_++);
         const Backward backward = emit_backward(arguments, result, pullback, "    ");
         std::vector<std::string> inputs{"out"};
@@ -192,11 +319,8 @@ public:
         text += "\n\n";
         text += name + ".defvjp(" + name + "_fwd, " + name + "_bwd)\n\n\n";
         definitions_ += text;
-        std::vector<std::string> operands{result.name};
-        for (const TensorInfo& argument : arguments) {
-            operands.push_back(argument.name);
-        }
-        return define(name + "(" + join(operands, ", ") + ")");
+        (void)result;
+        return name;
     }
 
     std::optional<std::string> scatter_add(const Dims& shape,
@@ -621,6 +745,7 @@ public:
         if (uses_gather_) {
             out += gather_import;
         }
+        out += helpers_;
         out += definitions_;
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         // The parameters the code gathers from their parts itself.
@@ -680,11 +805,12 @@ private:
     // attention) at full precision, when the numerics are not `fast`: XLA's
     // default on an NVIDIA GPU is TF32. The setting is read while tracing,
     // so it holds for everything the body calls and nothing outside it.
-    std::string precise(const std::string& body) const {
+    // `outer` is the indentation of the function the body belongs to.
+    std::string precise(const std::string& body, const std::string& outer = "") const {
         if (!full_precision_) {
             return body;
         }
-        std::string out = "    with jax.default_matmul_precision(\"highest\"):\n";
+        std::string out = outer + "    with jax.default_matmul_precision(\"highest\"):\n";
         std::size_t start = 0;
         while (start < body.size()) {
             std::size_t end = body.find('\n', start);
@@ -696,7 +822,58 @@ private:
         return out;
     }
 
-    bool full_precision_ = false;             // f32 products at full precision (`precise`)
+    bool full_precision_ = false;                 // f32 products at full precision (`precise`)
+    bool uses_kernels_ = false;                   // Pallas's import and `_kernel_call` are used
+    std::string helpers_;                         // module-level helpers before `definitions_`
+    std::map<std::string, std::string> kernels_;  // a kernel's program -> its function
+    std::map<std::string, std::size_t> launched_; // an op at its shapes -> its `_opN`
+    std::size_t launches_ = 0;
+
+    // Pallas, imported where it exists, and the `jax.custom_vjp` wrapper of
+    // a kernel whose backward pass differentiates the op's body.
+    std::string kernel_helpers() const {
+        return "import os\n"
+               "\n"
+               "try:\n"
+               "    from jax.experimental import pallas as pl\n"
+               "    from jax.experimental.pallas import triton as plgpu\n"
+               "except ImportError:  # without Pallas, ops run their bodies\n"
+               "    pl = None\n"
+               "\n"
+               "_INTERPRET = os.environ.get(\"LINNET_PALLAS_INTERPRET\") == \"1\"\n"
+               "\n"
+               "\n"
+               "def _kernel_call(launch, body):\n"
+               "    @jax.custom_vjp\n"
+               "    def call(*inputs):\n"
+               "        return launch(*inputs)\n"
+               "\n"
+               "    def forward(*inputs):\n"
+               "        return launch(*inputs), inputs\n"
+               "\n"
+               "    def backward(inputs, grad_out):\n"
+               "        floats = [\n"
+               "            i for i, x in enumerate(inputs) if jnp.issubdtype(x.dtype, "
+               "jnp.inexact)\n"
+               "        ]\n"
+               "\n"
+               "        def floating(*values):\n"
+               "            args = list(inputs)\n"
+               "            for i, value in zip(floats, values):\n"
+               "                args[i] = value\n"
+               "            return body(*args)\n"
+               "\n" +
+               precise("        _, pull = jax.vjp(floating, *(inputs[i] for i in floats))\n"
+                       "        grads = iter(pull(grad_out))\n"
+                       "        return tuple(next(grads) if i in floats else None for i in "
+                       "range(len(inputs)))\n",
+                       "    ") +
+               "\n"
+               "    call.defvjp(forward, backward)\n"
+               "    return call\n"
+               "\n"
+               "\n";
+    }
     bool uses_experts_ = false;               // the module imports `linnet.jax.moe`
     bool uses_loss_ = false;                  // the module imports `linnet.jax.loss`
     bool uses_gather_ = false;                // the module imports `linnet.jax.fsdp`

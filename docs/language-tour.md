@@ -119,7 +119,8 @@ pub op truncate<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
 PyTorch, JAX, and `--grad` exports all use it.
 
 An op can also name a [kernel](kernels.md), a tile program that generated
-PyTorch launches with Triton in place of the body:
+PyTorch launches with Triton, and generated JAX with Pallas, in place of the
+body:
 `-> Tensor[R, C; f32] kernel row_softmax<R, C, 1024> { body }`.
 
 ## Blocks

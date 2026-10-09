@@ -1,6 +1,7 @@
-"""Kernels in generated PyTorch: an op with a `kernel` launches it as a
-Triton program, run here in Triton's interpreter, and computes what the op's
-body computes. Its gradient is the op's `grad`, or else its body's."""
+"""Kernels: an op with a `kernel` launches it -- a Triton program from
+generated PyTorch, a Pallas kernel from generated JAX, run here in their
+interpreters -- and computes what the op's body computes. Its gradient is
+the op's `grad`, or else its body's."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
@@ -17,12 +18,10 @@ import torch
 
 from linnet.compiler import find_compiler
 
-pytest.importorskip("triton")
-# Set by conftest.py without a GPU, before Triton loaded.
-if os.environ.get("TRITON_INTERPRET") != "1":
-    pytest.skip("Triton's interpreter was not on as Triton loaded", allow_module_level=True)
-
 REPO = Path(__file__).resolve().parents[3]
+# Set by conftest.py without a GPU, before Triton loaded: Triton then runs
+# kernels in its interpreter.
+TRITON_INTERPRETS = os.environ.get("TRITON_INTERPRET") == "1"
 KERNELS = REPO / "spec-tests/valid/030_kernels.linnet"
 
 GRAD = """\
@@ -56,14 +55,15 @@ def _interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
             if (REPO / candidate).exists():
                 monkeypatch.setenv("LINNET_BIN", str(REPO / candidate))
                 break
-    # Generated code reads it: kernels run on the CPU, in the interpreter.
+    # Generated code reads them: kernels run on the CPU, in interpreters.
     monkeypatch.setenv("TRITON_INTERPRET", "1")
+    monkeypatch.setenv("LINNET_PALLAS_INTERPRET", "1")
 
 
 def _module(
-    source: Path, numerics: str, *binds: str
+    source: Path, numerics: str, *binds: str, target: str = "torch"
 ) -> tuple[str, Callable[..., tuple[object, ...]]]:
-    command = [find_compiler(), "torch", "--entry", "run", "--numerics", numerics]
+    command = [find_compiler(), target, "--entry", "run", "--numerics", numerics]
     for bind in binds:
         command += ["--bind", bind]
     completed = subprocess.run([*command, str(source)], capture_output=True, text=True, check=False)
@@ -77,6 +77,9 @@ def _module(
 
 
 def test_kernels_compute_what_bodies_do() -> None:
+    pytest.importorskip("triton")
+    if not TRITON_INTERPRETS:
+        pytest.skip("Triton's interpreter was not on as Triton loaded")
     # A tiled product over two K tiles, then a row softmax: tiles past the
     # edges are masked.
     binds = ("R=5", "C=40")
@@ -102,6 +105,9 @@ def test_kernels_compute_what_bodies_do() -> None:
 
 
 def test_a_kernel_takes_the_ops_grad(tmp_path: Path) -> None:
+    pytest.importorskip("triton")
+    if not TRITON_INTERPRETS:
+        pytest.skip("Triton's interpreter was not on as Triton loaded")
     source = tmp_path / "kernel_grad.linnet"
     source.write_text(GRAD, encoding="utf-8")
     text, run = _module(source, "equivalent", "N=37")
@@ -111,3 +117,56 @@ def test_a_kernel_takes_the_ops_grad(tmp_path: Path) -> None:
     torch.testing.assert_close(loss, 2.0 * x.detach().sum())
     loss.backward()
     torch.testing.assert_close(x.grad, torch.full((37,), 3.0))
+
+
+def test_pallas_kernels_compute_what_bodies_do() -> None:
+    pytest.importorskip("jax")
+    import jax
+    import numpy as np
+    from jax import Array
+
+    binds = ("R=5", "C=40")
+    text, kernels = _module(KERNELS, "equivalent", *binds, target="jax")
+    assert "pl.pallas_call" in text
+    exact_text, bodies = _module(KERNELS, "exact", *binds, target="jax")
+    assert "pallas" not in exact_text
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((5, 40)).astype(np.float32)
+    w = (rng.standard_normal((40, 40)) * 0.2).astype(np.float32)
+    np.testing.assert_allclose(
+        np.asarray(kernels(x, w)[0]), np.asarray(bodies(x, w)[0]), rtol=1e-5, atol=1e-5
+    )
+
+    # Without a `grad`, the backward pass differentiates the bodies.
+    def loss(run: Callable[..., tuple[object, ...]]) -> Callable[[Array], Array]:
+        def squared(x: Array) -> Array:
+            return (cast(Array, run(x, w)[0]) ** 2).sum()
+
+        return squared
+
+    np.testing.assert_allclose(
+        np.asarray(jax.grad(loss(kernels))(x)),
+        np.asarray(jax.grad(loss(bodies))(x)),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
+def test_a_pallas_kernel_takes_the_ops_grad(tmp_path: Path) -> None:
+    pytest.importorskip("jax")
+    import jax
+    import numpy as np
+    from jax import Array
+
+    source = tmp_path / "kernel_grad.linnet"
+    source.write_text(GRAD, encoding="utf-8")
+    text, run = _module(source, "equivalent", "N=37", target="jax")
+    assert "pl.pallas_call" in text
+    x = np.random.default_rng(1).standard_normal(37).astype(np.float32)
+
+    def total(x: Array) -> Array:
+        return cast(Array, run(x)[0])
+
+    loss, grad = jax.value_and_grad(total)(x)
+    np.testing.assert_allclose(float(loss), 2.0 * float(x.sum()), rtol=1e-5)
+    np.testing.assert_allclose(np.asarray(grad), np.full(37, 3.0), rtol=1e-6)
