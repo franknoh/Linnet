@@ -354,8 +354,8 @@ public:
         // `a[i, k] @ b[k, j]`, transposing what is the other way around.
         std::string a = lhs.name;
         std::string b = rhs.name;
-        std::int64_t i = lhs_axes[0] == shared ? lhs_axes[1] : lhs_axes[0];
-        std::int64_t j = rhs_axes[0] == shared ? rhs_axes[1] : rhs_axes[0];
+        const std::int64_t i = lhs_axes[0] == shared ? lhs_axes[1] : lhs_axes[0];
+        const std::int64_t j = rhs_axes[0] == shared ? rhs_axes[1] : rhs_axes[0];
         if (contains(rhs_axes, i) || contains(lhs_axes, j)) {
             return std::nullopt;
         }
