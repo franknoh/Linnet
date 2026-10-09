@@ -523,17 +523,18 @@ private:
             data = parse_enum();
             break;
         case K::KwFn:
-            data = parse_function(FunctionKind::Fn);
-            break;
         case K::KwOp:
-            data = parse_function(FunctionKind::Op);
-            break;
         case K::KwEntry:
-            data = parse_function(FunctionKind::Entry);
+        case K::KwKernel: {
+            // One call, so that a debug build reserves one declaration's
+            // worth of stack per nested item, not one per kind.
+            const K keyword = peek().kind;
+            data = parse_function(keyword == K::KwFn      ? FunctionKind::Fn
+                                  : keyword == K::KwOp    ? FunctionKind::Op
+                                  : keyword == K::KwEntry ? FunctionKind::Entry
+                                                          : FunctionKind::Kernel);
             break;
-        case K::KwKernel:
-            data = parse_function(FunctionKind::Kernel);
-            break;
+        }
         case K::KwBlock:
             data = parse_block();
             break;
