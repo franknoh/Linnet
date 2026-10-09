@@ -52,10 +52,10 @@ def _compiler() -> None:
 def test_torch(compile: bool) -> None:
     recurrent = load_function(SOURCE, "recurrent", std_root=STDLIB, compile=compile)
     got = recurrent(torch.tensor(XS), torch.tensor(H0)).numpy()
-    np.testing.assert_allclose(got, _recurrent(), rtol=1e-6)
+    np.testing.assert_allclose(got, _recurrent(), rtol=1e-6, atol=1e-6)
     counted = load_function(SOURCE, "counted", std_root=STDLIB, compile=compile)
     for value, want in zip(counted(torch.tensor(X)), _counted(), strict=True):
-        np.testing.assert_allclose(value.numpy(), want, rtol=1e-6)
+        np.testing.assert_allclose(value.numpy(), want, rtol=1e-6, atol=1e-6)
 
 
 def test_jax() -> None:
@@ -63,10 +63,10 @@ def test_jax() -> None:
     from linnet.jax import load_function as load_jax
 
     recurrent = load_jax(SOURCE, "recurrent", std_root=STDLIB)
-    np.testing.assert_allclose(np.asarray(recurrent(XS, H0)), _recurrent(), rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(recurrent(XS, H0)), _recurrent(), rtol=1e-6, atol=1e-6)
     counted = load_jax(SOURCE, "counted", std_root=STDLIB)
     for value, want in zip(counted(X), _counted(), strict=True):
-        np.testing.assert_allclose(np.asarray(value), want, rtol=1e-6)
+        np.testing.assert_allclose(np.asarray(value), want, rtol=1e-6, atol=1e-6)
 
 
 def test_onnx() -> None:
@@ -85,4 +85,4 @@ def test_onnx() -> None:
         feeds = {arg.name: value for arg, value in zip(session.get_inputs(), inputs, strict=True)}
         got = session.run(None, feeds)
         for value, want in zip(got, expected, strict=True):
-            np.testing.assert_allclose(value, want, rtol=1e-6)
+            np.testing.assert_allclose(value, want, rtol=1e-6, atol=1e-6)

@@ -516,23 +516,25 @@ TypeId Checker::check_expr_inner(ast::ExprId id, TypeId expected) {
 }
 
 TypeId Checker::check_for(const ast::ForLoop& loop, SourceSpan span, bool yields, EntityId& index) {
-    std::optional<shape::Poly> bounds[2];
-    const ast::ExprId ends[2] = {loop.start, loop.stop};
-    for (std::size_t i = 0; i < 2; ++i) {
-        const TypeId type = check_expr(ends[i]);
+    const auto bound = [&](ast::ExprId end) -> std::optional<shape::Poly> {
+        const TypeId type = check_expr(end);
         const TypeKind kind = types_.kind(type);
         if (kind == TypeKind::CompileInt) {
-            bounds[i] = types_.get(type).value;
-        } else if (kind != TypeKind::Error) {
+            return types_.get(type).value;
+        }
+        if (kind != TypeKind::Error) {
             error(codes::not_compile_time,
-                  ast().expr(ends[i]).span,
+                  ast().expr(end).span,
                   "a `for` range bound must be a compile-time integer, found `" + str(type) + "`")
                 .help("loop until a runtime condition with `while`");
         }
-    }
+        return std::nullopt;
+    };
+    const std::optional<shape::Poly> start = bound(loop.start);
+    const std::optional<shape::Poly> stop = bound(loop.stop);
     std::optional<shape::Poly> count;
-    if (bounds[0] && bounds[1]) {
-        count = *bounds[1] - *bounds[0];
+    if (start && stop) {
+        count = *stop - *start;
         if (!env_->solver.prove(shape::Relation::GreaterEqual, *count, shape::Poly(0))) {
             error(codes::negative_dimension,
                   span,

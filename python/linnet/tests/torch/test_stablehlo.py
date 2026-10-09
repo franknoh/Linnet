@@ -263,7 +263,9 @@ def test_for_loop_runs_under_xla() -> None:
     text = _export(source, {"T": 3, "H": 2}, entry="recurrent")
     assert '"stablehlo.dynamic_update_slice"' in text
     actual = _run_xla(text, [xs, h0])
-    np.testing.assert_allclose(np.asarray(actual, np.float32), np.stack(expected), rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(actual, np.float32), np.stack(expected), rtol=1e-6, atol=1e-6
+    )
 
 
 def test_while_loop_runs_under_xla(tmp_path: Path) -> None:

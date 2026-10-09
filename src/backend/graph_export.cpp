@@ -393,6 +393,7 @@ private:
             fail("a `while` loop inside index notation is not supported");
         }
         std::vector<Val> own;
+        own.reserve(op.operands.size());
         for (const ir::ValueId id : op.operands) {
             own.push_back(whole_tensor(value(id), "while"));
         }
@@ -433,6 +434,7 @@ private:
         const bool counts = target_.supports_counted();
         const std::size_t first = counts ? 0 : 1;
         std::vector<Val> own;
+        own.reserve(op.operands.size() + op.results.size());
         if (!counts) {
             own.push_back(constant_int(start, ScalarKind::I64));
         }
@@ -472,6 +474,7 @@ private:
                                                   {index, constant_int(1, ScalarKind::I64)},
                                                   {},
                                                   ScalarKind::I64)};
+                next.reserve(values.size());
                 next.insert(next.end(),
                             outputs.begin(),
                             outputs.begin() + static_cast<std::ptrdiff_t>(carried));
@@ -537,6 +540,7 @@ private:
             target_.compare(ir::CompareKind::Eq, positions, at, rows), rows, ScalarKind::Bool};
         const TensorInfo mask{target_.broadcast(is_row, {0}, shape), shape, ScalarKind::Bool};
         Dims value_axes;
+        value_axes.reserve(shape.size());
         for (std::size_t axis = 1; axis < shape.size(); ++axis) {
             value_axes.push_back(static_cast<std::int64_t>(axis));
         }
