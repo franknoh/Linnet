@@ -42,7 +42,7 @@ fn op block entry
 param buffer state sub
 let var return
 if else match
-static for in while
+static for in while yield
 where
 true false none some
 extern
@@ -52,7 +52,7 @@ Words reserved for future syntax MUST NOT be accepted as identifiers:
 
 ```text
 async await effect unsafe macro trait impl derive
-rng mut ref yield kernel device
+rng mut ref kernel device
 ```
 
 ## 1.5 Comments

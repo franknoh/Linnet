@@ -62,6 +62,9 @@ private:
     Report warning(const char* code, SourceSpan span, std::string message);
     ExprFacts& facts(ast::ExprId id) { return model_->exprs[env_->module][id]; }
     StmtFacts& facts_of_stmt(ast::StmtId id) { return model_->stmts[env_->module][id]; }
+    // The whole value of the `let`, `var`, assignment or `return` being
+    // checked: the one place a `for` that yields may stand.
+    ast::ExprId bindable_for_ = ast::no_id;
 
     // Where names are currently being resolved.
     struct Env {
@@ -140,6 +143,12 @@ private:
     TypeId check_binary(const ast::Expr& node, const ast::BinaryExpr& binary);
     TypeId check_member(const ast::Expr& node, const ast::MemberExpr& member);
     TypeId check_if(const ast::Expr& node, const ast::IfExpr& conditional, TypeId expected);
+    // `for i in start..stop { ... }`: its bounds, its index (returned in
+    // `index`) in a scope of its own, and its body. A loop that `yields` is a
+    // binding's value: its body ends with `yield`, and its type is the
+    // yielded type stacked along a leading axis of the loop's count.
+    TypeId check_for(const ast::ForLoop& loop, SourceSpan span, bool yields, EntityId& index);
+    TypeId stacked(TypeId element, const shape::Poly& count, SourceSpan span);
     TypeId check_match(const ast::Expr& node, const ast::MatchExpr& match, TypeId expected);
     TypeId check_reduction(const ast::Expr& node, const ast::ReductionExpr& reduction);
     TypeId check_index(const ast::Expr& node, const ast::IndexExpr& index);

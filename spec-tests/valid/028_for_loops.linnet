@@ -1,0 +1,35 @@
+module tests.for_loops
+
+// A scan: `h` carries, and each iteration's `h` is kept.
+pub entry recurrent<T: Dim, H: Dim>(
+    xs: Tensor[T, H; f32],
+    h0: Tensor[H; f32],
+) -> Tensor[T, H; f32] {
+    var h = h0
+    let hs = for t in 0..T {
+        h = tanh(h * 0.5 + xs[t])
+        yield h
+    }
+    return hs
+}
+
+// A counted loop without a value, scalar and tuple yields, and a range that
+// does not start at zero.
+pub entry counted<N: Dim>(
+    x: Tensor[N; f32],
+) -> (Tensor[N; f32], Tensor[4; i64], Tensor[4; f32], Tensor[4, N; f32]) {
+    var acc = x
+    for _i in 0..3 {
+        acc = acc + x
+    }
+    let steps = for i in 0..4 {
+        yield i * 2
+    }
+    var y = x
+    let both = for _i in 1..5 {
+        y = y * 2.0
+        yield (sum[n] y[n], y)
+    }
+    let (sums, ys) = both
+    return (acc, steps, sums, ys)
+}

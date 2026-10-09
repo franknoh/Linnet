@@ -1,0 +1,9 @@
+module m
+
+pub entry run(x: Tensor[4; f32]) -> Tensor[2, 4; f32] {
+    var y = x
+    let ys = for _i in 0..2 {
+        y = y + x
+    }
+    return ys
+}

@@ -48,7 +48,6 @@ constexpr auto reserved_words = std::to_array<std::string_view>({
     "rng",
     "mut",
     "ref",
-    "yield",
     "kernel",
     "device",
 });

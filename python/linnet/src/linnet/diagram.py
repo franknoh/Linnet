@@ -207,7 +207,7 @@ class _Builder:
             if op.operands[0] in self.constants:
                 self.constants[op.results[0].id] = self.constants[op.operands[0]]
             return
-        if kind in ("static_for", "static_range", "while"):
+        if kind in ("static_for", "static_range", "while", "for"):
             self.loop(op, group, expand)
             return
         if kind in ("call", "semantic.call"):
@@ -333,7 +333,7 @@ class _Builder:
             args = list(body.args[1:])
         group_id = self.fresh("g")
         self.graph.groups.append(Group(group_id, label, group))
-        if op.kind == "static_range":
+        if op.kind in ("static_range", "for"):
             self.constants[body.args[0].id] = body.args[0].name
             self.producer[body.args[0].id] = None
         for arg, operand in zip(args, carried, strict=False):

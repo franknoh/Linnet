@@ -272,6 +272,18 @@ public:
         return std::nullopt;
     }
 
+    // `stack` with row `index` (an `i64` scalar) of its leading axis replaced
+    // by `value`, whose shape is the rest of `stack`'s: one iteration's element
+    // of a `for` loop's value. Without it, the evaluator selects over every
+    // row.
+    virtual std::optional<std::string>
+    update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) {
+        (void)stack;
+        (void)index;
+        (void)value;
+        return std::nullopt;
+    }
+
     // Runtime loops. The evaluator carries the loop's values (the `while`
     // operands, then every state member) through three calls: `begin_while`
     // opens the loop and names the values the condition sees; after the
@@ -294,6 +306,24 @@ public:
     virtual bool while_needs_trailing_condition() const { return false; }
     virtual void while_trailing_condition(const TensorInfo& predicate) { (void)predicate; }
     virtual std::vector<std::string> end_while(const std::vector<TensorInfo>& next) {
+        (void)next;
+        return {};
+    }
+
+    // Loops over the integers `start <= i < stop`, known at export time, in
+    // the target's own counted form: `begin_counted` opens the loop and names
+    // the index (an `i64` scalar) and then the carried values the body sees;
+    // `end_counted` closes it and names the final values. Without it, a `for`
+    // loop runs as a `while` over its index.
+    virtual bool supports_counted() const { return false; }
+    virtual std::vector<std::string>
+    begin_counted(std::int64_t start, std::int64_t stop, const std::vector<TensorInfo>& initial) {
+        (void)start;
+        (void)stop;
+        (void)initial;
+        return {};
+    }
+    virtual std::vector<std::string> end_counted(const std::vector<TensorInfo>& next) {
         (void)next;
         return {};
     }

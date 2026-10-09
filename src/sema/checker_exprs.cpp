@@ -497,8 +497,118 @@ TypeId Checker::check_expr_inner(ast::ExprId id, TypeId expected) {
             [&](const ast::ReductionExpr& reduction) { return check_reduction(node, reduction); },
             [&](const ast::IfExpr& conditional) { return check_if(node, conditional, expected); },
             [&](const ast::MatchExpr& match) { return check_match(node, match, expected); },
+            [&](const ast::ForLoop& loop) {
+                const ast::ExprId self = current_expr_;
+                if (self != bindable_for_) {
+                    error(codes::misplaced_yield,
+                          node.span,
+                          "a `for` with a value must be the whole value of `let`, `var`, an "
+                          "assignment, or `return`")
+                        .help("bind it first: `let values = for ...`");
+                }
+                EntityId index = no_entity;
+                const TypeId type = check_for(loop, node.span, true, index);
+                facts(self).entity = index;
+                return type;
+            },
         },
         node.data);
+}
+
+TypeId Checker::check_for(const ast::ForLoop& loop, SourceSpan span, bool yields, EntityId& index) {
+    const auto bound = [&](ast::ExprId end) -> std::optional<shape::Poly> {
+        const TypeId type = check_expr(end);
+        const TypeKind kind = types_.kind(type);
+        if (kind == TypeKind::CompileInt) {
+            return types_.get(type).value;
+        }
+        if (kind != TypeKind::Error) {
+            error(codes::not_compile_time,
+                  ast().expr(end).span,
+                  "a `for` range bound must be a compile-time integer, found `" + str(type) + "`")
+                .help("loop until a runtime condition with `while`");
+        }
+        return std::nullopt;
+    };
+    const std::optional<shape::Poly> start = bound(loop.start);
+    const std::optional<shape::Poly> stop = bound(loop.stop);
+    std::optional<shape::Poly> count;
+    if (start && stop) {
+        count = *stop - *start;
+        if (!env_->solver.prove(shape::Relation::GreaterEqual, *count, shape::Poly(0))) {
+            error(codes::negative_dimension,
+                  span,
+                  "cannot prove that the `for` range does not end before it starts")
+                .help("add a `where` constraint, such as `Stop >= Start`");
+            count.reset();
+        }
+    }
+
+    env_->scopes.emplace_back();
+    record_binding(loop.index, types_.scalar(ScalarKind::I64));
+    index = declare_local(loop.index, types_.scalar(ScalarKind::I64), false);
+    std::size_t end = loop.body.size();
+    const ast::YieldStmt* last = nullptr;
+    if (yields) {
+        last = loop.body.empty() ? nullptr
+                                 : std::get_if<ast::YieldStmt>(&ast().stmt(loop.body.back()).data);
+        if (last == nullptr) {
+            error(codes::misplaced_yield, span, "a `for` with a value must end with `yield value`")
+                .help("`yield` the value of each iteration as the body's last statement");
+        } else {
+            --end;
+        }
+    }
+    for (std::size_t i = 0; i < end; ++i) {
+        env_->unbound_reported.clear();
+        check_stmt(loop.body[i], true);
+    }
+    TypeId result = types_.unit();
+    if (yields) {
+        result = types_.error();
+        if (last != nullptr) {
+            env_->unbound_reported.clear();
+            const SourceSpan value_span = ast().expr(last->value).span;
+            const TypeId value = default_literals(check_expr(last->value), value_span);
+            if (count && !types_.is_error(value)) {
+                result = stacked(value, *count, value_span);
+            }
+        }
+    }
+    env_->scopes.pop_back();
+    return result;
+}
+
+TypeId Checker::stacked(TypeId element, const shape::Poly& count, SourceSpan span) {
+    const TypeData data = types_.get(element); // copied: making types may move it
+    switch (data.kind) {
+    case TypeKind::Scalar:
+        return types_.tensor({ShapeElem::of(count)}, data.dtype);
+    case TypeKind::Tensor: {
+        Shape shape{ShapeElem::of(count)};
+        shape.insert(shape.end(), data.shape.begin(), data.shape.end());
+        return types_.tensor(std::move(shape), data.dtype);
+    }
+    case TypeKind::Tuple: {
+        std::vector<TypeId> elements;
+        elements.reserve(data.elements.size());
+        for (const TypeId part : data.elements) {
+            const TypeId stacked_part = stacked(part, count, span);
+            if (types_.is_error(stacked_part)) {
+                return stacked_part;
+            }
+            elements.push_back(stacked_part);
+        }
+        return types_.tuple(std::move(elements));
+    }
+    case TypeKind::Error:
+        return element;
+    default:
+        error(codes::type_mismatch,
+              span,
+              "`yield` takes a tensor, a scalar, or a tuple of them, found `" + str(element) + "`");
+        return types_.error();
+    }
 }
 
 TypeId Checker::value_of_entity(EntityId entity, SourceSpan span) {
@@ -1376,6 +1486,14 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
         return coerce(check_expr(value, declared), declared, ast().expr(value).span, "this value");
     };
 
+    bindable_for_ = std::visit(Overloaded{
+                                   [](const ast::LetStmt& let) { return let.value; },
+                                   [](const ast::VarStmt& var) { return var.value; },
+                                   [](const ast::AssignStmt& assign) { return assign.value; },
+                                   [](const ast::ReturnStmt& ret) { return ret.value; },
+                                   [](const auto&) { return ast::no_id; },
+                               },
+                               node.data);
     std::visit(
         Overloaded{
             [&](const ast::ErrorStmt&) {},
@@ -1527,6 +1645,18 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                        expected,
                        ast().expr(ret.value).span,
                        "returned value");
+            },
+            [&](const ast::ForLoop& loop) {
+                EntityId index = no_entity;
+                check_for(loop, node.span, false, index);
+                facts_of_stmt(id).entity = index;
+            },
+            [&](const ast::YieldStmt& yield) {
+                check_expr(yield.value);
+                error(codes::misplaced_yield,
+                      node.span,
+                      "`yield` ends the body of a `for` that is the value of `let`, `var`, an "
+                      "assignment, or `return`");
             },
             [&](const ast::WhileStmt& loop) {
                 const TypeId condition =

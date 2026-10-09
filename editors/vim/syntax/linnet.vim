@@ -3,15 +3,15 @@ if exists("b:current_syntax")
 endif
 
 syn keyword linnetConditional if else match
-syn keyword linnetStatement return where
-syn keyword linnetRepeat static for in
+syn keyword linnetStatement return where yield
+syn keyword linnetRepeat static for in while
 syn keyword linnetStructure module use const type struct enum fn op block entry param buffer state sub let var
 syn keyword linnetModifier pub as
 syn keyword linnetSelf crate self super
 syn keyword linnetBoolean true false
 syn keyword linnetConstant none
 syn keyword linnetOption some
-syn keyword linnetReserved state extern while async await effect unsafe macro trait impl derive random rng mut ref yield kernel device
+syn keyword linnetReserved extern async await effect unsafe macro trait impl derive rng mut ref kernel device
 
 syn keyword linnetType bool i8 i16 i32 i64 u8 u16 u32 u64 f16 bf16 f32 f64 Tensor
 syn keyword linnetConstraint Dim Shape DType Numeric Integer Float

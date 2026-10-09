@@ -56,6 +56,7 @@ warnings (`W`) fail only under `--strict` (`linnet lint`).
 | E2121 | `static for` over something not a structural array or compile-time range |
 | E2122 | self-referential constant, alias, or struct |
 | E2123 | compile-time integer required |
+| E2124 | `yield` outside the end of a `for` that is a binding's value, or such a `for` elsewhere |
 | E2190 | unimplemented feature |
 
 ## Shapes

@@ -231,6 +231,18 @@ public:
         return emit("reshape", {value}, "", shape, value.dtype);
     }
 
+    std::optional<std::string>
+    update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
+        Dims row_shape = stack.shape;
+        row_shape.front() = 1;
+        std::vector<TensorInfo> operands{
+            stack, {reshape(value, row_shape), row_shape, value.dtype}, index};
+        const TensorInfo zero{
+            constant(Literal::of_integer(0), ScalarKind::I64), {}, ScalarKind::I64};
+        operands.resize(stack.shape.size() + 2, zero);
+        return emit("dynamic_update_slice", operands, "", stack.shape, stack.dtype);
+    }
+
     std::string
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) override {
         return emit(

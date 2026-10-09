@@ -626,6 +626,35 @@ class _Tracer:
                     inner[arg.id] = value
                 carried = self.region(region, env, inner)
             return carried
+        if kind == "for":
+            # One iteration stands for all, as for `while`; a value's stack
+            # is made beforehand, whole, and filled a row an iteration.
+            stacks: list[Value] = []
+            carried = list(operands[2:])
+            if len(op.results) > len(carried):
+                stacked = op.results[-1]
+                parts = (
+                    stacked.type.elements
+                    if isinstance(stacked.type, ir.TupleType)
+                    else (stacked.type,)
+                )
+                for i, part in enumerate(parts):
+                    step = self.emit("for", "for (stack)", [], ex.ZERO)
+                    named = ir.Value(stacked.id, f"{stacked.name or 'stack'}.{i}", part)
+                    out = self.tensor_result(named, env, step)
+                    self.finish(step, [out])
+                    stacks.append(TensorValue(out))
+            region = op.regions[0]
+            inner = dict(values)
+            inner[region.args[0].id] = ScalarValue()
+            for arg, value in zip(region.args[1:], carried, strict=True):
+                inner[arg.id] = value
+            outputs = self.region(region, env, inner)[: len(carried)]
+            if not stacks:
+                return outputs
+            if isinstance(op.results[-1].type, ir.TupleType):
+                return [*outputs, TupleValue(tuple(stacks))]
+            return [*outputs, stacks[0]]
         if kind == "while":
             # One iteration stands for all: the carried values keep their
             # shapes, so every iteration has the same live memory.

@@ -15,7 +15,7 @@ where D % 2 == 0 {
 
 A compiler may inline, duplicate, eliminate, or otherwise transform a `fn` without keeping a semantic boundary.
 
-Recursive functions are rejected (§8.5).
+Recursive functions are rejected (§8.6).
 
 ## 7.2 `op`
 

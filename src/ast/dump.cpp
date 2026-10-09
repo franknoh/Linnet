@@ -247,8 +247,17 @@ private:
                         }
                     });
                 },
+                [&](const ForLoop& loop) { for_loop(loop); },
             },
             node.data);
+    }
+
+    void for_loop(const ForLoop& loop) {
+        nested("for " + name(loop.index), [&] {
+            nested("in", [&] { expr(loop.start); });
+            nested("to", [&] { expr(loop.stop); });
+            body(loop.body);
+        });
     }
 
     void index_component(const IndexComponent& component) {
@@ -343,6 +352,8 @@ private:
                                body(loop.body);
                            });
                        },
+                       [&](const ForLoop& loop) { for_loop(loop); },
+                       [&](const YieldStmt& yield) { nested("yield", [&] { expr(yield.value); }); },
                        [&](const StaticForStmt& loop) {
                            nested("static for " + pattern(loop.pattern), [&] {
                                nested("in", [&] { expr(loop.iterable); });
