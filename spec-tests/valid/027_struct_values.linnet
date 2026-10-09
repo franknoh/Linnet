@@ -1,0 +1,36 @@
+module tests.struct_values
+
+struct Moments<N: Dim, T: Float> {
+    mean: Tensor[N; T]
+    scale: Tensor[N; T]
+}
+
+struct Pair<T: DType> {
+    left: T
+    right: T
+}
+
+// Fields are given by name, in any order; generic arguments are inferred
+// from the fields.
+fn moments<N: Dim, T: Float>(x: Tensor[N; T]) -> Moments<N, T> {
+    let mean = x - x
+    return Moments(scale = x * x, mean = mean)
+}
+
+fn normalize<N: Dim, T: Float>(x: Tensor[N; T], m: Moments<N, T>) -> Tensor[N; T] {
+    return (x - m.mean) * m.scale
+}
+
+pub entry run<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] {
+    let m = moments(x)
+    // Written out, the generic arguments may also be given.
+    let p = Pair<i32>(left = 1, right = 2)
+    let q = Pair(left = p.right, right = p.left)
+    let shifted = normalize(x, m)
+    return shifted + cast<f32>(q.left - q.right)
+}
+
+// A struct result crosses an entry's boundary as its fields, in order.
+pub entry stats<N: Dim>(x: Tensor[N; f32]) -> Moments<N, f32> {
+    return moments(x)
+}

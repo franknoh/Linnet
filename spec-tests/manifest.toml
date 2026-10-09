@@ -233,3 +233,27 @@ code = "E2209"
 file = "invalid/126_sub_default_value.linnet"
 expect = "error"
 code = "E4101"
+
+[[case]]
+file = "valid/027_struct_values.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/128_struct_missing_field.linnet"
+expect = "error"
+code = "E2102"
+
+[[case]]
+file = "invalid/129_struct_unknown_field.linnet"
+expect = "error"
+code = "E2102"
+
+[[case]]
+file = "invalid/130_struct_positional.linnet"
+expect = "error"
+code = "E2102"
+
+[[case]]
+file = "invalid/131_struct_field_type.linnet"
+expect = "error"
+code = "E2101"

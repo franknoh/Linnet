@@ -1,0 +1,11 @@
+module m
+
+struct Pair<T: DType> {
+    left: T
+    right: T
+}
+
+pub entry run() -> i32 {
+    let p = Pair(left = 1, right = 2, middle = 3)
+    return p.left
+}

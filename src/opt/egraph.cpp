@@ -509,6 +509,8 @@ private:
         case OpKind::EnumConst:
         case OpKind::TupleMake:
         case OpKind::TupleGet:
+        case OpKind::StructMake:
+        case OpKind::StructGet:
         case OpKind::OptionSome:
         case OpKind::OptionNone:
         case OpKind::BlockParam:

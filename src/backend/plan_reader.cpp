@@ -139,6 +139,7 @@ private:
     // block just before its first method, which recovers the declaration
     // order of a module whose blocks have methods.
     void declare() {
+        declare_types();
         const Json::Object& blocks = document_["blocks"].as_object();
         for (const Json& function : document_["functions"].as_array()) {
             const std::string qualified = require(function, "name", "function").as_string();
@@ -177,6 +178,50 @@ private:
             info.generics = generics(function["generics"]);
             info.constraints = constraints(function["constraints"]);
         }
+    }
+
+    // Struct and enum declarations, their generics, then their fields, which
+    // may name each other. Plans written before they were listed have none.
+    void declare_types() {
+        const auto declared = [&](const char* key) {
+            return document_[key].is_null() ? Json::Object{} : document_[key].as_object();
+        };
+        const Json::Object structs = declared("structs");
+        const Json::Object enums = declared("enums");
+        for (const auto& [name, decl] : structs) {
+            nominals_[{TypeKind::Struct, name}] = declare_type(EntityKind::Struct, name, decl);
+        }
+        for (const auto& [name, decl] : enums) {
+            nominals_[{TypeKind::Enum, name}] = declare_type(EntityKind::Enum, name, decl);
+        }
+        for (const auto& [name, decl] : enums) {
+            DeclInfo& info = model().decls[nominals_.at({TypeKind::Enum, name})];
+            info.generics = generics(decl["generics"]);
+            for (const Json& variant : decl["variants"].as_array()) {
+                model().names.push_back(variant.as_string());
+                info.variants.push_back(model().names.back());
+            }
+        }
+        for (const auto& [name, decl] : structs) {
+            model().decls[nominals_.at({TypeKind::Struct, name})].generics =
+                generics(decl["generics"]);
+        }
+        for (const auto& [name, decl] : structs) {
+            DeclInfo& info = model().decls[nominals_.at({TypeKind::Struct, name})];
+            for (const Json& field : decl["fields"].as_array()) {
+                model().names.push_back(require(field, "name", "field").as_string());
+                info.fields.push_back(
+                    {model().names.back(), type(require(field, "type", "field"))});
+            }
+        }
+    }
+
+    EntityId declare_type(EntityKind kind, const std::string& name, const Json& decl) {
+        const std::string path =
+            decl["module"].is_string() ? decl["module"].as_string() : root_path();
+        const EntityId id = add_entity(kind, name, module_index(path));
+        model().entities[id].is_pub = decl["pub"].is_null() || decl["pub"].as_bool();
+        return id;
     }
 
     void define_blocks() {
@@ -412,6 +457,19 @@ private:
                 args.push_back(generic_value(arg));
             }
             return types().nominal(TypeKind::Block, block->second, std::move(args));
+        }
+        if (kind == "struct" || kind == "enum") {
+            const TypeKind nominal = kind == "struct" ? TypeKind::Struct : TypeKind::Enum;
+            const std::string& name = require(value, "name", "nominal type").as_string();
+            const auto found = nominals_.find({nominal, name});
+            if (found == nominals_.end()) {
+                fail(kind + " `" + name + "` is not declared in the plan");
+            }
+            std::vector<GenericValue> args;
+            for (const Json& arg : value["args"].as_array()) {
+                args.push_back(generic_value(arg));
+            }
+            return types().nominal(nominal, found->second, std::move(args));
         }
         if (kind == "shape") {
             return types().shape_value(shape(require(value, "shape", "shape type")));
@@ -649,6 +707,7 @@ private:
     std::shared_ptr<Model> model_;
     ir::Module module_;
     std::map<std::string, EntityId> blocks_;
+    std::map<std::pair<TypeKind, std::string>, EntityId> nominals_; // structs and enums
     std::map<std::string, EntityId> functions_;
     std::map<std::int64_t, shape::SymbolId> symbols_;
     std::map<std::int64_t, DTypeVarId> dtype_vars_;

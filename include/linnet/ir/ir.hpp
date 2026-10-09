@@ -78,6 +78,7 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(Reduce, "reduce", 0, 1)                                                                      \
     X(TupleMake, "tuple.make", -1, 0)                                                              \
     X(TupleGet, "tuple.get", 1, 0)                                                                 \
+    X(StructMake, "struct.make", -1, 0)                                                            \
     X(StructGet, "struct.get", 1, 0)                                                               \
     X(OptionSome, "option.some", 1, 0)                                                             \
     X(OptionNone, "option.none", 0, 0)                                                             \

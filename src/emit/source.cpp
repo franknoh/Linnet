@@ -326,7 +326,8 @@ private:
             text += "    " + std::string(variant) + ",\n";
         }
         for (const FieldInfo& field : info.fields) {
-            text += "    " + std::string(field.name) + ": " + type(field.type) + ",\n";
+            import_types(field.type);
+            text += "    " + std::string(field.name) + ": " + type(field.type) + "\n";
         }
         return text + "}\n";
     }
@@ -863,6 +864,17 @@ private:
         }
         case ir::OpKind::TupleMake:
             return "(" + operand_list(op) + (op.operands.size() == 1 ? ",)" : ")");
+        case ir::OpKind::StructMake: {
+            const TypeId type = module_.value(op.results.front()).type;
+            import_types(type);
+            const auto& fields = model_.decls.at(model_.types.get(type).decl).fields;
+            std::string text = model_.types.to_string(type) + "(";
+            for (std::size_t i = 0; i < op.operands.size() && i < fields.size(); ++i) {
+                text += (i == 0 ? "" : ", ") + std::string(fields[i].name) + " = " +
+                        expr(op.operands[i]);
+            }
+            return text + ")";
+        }
         case ir::OpKind::OptionSome:
             return "some(" + expr(op.operands[0]) + ")";
         case ir::OpKind::OptionNone:

@@ -147,6 +147,27 @@ pub entry mse<B: Dim, N: Dim>(predicted: Tensor[B, N; f32], target: Tensor[B, N;
 }
 ```
 
+## Structs
+
+A struct groups values under field names. Calling its name builds one, every
+field given by name.
+
+```linnet
+struct Moments<N: Dim, T: Float> {
+    mean: Tensor[N; T]
+    scale: Tensor[N; T]
+}
+
+fn moments<N: Dim, T: Float>(x: Tensor[N; T]) -> Moments<N, T> {
+    return Moments(mean = x - x, scale = x * x)   // generics inferred from the fields
+}
+
+let m = moments(x)
+let y = (x - m.mean) * m.scale
+```
+
+An entry that returns a struct hands the backend its fields as a tuple.
+
 ## Loops
 
 `static for` is unrolled at compile time; `while` loops at runtime. `var`

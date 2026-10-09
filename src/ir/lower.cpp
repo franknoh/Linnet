@@ -1173,12 +1173,22 @@ private:
         }
         const Entity& target = model().entities[callee];
         const DeclInfo& info = model().decls.at(callee);
-        const auto& decl =
-            std::get<ast::FunctionDecl>(modules_[target.module]->item(target.item).data);
-
         // Generic bindings of this call, on top of the frame's own.
         Substitution substitution =
             types().substitute(call_facts.substitution, frame_->substitution);
+        if (target.kind == EntityKind::Struct) {
+            // A struct value: its fields in declaration order.
+            std::vector<ValueId> fields(info.fields.size(), no_id);
+            for (std::size_t i = 0; i < call.args.size() && i < call_facts.argument_slots.size();
+                 ++i) {
+                const std::uint32_t slot = call_facts.argument_slots[i];
+                fields[slot] = lower_expr(call.args[i].value,
+                                          types().substitute(info.fields[slot].type, substitution));
+            }
+            return emit(OpKind::StructMake, std::move(fields), type, {}, node.span);
+        }
+        const auto& decl =
+            std::get<ast::FunctionDecl>(modules_[target.module]->item(target.item).data);
 
         std::vector<ValueId> operands;
         if (target.parent != no_entity) {

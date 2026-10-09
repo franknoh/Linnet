@@ -14,6 +14,9 @@ a materializer builds a module. It holds no tensor data.
   "blocks":    { <name>: { "module", "pub", "generics": [generic], "constraints": [constraint],
                            "members": [ { "name", "kind": "param" | "buffer" | "state" | "sub",
                                           "type": type } ] } },
+  "structs":   { <name>: { "module", "pub", "generics": [generic],
+                           "fields": [ { "name", "type": type } ] } },
+  "enums":     { <name>: { "module", "pub", "generics": [generic], "variants": [name] } },
   "functions": [ { "name", "kind": "fn" | "op" | "entry", "block": name | null, "pub",
                    "generics": [generic], "constraints": [constraint],
                    "results": [type], "states": [path], "body": region } ],
@@ -26,6 +29,7 @@ a materializer builds a module. It holds no tensor data.
 | `manifest` | every parameter, buffer and state of the instantiated hierarchy; `[*]` in a path is each element of a sub array, whose lengths `repeat` lists |
 | `states` | the state members a function reads or writes, directly or through calls, relative to its block |
 | `constants` | module-level `const` items, each a region yielding one value; `contextual` marks an untyped declaration |
+| `structs`, `enums` | every struct and enum declaration the program mentions, so that a reader can type its values; `struct.make` builds a value from its fields in declaration order |
 
 `--functions` prints the module-level entries, with `root` `null` and an
 empty `manifest`.

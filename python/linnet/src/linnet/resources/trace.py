@@ -529,7 +529,7 @@ class _Tracer:
             return [TensorValue(out)]
         if kind in ("comprehension", "reduce"):
             return [self.comprehension(op, env, values)]
-        if kind == "tuple.make":
+        if kind in ("tuple.make", "struct.make"):
             return [TupleValue(tuple(operands))]
         if kind in ("tuple.get", "struct.get"):
             whole = operands[0]
