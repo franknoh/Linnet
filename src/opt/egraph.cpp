@@ -662,7 +662,8 @@ private:
             deps.erase(id);
             // State reads and writes keep their relative order.
             const OpKind kind = module_.op(id).kind;
-            if (kind == OpKind::StateRead || kind == OpKind::StateWrite) {
+            if (kind == OpKind::StateRead || kind == OpKind::StateWrite ||
+                kind == OpKind::KernelStore) {
                 if (last_effect != no_id) {
                     deps.insert(last_effect);
                 }

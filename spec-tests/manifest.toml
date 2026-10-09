@@ -310,3 +310,32 @@ code = "E2125"
 file = "invalid/140_grad_wrong_result.linnet"
 expect = "error"
 code = "E2101"
+
+[[case]]
+file = "valid/030_kernels.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/141_kernel_reads_memory.linnet"
+expect = "error"
+code = "E2127"
+
+[[case]]
+file = "invalid/142_kernel_binding_mismatch.linnet"
+expect = "error"
+code = "E2126"
+
+[[case]]
+file = "invalid/143_kernel_called.linnet"
+expect = "error"
+code = "E2126"
+
+[[case]]
+file = "invalid/144_store_outside_kernel.linnet"
+expect = "error"
+code = "E2127"
+
+[[case]]
+file = "invalid/145_kernel_runtime_grid.linnet"
+expect = "error"
+code = "E2123"

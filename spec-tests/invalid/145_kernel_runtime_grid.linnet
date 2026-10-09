@@ -1,0 +1,5 @@
+module m
+
+kernel copy(x: Tensor[4; f32], n: i64) -> y: Tensor[4; f32] grid(n) {
+    store(y[iota<i32>(4)], load(x[iota<i32>(4)]))
+}

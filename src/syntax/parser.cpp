@@ -77,6 +77,7 @@ constexpr bool starts_item(K kind) {
     case K::KwOp:
     case K::KwBlock:
     case K::KwEntry:
+    case K::KwKernel:
     case K::KwParam:
     case K::KwBuffer:
     case K::KwSub:
@@ -522,14 +523,18 @@ private:
             data = parse_enum();
             break;
         case K::KwFn:
-            data = parse_function(FunctionKind::Fn);
-            break;
         case K::KwOp:
-            data = parse_function(FunctionKind::Op);
-            break;
         case K::KwEntry:
-            data = parse_function(FunctionKind::Entry);
+        case K::KwKernel: {
+            // One call, so that a debug build reserves one declaration's
+            // worth of stack per nested item, not one per kind.
+            const K keyword = peek().kind;
+            data = parse_function(keyword == K::KwFn      ? FunctionKind::Fn
+                                  : keyword == K::KwOp    ? FunctionKind::Op
+                                  : keyword == K::KwEntry ? FunctionKind::Entry
+                                                          : FunctionKind::Kernel);
             break;
+        }
         case K::KwBlock:
             data = parse_block();
             break;
@@ -635,15 +640,38 @@ private:
     FunctionDecl parse_function(FunctionKind kind) {
         const std::string_view keyword = text(peek());
         advance();
-        FunctionDecl decl{
-            kind, expect_identifier("function name"), {}, {}, no_id, {}, {}, {}, {}, std::nullopt};
+        FunctionDecl decl{kind,
+                          expect_identifier("function name"),
+                          {},
+                          {},
+                          no_id,
+                          {},
+                          {},
+                          {},
+                          {},
+                          std::nullopt,
+                          std::nullopt,
+                          {},
+                          {}};
         decl.generics = parse_generic_params(decl.generics_span);
         decl.parameters = parse_parameters(decl.parameters_span);
-        if (accept(K::Arrow)) {
+        if (kind == FunctionKind::Kernel) {
+            parse_kernel_header(decl);
+        } else if (accept(K::Arrow)) {
             decl.return_type = parse_type();
         } else if (kind == FunctionKind::Op) {
             error_expected("`->` and a result type; an `" + std::string(keyword) +
                            "` must declare its result");
+        }
+        if (kind == FunctionKind::Op && at(K::KwKernel)) {
+            const std::uint32_t begin = here();
+            advance();
+            KernelBinding binding{expect_identifier("a kernel name"), {}, {}};
+            if (at(K::Less)) {
+                binding.generic_args = parse_generic_args();
+            }
+            binding.span = span_from(begin);
+            decl.kernel = std::move(binding);
         }
         if (at(K::KwWhere)) {
             decl.constraints = parse_where();
@@ -666,6 +694,46 @@ private:
             decl.gradient = std::move(clause);
         }
         return decl;
+    }
+
+    // `-> y: T grid(...)` or `-> (a: T, b: U) grid(...)`: a kernel's named
+    // results, then its launch grid (`grid` is a keyword only here).
+    void parse_kernel_header(FunctionDecl& decl) {
+        if (!expect(K::Arrow)) {
+            return;
+        }
+        const auto result = [&] {
+            const std::uint32_t begin = here();
+            Parameter param{{}, expect_identifier("a result name"), no_id, no_id};
+            expect(K::Colon);
+            param.type = parse_type();
+            param.span = span_from(begin);
+            decl.results.push_back(param);
+        };
+        if (accept(K::LParen)) {
+            while (!at(K::RParen) && !at(K::Eof)) {
+                result();
+                if (!accept(K::Comma)) {
+                    break;
+                }
+            }
+            expect(K::RParen);
+        } else {
+            result();
+        }
+        if (!(at(K::Identifier) && text(peek()) == "grid")) {
+            error_expected("`grid(...)`, the kernel's launch grid");
+            return;
+        }
+        advance();
+        expect(K::LParen);
+        while (!at(K::RParen) && !at(K::Eof)) {
+            decl.grid.push_back(parse_expr());
+            if (!accept(K::Comma)) {
+                break;
+            }
+        }
+        expect(K::RParen);
     }
 
     BlockDecl parse_block() {
@@ -867,6 +935,19 @@ private:
         } else if (at(K::KwYield)) {
             advance();
             data = YieldStmt{parse_expr()};
+        } else if (at(K::Identifier) && text(peek()) == "store" && peek(1).kind == K::LParen) {
+            // `store(target, value[, mask])`: a kernel's write, the one call
+            // that stands as a statement.
+            advance();
+            advance();
+            StoreStmt store{parse_expr(), no_id, no_id};
+            expect(K::Comma);
+            store.value = parse_expr();
+            if (accept(K::Comma) && !at(K::RParen)) {
+                store.mask = parse_expr();
+            }
+            expect(K::RParen);
+            data = store;
         } else {
             Diagnostic* diagnostic =
                 error_at(peek().span,

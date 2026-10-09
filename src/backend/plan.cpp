@@ -404,6 +404,17 @@ private:
             // An op's `grad`: its parameters, result and result gradient in.
             out += ",\"gradient\":" + region_json(function.gradient);
         }
+        if (function.is_kernel) {
+            // The body's last `outputs` arguments are the results it writes.
+            out += ",\"outputs\":" + std::to_string(function.outputs);
+            out += ",\"grid\":" + region_json(function.grid);
+        }
+        if (!function.kernel.empty()) {
+            out += ",\"kernel\":{\"name\":" + json_string(function.kernel) + ",\"generics\":[";
+            out += join(
+                function.kernel_args, ",", [&](const auto& item) { return generic_value(item); });
+            out += "]}";
+        }
         return out + "}";
     }
 
@@ -514,6 +525,9 @@ private:
         case ir::OpKind::ConstBool:
         case ir::OpKind::TupleGet:
         case ir::OpKind::StructGet:
+        case ir::OpKind::KernelProgramId: // the grid axis
+        case ir::OpKind::KernelLoad:      // the number of indices
+        case ir::OpKind::KernelStore:
             attrs.push_back("\"value\":" + std::to_string(a.integer));
             break;
         case ir::OpKind::ConstFloat: {

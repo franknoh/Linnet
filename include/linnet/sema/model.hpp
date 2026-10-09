@@ -59,6 +59,7 @@ struct Entity {
     bool is_pub = false;
     bool is_mutable = false;      // Local declared with `var`
     bool is_parameter = false;    // Local that is a function parameter
+    bool is_memory = false;       // Local: a kernel's tensor parameter or result
     bool is_buffer = false;       // Member declared with `buffer`
     bool is_state = false;        // Member declared with `state`
     bool is_used = false;         // referenced at least once
@@ -115,6 +116,11 @@ struct DeclInfo {
     // gradient of each parameter that `takes_gradient`, a tuple when several.
     std::vector<EntityId> gradient_entities;
     TypeId gradient_result = no_type;
+    // A kernel's named results; an op's `kernel` and its generic arguments,
+    // in the kernel's generics' order.
+    std::vector<EntityId> kernel_results;
+    EntityId kernel = no_entity;
+    std::vector<GenericValue> kernel_args;
     // Structs, enums, aliases
     std::vector<FieldInfo> fields;
     std::vector<std::string_view> variants;

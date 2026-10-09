@@ -490,6 +490,14 @@ private:
         const std::string& kind = function["kind"].as_string();
         out.is_op = kind == "op";
         out.is_entry = kind == "entry";
+        out.is_kernel = kind == "kernel";
+        out.outputs = static_cast<std::size_t>(function["outputs"].as_int());
+        if (const Json& kernel = function["kernel"]; !kernel.is_null()) {
+            out.kernel = kernel["name"].as_string();
+            for (const Json& value : kernel["generics"].as_array()) {
+                out.kernel_args.push_back(generic_value(value));
+            }
+        }
         DeclInfo& info = model().decls[out.entity];
         out.generics = info.generics;
         out.constraints = info.constraints;
@@ -505,12 +513,20 @@ private:
             out.gradient = module_.add_region(ir::no_id);
         }
         const ir::RegionId gradient_region = out.gradient;
+        if (out.is_kernel) {
+            out.grid = module_.add_region(ir::no_id);
+        }
+        const ir::RegionId grid = out.grid;
         module_.add_function(std::move(out));
         values_.clear();
         fill_region(body, require(function, "body", "function"));
         if (gradient_region != ir::no_id) {
             values_.clear();
             fill_region(gradient_region, gradient);
+        }
+        if (grid != ir::no_id) {
+            values_.clear();
+            fill_region(grid, require(function, "grid", "kernel"));
         }
     }
 
@@ -603,6 +619,9 @@ private:
         case ir::OpKind::ConstBool:
         case ir::OpKind::TupleGet:
         case ir::OpKind::StructGet:
+        case ir::OpKind::KernelProgramId:
+        case ir::OpKind::KernelLoad:
+        case ir::OpKind::KernelStore:
             a.integer = attrs["value"].as_int();
             break;
         case ir::OpKind::ConstFloat:

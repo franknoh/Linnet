@@ -45,7 +45,7 @@ A trusted escape hatch for operations with externally supplied backend implement
 
 ## 15.9 Kernel language
 
-A low-level kernel DSL for Triton-like tile programs, targeting the same or a lower IR and kept separate from model-level `.linnet` semantics.
+Kernels (§7.9) are tile programs an op may run in place of its body. Atomics, scans within a tile, shared-memory and pipelining controls, and kernels outside an op are open.
 
 ## 15.10 Distributed execution
 

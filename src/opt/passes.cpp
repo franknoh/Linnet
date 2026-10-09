@@ -83,7 +83,8 @@ std::set<std::string> stateful_functions(const Module& module) {
 // effects: never removed as dead, never merged with one another, never moved
 // past each other.
 bool has_effects(const Operation& op, const std::set<std::string>& stateful) {
-    if (op.kind == OpKind::StateRead || op.kind == OpKind::StateWrite) {
+    if (op.kind == OpKind::StateRead || op.kind == OpKind::StateWrite ||
+        op.kind == OpKind::KernelStore) {
         return true;
     }
     return (op.kind == OpKind::Call || op.kind == OpKind::SemanticCall) &&
@@ -181,7 +182,8 @@ bool eliminate_dead_code(Module& module) {
             for (const OpId id : ops) {
                 const Operation& op = module.op(id);
                 if (is_terminator(op.kind) || op.kind == OpKind::StateWrite ||
-                    op.kind == OpKind::While || contains_effects(module, op, stateful)) {
+                    op.kind == OpKind::KernelStore || op.kind == OpKind::While ||
+                    contains_effects(module, op, stateful)) {
                     continue;
                 }
                 bool is_used = false;

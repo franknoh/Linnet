@@ -24,6 +24,13 @@
 // then, for a loop with a value, the iteration's element; its results are the
 // final carried values and, last, the elements stacked along a leading axis.
 //
+// A kernel's body runs once per program of its grid: `kernel.program_id`
+// (attribute `integer`: the grid axis) is the program's index along an axis.
+// `kernel.load` takes a tensor parameter, its `integer` indices (scalars or
+// integer tiles, each adding its axes to the result), then an optional mask
+// and value for masked-off elements; `kernel.store` takes a result, its
+// indices, the value, and an optional mask.
+//
 // The IR is an implementation detail: its textual form (`inspect --core-ir`)
 // is for debugging and is not stable.
 
@@ -100,6 +107,9 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(StaticRange, "static_range", -1, 1)                                                          \
     X(While, "while", -1, 2)                                                                       \
     X(For, "for", -1, 1)                                                                           \
+    X(KernelProgramId, "kernel.program_id", 0, 0)                                                  \
+    X(KernelLoad, "kernel.load", -1, 0)                                                            \
+    X(KernelStore, "kernel.store", -1, 0)                                                          \
     X(Yield, "yield", -1, 0)                                                                       \
     X(Return, "return", -1, 0)
 
@@ -191,9 +201,21 @@ struct Function {
     // returning the gradient of each parameter that `sema::takes_gradient`
     // (a tuple when several). `no_id` when the op has none.
     RegionId gradient = no_id;
+    // A kernel: its body's last `outputs` arguments are its results, which
+    // it writes with `kernel.store`; `grid` is a region yielding the sizes of
+    // its launch grid.
+    bool is_kernel = false;
+    std::size_t outputs = 0;
+    RegionId grid = no_id;
+    // An op's `kernel`: the kernel's name and its generic arguments, in the
+    // kernel's order and in terms of the op's generics. Empty without one.
+    std::string kernel;
+    std::vector<sema::GenericValue> kernel_args;
 
-    // `op`, `entry` or `fn`, as source declares it.
-    std::string_view keyword() const { return is_op ? "op" : is_entry ? "entry" : "fn"; }
+    // `op`, `entry`, `kernel` or `fn`, as source declares it.
+    std::string_view keyword() const {
+        return is_op ? "op" : is_entry ? "entry" : is_kernel ? "kernel" : "fn";
+    }
 };
 
 // A module-level constant: its initializer as a region yielding one value.

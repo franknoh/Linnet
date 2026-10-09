@@ -7,13 +7,13 @@ syn keyword linnetStatement return where yield
 " `grad` is a keyword only after an op's body: `} grad(y, dy) {`
 syn match linnetStatement "\(}\s*\)\@<=\<grad\>"
 syn keyword linnetRepeat static for in while
-syn keyword linnetStructure module use const type struct enum fn op block entry param buffer state sub let var
+syn keyword linnetStructure module use const type struct enum fn op kernel block entry param buffer state sub let var
 syn keyword linnetModifier pub as
 syn keyword linnetSelf crate self super
 syn keyword linnetBoolean true false
 syn keyword linnetConstant none
 syn keyword linnetOption some
-syn keyword linnetReserved extern async await effect unsafe macro trait impl derive rng mut ref kernel device
+syn keyword linnetReserved extern async await effect unsafe macro trait impl derive rng mut ref device
 
 syn keyword linnetType bool i8 i16 i32 i64 u8 u16 u32 u64 f16 bf16 f32 f64 Tensor
 syn keyword linnetConstraint Dim Shape DType Numeric Integer Float

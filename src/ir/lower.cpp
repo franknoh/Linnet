@@ -217,6 +217,12 @@ private:
         function.name = qualified_name(entity);
         function.is_op = decl.kind == ast::FunctionKind::Op;
         function.is_entry = decl.kind == ast::FunctionKind::Entry;
+        function.is_kernel = decl.kind == ast::FunctionKind::Kernel;
+        function.outputs = info.kernel_results.size();
+        if (info.kernel != no_entity) {
+            function.kernel = qualified_name(info.kernel);
+            function.kernel_args = info.kernel_args;
+        }
         function.entity = entity;
         function.generics = info.generics;
         function.constraints = info.constraints;
@@ -226,6 +232,9 @@ private:
         function.body = module_.add_region(no_id);
         if (decl.gradient && decl.kind == ast::FunctionKind::Op) {
             function.gradient = module_.add_region(no_id);
+        }
+        if (function.is_kernel) {
+            function.grid = module_.add_region(no_id);
         }
         const FunctionId id = module_.add_function(function);
 
@@ -244,6 +253,11 @@ private:
                 module_.add_argument(block_, info.params[i].type, std::string(info.params[i].name));
             frame.locals[info.param_entities[i]] = argument;
         }
+        for (const EntityId result : info.kernel_results) {
+            const Entity& output = model().entities[result];
+            frame.locals[result] =
+                module_.add_argument(block_, output.type, std::string(output.name));
+        }
         lower_body(decl.body);
         // A function without a result ends in an implicit return.
         const Block& body = module_.block(block_);
@@ -252,6 +266,20 @@ private:
         }
         if (function.gradient != no_id) {
             lower_gradient(entity, function.gradient);
+        }
+        if (function.grid != no_id) {
+            // The grid's sizes, compile-time integers of the generics.
+            Frame grid;
+            grid.module = target.module;
+            grid.function = entity;
+            frame_ = &grid;
+            block_ = module_.add_block(function.grid);
+            std::vector<ValueId> sizes;
+            sizes.reserve(decl.grid.size());
+            for (const ast::ExprId size : decl.grid) {
+                sizes.push_back(lower_expr(size, no_type));
+            }
+            yield(std::move(sizes));
         }
         frame_ = nullptr;
         (void)id;
@@ -419,6 +447,27 @@ private:
                     lower_for(loop, stmt_facts.entity, no_type, node.span);
                 },
                 [&](const ast::YieldStmt&) {}, // lowered by its loop
+                [&](const ast::StoreStmt& store) {
+                    const auto& target = std::get<ast::IndexExpr>(ast().expr(store.target).data);
+                    std::vector<ValueId> operands = memory_operands(target);
+                    const TypeId tile = substituted(facts(store.target).type);
+                    const TypeKind value_kind = types().kind(facts(store.value).type);
+                    const bool is_tile =
+                        value_kind == TypeKind::Tensor && types().kind(tile) == TypeKind::Tensor;
+                    operands.push_back(lower_expr(
+                        store.value, is_tile ? tile : types().scalar(types().get(tile).dtype)));
+                    if (store.mask != ast::no_id) {
+                        operands.push_back(lower_expr(store.mask, no_type));
+                    }
+                    Attributes attributes;
+                    attributes.integer = static_cast<std::int64_t>(target.components.size());
+                    module_.add_op(block_,
+                                   OpKind::KernelStore,
+                                   std::move(operands),
+                                   {},
+                                   std::move(attributes),
+                                   node.span);
+                },
             },
             node.data);
     }
@@ -1386,6 +1435,15 @@ private:
         return value == no_id ? emit(OpKind::ConstInt, {}, types().unit()) : value;
     }
 
+    // `x[i, j]` in `load` or `store`: the tensor in memory, then its indices.
+    std::vector<ValueId> memory_operands(const ast::IndexExpr& target) {
+        std::vector<ValueId> operands{lower_expr(target.base, no_type)};
+        for (const ast::IndexComponent& component : target.components) {
+            operands.push_back(lower_expr(component.value, types().scalar(ScalarKind::I32)));
+        }
+        return operands;
+    }
+
     Shape shape_argument(ast::ExprId expr) {
         const TypeData& data = types().get(substituted(facts(expr).type));
         return data.kind == TypeKind::ShapeValue ? data.shape : Shape{};
@@ -1471,6 +1529,23 @@ private:
         if (name == "iota") {
             attributes.shape = types().get(type).shape;
             return emit(OpKind::Iota, {}, type, attributes, node.span);
+        }
+        if (name == "program_id") {
+            const TypeData& axis = types().get(facts(call.args.front().value).type);
+            attributes.integer = axis.value.constant().value_or(0);
+            return emit(OpKind::KernelProgramId, {}, type, attributes, node.span);
+        }
+        if (name == "load") {
+            const auto& target = std::get<ast::IndexExpr>(ast().expr(call.args.front().value).data);
+            std::vector<ValueId> operands = memory_operands(target);
+            if (call.args.size() >= 2) {
+                operands.push_back(arg(1, no_type));
+            }
+            if (call.args.size() == 3) {
+                operands.push_back(arg(2, types().scalar(types().get(type).dtype)));
+            }
+            attributes.integer = static_cast<std::int64_t>(target.components.size());
+            return emit(OpKind::KernelLoad, std::move(operands), type, attributes, node.span);
         }
         if (name == "fill") {
             attributes.shape = types().get(type).shape;

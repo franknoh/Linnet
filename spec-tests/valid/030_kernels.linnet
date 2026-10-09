@@ -1,0 +1,60 @@
+module m
+
+// One program a row: the row's softmax, its columns one tile of B.
+pub kernel row_softmax<R: Dim, C: Dim, B: Dim>(x: Tensor[R, C; f32]) -> y: Tensor[R, C; f32] grid(R)
+where B >= C {
+    let row = program_id(0)
+    let cols = iota<i32>(B)
+    let mask = cols < C
+    let v = load(x[row, cols], mask, -1e30)
+    let e = exp(v - max[c] v[c])
+    store(y[row, cols], e / sum[c] e[c], mask)
+}
+
+pub op softmax<R: Dim, C: Dim>(
+    x: Tensor[R, C; f32],
+) -> Tensor[R, C; f32] kernel row_softmax<R, C, 1024> {
+    let top[r] = max[c] x[r, c]
+    let e[r, c] = exp(x[r, c] - top[r])
+    let total[r] = sum[c] e[r, c]
+    let y[r, c] = e[r, c] / total[r]
+    return y
+}
+
+// Each program one [BM, BN] tile of the product, over K a tile of BK at a time.
+pub kernel matmul<M: Dim, N: Dim, K: Dim, BM: Dim, BN: Dim, BK: Dim>(
+    a: Tensor[M, K; f32],
+    b: Tensor[K, N; f32],
+) -> c: Tensor[M, N; f32] grid((M + BM - 1) / BM, (N + BN - 1) / BN)
+where
+    BM > 0,
+    BN > 0,
+    BK > 0
+{
+    let rows = program_id(0) * BM + iota<i32>(BM)
+    let cols = program_id(1) * BN + iota<i32>(BN)
+    var acc = fill<f32>([BM, BN], 0.0)
+    for step in 0..(K + BK - 1) / BK {
+        let ks = cast<i32>(step) * BK + iota<i32>(BK)
+        let a_mask[i, k] = rows[i] < M && ks[k] < K
+        let b_mask[k, j] = ks[k] < K && cols[j] < N
+        let at = load(a[rows, ks], a_mask, 0.0)
+        let bt = load(b[ks, cols], b_mask, 0.0)
+        let product[i, j] = sum[k] at[i, k] * bt[k, j]
+        acc = acc + product
+    }
+    let mask[i, j] = rows[i] < M && cols[j] < N
+    store(c[rows, cols], acc, mask)
+}
+
+pub op linear<M: Dim, N: Dim, K: Dim>(
+    a: Tensor[M, K; f32],
+    b: Tensor[K, N; f32],
+) -> Tensor[M, N; f32] kernel matmul<M, N, K, 32, 32, 32> {
+    let c[m, n] = sum[k] a[m, k] * b[k, n]
+    return c
+}
+
+pub entry run<R: Dim, C: Dim>(x: Tensor[R, C; f32], w: Tensor[C, C; f32]) -> Tensor[R, C; f32] {
+    return softmax(linear(x, w))
+}

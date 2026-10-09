@@ -318,3 +318,21 @@ TEST("format: an op's grad clause") {
              "    return dy * 2.0\n"
              "}\n");
 }
+
+TEST("format: kernels and an op's kernel") {
+    CHECK_EQ(fmt("module m\nkernel k(x: Tensor[4; f32])->(y: Tensor[4; f32],z: Tensor[4; f32]) "
+                 "grid( 1 ){\n"
+                 "let i=iota<i32>(4)\nstore(y[i],load(x[i]),i<4)\nstore(z[i],2.0)}\n"
+                 "op f(x: Tensor[4; f32])->Tensor[4; f32] kernel k {return x}\n"),
+             "module m\n"
+             "\n"
+             "kernel k(x: Tensor[4; f32]) -> (y: Tensor[4; f32], z: Tensor[4; f32]) grid(1) {\n"
+             "    let i = iota<i32>(4)\n"
+             "    store(y[i], load(x[i]), i < 4)\n"
+             "    store(z[i], 2.0)\n"
+             "}\n"
+             "\n"
+             "op f(x: Tensor[4; f32]) -> Tensor[4; f32] kernel k {\n"
+             "    return x\n"
+             "}\n");
+}

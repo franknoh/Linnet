@@ -260,6 +260,11 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
     };
 
     if (const auto* name = std::get_if<ast::NameExpr>(&callee.data)) {
+        // Inside a kernel, its builtins (`program_id`, `load`).
+        if (env_->in_kernel && (name->name.text == "program_id" || name->name.text == "load")) {
+            facts(self).builtin = std::string(name->name.text);
+            return check_kernel_call(node, call, name->name.text);
+        }
         const EntityId entity = lookup(name->name);
         if (entity != no_entity) {
             return call_entity(entity, callee.span, {});
@@ -324,6 +329,18 @@ TypeId Checker::check_user_call(const ast::Expr& node,
     resolve(callee);
     const DeclInfo& info = decls_[callee];
     const std::string name(entities_[callee].name);
+    const Entity& callee_entity = entities_[callee];
+    if (std::get<ast::FunctionDecl>(modules_[callee_entity.module]->item(callee_entity.item).data)
+            .kind == ast::FunctionKind::Kernel) {
+        error(codes::kernel_binding,
+              ast().expr(call.callee).span,
+              "`" + name + "` is a kernel: it runs as an op's `kernel`, not by a call")
+            .note("name it in an op's header: `-> T kernel " + name + "<...> { body }`");
+        for (const ast::Argument& arg : call.args) {
+            check_expr(arg.value);
+        }
+        return types_.error();
+    }
     if (env_->function != no_entity) {
         call_edges_.push_back({env_->function, callee, ast().expr(call.callee).span});
     }

@@ -58,6 +58,8 @@ warnings (`W`) fail only under `--strict` (`linnet lint`).
 | E2123 | compile-time integer required |
 | E2124 | `yield` outside the end of a `for` that is a binding's value, or such a `for` elsewhere |
 | E2125 | `grad` on something other than an op, or on an op that does not return one floating tensor or scalar, takes a parameter that is not a tensor or scalar, or has no floating tensor parameter |
+| E2126 | an op's `kernel` that does not take the op's parameters or write what it returns, or a call to a kernel |
+| E2127 | a kernel rule broken: a tensor in memory outside `load`/`store`, `return` in a kernel, `store` outside one, slices in a memory index |
 | E2190 | unimplemented feature |
 
 ## Shapes

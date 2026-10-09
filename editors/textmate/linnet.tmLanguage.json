@@ -86,7 +86,7 @@
                     }
                 },
                 {
-                    "match": "\\b(fn|op|entry)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "\\b(fn|op|entry|kernel)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
                         "1": { "name": "storage.type.function.linnet" },
                         "2": { "name": "entity.name.function.linnet" }
@@ -139,7 +139,7 @@
                 },
                 {
                     "name": "storage.type.linnet",
-                    "match": "\\b(?:module|use|const|type|struct|enum|fn|op|block|entry|param|buffer|state|sub|let|var)\\b"
+                    "match": "\\b(?:module|use|const|type|struct|enum|fn|op|kernel|block|entry|param|buffer|state|sub|let|var)\\b"
                 },
                 {
                     "name": "storage.modifier.linnet",
@@ -159,7 +159,7 @@
                 },
                 {
                     "name": "invalid.illegal.reserved.linnet",
-                    "match": "\\b(?:extern|async|await|effect|unsafe|macro|trait|impl|derive|rng|mut|ref|kernel|device)\\b"
+                    "match": "\\b(?:extern|async|await|effect|unsafe|macro|trait|impl|derive|rng|mut|ref|device)\\b"
                 }
             ]
         },

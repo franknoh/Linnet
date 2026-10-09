@@ -1,0 +1,9 @@
+module m
+
+kernel copy(x: Tensor[4; f32]) -> y: Tensor[4; f32] grid(1) {
+    store(y[iota<i32>(4)], load(x[iota<i32>(4)]))
+}
+
+op same(x: Tensor[4; f64]) -> Tensor[4; f64] kernel copy {
+    return x
+}

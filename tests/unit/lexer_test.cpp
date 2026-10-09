@@ -74,12 +74,12 @@ TEST("lexer: every keyword is recognized and round-trips its spelling") {
 
 TEST("lexer: reserved words are distinguished from identifiers") {
     const Lexed lexed("async await effect unsafe macro trait impl derive rng mut ref "
-                      "kernel device asyncs Tensor f32 sum _x x1 std");
+                      "device asyncs Tensor f32 sum _x x1 std");
     CHECK(!lexed.sink.has_errors());
-    for (std::size_t i = 0; i < 13; ++i) {
+    for (std::size_t i = 0; i < 12; ++i) {
         CHECK(lexed.kind(i) == TokenKind::ReservedWord);
     }
-    for (std::size_t i = 13; i < 20; ++i) {
+    for (std::size_t i = 12; i < 19; ++i) {
         CHECK(lexed.kind(i) == TokenKind::Identifier);
     }
 }

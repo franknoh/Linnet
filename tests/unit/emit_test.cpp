@@ -198,6 +198,28 @@ TEST("emit: an op's grad clause") {
     check_round_trip(source);
 }
 
+TEST("emit: kernels and an op's kernel") {
+    const std::string source =
+        "module m\n"
+        "pub kernel scale<N: Dim, B: Dim>(x: Tensor[N; f32]) -> y: Tensor[N; f32] "
+        "grid((N + B - 1) / B)\n"
+        "where B > 0 {\n"
+        "    let i = program_id(0) * B + iota<i32>(B)\n"
+        "    let v = load(x[i], i < N, 0.0)\n"
+        "    store(y[i], v * 2.0, i < N)\n"
+        "}\n"
+        "pub op double<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] kernel scale<N, 128> {\n"
+        "    return x * 2.0\n"
+        "}\n";
+    const std::string text = emitted(source);
+    CHECK(contains(text, "-> y: Tensor[N; f32] grid("));
+    CHECK(contains(text, "load(x["));
+    CHECK(contains(text, "store(y["));
+    CHECK(contains(text, "kernel scale<N, 128> {"));
+    CHECK(!contains(text, "    return\n"));
+    check_round_trip(source);
+}
+
 TEST("emit: values used inside a region keep their own binding") {
     const std::string source = "module m\n"
                                "pub fn f<N: Dim>() -> Tensor[N; i64] {\n"

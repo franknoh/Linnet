@@ -51,6 +51,7 @@ namespace linnet {
     X(KwFalse, "false")                                                                            \
     X(KwNone, "none")                                                                              \
     X(KwSome, "some")                                                                              \
+    X(KwKernel, "kernel")                                                                          \
     X(KwExtern, "extern")                                                                          \
     X(LParen, "(")                                                                                 \
     X(RParen, ")")                                                                                 \

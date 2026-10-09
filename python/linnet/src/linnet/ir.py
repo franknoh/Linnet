@@ -254,7 +254,7 @@ class Region:
 @dataclass(frozen=True, slots=True)
 class Function:
     name: str
-    kind: Literal["fn", "op", "entry"]
+    kind: Literal["fn", "op", "entry", "kernel"]
     block: str | None
     pub: bool
     generics: tuple[Generic, ...]
@@ -265,6 +265,11 @@ class Function:
     # An op's `grad`: its parameters, result and result gradient in, the
     # gradient of each parameter that `takes_gradient` out.
     gradient: Region | None = None
+    # A kernel: its body's last `outputs` arguments are the results it writes,
+    # and `grid` yields its launch grid. An op's kernel, by name.
+    outputs: int = 0
+    grid: Region | None = None
+    kernel: str | None = None
 
     @property
     def short_name(self) -> str:
@@ -615,7 +620,7 @@ class _Reader:
     def function(self, data: JsonValue) -> Function:
         node = _object(data)
         kind = str(node["kind"])
-        if kind not in ("fn", "op", "entry"):
+        if kind not in ("fn", "op", "entry", "kernel"):
             raise LinnetError(f"unknown function kind `{kind}`")
         block = node.get("block")
         return Function(
@@ -629,6 +634,9 @@ class _Reader:
             states=tuple(str(s) for s in _list(node.get("states", []))),
             body=self.region(node["body"]),
             gradient=self.region(node["gradient"]) if "gradient" in node else None,
+            outputs=_int(node.get("outputs", 0)),
+            grid=self.region(node["grid"]) if "grid" in node else None,
+            kernel=str(_object(node["kernel"])["name"]) if "kernel" in node else None,
         )
 
     def constant(self, data: JsonValue) -> Constant:
