@@ -21,6 +21,10 @@ bool differentiable(const TensorInfo& value) {
 
 std::string GradientTarget::input(const std::string& name, const Dims& shape, ScalarKind dtype) {
     std::string id = inner_.input(name, shape, dtype);
+    shapes_.emplace(id, shape);
+    if (sema::is_float(dtype)) {
+        sources_[id] |= from_inputs;
+    }
     inputs_.push_back({id, shape, dtype});
     input_names_.push_back(name);
     return id;
@@ -29,17 +33,25 @@ std::string GradientTarget::input(const std::string& name, const Dims& shape, Sc
 std::string
 GradientTarget::parameter(const std::string& path, const Dims& shape, ScalarKind dtype) {
     std::string id = inner_.parameter(path, shape, dtype);
+    shapes_.emplace(id, shape);
+    if (sema::is_float(dtype)) {
+        sources_[id] |= from_parameters;
+    }
     parameters_.push_back({id, shape, dtype});
     parameter_paths_.push_back(path);
     return id;
 }
 
 std::string GradientTarget::state(const std::string& path, const Dims& shape, ScalarKind dtype) {
-    return inner_.state(path, shape, dtype);
+    std::string id = inner_.state(path, shape, dtype);
+    shapes_.emplace(id, shape);
+    return id;
 }
 
 std::string GradientTarget::constant(const Literal& literal, ScalarKind dtype) {
-    return inner_.constant(literal, dtype);
+    std::string id = inner_.constant(literal, dtype);
+    shapes_.emplace(id, Dims{});
+    return id;
 }
 
 std::string GradientTarget::elementwise(Elementwise kind,
@@ -213,13 +225,26 @@ std::vector<std::string> GradientTarget::begin_counted(std::int64_t start,
 // skipped) is the operand itself: nothing to record.
 std::string GradientTarget::record(Step step) {
     std::string name = step.result.name;
+    shapes_.emplace(name, step.result.shape);
     const bool is_identity =
         std::any_of(step.operands.begin(), step.operands.end(), [&](const TensorInfo& operand) {
             return operand.name == name;
         });
-    if (!is_identity) {
-        tape_.push_back(std::move(step));
+    if (is_identity) {
+        return name;
     }
+    if (differentiable(step.result)) {
+        std::uint8_t reached = 0;
+        for (const TensorInfo& operand : step.operands) {
+            if (const auto found = sources_.find(operand.name); found != sources_.end()) {
+                reached |= found->second;
+            }
+        }
+        if (reached != 0) {
+            sources_[name] |= reached;
+        }
+    }
+    tape_.push_back(std::move(step));
     return name;
 }
 
@@ -238,10 +263,11 @@ std::string GradientTarget::finish(const std::vector<TensorInfo>& results,
                             "loss");
     }
     const TensorInfo& loss = results.front();
-    backward(loss);
     // A module-level entry's gradient is with respect to its inputs; a
     // block's, with respect to its parameters.
     const bool by_inputs = block_name.empty();
+    wanted_ = by_inputs ? from_inputs : from_parameters;
+    backward(loss);
     const std::vector<TensorInfo>& wrt = by_inputs ? inputs_ : parameters_;
     const std::vector<std::string>& paths = by_inputs ? input_names_ : parameter_paths_;
     std::vector<TensorInfo> outputs{loss};
@@ -283,15 +309,24 @@ void GradientTarget::backward(const TensorInfo& loss) {
 }
 
 void GradientTarget::accumulate(const TensorInfo& value, const TensorInfo& grad) {
-    if (!differentiable(value)) {
+    // Only what the differentiated values reach carries a gradient.
+    const auto reached = sources_.find(value.name);
+    if (!differentiable(value) || reached == sources_.end() || (reached->second & wanted_) == 0) {
         return;
     }
-    TensorInfo matched = grad;
-    if (matched.dtype != value.dtype) {
-        matched = {inner_.convert(matched, value.dtype), matched.shape, value.dtype};
+    // A format that broadcasts elementwise operands itself is handed them
+    // unbroadcast, with the result's shape: the value's own shape is the one
+    // it was defined with.
+    TensorInfo defined = value;
+    if (const auto known = shapes_.find(value.name); known != shapes_.end()) {
+        defined.shape = known->second;
     }
-    if (matched.shape != value.shape) {
-        matched = unbroadcast(matched, value);
+    TensorInfo matched = grad;
+    if (matched.dtype != defined.dtype) {
+        matched = {inner_.convert(matched, defined.dtype), matched.shape, defined.dtype};
+    }
+    if (matched.shape != defined.shape) {
+        matched = unbroadcast(matched, defined);
     }
     const auto found = adjoints_.find(value.name);
     if (found == adjoints_.end()) {

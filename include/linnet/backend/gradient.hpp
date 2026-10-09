@@ -2,6 +2,7 @@
 
 #include "linnet/backend/graph_export.hpp"
 
+#include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -147,6 +148,15 @@ private:
     std::vector<TensorInfo> parameters_;
     std::vector<std::string> parameter_paths_;
     std::map<std::string, TensorInfo> adjoints_;
+    // Every value's shape where it was defined.
+    std::map<std::string, Dims> shapes_;
+    // Which differentiated values -- floating inputs, floating parameters --
+    // each value is computed from; the backward pass follows only those
+    // `wanted_`.
+    static constexpr std::uint8_t from_inputs = 1;
+    static constexpr std::uint8_t from_parameters = 2;
+    std::map<std::string, std::uint8_t> sources_;
+    std::uint8_t wanted_ = 0;
 };
 
 // What `GradientTarget` cannot differentiate; `export_graph` reports it.

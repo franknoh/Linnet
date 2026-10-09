@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -134,11 +135,13 @@ def _parameters() -> dict[str, NDArray[np.float32]]:
     return {k: rng.standard_normal(v).astype(np.float32) * 0.5 for k, v in SHAPES.items()}
 
 
-def _reference(source: Path, entry: str) -> tuple[float, list[NDArray[np.float32]]]:
-    """The loss and PyTorch autograd's gradient of the generated forward code."""
+def _reference(source: Path, entry: str) -> tuple[float, dict[str, NDArray[np.float32]]]:
+    """The loss and PyTorch autograd's gradient of the generated forward code,
+    by parameter path (input name for a module-level entry)."""
     module = _python(_export(source, "torch", entry, gradient=False))
     inputs = [torch.tensor(value) for value in CASES[entry]]
     if entry == "mse":
+        paths = ["predicted", "target"]
         wrt = inputs
         arguments: list[torch.Tensor] = inputs
     else:
@@ -151,10 +154,10 @@ def _reference(source: Path, entry: str) -> tuple[float, list[NDArray[np.float32
     (loss,) = cast(tuple[torch.Tensor], _run_python(module, arguments))
     # An input the loss does not read has no gradient: None.
     grads = cast(Sequence[torch.Tensor | None], torch.autograd.grad(loss, wrt, allow_unused=True))
-    return float(loss), [
-        np.zeros(tuple(value.shape), np.float32) if grad is None else grad.detach().numpy()
-        for value, grad in zip(wrt, grads, strict=True)
-    ]
+    return float(loss), {
+        path: np.zeros(tuple(value.shape), np.float32) if grad is None else grad.detach().numpy()
+        for path, value, grad in zip(paths, wrt, grads, strict=True)
+    }
 
 
 def _arguments(entry: str, paths: Sequence[str]) -> list[NDArray[np.generic]]:
@@ -162,26 +165,32 @@ def _arguments(entry: str, paths: Sequence[str]) -> list[NDArray[np.generic]]:
     return [*CASES[entry], *(parameters[path] for path in paths)]
 
 
-def _check(outputs: Sequence[object], expected: tuple[float, list[NDArray[np.float32]]]) -> None:
+def _check(
+    outputs: Sequence[object],
+    labels: Sequence[str],
+    expected: tuple[float, dict[str, NDArray[np.float32]]],
+) -> None:
+    """The loss, then each gradient against the reference of its labeled path."""
     loss, grads = expected
-    assert len(outputs) == 1 + len(grads)
+    assert sorted(labels) == sorted(grads)
+    assert len(outputs) == 1 + len(labels)
     np.testing.assert_allclose(float(np.asarray(outputs[0])), loss, rtol=1e-5, atol=1e-6)
-    for got, want in zip(outputs[1:], grads, strict=True):
-        np.testing.assert_allclose(np.asarray(got), want, rtol=1e-4, atol=1e-5)
+    for label, got in zip(labels, outputs[1:], strict=True):
+        np.testing.assert_allclose(np.asarray(got), grads[label], rtol=1e-4, atol=1e-5)
+
+
+def _python_paths(module: dict[str, object], entry: str) -> list[str]:
+    return [] if entry == "mse" else cast(list[str], module["PARAMETERS"])
 
 
 @pytest.mark.parametrize("entry", list(CASES))
 def test_torch(source: Path, entry: str) -> None:
     expected = _reference(source, entry)
     module = _python(_export(source, "torch", entry, gradient=True))
-    gradients = cast(list[str], module["GRADIENTS"])
-    if entry == "mse":
-        assert gradients == ["predicted", "target"]
-    else:
-        assert gradients == cast(list[str], module["PARAMETERS"])
-    arguments = [torch.tensor(a) for a in _arguments(entry, gradients if entry != "mse" else [])]
+    arguments = [torch.tensor(a) for a in _arguments(entry, _python_paths(module, entry))]
     outputs = _run_python(module, arguments)
-    _check([cast(torch.Tensor, o).detach().numpy() for o in outputs], expected)
+    labels = cast(list[str], module["GRADIENTS"])
+    _check([cast(torch.Tensor, o).detach().numpy() for o in outputs], labels, expected)
 
 
 @pytest.mark.parametrize("entry", list(CASES))
@@ -189,8 +198,8 @@ def test_jax(source: Path, entry: str) -> None:
     pytest.importorskip("jax")
     expected = _reference(source, entry)
     module = _python(_export(source, "jax", entry, gradient=True))
-    paths = [] if entry == "mse" else cast(list[str], module["PARAMETERS"])
-    _check(_run_python(module, _arguments(entry, paths)), expected)
+    outputs = _run_python(module, _arguments(entry, _python_paths(module, entry)))
+    _check(outputs, cast(list[str], module["GRADIENTS"]), expected)
 
 
 @pytest.mark.parametrize("entry", list(CASES))
@@ -206,10 +215,12 @@ def test_onnx(source: Path, entry: str) -> None:
     parameters = _parameters()
     for name in names[len(CASES[entry]) :]:
         inputs[name] = parameters[metadata[f"linnet.path.{name}"]]
+    outputs = [graph_output.name for graph_output in model.graph.output]
+    labels = [metadata[f"linnet.gradient.{name}"] for name in outputs[1:]]
     session = onnxruntime.InferenceSession(
         model.SerializeToString(), providers=["CPUExecutionProvider"]
     )
-    _check(session.run(None, inputs), expected)
+    _check(session.run(None, inputs), labels, expected)
 
 
 @pytest.mark.parametrize("entry", list(CASES))
@@ -219,10 +230,10 @@ def test_stablehlo(source: Path, entry: str) -> None:
 
     expected = _reference(source, entry)
     text = _export(source, "stablehlo", entry, gradient=True)
-    assert "linnet.gradients" in text
-    import re
-
     paths = re.findall(r'linnet\.path = "([^"]+)"', text)
+    listed = re.search(r"linnet\.gradients = \[([^\]]*)\]", text)
+    assert listed is not None
+    labels = re.findall(r'"([^"]+)"', listed.group(1))
     options = importlib.import_module("jaxlib._jax")
     backend = jex.backend.get_backend()
     device = backend.local_devices()[0]
@@ -230,7 +241,7 @@ def test_stablehlo(source: Path, entry: str) -> None:
         text, options.DeviceList((device,)), options.CompileOptions()
     )
     buffers = [jax.device_put(a, device) for a in _arguments(entry, paths)]
-    _check([np.asarray(o) for o in executable.execute(buffers)], expected)
+    _check([np.asarray(o) for o in executable.execute(buffers)], labels, expected)
 
 
 REFUSED = """\
