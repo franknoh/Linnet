@@ -1,6 +1,7 @@
 #include "linnet/backend/graph_export.hpp"
 
 #include "linnet/backend/gradient.hpp"
+#include "linnet/backend/kernel.hpp"
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
@@ -567,7 +568,7 @@ private:
                               const std::function<TensorInfo(const std::vector<Val>&)>& predicate,
                               const std::function<std::vector<Val>(const std::vector<Val>&)>& body,
                               std::optional<Counted> counted = std::nullopt) {
-        if (!target_.supports_while()) {
+        if (!(counted ? target_.supports_counted() : target_.supports_while())) {
             fail("runtime loops are not exported to this format yet; they run in the "
                  "PyTorch interpreter");
         }
@@ -1604,6 +1605,45 @@ private:
             }
             return;
         }
+        case ir::OpKind::KernelProgramId:
+            define(op, tensor(kernel_target().program_id(a.integer), {}, ScalarKind::I32));
+            return;
+        case ir::OpKind::KernelLoad: {
+            const auto rank = static_cast<std::size_t>(a.integer);
+            std::vector<TensorInfo> indices;
+            for (std::size_t i = 1; i <= rank; ++i) {
+                indices.push_back(info(operand(i)));
+            }
+            std::optional<TensorInfo> mask;
+            std::optional<TensorInfo> other;
+            if (op.operands.size() > rank + 1) {
+                mask = info(operand(rank + 1));
+            }
+            if (op.operands.size() > rank + 2) {
+                other = info(operand(rank + 2));
+            }
+            const Dims shape = result_shape(op);
+            const ScalarKind dtype = result_dtype(op);
+            define(
+                op,
+                tensor(kernel_target().load(info(operand(0)), indices, mask, other, shape, dtype),
+                       shape,
+                       dtype));
+            return;
+        }
+        case ir::OpKind::KernelStore: {
+            const auto rank = static_cast<std::size_t>(a.integer);
+            std::vector<TensorInfo> indices;
+            for (std::size_t i = 1; i <= rank; ++i) {
+                indices.push_back(info(operand(i)));
+            }
+            std::optional<TensorInfo> mask;
+            if (op.operands.size() > rank + 2) {
+                mask = info(operand(rank + 2));
+            }
+            kernel_target().store(info(operand(0)), indices, info(operand(rank + 1)), mask);
+            return;
+        }
         case ir::OpKind::EnumConst: {
             Val variant;
             variant.kind = Val::Kind::Enum;
@@ -1685,6 +1725,9 @@ private:
             fail("callee `" + op.attributes.name + "` is not defined in this program");
         }
         const ir::Function& callee = *found->second;
+        if (!callee.kernel.empty() && try_kernel(op, callee)) {
+            return;
+        }
         if (callee.gradient != ir::no_id) {
             call_with_gradient(op, callee);
             return;
@@ -1797,12 +1840,33 @@ private:
         if (results.empty() || results.front().kind != Val::Kind::Tensor) {
             fail("internal: an op with a `grad` must return one tensor");
         }
+        const GraphTarget::Pullback pullback = make_pullback(callee, subst, arguments);
+        Val result = results.front();
+        result.name = target_.end_custom_gradient(infos, info(result), pullback);
+        result.grid_rank = grid_.size();
+        define(op, result);
+    }
+
+    // The backward pass of an op's `grad`, for the tensor arguments of a
+    // call: emitted from the names it is given (see `GraphTarget::Pullback`).
+    GraphTarget::Pullback make_pullback(const ir::Function& callee,
+                                        const Substitution& subst,
+                                        const std::vector<Val>& arguments) {
+        const ir::Block& gradient = module_.block(module_.region(callee.gradient).blocks.front());
+        std::vector<std::size_t> tensors;
+        std::vector<bool> takes;
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            takes.push_back(
+                sema::takes_gradient(types_, module_.value(gradient.arguments[i]).type));
+            if (arguments[i].kind == Val::Kind::Tensor) {
+                tensors.push_back(i);
+            }
+        }
         const ir::RegionId region = callee.gradient;
-        const GraphTarget::Pullback pullback =
-            [this, region, subst, arguments, tensors, takes](
-                const std::vector<TensorInfo>& given,
-                const TensorInfo& result,
-                const TensorInfo& grad) -> std::vector<std::optional<std::string>> {
+        return [this, region, subst, arguments, tensors, takes](
+                   const std::vector<TensorInfo>& given,
+                   const TensorInfo& result,
+                   const TensorInfo& grad) -> std::vector<std::optional<std::string>> {
             std::vector<Val> bound = arguments;
             for (std::size_t k = 0; k < tensors.size(); ++k) {
                 bound[tensors[k]].name = given[k].name;
@@ -1831,12 +1895,156 @@ private:
             }
             return out;
         };
-        Val result = results.front();
-        result.name = target_.end_custom_gradient(infos, info(result), pullback);
-        result.grid_rank = grid_.size();
-        define(op, result);
     }
 
+    // An op with a `kernel`, launched in place of its body where the target
+    // runs kernels and the kernel's `where` clause holds; false otherwise.
+    bool try_kernel(const ir::Operation& op, const ir::Function& callee) {
+        if (!options_.kernels) {
+            return false;
+        }
+        const std::unique_ptr<KernelTarget> writer = target_.kernel_target();
+        const auto found = functions_.find(callee.kernel);
+        if (!writer || !grid_.empty() || found == functions_.end()) {
+            return false;
+        }
+        const ir::Function& kernel = *found->second;
+        const Substitution subst = types_.substitute(op.attributes.substitution, frame().subst);
+        Substitution bound;
+        for (std::size_t i = 0; i < kernel.generics.size() && i < callee.kernel_args.size(); ++i) {
+            sema::bind(bound, kernel.generics[i], types_.substitute(callee.kernel_args[i], subst));
+        }
+        for (const sema::ConstraintInfo& constraint : kernel.constraints) {
+            const std::int64_t lhs =
+                constant(types_.substitute(constraint.lhs, bound), "a kernel's constraint");
+            const std::int64_t rhs =
+                constant(types_.substitute(constraint.rhs, bound), "a kernel's constraint");
+            if (!relation_holds(constraint.relation, lhs, rhs)) {
+                return false;
+            }
+        }
+        std::vector<Val> arguments;
+        for (const ir::ValueId id : op.operands) {
+            arguments.push_back(value(id));
+            if (arguments.back().kind != Val::Kind::Tensor) {
+                return false;
+            }
+        }
+
+        KernelLaunch launch;
+        launch.op = callee.name;
+        launch.name = kernel.name;
+        // The grid's sizes, compile-time integers of the kernel's generics.
+        Frame sizes;
+        sizes.subst = bound;
+        frames_.push_back(std::move(sizes));
+        const ir::Block& grid = module_.block(module_.region(kernel.grid).blocks.front());
+        for (const ir::ValueId size : module_.op(grid.ops.back()).operands) {
+            launch.grid.push_back(range_bound(size));
+        }
+        frames_.pop_back();
+        for (const Val& argument : arguments) {
+            launch.arguments.push_back(info(argument));
+        }
+        const ir::Block& body = module_.block(module_.region(kernel.body).blocks.front());
+        for (std::size_t i = body.arguments.size() - kernel.outputs; i < body.arguments.size();
+             ++i) {
+            const TypeData& data =
+                types_.get(types_.substitute(module_.value(body.arguments[i]).type, bound));
+            launch.results.push_back({"", concrete_shape(data.shape), concrete_dtype(data.dtype)});
+        }
+        launch.program = Evaluator(module_, options_, *writer).run_kernel(kernel, bound);
+        launch.body = [this, &callee, subst, arguments](const std::vector<TensorInfo>& given) {
+            std::vector<Val> bound_arguments = arguments;
+            for (std::size_t i = 0; i < given.size() && i < bound_arguments.size(); ++i) {
+                bound_arguments[i].name = given[i].name;
+            }
+            const std::vector<Val> returned = run_call_region(callee.body, subst, bound_arguments);
+            std::vector<std::string> names;
+            for (const Val& result : returned.empty() || returned.front().kind != Val::Kind::Tuple
+                                         ? returned
+                                         : returned.front().elements) {
+                names.push_back(result.name);
+            }
+            return names;
+        };
+        if (callee.gradient != ir::no_id) {
+            launch.pullback = make_pullback(callee, subst, arguments);
+        }
+        const auto names = target_.launch_kernel(launch);
+        if (!names || names->size() != launch.results.size()) {
+            return false;
+        }
+        Val result;
+        if (names->size() == 1) {
+            result =
+                tensor(names->front(), launch.results.front().shape, launch.results.front().dtype);
+        } else {
+            result.kind = Val::Kind::Tuple;
+            for (std::size_t i = 0; i < names->size(); ++i) {
+                result.elements.push_back(
+                    tensor((*names)[i], launch.results[i].shape, launch.results[i].dtype));
+            }
+        }
+        define(op, result);
+        return true;
+    }
+
+    static bool relation_holds(shape::Relation relation, std::int64_t lhs, std::int64_t rhs) {
+        switch (relation) {
+        case shape::Relation::Equal:
+            return lhs == rhs;
+        case shape::Relation::NotEqual:
+            return lhs != rhs;
+        case shape::Relation::Less:
+            return lhs < rhs;
+        case shape::Relation::LessEqual:
+            return lhs <= rhs;
+        case shape::Relation::Greater:
+            return lhs > rhs;
+        case shape::Relation::GreaterEqual:
+            return lhs >= rhs;
+        }
+        return false;
+    }
+
+    KernelTarget& kernel_target() {
+        auto* kernel = dynamic_cast<KernelTarget*>(&target_);
+        if (kernel == nullptr) {
+            fail("internal: a kernel's operation outside a kernel");
+        }
+        return *kernel;
+    }
+
+public:
+    // A kernel's body with its generics `subst`, written by the kernel
+    // target this evaluator writes to.
+    KernelProgram run_kernel(const ir::Function& kernel, const Substitution& subst) {
+        KernelTarget& writer = kernel_target();
+        Frame frame;
+        frame.subst = subst;
+        const ir::Block& body = module_.block(module_.region(kernel.body).blocks.front());
+        const std::size_t results = body.arguments.size() - kernel.outputs;
+        for (std::size_t i = 0; i < body.arguments.size(); ++i) {
+            const ir::Value& argument = module_.value(body.arguments[i]);
+            const TypeData& data = types_.get(types_.substitute(argument.type, subst));
+            const ScalarKind dtype = concrete_dtype(data.dtype);
+            if (data.kind == TypeKind::Tensor) {
+                const Dims shape = concrete_shape(data.shape);
+                frame.values[body.arguments[i]] =
+                    tensor(writer.memory(argument.name, shape, dtype, i >= results), shape, dtype);
+            } else {
+                frame.values[body.arguments[i]] =
+                    tensor(writer.scalar(argument.name, dtype), {}, dtype);
+            }
+        }
+        frames_.push_back(std::move(frame));
+        run_block(body);
+        frames_.pop_back();
+        return writer.program();
+    }
+
+private:
     // A region run as a call's: a frame of its own, outside any grid.
     std::vector<Val> run_call_region(ir::RegionId region,
                                      const Substitution& subst,
@@ -2234,6 +2442,8 @@ export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget&
         return std::unexpected(error.what());
     } catch (const GradientError& error) {
         return std::unexpected(std::string("gradient: ") + error.what());
+    } catch (const KernelError& error) {
+        return std::unexpected(std::string("kernel: ") + error.what());
     }
 }
 
@@ -2847,6 +3057,15 @@ std::string prune_python_assignments(const std::string& body, const std::string&
         }
     }
     return out;
+}
+
+std::unique_ptr<KernelTarget> GraphTarget::kernel_target() const {
+    return nullptr;
+}
+
+std::optional<std::vector<std::string>> GraphTarget::launch_kernel(const KernelLaunch& launch) {
+    (void)launch;
+    return std::nullopt;
 }
 
 std::string python_tuple(const Dims& dims) {

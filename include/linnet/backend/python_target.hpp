@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -120,6 +121,12 @@ protected:
                            const TensorInfo& result,
                            const Pullback& pullback,
                            const std::string& indent);
+    // An op's body, emitted at `indent` in a scope of its own from the
+    // arguments `a0`, `a1`, ...: the text and its results' names.
+    std::pair<std::string, std::vector<std::string>>
+    emit_body(const std::vector<TensorInfo>& arguments,
+              const std::function<std::vector<std::string>(const std::vector<TensorInfo>&)>& body,
+              const std::string& indent);
 
     std::string library_;   // `torch`, `jnp`
     std::string bool_name_; // the library's boolean dtype, after `library_.`

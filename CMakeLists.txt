@@ -51,6 +51,7 @@ add_library(linnet_core STATIC
     src/ast/dump.cpp
     src/backend/graph_export.cpp
     src/backend/gradient.cpp
+    src/backend/triton.cpp
     src/backend/onnx.cpp
     src/backend/plan.cpp
     src/backend/plan_reader.cpp

@@ -106,6 +106,8 @@ dev = [
     "trl>=1.14",
     "accelerate>=1.10",
     "optax>=0.2",
+    # Kernels in generated PyTorch; tests run them in Triton's interpreter.
+    "triton>=3.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [[tool.uv.index]]
