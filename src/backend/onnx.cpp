@@ -692,6 +692,15 @@ public:
         return node("Reshape", {value, target}, "", shape, value.dtype);
     }
 
+    std::optional<std::string> scatter_add(const Dims& shape,
+                                           ScalarKind dtype,
+                                           const TensorInfo& indices,
+                                           const TensorInfo& values) override {
+        const Literal zero = sema::is_float(dtype) ? Literal::of_real(0.0) : Literal::of_integer(0);
+        const TensorInfo zeros{broadcast(scalar_constant(zero, dtype), {}, shape), shape, dtype};
+        return node("ScatterND", {zeros, indices, values}, "reduction = \"add\"", shape, dtype);
+    }
+
     std::optional<std::string>
     update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
         Dims row_shape = stack.shape;
@@ -914,6 +923,12 @@ public:
             const std::string name = "output" + std::to_string(i);
             name_output(results[i].name, name);
             outputs.push_back(tensor_type(results[i].shape, results[i].dtype) + " " + name);
+            // A gradient export's results after the loss: its gradient with
+            // respect to these.
+            if (i > 0 && i <= gradients().size()) {
+                metadata_.push_back("\"linnet.gradient." + name + "\": \"" + gradients()[i - 1] +
+                                    "\"");
+            }
         }
         for (std::size_t i = 0; i < states.size(); ++i) {
             const std::string name = "next_state" + std::to_string(i);

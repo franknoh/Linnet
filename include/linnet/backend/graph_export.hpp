@@ -310,6 +310,21 @@ public:
         return {};
     }
 
+    // `values` added into zeros of `shape` and `dtype` at `indices` -- shaped
+    // as `gather` takes them, `[..., k]` positions along the first `k` axes --
+    // where several may hit the same position: the backward pass of a
+    // gather. Without it, a gather has no gradient.
+    virtual std::optional<std::string> scatter_add(const Dims& shape,
+                                                   sema::ScalarKind dtype,
+                                                   const TensorInfo& indices,
+                                                   const TensorInfo& values) {
+        (void)shape;
+        (void)dtype;
+        (void)indices;
+        (void)values;
+        return std::nullopt;
+    }
+
     // Loops over the integers `start <= i < stop`, known at export time, in
     // the target's own counted form: `begin_counted` opens the loop and names
     // the index (an `i64` scalar) and then the carried values the body sees;
@@ -337,8 +352,15 @@ public:
                                const std::string& block_name,
                                const std::string& entry_name) = 0;
 
+    // An export of a gradient (`GraphExportOptions::gradient`): the paths of
+    // the parameters (or inputs) whose gradients follow the loss among the
+    // results, in order. Set before `finish`, which records them.
+    void set_gradients(std::vector<std::string> paths) { gradients_ = std::move(paths); }
+    const std::vector<std::string>& gradients() const { return gradients_; }
+
 private:
     std::map<std::string, std::int64_t> call_generics_;
+    std::vector<std::string> gradients_;
 };
 
 // Whether `text` matches the glob `pattern`: `*` any run of characters,
@@ -423,6 +445,11 @@ struct GraphExportOptions {
     std::vector<std::string> lora;
     std::int64_t lora_rank = 0;
     double lora_alpha = 0.0;
+    // The entry's gradient instead of the entry (`GradientTarget`): its one
+    // result, a floating scalar, then that loss's gradient with respect to
+    // every floating parameter -- or, for a module-level entry, every floating
+    // input.
+    bool gradient = false;
     // StableHLO and generated JAX only: f32 products (matrix products,
     // convolutions, attention) at full f32 precision. XLA otherwise runs
     // them at the device's default, which on an NVIDIA GPU since Ampere is

@@ -731,6 +731,10 @@ public:
         }
         out += "NEXT_STATES = " + string_list(next_states) + "\n";
         out += "RESULTS = " + std::to_string(results.size()) + "\n";
+        if (!gradients().empty()) {
+            // The results after the loss: its gradient with respect to these.
+            out += "GRADIENTS = " + string_list(gradients()) + "\n";
+        }
         std::string tail = "    return (";
         std::vector<std::string> outputs;
         outputs.reserve(results.size() + states.size());
@@ -1052,6 +1056,15 @@ public:
     update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
         return define(stack.name + ".index_copy(0, " + index.name + ".reshape(1), " + value.name +
                       ".unsqueeze(0))");
+    }
+
+    std::optional<std::string> scatter_add(const Dims& shape,
+                                           ScalarKind dtype,
+                                           const TensorInfo& indices,
+                                           const TensorInfo& values) override {
+        return define("torch.zeros(" + python_tuple(shape) + ", dtype=" + dtype_name(dtype) +
+                      ", device=" + device() + ").index_put_(tuple(" + indices.name +
+                      ".unbind(-1)), " + values.name + ", accumulate=True)");
     }
 
     std::vector<std::string> end_while(const std::vector<TensorInfo>& next) override {

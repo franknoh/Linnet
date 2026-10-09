@@ -132,6 +132,7 @@ linnet jax   ...same options...
 | `--bind <G>=<value>` | a generic's value; defaults apply. Shape packs: `--bind S=2,3`, or `--bind S=` for none |
 | `--optionals present\|absent` | optional parameters; default `absent` |
 | `--numerics exact\|equivalent\|fast` | the numerics policy; default `equivalent` |
+| `--grad` | the entry's gradient instead (see below) |
 
 Every generic must be bound, and the values must satisfy the `where`
 clauses (`H=5 Heads=2` fails `H % Heads == 0`). Anything the format cannot
@@ -148,6 +149,24 @@ error.
 | `onnx` | ONNX text (`onnx.parser.parse_model`); parameters are `param<N>` inputs with `linnet.path.param<N>` metadata, states `state<N>` in and `next_state<N>` out |
 | `torch` | a Python module: `main(*inputs, *parameters, *states, *constants)` with `PARAMETERS`, `STATES`, `NEXT_STATES`, `RESULTS`, and `constants(device)`, the input-independent tensors computed once per shape |
 | `jax` | the same module in `jax.numpy`, differentiable with `jax.grad` |
+
+### Gradients
+
+`--grad` exports a loss and its gradient. The entry must return one
+floating scalar. The export returns that loss, then its gradient with
+respect to every floating parameter in the order the export takes them,
+or, for a module-level entry, every floating input.
+
+```bash
+linnet onnx --grad --entry loss --bind N=32 model.linnet
+```
+
+The compiler writes the backward pass from the exported operations, so
+ONNX and StableHLO models can be trained by a runtime with no autograd.
+Each format lists the paths: `linnet.gradients` on `@main`,
+`linnet.gradient.output<N>` metadata, or `GRADIENTS` in Python. Library
+calls run as their canonical bodies. Runtime loops and entries that assign
+`state` have no gradient yet.
 
 ### Generated Python
 

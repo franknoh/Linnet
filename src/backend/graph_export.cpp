@@ -1,5 +1,6 @@
 #include "linnet/backend/graph_export.hpp"
 
+#include "linnet/backend/gradient.hpp"
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
@@ -2127,9 +2128,21 @@ private:
 std::expected<std::string, std::string>
 export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget& target) {
     try {
-        return Evaluator(module, options, target).run();
+        if (!options.gradient) {
+            return Evaluator(module, options, target).run();
+        }
+        if (!options.placement.empty() || !options.offload.empty() ||
+            !options.fully_shard.empty() || options.prepare) {
+            return std::unexpected("a gradient export runs on one device, with every parameter "
+                                   "an argument: not with placement, offload, sharding or "
+                                   "--prepare");
+        }
+        GradientTarget gradient(target);
+        return Evaluator(module, options, gradient).run();
     } catch (const Unsupported& error) {
         return std::unexpected(error.what());
+    } catch (const GradientError& error) {
+        return std::unexpected(std::string("gradient: ") + error.what());
     }
 }
 

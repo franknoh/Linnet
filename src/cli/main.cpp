@@ -92,12 +92,15 @@ void print_usage(std::FILE* out) {
         "  stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...\n"
         "            [--numerics exact|equivalent|fast]\n"
         "            [--optionals present|absent] [--absent <param>]...\n"
-        "            [--absent-file <file>|-] [--std <dir>] <file>\n"
+        "            [--absent-file <file>|-] [--grad] [--std <dir>] <file>\n"
         "                                       Print an entry as a StableHLO module with\n"
         "                                       static shapes; parameters are arguments.\n"
         "                                       --entry names an entry of the root block\n"
         "                                       or a module-level entry (a function of\n"
-        "                                       its inputs alone, exported on its own)\n"
+        "                                       its inputs alone, exported on its own);\n"
+        "                                       --grad exports a scalar loss and its\n"
+        "                                       gradient with respect to every floating\n"
+        "                                       parameter (a module-level entry's inputs)\n"
         "  onnx [same options as stablehlo] <file>\n"
         "                                       Print an entry as an ONNX model (text format)\n"
         "  torch [same options as stablehlo] [--place <block>=<slot>]...\n"
@@ -585,6 +588,8 @@ int run_graph_export(std::span<const std::string_view> args,
                 export_options.bindings[std::string(value.substr(0, equals))] =
                     std::string(value.substr(equals + 1));
             }
+        } else if (arg == "--grad") {
+            export_options.gradient = true;
         } else if (arg == "--prepare" && (format == "torch" || format == "jax")) {
             export_options.prepare = true;
         } else if (arg == "--no-fuse" && format == "torch") {

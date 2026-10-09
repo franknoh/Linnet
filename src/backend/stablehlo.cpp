@@ -231,6 +231,37 @@ public:
         return emit("reshape", {value}, "", shape, value.dtype);
     }
 
+    std::optional<std::string> scatter_add(const Dims& shape,
+                                           ScalarKind dtype,
+                                           const TensorInfo& indices,
+                                           const TensorInfo& values) override {
+        // The leading axes take the index columns; the values' trailing axes
+        // are the windows, the rest of each position.
+        const auto scattered = static_cast<std::size_t>(indices.shape.back());
+        const std::size_t batch = indices.shape.size() - 1;
+        Dims inserted;
+        Dims windows;
+        for (std::size_t i = 0; i < shape.size(); ++i) {
+            if (i < scattered) {
+                inserted.push_back(static_cast<std::int64_t>(i));
+            } else {
+                windows.push_back(static_cast<std::int64_t>(batch + i - scattered));
+            }
+        }
+        const Literal zero = sema::is_float(dtype) ? Literal::of_real(0.0) : Literal::of_integer(0);
+        const TensorInfo zeros{broadcast(scalar_constant(zero, dtype), {}, shape), shape, dtype};
+        return emit("scatter",
+                    {zeros, indices, values},
+                    "scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = " +
+                        index_list(windows) + ", inserted_window_dims = " + index_list(inserted) +
+                        ", scatter_dims_to_operand_dims = " + index_list(inserted) +
+                        ", index_vector_dim = " + std::to_string(batch) +
+                        ">, indices_are_sorted = false, unique_indices = false",
+                    shape,
+                    dtype,
+                    combiner("add", dtype));
+    }
+
     std::optional<std::string>
     update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
         Dims row_shape = stack.shape;
@@ -682,12 +713,24 @@ public:
         out += "  func.func @main(";
         out += join(arguments_, ", ");
         out += ") -> " + (outputs.size() == 1 ? types : "(" + types + ")");
+        std::vector<std::string> attributes;
         if (!states.empty()) {
-            out += " attributes {linnet.states = [";
+            std::string listed = "linnet.states = [";
             for (std::size_t i = 0; i < states.size(); ++i) {
-                out += (i == 0 ? "\"" : ", \"") + states[i].first + "\"";
+                listed += (i == 0 ? "\"" : ", \"") + states[i].first + "\"";
             }
-            out += "]}";
+            attributes.push_back(listed + "]");
+        }
+        if (!gradients().empty()) {
+            // The results after the loss: its gradient with respect to these.
+            std::string listed = "linnet.gradients = [";
+            for (std::size_t i = 0; i < gradients().size(); ++i) {
+                listed += (i == 0 ? "\"" : ", \"") + gradients()[i] + "\"";
+            }
+            attributes.push_back(listed + "]");
+        }
+        if (!attributes.empty()) {
+            out += " attributes {" + join(attributes, ", ") + "}";
         }
         out += " {\n";
         out += body_;
