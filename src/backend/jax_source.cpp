@@ -161,6 +161,15 @@ public:
                       ", " + index.name + ", 0)");
     }
 
+    std::optional<std::string> scatter_add(const Dims& shape,
+                                           ScalarKind dtype,
+                                           const TensorInfo& indices,
+                                           const TensorInfo& values) override {
+        return define("jnp.zeros(" + python_tuple(shape) + ", dtype=" + dtype_name(dtype) +
+                      ").at[tuple(jnp.moveaxis(" + indices.name + ", -1, 0))].add(" + values.name +
+                      ")");
+    }
+
     std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) override {
         (void)shape;
@@ -585,6 +594,10 @@ public:
         }
         out += "NEXT_STATES = " + string_list(next_states) + "\n";
         out += "RESULTS = " + std::to_string(results.size()) + "\n";
+        if (!gradients().empty()) {
+            // The results after the loss: its gradient with respect to these.
+            out += "GRADIENTS = " + string_list(gradients()) + "\n";
+        }
         std::string tail = "    return (";
         std::vector<std::string> outputs;
         outputs.reserve(results.size() + states.size());
