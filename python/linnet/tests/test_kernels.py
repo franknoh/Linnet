@@ -18,6 +18,9 @@ import torch
 from linnet.compiler import find_compiler
 
 pytest.importorskip("triton")
+# Set by conftest.py without a GPU, before Triton loaded.
+if os.environ.get("TRITON_INTERPRET") != "1":
+    pytest.skip("Triton's interpreter was not on as Triton loaded", allow_module_level=True)
 
 REPO = Path(__file__).resolve().parents[3]
 KERNELS = REPO / "spec-tests/valid/030_kernels.linnet"
@@ -53,7 +56,7 @@ def _interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
             if (REPO / candidate).exists():
                 monkeypatch.setenv("LINNET_BIN", str(REPO / candidate))
                 break
-    # Triton reads it as a kernel is defined: kernels run on the CPU.
+    # Generated code reads it: kernels run on the CPU, in the interpreter.
     monkeypatch.setenv("TRITON_INTERPRET", "1")
 
 
