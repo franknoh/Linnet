@@ -14,6 +14,8 @@ std::string_view keyword_of(const ast::FunctionDecl& decl) {
         return "op";
     case ast::FunctionKind::Entry:
         return "entry";
+    case ast::FunctionKind::Kernel:
+        return "kernel";
     }
     return "fn";
 }

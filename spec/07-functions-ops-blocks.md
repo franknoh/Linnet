@@ -132,3 +132,37 @@ The default MUST satisfy the declared constraint.
 ## 7.8 Overloading
 
 A module cannot declare two functions or ops with the same name; there is no overloading by argument type.
+
+## 7.9 Kernels
+
+A `kernel` is a tile program: its body runs once per program of a launch grid, on tiles, small tensors of compile-time shapes. An op names a kernel that may compute it in place of its body:
+
+```text
+pub kernel row_softmax<R: Dim, C: Dim, B: Dim>(
+    x: Tensor[R, C; f32],
+) -> y: Tensor[R, C; f32] grid(R)
+where B >= C {
+    let row = program_id(0)
+    let cols = iota<i32>(B)
+    let mask = cols < C
+    let v = load(x[row, cols], mask, -1e30)
+    let e = exp(v - max[c] v[c])
+    store(y[row, cols], e / sum[c] e[c], mask)
+}
+
+pub op softmax<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> Tensor[R, C; f32] kernel row_softmax<R, C, 1024> {
+    ...
+}
+```
+
+A kernel is declared at module level. Its parameters are tensors in memory or scalars; its named results are tensors in memory. Every tensor has a known rank: no shape pack. `grid(...)` gives one to three compile-time integers, the number of programs along each axis.
+
+In the body:
+
+- `program_id(axis)` is the program's `i32` index along grid axis 0, 1, or 2.
+- `load(x[i, j], mask, other)` reads a tensor parameter. Each index is an integer scalar or an integer tile, and each tile adds its axes to the result in order: with tiles `rows: [BM]` and `cols: [BN]`, `x[rows, cols]` is a `[BM, BN]` tile. Where the optional `bool` mask, of the result's shape or a scalar, is false, the element is `other` (default `0`) and memory is not read.
+- `store(y[i, j], value, mask)` writes a result: `value` is a tile of the indexed shape or a scalar, written where the optional mask is true. `store` is the one call that stands as a statement.
+- A tensor parameter or result appears only in `load` or `store`. Tiles use the rest of the language: arithmetic, index notation, reductions, `iota`, `fill`, `for` and `while` loops, `fn` calls. A kernel returns nothing and is not called.
+
+An op's `kernel name<args>` binds the kernel's generics in terms of the op's. The kernel takes the op's parameters, in order and of the same types, and writes what the op returns, one result or a tuple. A backend MAY launch the kernel in place of the op's body where the kernel's `where` clause holds for the bound generics; the body remains the op's definition. A kernel that disagrees with it is a program error the compiler cannot detect.
+

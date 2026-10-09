@@ -651,6 +651,16 @@ private:
                 [&](const YieldStmt& yield) {
                     return b_.concat({b_.text("yield "), expr(yield.value)});
                 },
+                [&](const StoreStmt& store) {
+                    std::vector<DocId> parts{
+                        b_.text("store("), expr(store.target), b_.text(", "), expr(store.value)};
+                    if (store.mask != no_id) {
+                        parts.push_back(b_.text(", "));
+                        parts.push_back(expr(store.mask));
+                    }
+                    parts.push_back(b_.text(")"));
+                    return b_.concat(parts);
+                },
                 [&](const StaticForStmt& loop) {
                     DocId iterable = expr(loop.iterable);
                     if (loop.range_end != no_id) {
@@ -694,9 +704,10 @@ private:
     }
 
     DocId function(const FunctionDecl& decl, SourceSpan item_span) {
-        const std::string_view keyword = decl.kind == FunctionKind::Fn   ? "fn "
-                                         : decl.kind == FunctionKind::Op ? "op "
-                                                                         : "entry ";
+        const std::string_view keyword = decl.kind == FunctionKind::Fn       ? "fn "
+                                         : decl.kind == FunctionKind::Op     ? "op "
+                                         : decl.kind == FunctionKind::Kernel ? "kernel "
+                                                                             : "entry ";
         std::vector<DocId> parts{b_.text(keyword), name(decl.name)};
         parts.push_back(generic_params(decl.generics, decl.generics_span));
 
@@ -718,6 +729,27 @@ private:
         if (decl.return_type != no_id) {
             parts.push_back(b_.text(" -> "));
             parts.push_back(type(decl.return_type));
+        }
+        if (decl.kind == FunctionKind::Kernel) {
+            // `-> y: T grid(...)`; several results in parentheses.
+            parts.push_back(b_.text(decl.results.size() == 1 ? " -> " : " -> ("));
+            for (std::size_t i = 0; i < decl.results.size(); ++i) {
+                parts.push_back(b_.text(i == 0 ? "" : ", "));
+                parts.push_back(name(decl.results[i].name));
+                parts.push_back(b_.text(": "));
+                parts.push_back(type(decl.results[i].type));
+            }
+            parts.push_back(b_.text(decl.results.size() == 1 ? " grid(" : ") grid("));
+            for (std::size_t i = 0; i < decl.grid.size(); ++i) {
+                parts.push_back(b_.text(i == 0 ? "" : ", "));
+                parts.push_back(expr(decl.grid[i]));
+            }
+            parts.push_back(b_.text(")"));
+        }
+        if (decl.kernel) {
+            parts.push_back(b_.text(" kernel "));
+            parts.push_back(name(decl.kernel->name));
+            parts.push_back(generic_args(decl.kernel->generic_args));
         }
 
         where_clause(parts, decl.constraints);

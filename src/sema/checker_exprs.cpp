@@ -644,6 +644,16 @@ TypeId Checker::check_name(const ast::Expr& node, const ast::NameExpr& name) {
     }
     const EntityId entity = lookup(name.name);
     facts(current_expr_).entity = entity;
+    if (entity != no_entity && entities_[entity].is_memory && !memory_access_) {
+        const std::string text(name.name.text);
+        error(codes::invalid_kernel,
+              node.span,
+              entities_[entity].is_parameter
+                  ? "`" + text + "` is in memory: read it with `load(" + text + "[...])`"
+                  : "`" + text + "` is a result in memory: write it with `store(" + text +
+                        "[...], value)`");
+        return types_.error();
+    }
     if (entity == no_entity) {
         auto report = error(codes::unknown_symbol,
                             node.span,
@@ -1619,7 +1629,14 @@ void Checker::check_stmt(ast::StmtId id, bool in_static_for) {
                     coerce(value, target.type, ast().expr(assign.value).span, "this value");
                 }
             },
+            [&](const ast::StoreStmt& store) { check_store(store, node.span); },
             [&](const ast::ReturnStmt& ret) {
+                if (env_->in_kernel) {
+                    error(codes::invalid_kernel,
+                          node.span,
+                          "a kernel returns nothing: it writes its results with `store`");
+                    return;
+                }
                 if (in_static_for) {
                     error(
                         codes::missing_return, node.span, "`return` is not allowed inside a loop");

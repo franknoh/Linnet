@@ -378,6 +378,28 @@ TEST("parser: an op's grad clause") {
              "E1101");
 }
 
+TEST("parser: kernels, their stores, and an op's kernel") {
+    const Parsed parsed(
+        "module m\n"
+        "kernel k<B: Dim>(x: Tensor[4; f32]) -> (y: Tensor[4; f32], z: Tensor[4; f32]) grid(1) {\n"
+        "    let i = iota<i32>(B)\n"
+        "    store(y[i], load(x[i], i < 4, 0.0), i < 4)\n"
+        "    store(z[i], 1.0)\n"
+        "}\n"
+        "op f(x: Tensor[4; f32]) -> Tensor[4; f32] kernel k<4> { return x }\n");
+    CHECK_EQ(parsed.codes(), "");
+    CHECK(parsed.tree.find("kernel k") != std::string::npos);
+    CHECK(parsed.tree.find("result z: Tensor[4; f32]") != std::string::npos);
+    CHECK(parsed.tree.find("store") != std::string::npos);
+    CHECK(parsed.tree.find("kernel k <4>") != std::string::npos);
+    // `grid` and `store` name things elsewhere.
+    CHECK_EQ(
+        Parsed("module m\nfn f(grid: f32) -> f32 { let store = grid\nreturn store }\n").codes(),
+        "");
+    CHECK_EQ(Parsed("module m\nkernel k(x: Tensor[4; f32]) -> y: Tensor[4; f32] { }\n").codes(),
+             "E1101");
+}
+
 TEST("parser: a match arm cannot start with a tuple pattern") {
     const Parsed first("module m\nfn f() { return match o { (c, d) => c none => x } }\n");
     CHECK_EQ(first.codes(), "E1101");

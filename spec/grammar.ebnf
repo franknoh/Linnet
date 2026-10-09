@@ -16,6 +16,7 @@ item               = [ "pub" ], ( const_decl
                                   | enum_decl
                                   | fn_decl
                                   | op_decl
+                                  | kernel_decl
                                   | block_decl
                                   | entry_decl ) ;
 
@@ -30,9 +31,17 @@ enum_decl          = "enum", identifier, [ generic_params ], "{", [ identifier, 
 fn_decl            = "fn", identifier, [ generic_params ], parameter_list,
                      [ "->", type ], [ where_clause ], block_body ;
 op_decl            = "op", identifier, [ generic_params ], parameter_list,
-                     "->", type, [ where_clause ], block_body, [ grad_clause ] ;
+                     "->", type, [ kernel_binding ], [ where_clause ], block_body,
+                     [ grad_clause ] ;
+kernel_binding     = "kernel", identifier, [ generic_arguments ] ;
 (* `grad` is a keyword only here, after an op's body. *)
 grad_clause        = "grad", "(", identifier, ",", identifier, ")", block_body ;
+(* `grid` is a keyword only here, after a kernel's results. *)
+kernel_decl        = "kernel", identifier, [ generic_params ], parameter_list,
+                     "->", kernel_results, "grid", "(", expr, { ",", expr }, ")",
+                     [ where_clause ], block_body ;
+kernel_results     = kernel_result | "(", kernel_result, { ",", kernel_result }, ")" ;
+kernel_result      = identifier, ":", type ;
 entry_decl         = "entry", identifier, [ generic_params ], parameter_list,
                      [ "->", type ], [ where_clause ], block_body ;
 
@@ -62,7 +71,8 @@ statement          = let_stmt
                    | static_for_stmt
                    | while_stmt
                    | for_stmt
-                   | yield_stmt ;
+                   | yield_stmt
+                   | store_stmt ;
 
 let_stmt           = "let", ( pattern, [ ":", type ], "=", expr | comprehension_lhs, "=", expr ) ;
 var_stmt           = "var", identifier, [ ":", type ], "=", expr ;
@@ -73,6 +83,8 @@ while_stmt         = "while", expr, block_body ;
 for_stmt           = for_loop ;
 (* Only as the last statement of a `for` that is a binding's value. *)
 yield_stmt         = "yield", expr ;
+(* Only in a kernel; `store` is a keyword only at a statement's start. *)
+store_stmt         = "store", "(", expr, ",", expr, [ ",", expr ], ")" ;
 for_loop           = "for", identifier, "in", expr, "..", expr, block_body ;
 
 pattern            = identifier

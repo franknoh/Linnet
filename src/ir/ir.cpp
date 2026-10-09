@@ -139,6 +139,9 @@ std::vector<BlockId> Module::all_blocks() const {
         if (function.gradient != no_id) {
             roots.push_back(function.gradient);
         }
+        if (function.grid != no_id) {
+            roots.push_back(function.grid);
+        }
     }
     for (const Constant& constant : constants_) {
         roots.push_back(constant.body);
@@ -176,6 +179,10 @@ public:
             check_region(function.body, visible, "function " + function.name, &function);
             if (function.gradient != no_id) {
                 check_region(function.gradient, visible, "grad of " + function.name, &function);
+            }
+            if (function.grid != no_id) {
+                // The grid yields its sizes, as a constant's body its value.
+                check_region(function.grid, visible, "grid of " + function.name, nullptr);
             }
         }
         for (const Constant& constant : module_.constants()) {
@@ -321,10 +328,25 @@ private:
             header += i == 0 ? " -> " : ", ";
             header += type(function.results[i]);
         }
+        if (!function.kernel.empty()) {
+            header += " kernel @" + function.kernel + "<";
+            for (std::size_t i = 0; i < function.kernel_args.size(); ++i) {
+                header += (i == 0 ? "" : ", ") + module_.types().to_string(function.kernel_args[i]);
+            }
+            header += ">";
+        }
         for (const sema::ConstraintInfo& constraint : function.constraints) {
             header += " where " + module_.model().dims.to_string(constraint.lhs) + " " +
                       std::string(shape::relation_spelling(constraint.relation)) + " " +
                       module_.model().dims.to_string(constraint.rhs);
+        }
+        if (function.grid != no_id) {
+            // The launch grid, yielded by a region of its own.
+            line(header + " grid {");
+            ++indent_;
+            print_block(module_.block(module_.region(function.grid).blocks.front()));
+            --indent_;
+            header = "}";
         }
         line(header + " {");
         ++indent_;
@@ -376,6 +398,7 @@ private:
             return " " + std::string(compare_spelling(a.compare));
         case OpKind::TupleGet:
         case OpKind::StructGet:
+        case OpKind::KernelProgramId:
             return " " + std::to_string(a.integer);
         case OpKind::Concat:
             return " axis " + std::to_string(a.axis);

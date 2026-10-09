@@ -77,6 +77,7 @@ private:
         std::vector<std::vector<IndexVar>> index_scopes;
         std::string owner;
         std::vector<std::string_view> unbound_reported; // per statement, to report once
+        bool in_kernel = false;
     };
     class EnvGuard;
 
@@ -107,6 +108,22 @@ private:
     Env make_env(EntityId entity);
     void check_function_body(EntityId entity);
     void check_gradient(EntityId entity);
+
+    // ------------------------------------------------------------- kernels
+    void check_kernel_signature(EntityId entity);
+    void check_kernel_binding(EntityId op);
+    TypeId
+    check_kernel_call(const ast::Expr& node, const ast::CallExpr& call, std::string_view name);
+    void check_store(const ast::StoreStmt& store, SourceSpan span);
+    // `x[i, j]` in `load` or `store`: the element dtype and the shape the
+    // index tiles make together; nothing when it is not a valid access.
+    struct MemoryAccess {
+        DType dtype;
+        Shape shape;
+    };
+    std::optional<MemoryAccess> check_memory_access(ast::ExprId target, bool is_store);
+    void check_mask(ast::ExprId mask, const Shape& shape);
+    bool memory_access_ = false; // checking the memory a `load` or `store` names
     void report_recursion();
     void collect_manifests();
 

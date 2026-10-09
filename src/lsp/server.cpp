@@ -431,9 +431,10 @@ struct Server::State {
                                name = decl.name.text;
                                selection = decl.name.span;
                                kind = 12;
-                               detail = decl.kind == ast::FunctionKind::Fn   ? "fn"
-                                        : decl.kind == ast::FunctionKind::Op ? "op"
-                                                                             : "entry";
+                               detail = decl.kind == ast::FunctionKind::Fn       ? "fn"
+                                        : decl.kind == ast::FunctionKind::Op     ? "op"
+                                        : decl.kind == ast::FunctionKind::Kernel ? "kernel"
+                                                                                 : "entry";
                            },
                            [&](const ast::BlockDecl& decl) {
                                name = decl.name.text;

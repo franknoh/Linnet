@@ -300,7 +300,9 @@ private:
         if (first_param == 1) {
             bind_name(body.arguments.front(), "self");
         }
-        for (std::size_t i = first_param; i < body.arguments.size(); ++i) {
+        // A kernel's last arguments are its named results.
+        const std::size_t params_end = body.arguments.size() - function.outputs;
+        for (std::size_t i = first_param; i < params_end; ++i) {
             const ir::ValueId argument = body.arguments[i];
             header += i == first_param ? "" : ", ";
             header += name_of(argument) + ": " + type(module_.value(argument).type);
@@ -309,9 +311,26 @@ private:
         if (!function.results.empty()) {
             header += " -> " + type(function.results.front());
         }
+        if (function.is_kernel) {
+            header += function.outputs == 1 ? " -> " : " -> (";
+            for (std::size_t i = params_end; i < body.arguments.size(); ++i) {
+                const ir::ValueId argument = body.arguments[i];
+                header += i == params_end ? "" : ", ";
+                header += name_of(argument) + ": " + type(module_.value(argument).type);
+            }
+            header += function.outputs == 1 ? " grid(" : ") grid(";
+            const ir::Block& grid = module_.block(module_.region(function.grid).blocks.front());
+            const ir::Operation& sizes = module_.op(grid.ops.back());
+            header += operand_list(sizes) + ")";
+        }
+        if (!function.kernel.empty()) {
+            header += " kernel " + kernel_name(function.kernel) + kernel_arguments(function);
+        }
         header += where_clause(function.constraints) + " {\n";
 
+        is_kernel_body_ = function.is_kernel;
         auto statements = emit_statements(body, indent + 1);
+        is_kernel_body_ = false;
         if (!statements) {
             return statements;
         }
@@ -586,14 +605,26 @@ private:
             const ir::Operation& op = module_.op(id);
             switch (op.kind) {
             case ir::OpKind::Return:
-                out += pad + "return" +
-                       (op.operands.empty() ? "" : " " + expr(op.operands.front())) + "\n";
+                // A kernel ends without one: it writes its results instead.
+                if (!(op.operands.empty() && is_kernel_body_)) {
+                    out += pad + "return" +
+                           (op.operands.empty() ? "" : " " + expr(op.operands.front())) + "\n";
+                }
                 break;
             case ir::OpKind::Yield:
                 break; // handled by the enclosing loop
             case ir::OpKind::StateWrite:
                 out += pad + op.attributes.name + " = " + expr(op.operands[1]) + "\n";
                 break;
+            case ir::OpKind::KernelStore: {
+                // `store(out[i, j], value, mask)`
+                const auto rank = static_cast<std::size_t>(op.attributes.integer);
+                out += pad + "store(" + memory_access(op, rank) + ", " +
+                       expr(op.operands[rank + 1]) +
+                       (op.operands.size() > rank + 2 ? ", " + expr(op.operands[rank + 2]) : "") +
+                       ")\n";
+                break;
+            }
             case ir::OpKind::TupleGet:
                 if (!names_.contains(op.results.front())) {
                     out += pad + destructure(block, op.operands.front()) + "\n";
@@ -1019,11 +1050,49 @@ private:
             const std::string base = expr(op.operands[0]);
             return base == "self" ? a.name : base + "." + a.name;
         }
+        case ir::OpKind::KernelProgramId:
+            return "program_id(" + std::to_string(a.integer) + ")";
+        case ir::OpKind::KernelLoad: {
+            const auto rank = static_cast<std::size_t>(a.integer);
+            return "load(" + memory_access(op, rank) +
+                   (op.operands.size() > rank + 1 ? ", " + operand_list(op, rank + 1) : "") + ")";
+        }
         case ir::OpKind::ArrayGet:
             return expr(op.operands[0]) + "[" + expr(op.operands[1]) + "]";
         default:
             return "<unsupported " + std::string(ir::op_spelling(op.kind)) + ">";
         }
+    }
+
+    // `x[i, j]`: a kernel's tensor in memory and its first `rank` indices.
+    std::string memory_access(const ir::Operation& op, std::size_t rank) {
+        std::string text = expr(op.operands[0]) + "[";
+        for (std::size_t i = 1; i <= rank; ++i) {
+            text += (i == 1 ? "" : ", ") + expr(op.operands[i]);
+        }
+        return text + "]";
+    }
+
+    // An op's kernel by name, imported when another module declares it.
+    std::string kernel_name(const std::string& qualified) {
+        const auto found = functions_by_name_.find(qualified);
+        if (found != functions_by_name_.end()) {
+            import_entity(found->second->entity);
+            return std::string(model_.entities[found->second->entity].name);
+        }
+        const std::size_t separator = qualified.find("::");
+        const std::string name =
+            separator == std::string::npos ? qualified : qualified.substr(separator + 2);
+        if (separator != std::string::npos && qualified.substr(0, separator) != module_path()) {
+            imports_[qualified.substr(0, separator)].insert(name);
+        }
+        return name;
+    }
+
+    std::string kernel_arguments(const ir::Function& function) const {
+        ir::Attributes arguments;
+        arguments.generic_args = function.kernel_args;
+        return generic_arguments(arguments);
     }
 
     // Explicit generic arguments make emitted calls independent of inference.
@@ -1071,6 +1140,7 @@ private:
     std::set<std::pair<ir::BlockId, std::string>> written_states_;
     std::map<ir::ValueId, std::size_t> uses_;
     std::set<ir::BlockId> statement_blocks_;
+    bool is_kernel_body_ = false; // emitting a kernel, which ends without `return`
     std::set<ir::ValueId> used_across_blocks_;
     std::map<ir::BlockId, ir::BlockId> folded_into_; // taken match arm -> its match's block
     std::map<ir::ValueId, bool> binding_memo_;

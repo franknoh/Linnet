@@ -354,6 +354,15 @@ private:
                        },
                        [&](const ForLoop& loop) { for_loop(loop); },
                        [&](const YieldStmt& yield) { nested("yield", [&] { expr(yield.value); }); },
+                       [&](const StoreStmt& store) {
+                           nested("store", [&] {
+                               expr(store.target);
+                               expr(store.value);
+                               if (store.mask != no_id) {
+                                   expr(store.mask);
+                               }
+                           });
+                       },
                        [&](const StaticForStmt& loop) {
                            nested("static for " + pattern(loop.pattern), [&] {
                                nested("in", [&] { expr(loop.iterable); });
@@ -417,9 +426,10 @@ private:
                            });
                        },
                        [&](const FunctionDecl& decl) {
-                           const std::string_view keyword = decl.kind == FunctionKind::Fn ? "fn "
-                                                            : decl.kind == FunctionKind::Op
-                                                                ? "op "
+                           const std::string_view keyword = decl.kind == FunctionKind::Fn   ? "fn "
+                                                            : decl.kind == FunctionKind::Op ? "op "
+                                                            : decl.kind == FunctionKind::Kernel
+                                                                ? "kernel "
                                                                 : "entry ";
                            nested(visibility + std::string(keyword) + name(decl.name), [&] {
                                generics(decl.generics);
@@ -434,6 +444,22 @@ private:
                                }
                                if (decl.return_type != no_id) {
                                    line("returns " + type(decl.return_type));
+                               }
+                               for (const Parameter& result : decl.results) {
+                                   line("result " + name(result.name) + ": " + type(result.type));
+                               }
+                               if (!decl.grid.empty()) {
+                                   nested("grid", [&] {
+                                       for (const ExprId dim : decl.grid) {
+                                           expr(dim);
+                                       }
+                                   });
+                               }
+                               if (decl.kernel) {
+                                   line("kernel " + name(decl.kernel->name) +
+                                        (decl.kernel->generic_args.empty()
+                                             ? ""
+                                             : " " + generic_args(decl.kernel->generic_args)));
                                }
                                for (const ExprId constraint : decl.constraints) {
                                    nested("where", [&] { expr(constraint); });

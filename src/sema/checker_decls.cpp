@@ -528,6 +528,9 @@ void Checker::resolve_function(EntityId entity) {
         local.module = env.module;
         local.type = parameter.type;
         local.is_parameter = true;
+        // A kernel's tensors are in memory, read with `load`.
+        local.is_memory = decl.kind == ast::FunctionKind::Kernel &&
+                          types_.kind(parameter.type) == TypeKind::Tensor;
         local.state = ResolveState::Done;
         const EntityId created = add_entity(local);
         declare(seen, created, codes::duplicate_name);
@@ -535,6 +538,20 @@ void Checker::resolve_function(EntityId entity) {
         info.param_entities.push_back(created);
     }
     info.result = decl.return_type == ast::no_id ? types_.unit() : eval_type(decl.return_type);
+    // A kernel's results are tensors in memory it writes with `store`.
+    for (const ast::Parameter& result : decl.results) {
+        Entity local;
+        local.kind = EntityKind::Local;
+        local.name = result.name.text;
+        local.span = result.name.span;
+        local.module = env.module;
+        local.type = result.type == ast::no_id ? types_.error() : eval_type(result.type);
+        local.is_memory = true;
+        local.state = ResolveState::Done;
+        const EntityId created = add_entity(local);
+        declare(seen, created, codes::duplicate_name);
+        info.kernel_results.push_back(created);
+    }
     if (decl.gradient) {
         // `grad(y, dy)`: the result and the gradient arriving at it.
         for (const ast::Name& name : {decl.gradient->result, decl.gradient->grad}) {
@@ -768,8 +785,20 @@ void Checker::check_function_body(EntityId entity) {
                    "default value");
         }
     }
+    for (const EntityId result : info.kernel_results) {
+        if (!is_prelude_name(entities_[result].name)) {
+            env.scopes.back().emplace(entities_[result].name, result);
+        }
+    }
+    if (decl.kind == ast::FunctionKind::Kernel) {
+        env.in_kernel = true;
+        check_kernel_signature(entity);
+    }
     env.scopes.emplace_back();
     check_body(decl.body, true);
+    if (decl.kind == ast::FunctionKind::Op && decl.kernel) {
+        check_kernel_binding(entity);
+    }
     if (decl.gradient) {
         check_gradient(entity);
     }

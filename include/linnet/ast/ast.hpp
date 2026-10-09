@@ -286,6 +286,14 @@ struct YieldStmt {
     ExprId value;
 };
 
+// `store(out[i, j], value, mask)`: a kernel's write of a tile to one of its
+// results; `mask` is optional.
+struct StoreStmt {
+    ExprId target;
+    ExprId value;
+    ExprId mask = no_id;
+};
+
 using StmtData = std::variant<ErrorStmt,
                               LetStmt,
                               ComprehensionStmt,
@@ -295,7 +303,8 @@ using StmtData = std::variant<ErrorStmt,
                               StaticForStmt,
                               WhileStmt,
                               ForLoop,
-                              YieldStmt>;
+                              YieldStmt,
+                              StoreStmt>;
 
 struct Stmt {
     SourceSpan span;
@@ -352,7 +361,7 @@ struct EnumDecl {
     SourceSpan generics_span{};
 };
 
-enum class FunctionKind : std::uint8_t { Fn, Op, Entry };
+enum class FunctionKind : std::uint8_t { Fn, Op, Entry, Kernel };
 // An op's backward pass, after its body: `grad(y, dy) { ... }` names the
 // op's result and the gradient arriving at it, and returns the gradients of
 // its floating tensor parameters.
@@ -362,6 +371,12 @@ struct GradientClause {
     std::vector<StmtId> body;
     SourceSpan span;            // `grad` through its `}`
     std::uint32_t body_end = 0; // just past the op body's `}`
+};
+// An op's `kernel name<args>`, in its header: the kernel that may compute it.
+struct KernelBinding {
+    Name name;
+    std::vector<GenericArg> generic_args;
+    SourceSpan span;
 };
 struct FunctionDecl {
     FunctionKind kind;
@@ -374,6 +389,10 @@ struct FunctionDecl {
     SourceSpan generics_span{};
     SourceSpan parameters_span{}; // `(` through `)`
     std::optional<GradientClause> gradient;
+    std::optional<KernelBinding> kernel; // an op's
+    // A kernel's named results and launch grid: `-> y: T grid(R, C / B)`.
+    std::vector<Parameter> results;
+    std::vector<ExprId> grid;
 };
 
 struct BlockDecl {
