@@ -54,6 +54,7 @@ inline constexpr const char* invalid_static_for = "E2121";
 inline constexpr const char* cyclic_definition = "E2122";
 inline constexpr const char* not_compile_time = "E2123";
 inline constexpr const char* misplaced_yield = "E2124";
+inline constexpr const char* invalid_gradient = "E2125";
 inline constexpr const char* not_implemented = "E2190";
 
 // Shapes

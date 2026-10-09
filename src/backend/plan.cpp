@@ -399,8 +399,12 @@ private:
         out += "],\"states\":[";
         const std::vector<std::string> states = state_footprint(function);
         out += join(states, ",", [&](const auto& item) { return json_string(item); });
-        out += "],\"body\":" + region_json(function.body) + "}";
-        return out;
+        out += "],\"body\":" + region_json(function.body);
+        if (function.gradient != ir::no_id) {
+            // An op's `grad`: its parameters, result and result gradient in.
+            out += ",\"gradient\":" + region_json(function.gradient);
+        }
+        return out + "}";
     }
 
     // ---------------------------------------------------------- state footprint

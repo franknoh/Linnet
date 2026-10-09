@@ -104,6 +104,20 @@ pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
 }
 ```
 
+`grad(y, dy)` after an op's body replaces the backward pass of the body.
+`y` is the result and `dy` the gradient arriving at it. It returns the
+gradient of each floating tensor parameter, a tuple when there are several.
+
+```linnet
+pub op truncate<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return cast<T>(cast<i64>(x))
+} grad(y, dy) {
+    return dy  // straight through
+}
+```
+
+PyTorch, JAX, and `--grad` exports all use it.
+
 ## Blocks
 
 A block holds `param` weights bound from a checkpoint, `buffer` data,

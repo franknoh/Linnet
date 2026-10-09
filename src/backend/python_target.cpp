@@ -129,6 +129,41 @@ std::string PythonTarget::dtype_name(ScalarKind dtype) const {
            (dtype == ScalarKind::Bool ? bool_name_ : std::string(dtype_names(dtype).numpy));
 }
 
+std::vector<std::string>
+PythonTarget::begin_custom_gradient(const std::vector<TensorInfo>& arguments) {
+    std::vector<std::string> names;
+    names.reserve(arguments.size());
+    for (const TensorInfo& argument : arguments) {
+        names.push_back(sema::is_float(argument.dtype) ? define(detach(argument.name))
+                                                       : argument.name);
+    }
+    return names;
+}
+
+PythonTarget::Backward PythonTarget::emit_backward(const std::vector<TensorInfo>& arguments,
+                                                   const TensorInfo& result,
+                                                   const Pullback& pullback,
+                                                   const std::string& indent) {
+    Backward out;
+    std::vector<TensorInfo> locals;
+    locals.reserve(arguments.size());
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        out.arguments.push_back("a" + std::to_string(i));
+        locals.push_back({out.arguments.back(), arguments[i].shape, arguments[i].dtype});
+    }
+    std::string body = std::exchange(body_, std::string());
+    std::string saved_indent = std::exchange(indent_, indent);
+    // A fresh scope with no enclosing one: an expression `main` computed
+    // is computed again here rather than read from `main`.
+    auto scopes = std::exchange(cse_, {{}});
+    out.gradients = pullback(
+        locals, {"out", result.shape, result.dtype}, {"grad_out", result.shape, result.dtype});
+    out.body = std::exchange(body_, std::move(body));
+    indent_ = std::move(saved_indent);
+    cse_ = std::move(scopes);
+    return out;
+}
+
 std::string PythonTarget::define(const std::string& expression) {
     for (auto scope = cse_.rbegin(); scope != cse_.rend(); ++scope) {
         const auto found = scope->find(expression);

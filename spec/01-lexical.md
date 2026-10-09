@@ -48,6 +48,8 @@ true false none some
 extern
 ```
 
+`grad` is a keyword only after an op's body (§7.2); elsewhere it is an identifier.
+
 Words reserved for future syntax MUST NOT be accepted as identifiers:
 
 ```text

@@ -30,7 +30,9 @@ enum_decl          = "enum", identifier, [ generic_params ], "{", [ identifier, 
 fn_decl            = "fn", identifier, [ generic_params ], parameter_list,
                      [ "->", type ], [ where_clause ], block_body ;
 op_decl            = "op", identifier, [ generic_params ], parameter_list,
-                     "->", type, [ where_clause ], block_body ;
+                     "->", type, [ where_clause ], block_body, [ grad_clause ] ;
+(* `grad` is a keyword only here, after an op's body. *)
+grad_clause        = "grad", "(", identifier, ",", identifier, ")", block_body ;
 entry_decl         = "entry", identifier, [ generic_params ], parameter_list,
                      [ "->", type ], [ where_clause ], block_body ;
 

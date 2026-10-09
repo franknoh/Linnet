@@ -281,3 +281,32 @@ code = "E2124"
 file = "invalid/135_for_value_as_operand.linnet"
 expect = "error"
 code = "E2124"
+
+[[case]]
+file = "valid/029_op_gradients.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/136_grad_on_fn.linnet"
+expect = "error"
+code = "E2125"
+
+[[case]]
+file = "invalid/137_grad_tuple_result.linnet"
+expect = "error"
+code = "E2125"
+
+[[case]]
+file = "invalid/138_grad_optional_parameter.linnet"
+expect = "error"
+code = "E2125"
+
+[[case]]
+file = "invalid/139_grad_nothing_to_differentiate.linnet"
+expect = "error"
+code = "E2125"
+
+[[case]]
+file = "invalid/140_grad_wrong_result.linnet"
+expect = "error"
+code = "E2101"

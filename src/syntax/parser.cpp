@@ -635,7 +635,8 @@ private:
     FunctionDecl parse_function(FunctionKind kind) {
         const std::string_view keyword = text(peek());
         advance();
-        FunctionDecl decl{kind, expect_identifier("function name"), {}, {}, no_id, {}, {}};
+        FunctionDecl decl{
+            kind, expect_identifier("function name"), {}, {}, no_id, {}, {}, {}, {}, std::nullopt};
         decl.generics = parse_generic_params(decl.generics_span);
         decl.parameters = parse_parameters(decl.parameters_span);
         if (accept(K::Arrow)) {
@@ -648,6 +649,22 @@ private:
             decl.constraints = parse_where();
         }
         decl.body = parse_body();
+        // `grad` is a keyword only here, after a body, where no identifier
+        // can stand.
+        if (at(K::Identifier) && text(peek()) == "grad") {
+            const std::uint32_t begin = here();
+            GradientClause clause;
+            clause.body_end = last_end_;
+            advance();
+            expect(K::LParen);
+            clause.result = expect_identifier("a name for the op's result");
+            expect(K::Comma);
+            clause.grad = expect_identifier("a name for the gradient of the result");
+            expect(K::RParen);
+            clause.body = parse_body();
+            clause.span = span_from(begin);
+            decl.gradient = std::move(clause);
+        }
         return decl;
     }
 

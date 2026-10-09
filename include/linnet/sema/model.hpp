@@ -111,11 +111,19 @@ struct DeclInfo {
     std::vector<EntityId> param_entities;
     TypeId result = no_type;
     std::vector<ConstraintInfo> constraints;
+    // An op's `grad(y, dy)`: the two names, and what it returns -- the
+    // gradient of each parameter that `takes_gradient`, a tuple when several.
+    std::vector<EntityId> gradient_entities;
+    TypeId gradient_result = no_type;
     // Structs, enums, aliases
     std::vector<FieldInfo> fields;
     std::vector<std::string_view> variants;
     TypeId aliased = no_type;
 };
+
+// Whether an op's `grad` returns a gradient for a parameter of `type`: a
+// tensor of a floating dtype or of a dtype generic bounded by `Float`.
+bool takes_gradient(const TypeStore& types, TypeId type);
 
 // A generic parameter as its declaration writes it: `N: Dim`, `*S: Shape`,
 // `T: Float` (its default aside).

@@ -1,0 +1,7 @@
+module m
+
+op count(x: Tensor[4; i64], s: f32) -> f32 {
+    return s
+} grad(y, dy) {
+    return dy
+}

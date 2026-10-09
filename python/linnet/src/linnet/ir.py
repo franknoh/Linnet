@@ -262,6 +262,9 @@ class Function:
     results: tuple[Type, ...]
     states: tuple[str, ...]
     body: Region
+    # An op's `grad`: its parameters, result and result gradient in, the
+    # gradient of each parameter that `takes_gradient` out.
+    gradient: Region | None = None
 
     @property
     def short_name(self) -> str:
@@ -625,6 +628,7 @@ class _Reader:
             results=tuple(self.type(t) for t in _list(node.get("results", []))),
             states=tuple(str(s) for s in _list(node.get("states", []))),
             body=self.region(node["body"]),
+            gradient=self.region(node["gradient"]) if "gradient" in node else None,
         )
 
     def constant(self, data: JsonValue) -> Constant:
@@ -637,6 +641,20 @@ class _Reader:
             contextual=bool(node.get("contextual", False)),
             body=self.region(node["body"]),
         )
+
+
+def takes_gradient(function: Function, type: Type) -> bool:
+    """Whether an op's `grad` returns a gradient for a parameter of `type`: a
+    tensor of a floating dtype or of a dtype generic bounded by `Float`."""
+    if not isinstance(type, TensorType):
+        return False
+    dtype = type.dtype
+    if isinstance(dtype, DTypeVar):
+        return any(
+            generic.kind == "dtype" and generic.id == dtype.id and generic.dtype_class == "float"
+            for generic in function.generics
+        )
+    return DTYPES[dtype].is_float
 
 
 def parse_substitution(data: JsonValue) -> Substitution:

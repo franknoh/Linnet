@@ -129,6 +129,15 @@
                     "match": "\\b(?:if|else|match|return|static|for|in|while|yield|where)\\b"
                 },
                 {
+                    "comment": "`grad` is a keyword only after an op's body: `} grad(y, dy) {`",
+                    "match": "(?<=\\})\\s*\\b(grad)\\b",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.control.linnet"
+                        }
+                    }
+                },
+                {
                     "name": "storage.type.linnet",
                     "match": "\\b(?:module|use|const|type|struct|enum|fn|op|block|entry|param|buffer|state|sub|let|var)\\b"
                 },

@@ -85,6 +85,9 @@ public:
             functions_by_name_[function.name] = &function;
             functions_by_entity_[function.entity] = &function;
             collect_statement_blocks(function.body);
+            if (function.gradient != ir::no_id) {
+                collect_statement_blocks(function.gradient);
+            }
         }
         for (const ir::Constant& constant : module_.constants()) {
             constants_by_entity_[constant.entity] = &constant;
@@ -312,7 +315,33 @@ private:
         if (!statements) {
             return statements;
         }
-        return header + *statements + pad + "}\n";
+        if (function.gradient == ir::no_id) {
+            return header + *statements + pad + "}\n";
+        }
+        // `} grad(y, dy) {`: the op's parameters keep their names; the
+        // region's last two arguments are the result and its gradient.
+        std::vector<std::string> parameters;
+        for (std::size_t i = first_param; i < body.arguments.size(); ++i) {
+            parameters.push_back(name_of(body.arguments[i]));
+        }
+        names_.clear();
+        used_names_.clear();
+        reserve_visible_names(target);
+        const ir::Block& gradient = module_.block(module_.region(function.gradient).blocks.front());
+        if (gradient.arguments.size() != parameters.size() + 2) {
+            return std::unexpected("malformed `grad` of `" + std::string(target.name) + "`");
+        }
+        for (std::size_t i = 0; i < parameters.size(); ++i) {
+            bind_name(gradient.arguments[i], parameters[i]);
+        }
+        const std::string result = name_of(gradient.arguments[parameters.size()]);
+        const std::string grad = name_of(gradient.arguments[parameters.size() + 1]);
+        auto backward = emit_statements(gradient, indent + 1);
+        if (!backward) {
+            return backward;
+        }
+        return header + *statements + pad + "} grad(" + result + ", " + grad + ") {\n" + *backward +
+               pad + "}\n";
     }
 
     // `pub enum Name { A, B }` or `pub struct Name { field: Type, ... }`.

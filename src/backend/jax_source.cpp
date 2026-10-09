@@ -161,6 +161,44 @@ public:
                       ", " + index.name + ", 0)");
     }
 
+    // A `jax.custom_vjp` function that hands the result (computed from
+    // arguments behind `stop_gradient`) through; its backward is the op's
+    // `grad`.
+    std::string end_custom_gradient(const std::vector<TensorInfo>& arguments,
+                                    const TensorInfo& result,
+                                    const Pullback& pullback) override {
+        const std::string name = "_grad" + std::to_string(custom_gradients_++);
+        const Backward backward = emit_backward(arguments, result, pullback, "    ");
+        std::vector<std::string> inputs{"out"};
+        inputs.insert(inputs.end(), backward.arguments.begin(), backward.arguments.end());
+        const std::string signature = "(" + join(inputs, ", ") + ")";
+        std::string saved = join(backward.arguments, ", ");
+        saved = backward.arguments.empty() ? "out," : saved + ", out";
+        std::string text = "@jax.custom_vjp\n";
+        text += "def " + name + signature + ":\n    return out\n\n\n";
+        text += "def " + name + "_fwd" + signature + ":\n";
+        text += "    return out, (" + saved + ")\n\n\n";
+        // `None`: a zero gradient, for the result (its arguments are behind
+        // `stop_gradient`) and for what the op takes none for.
+        std::vector<std::string> returned{"None"};
+        for (const auto& gradient : backward.gradients) {
+            returned.push_back(gradient.value_or("None"));
+        }
+        // Traced with the backward pass, outside `main`: its products set
+        // their own precision.
+        text += "def " + name + "_bwd(saved, grad_out):\n";
+        text += precise("    " + saved + " = saved\n" + backward.body + "    return (" +
+                        join(returned, ", ") + ")\n");
+        text += "\n\n";
+        text += name + ".defvjp(" + name + "_fwd, " + name + "_bwd)\n\n\n";
+        definitions_ += text;
+        std::vector<std::string> operands{result.name};
+        for (const TensorInfo& argument : arguments) {
+            operands.push_back(argument.name);
+        }
+        return define(name + "(" + join(operands, ", ") + ")");
+    }
+
     std::optional<std::string> scatter_add(const Dims& shape,
                                            ScalarKind dtype,
                                            const TensorInfo& indices,
@@ -583,6 +621,7 @@ public:
         if (uses_gather_) {
             out += gather_import;
         }
+        out += definitions_;
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         // The parameters the code gathers from their parts itself.
         out += "GATHERED = " + string_list(gathered_paths_) + "\n";
@@ -693,6 +732,9 @@ private:
         return "jnp.broadcast_to(" + value + ", " + python_tuple(shape) + ")";
     }
     std::string infinity() const override { return "jnp.inf"; }
+    std::string detach(const std::string& value) const override {
+        return "jax.lax.stop_gradient(" + value + ")";
+    }
 
     std::vector<Loop> loops_;
     std::size_t loops_made_ = 0;

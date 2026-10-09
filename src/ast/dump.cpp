@@ -439,6 +439,11 @@ private:
                                    nested("where", [&] { expr(constraint); });
                                }
                                body(decl.body);
+                               if (decl.gradient) {
+                                   nested("grad " + name(decl.gradient->result) + ", " +
+                                              name(decl.gradient->grad),
+                                          [&] { body(decl.gradient->body); });
+                               }
                            });
                        },
                        [&](const BlockDecl& decl) {

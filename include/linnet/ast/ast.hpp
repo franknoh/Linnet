@@ -353,6 +353,16 @@ struct EnumDecl {
 };
 
 enum class FunctionKind : std::uint8_t { Fn, Op, Entry };
+// An op's backward pass, after its body: `grad(y, dy) { ... }` names the
+// op's result and the gradient arriving at it, and returns the gradients of
+// its floating tensor parameters.
+struct GradientClause {
+    Name result;
+    Name grad;
+    std::vector<StmtId> body;
+    SourceSpan span;            // `grad` through its `}`
+    std::uint32_t body_end = 0; // just past the op body's `}`
+};
 struct FunctionDecl {
     FunctionKind kind;
     Name name;
@@ -363,6 +373,7 @@ struct FunctionDecl {
     std::vector<StmtId> body;
     SourceSpan generics_span{};
     SourceSpan parameters_span{}; // `(` through `)`
+    std::optional<GradientClause> gradient;
 };
 
 struct BlockDecl {

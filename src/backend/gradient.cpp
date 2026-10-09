@@ -21,7 +21,7 @@ bool differentiable(const TensorInfo& value) {
 
 std::string GradientTarget::input(const std::string& name, const Dims& shape, ScalarKind dtype) {
     std::string id = inner_.input(name, shape, dtype);
-    shapes_.emplace(id, shape);
+    define(id, shape);
     if (sema::is_float(dtype)) {
         sources_[id] |= from_inputs;
     }
@@ -33,7 +33,7 @@ std::string GradientTarget::input(const std::string& name, const Dims& shape, Sc
 std::string
 GradientTarget::parameter(const std::string& path, const Dims& shape, ScalarKind dtype) {
     std::string id = inner_.parameter(path, shape, dtype);
-    shapes_.emplace(id, shape);
+    define(id, shape);
     if (sema::is_float(dtype)) {
         sources_[id] |= from_parameters;
     }
@@ -44,13 +44,13 @@ GradientTarget::parameter(const std::string& path, const Dims& shape, ScalarKind
 
 std::string GradientTarget::state(const std::string& path, const Dims& shape, ScalarKind dtype) {
     std::string id = inner_.state(path, shape, dtype);
-    shapes_.emplace(id, shape);
+    define(id, shape);
     return id;
 }
 
 std::string GradientTarget::constant(const Literal& literal, ScalarKind dtype) {
     std::string id = inner_.constant(literal, dtype);
-    shapes_.emplace(id, Dims{});
+    define(id, Dims{});
     return id;
 }
 
@@ -225,7 +225,10 @@ std::vector<std::string> GradientTarget::begin_counted(std::int64_t start,
 // skipped) is the operand itself: nothing to record.
 std::string GradientTarget::record(Step step) {
     std::string name = step.result.name;
-    shapes_.emplace(name, step.result.shape);
+    if (replaying_) {
+        return name;
+    }
+    define(name, step.result.shape);
     const bool is_identity =
         std::any_of(step.operands.begin(), step.operands.end(), [&](const TensorInfo& operand) {
             return operand.name == name;
@@ -244,6 +247,62 @@ std::string GradientTarget::record(Step step) {
             sources_[name] |= reached;
         }
     }
+    tape_.push_back(std::move(step));
+    return name;
+}
+
+void GradientTarget::define(const std::string& name, const Dims& shape) {
+    if (shapes_.emplace(name, shape).second) {
+        order_.emplace(name, order_.size());
+    }
+}
+
+std::vector<std::string>
+GradientTarget::begin_custom_gradient(const std::vector<TensorInfo>& arguments) {
+    if (!replaying_) {
+        customs_.emplace_back(tape_.size(), order_.size());
+    }
+    return GraphTarget::begin_custom_gradient(arguments);
+}
+
+// The body's operations stay emitted -- they compute the result -- but
+// leave the tape: one step stands for them, whose backward pass is `grad`.
+std::string GradientTarget::end_custom_gradient(const std::vector<TensorInfo>& arguments,
+                                                const TensorInfo& result,
+                                                const Pullback& pullback) {
+    if (replaying_) {
+        return result.name;
+    }
+    const auto [tape, definitions] = customs_.back();
+    customs_.pop_back();
+    tape_.resize(tape);
+    Step step;
+    step.kind = Step::Kind::Custom;
+    step.operands = arguments;
+    step.result = result;
+    // A result named as something defined before the op (an argument it
+    // returns, an expression computed before) would share that value's
+    // gradient: it gets a name of its own.
+    const auto defined = order_.find(result.name);
+    if (defined != order_.end() && defined->second < definitions) {
+        step.result.name = inner_.elementwise(Elementwise::Add,
+                                              {result, full(0.0, result.shape, result.dtype)},
+                                              result.shape,
+                                              result.dtype);
+    }
+    step.custom = pullbacks_.size();
+    pullbacks_.push_back(pullback);
+    std::uint8_t reached = 0;
+    for (const TensorInfo& argument : arguments) {
+        if (const auto found = sources_.find(argument.name); found != sources_.end()) {
+            reached |= found->second;
+        }
+    }
+    define(step.result.name, step.result.shape);
+    if (reached != 0 && differentiable(step.result)) {
+        sources_[step.result.name] |= reached;
+    }
+    std::string name = step.result.name;
     tape_.push_back(std::move(step));
     return name;
 }
@@ -267,6 +326,7 @@ std::string GradientTarget::finish(const std::vector<TensorInfo>& results,
     // block's, with respect to its parameters.
     const bool by_inputs = block_name.empty();
     wanted_ = by_inputs ? from_inputs : from_parameters;
+    replaying_ = true;
     backward(loss);
     const std::vector<TensorInfo>& wrt = by_inputs ? inputs_ : parameters_;
     const std::vector<std::string>& paths = by_inputs ? input_names_ : parameter_paths_;
@@ -582,6 +642,17 @@ void GradientTarget::propagate(const Step& step, const TensorInfo& g) {
             offset = limits[axis];
             accumulate(part,
                        {inner_.slice(g, starts, limits, strides, part.shape), part.shape, g.dtype});
+        }
+        return;
+    }
+    case Step::Kind::Custom: {
+        // `pullbacks_` grows only while recording: the reference stays valid.
+        const std::vector<std::optional<std::string>> gradients =
+            pullbacks_[step.custom](ops, result, g);
+        for (std::size_t i = 0; i < ops.size() && i < gradients.size(); ++i) {
+            if (const std::optional<std::string>& gradient = gradients[i]) {
+                accumulate(ops[i], {*gradient, ops[i].shape, ops[i].dtype});
+            }
         }
         return;
     }

@@ -20,6 +20,11 @@ std::string_view keyword_of(const ast::FunctionDecl& decl) {
 
 } // namespace
 
+bool takes_gradient(const TypeStore& types, TypeId type) {
+    const TypeData& data = types.get(type);
+    return data.kind == TypeKind::Tensor && types.class_of(data.dtype) == DTypeClass::Float;
+}
+
 std::string generic_text(const GenericInfo& generic) {
     switch (generic.kind) {
     case GenericKind::Dim:

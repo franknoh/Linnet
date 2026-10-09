@@ -224,6 +224,9 @@ private:
             function.results.push_back(info.result);
         }
         function.body = module_.add_region(no_id);
+        if (decl.gradient && decl.kind == ast::FunctionKind::Op) {
+            function.gradient = module_.add_region(no_id);
+        }
         const FunctionId id = module_.add_function(function);
 
         Frame frame;
@@ -247,8 +250,41 @@ private:
         if (body.ops.empty() || module_.op(body.ops.back()).kind != OpKind::Return) {
             module_.add_op(block_, OpKind::Return, {}, {});
         }
+        if (function.gradient != no_id) {
+            lower_gradient(entity, function.gradient);
+        }
         frame_ = nullptr;
         (void)id;
+    }
+
+    // An op's `grad`: its parameters, then `y` and `dy`, in a region of
+    // its own.
+    void lower_gradient(EntityId entity, RegionId region) {
+        const Entity& target = model().entities[entity];
+        const DeclInfo& info = model().decls.at(entity);
+        const auto& decl =
+            std::get<ast::FunctionDecl>(modules_[target.module]->item(target.item).data);
+        if (!decl.gradient) {
+            return;
+        }
+        Frame frame;
+        frame.module = target.module;
+        frame.function = entity;
+        frame.results = {info.gradient_result};
+        frame_ = &frame;
+        block_ = module_.add_block(region);
+        for (std::size_t i = 0; i < info.params.size(); ++i) {
+            const ValueId argument =
+                module_.add_argument(block_, info.params[i].type, std::string(info.params[i].name));
+            frame.locals[info.param_entities[i]] = argument;
+        }
+        for (const EntityId local : info.gradient_entities) {
+            const ValueId argument = module_.add_argument(
+                block_, info.result, std::string(model().entities[local].name));
+            frame.locals[local] = argument;
+        }
+        lower_body(decl.gradient->body);
+        frame_ = nullptr;
     }
 
     // A constant's initializer, in a region of its own; uses stay inlined.

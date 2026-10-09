@@ -4,6 +4,8 @@ endif
 
 syn keyword linnetConditional if else match
 syn keyword linnetStatement return where yield
+" `grad` is a keyword only after an op's body: `} grad(y, dy) {`
+syn match linnetStatement "\(}\s*\)\@<=\<grad\>"
 syn keyword linnetRepeat static for in while
 syn keyword linnetStructure module use const type struct enum fn op block entry param buffer state sub let var
 syn keyword linnetModifier pub as

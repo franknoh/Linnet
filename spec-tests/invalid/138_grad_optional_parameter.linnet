@@ -1,0 +1,7 @@
+module m
+
+op shift(x: Tensor[4; f32], b: Tensor[4; f32]? = none) -> Tensor[4; f32] {
+    return x
+} grad(y, dy) {
+    return dy
+}

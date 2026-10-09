@@ -220,6 +220,9 @@ void for_each_semantic_call(ir::Module& module, Visit&& visit) {
     for (std::size_t i = 0; i < module.functions().size(); ++i) {
         const ir::Function& function = module.functions()[i];
         std::vector<ir::RegionId> pending{function.body};
+        if (function.gradient != ir::no_id) {
+            pending.push_back(function.gradient);
+        }
         while (!pending.empty()) {
             const ir::RegionId region = pending.back();
             pending.pop_back();

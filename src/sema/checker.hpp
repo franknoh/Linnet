@@ -106,6 +106,7 @@ private:
     void resolve_const(EntityId entity);
     Env make_env(EntityId entity);
     void check_function_body(EntityId entity);
+    void check_gradient(EntityId entity);
     void report_recursion();
     void collect_manifests();
 

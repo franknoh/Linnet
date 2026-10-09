@@ -721,7 +721,19 @@ private:
         }
 
         where_clause(parts, decl.constraints);
-        parts.push_back(braced(statement_elements(decl.body), item_span.end - 1));
+        if (!decl.gradient) {
+            parts.push_back(braced(statement_elements(decl.body), item_span.end - 1));
+            return b_.concat(parts);
+        }
+        // `} grad(y, dy) {`, as `} else {`.
+        const GradientClause& clause = *decl.gradient;
+        parts.push_back(braced(statement_elements(decl.body), clause.body_end - 1));
+        parts.push_back(b_.text(" grad("));
+        parts.push_back(name(clause.result));
+        parts.push_back(b_.text(", "));
+        parts.push_back(name(clause.grad));
+        parts.push_back(b_.text(") "));
+        parts.push_back(braced(statement_elements(clause.body), item_span.end - 1));
         return b_.concat(parts);
     }
 

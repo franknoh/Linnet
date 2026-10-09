@@ -81,6 +81,12 @@ public:
     bool supports_while() const override { return inner_.supports_while(); }
     std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) override;
     bool supports_counted() const override { return inner_.supports_counted(); }
+    // An op's `grad` stands for the backward pass of its body.
+    std::vector<std::string>
+    begin_custom_gradient(const std::vector<TensorInfo>& arguments) override;
+    std::string end_custom_gradient(const std::vector<TensorInfo>& arguments,
+                                    const TensorInfo& result,
+                                    const Pullback& pullback) override;
     std::vector<std::string> begin_counted(std::int64_t start,
                                            std::int64_t stop,
                                            const std::vector<TensorInfo>& initial) override;
@@ -105,6 +111,7 @@ private:
             Concat,
             Gather,
             Reduce,
+            Custom, // an op's `grad`: `pullbacks_[custom]`
         };
         Kind kind = Kind::Elementwise;
         Elementwise op = Elementwise::Add;
@@ -115,9 +122,12 @@ private:
         Dims second; // contract rhs axes, slice limits
         Dims third;  // contract result axes, slice strides
         std::int64_t axis = 0;
+        std::size_t custom = 0;
     };
 
     std::string record(Step step);
+    // Notes where `name` is first defined, with its shape.
+    void define(const std::string& name, const Dims& shape);
     void backward(const TensorInfo& loss);
     void propagate(const Step& step, const TensorInfo& grad);
     void accumulate(const TensorInfo& value, const TensorInfo& grad);
@@ -148,8 +158,16 @@ private:
     std::vector<TensorInfo> parameters_;
     std::vector<std::string> parameter_paths_;
     std::map<std::string, TensorInfo> adjoints_;
-    // Every value's shape where it was defined.
+    // Every value's shape where it was defined, and the order of
+    // definitions.
     std::map<std::string, Dims> shapes_;
+    std::map<std::string, std::size_t> order_;
+    // Open `grad` ops: where each began, on the tape and among definitions.
+    std::vector<std::pair<std::size_t, std::size_t>> customs_;
+    std::vector<Pullback> pullbacks_;
+    // The backward pass is being emitted: the evaluator's calls are part of
+    // it, not recorded.
+    bool replaying_ = false;
     // Which differentiated values -- floating inputs, floating parameters --
     // each value is computed from; the backward pass follows only those
     // `wanted_`.
