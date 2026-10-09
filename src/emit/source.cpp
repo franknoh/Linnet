@@ -439,7 +439,8 @@ private:
             statement_blocks_.insert(block);
             for (const ir::OpId id : module_.block(block).ops) {
                 if (module_.op(id).kind == ir::OpKind::StaticFor ||
-                    module_.op(id).kind == ir::OpKind::StaticRange) {
+                    module_.op(id).kind == ir::OpKind::StaticRange ||
+                    module_.op(id).kind == ir::OpKind::For) {
                     collect_statement_blocks(module_.op(id).regions.front());
                 } else if (module_.op(id).kind == ir::OpKind::While) {
                     collect_statement_blocks(module_.op(id).regions.back()); // the body
@@ -469,7 +470,7 @@ private:
     static constexpr int max_inline_depth = 2;
 
     bool needs_binding(const ir::Operation& op) {
-        if (op.kind == ir::OpKind::Comprehension) {
+        if (op.kind == ir::OpKind::Comprehension || op.kind == ir::OpKind::For) {
             return true;
         }
         if (op.kind == ir::OpKind::StateRead) {
@@ -521,7 +522,8 @@ private:
                 is_constant(source.kind) || is_negated_constant(source) ||
                 source.results.size() != 1 || source.kind == ir::OpKind::StaticFor ||
                 source.kind == ir::OpKind::StaticRange || source.kind == ir::OpKind::While ||
-                source.kind == ir::OpKind::TupleGet || needs_binding(source);
+                source.kind == ir::OpKind::For || source.kind == ir::OpKind::TupleGet ||
+                needs_binding(source);
             if (!is_leaf) {
                 depth = std::max(depth, inline_depth(source));
             }
@@ -605,6 +607,41 @@ private:
                 for (std::size_t i = 0; i < yield.operands.size(); ++i) {
                     out += pad + "    " + name_of(op.results[i]) + " = " + expr(yield.operands[i]) +
                            "\n";
+                }
+                out += pad + "}\n";
+                break;
+            }
+            case ir::OpKind::For: {
+                const ir::Block& body =
+                    module_.block(module_.region(op.regions.front()).blocks.front());
+                // The range's bounds, then the carried values; the results are
+                // the carried values' last, then the value of a loop with one.
+                const std::size_t carried = op.operands.size() - 2;
+                const bool yields = op.results.size() > carried;
+                for (std::size_t i = 0; i < carried; ++i) {
+                    const std::string name = name_of(body.arguments[i + 1]);
+                    out += pad;
+                    out += var_line(name, op.operands[i + 2]);
+                    bind_name(op.results[i], name);
+                }
+                out += pad;
+                if (yields) {
+                    out += "let " + name_of(op.results.back()) + " = ";
+                }
+                out += "for " + name_of(body.arguments.front()) + " in " + expr(op.operands[0]) +
+                       ".." + expr(op.operands[1]) + " {\n";
+                auto inner = emit_statements(body, indent + 1);
+                if (!inner) {
+                    return inner;
+                }
+                out += *inner;
+                const ir::Operation& yield = module_.op(body.ops.back());
+                for (std::size_t i = 0; i < carried; ++i) {
+                    out += pad + "    " + name_of(op.results[i]) + " = " + expr(yield.operands[i]) +
+                           "\n";
+                }
+                if (yields) {
+                    out += pad + "    yield " + expr(yield.operands.back()) + "\n";
                 }
                 out += pad + "}\n";
                 break;

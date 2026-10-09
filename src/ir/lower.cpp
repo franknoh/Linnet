@@ -299,8 +299,28 @@ private:
                 assigned_locals(loop->body, out);
             } else if (const auto* while_loop = std::get_if<ast::WhileStmt>(&node.data)) {
                 assigned_locals(while_loop->body, out);
+            } else if (const auto* for_loop = std::get_if<ast::ForLoop>(&node.data)) {
+                assigned_locals(for_loop->body, out);
+            }
+            // A `for` with a value is the whole value of its statement.
+            if (const ast::ForLoop* scan = bound_for(node)) {
+                assigned_locals(scan->body, out);
             }
         }
+    }
+
+    // The `for` loop that is a `let`, `var`, assignment or `return` value.
+    const ast::ForLoop* bound_for(const ast::Stmt& node) const {
+        const ast::ExprId value =
+            std::visit(Overloaded{
+                           [](const ast::LetStmt& let) { return let.value; },
+                           [](const ast::VarStmt& var) { return var.value; },
+                           [](const ast::AssignStmt& assign) { return assign.value; },
+                           [](const ast::ReturnStmt& ret) { return ret.value; },
+                           [](const auto&) { return ast::no_id; },
+                       },
+                       node.data);
+        return value == ast::no_id ? nullptr : std::get_if<ast::ForLoop>(&ast().expr(value).data);
     }
 
     void lower_stmt(ast::StmtId id) {
@@ -359,6 +379,10 @@ private:
                 },
                 [&](const ast::StaticForStmt& loop) { lower_static_for(loop, node.span); },
                 [&](const ast::WhileStmt& loop) { lower_while(loop, node.span); },
+                [&](const ast::ForLoop& loop) {
+                    lower_for(loop, stmt_facts.entity, no_type, node.span);
+                },
+                [&](const ast::YieldStmt&) {}, // lowered by its loop
             },
             node.data);
     }
@@ -465,6 +489,74 @@ private:
         for (std::size_t i = 0; i < carried.size(); ++i) {
             frame_->locals[carried[i]] = module_.op(op).results[i];
         }
+    }
+
+    // `for`: a `for` op over the range, carrying the `var` locals the body
+    // assigns. A loop with a value (`stacked` its type) yields its trailing
+    // `yield` value last, and returns the stacked result.
+    ValueId lower_for(const ast::ForLoop& loop, EntityId index, TypeId stacked, SourceSpan span) {
+        std::vector<EntityId> carried;
+        assigned_locals(loop.body, carried);
+        std::vector<ValueId> operands{lower_expr(loop.start, no_type),
+                                      lower_expr(loop.stop, no_type)};
+        std::vector<TypeId> results;
+        std::vector<std::pair<TypeId, std::string>> arguments{
+            {types().scalar(ScalarKind::I64), std::string(loop.index.text)}};
+        for (const EntityId entity : carried) {
+            operands.push_back(frame_->locals.at(entity));
+            results.push_back(module_.value(frame_->locals.at(entity)).type);
+            arguments.emplace_back(results.back(), std::string(model().entities[entity].name));
+        }
+        const bool yields = stacked != no_type;
+        if (yields) {
+            results.push_back(stacked);
+        }
+        const OpId op = region_op(OpKind::For, operands, results, {}, span);
+        const RegionId body = nested_region(op, arguments, [&](const std::vector<ValueId>& args) {
+            frame_->locals[index] = args.front();
+            for (std::size_t i = 0; i < carried.size(); ++i) {
+                frame_->locals[carried[i]] = args[i + 1];
+            }
+            lower_body(loop.body);
+            std::vector<ValueId> yielded;
+            yielded.reserve(carried.size() + 1);
+            for (const EntityId entity : carried) {
+                yielded.push_back(frame_->locals.at(entity));
+            }
+            if (yields && !loop.body.empty()) {
+                if (const auto* last =
+                        std::get_if<ast::YieldStmt>(&ast().stmt(loop.body.back()).data)) {
+                    yielded.push_back(lower_expr(last->value, unstacked(stacked)));
+                }
+            }
+            yield(std::move(yielded));
+        });
+        module_.op(op).regions.push_back(body);
+        for (std::size_t i = 0; i < carried.size(); ++i) {
+            frame_->locals[carried[i]] = module_.op(op).results[i];
+        }
+        return yields ? module_.op(op).results.back() : no_id;
+    }
+
+    // One iteration's element of a stacked `for` value: its leading axis gone,
+    // a vector becoming a scalar.
+    TypeId unstacked(TypeId stacked) {
+        const TypeData data = types().get(stacked);
+        if (data.kind == TypeKind::Tensor && !data.shape.empty()) {
+            if (data.shape.size() == 1) {
+                return types().scalar(data.dtype);
+            }
+            return types().tensor(Shape(data.shape.begin() + 1, data.shape.end()), data.dtype);
+        }
+        if (data.kind == TypeKind::Tuple) {
+            std::vector<TypeId> elements;
+            elements.reserve(data.elements.size());
+            for (const TypeId element : data.elements) {
+                elements.push_back(unstacked(element));
+            }
+            return types().tuple(std::move(elements));
+        }
+        return types().error();
     }
 
     void lower_static_for(const ast::StaticForStmt& loop, SourceSpan span) {
@@ -687,6 +779,9 @@ private:
                     return module_.op(op).results.front();
                 },
                 [&](const ast::MatchExpr& match) { return lower_match(node, match, type); },
+                [&](const ast::ForLoop& loop) {
+                    return lower_for(loop, facts(id).entity, type, node.span);
+                },
             },
             node.data);
     }

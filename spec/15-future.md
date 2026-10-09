@@ -12,7 +12,7 @@ Structured state (a `struct` of tensors), state carried by runtime loops, and st
 
 ## 15.3 Runtime loops and scan
 
-A first-class `scan` that collects per-iteration outputs, beyond `while` (§8.4).
+A `for` with a value (§8.5) collects per-iteration outputs. Iterating a tensor's leading axis directly (`for x in xs`) and runtime trip counts are open.
 
 ## 15.4 Custom gradients and training
 

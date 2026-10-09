@@ -692,6 +692,16 @@ public:
         return node("Reshape", {value, target}, "", shape, value.dtype);
     }
 
+    std::optional<std::string>
+    update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
+        Dims row_shape = stack.shape;
+        row_shape.front() = 1;
+        const TensorInfo row{reshape(value, row_shape), row_shape, value.dtype};
+        const TensorInfo at{
+            reshape(cast_to(index, ScalarKind::I64), {1, 1}), {1, 1}, ScalarKind::I64};
+        return node("ScatterND", {stack, at, row}, "", stack.shape, stack.dtype);
+    }
+
     std::string
     transpose(const TensorInfo& value, const Dims& permutation, const Dims& shape) override {
         return node(

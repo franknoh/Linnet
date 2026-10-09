@@ -27,6 +27,7 @@ KEYWORDS = frozenset(
         "as", "const", "type", "struct", "enum", "fn", "op", "block", "entry", "param", "buffer",
         "state", "sub", "let", "var", "return", "if", "else", "match", "static", "for", "in",
         "while", "where", "true", "false", "none", "some", "extern", "module", "use", "pub",
+        "yield",
     }
 )  # fmt: skip
 PRELUDE = frozenset(

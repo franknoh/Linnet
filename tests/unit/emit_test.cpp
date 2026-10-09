@@ -163,6 +163,26 @@ TEST("emit: struct declarations and values") {
     check_round_trip(source);
 }
 
+TEST("emit: for loops with and without a value") {
+    const std::string source = "module m\n"
+                               "pub fn f<N: Dim>(x: Tensor[N; f32]) -> Tensor[3, N; f32] {\n"
+                               "    var acc = x\n"
+                               "    for _i in 0..2 {\n"
+                               "        acc = acc + x\n"
+                               "    }\n"
+                               "    let ys = for i in 1..4 {\n"
+                               "        acc = acc * 2.0\n"
+                               "        yield acc\n"
+                               "    }\n"
+                               "    return ys\n"
+                               "}\n";
+    const std::string text = emitted(source);
+    CHECK(contains(text, "for _i in 0..2 {\n"));
+    CHECK(contains(text, " = for i in 1..4 {\n"));
+    CHECK(contains(text, "        yield "));
+    check_round_trip(source);
+}
+
 TEST("emit: values used inside a region keep their own binding") {
     const std::string source = "module m\n"
                                "pub fn f<N: Dim>() -> Tensor[N; i64] {\n"

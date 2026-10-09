@@ -170,13 +170,25 @@ An entry that returns a struct hands the backend its fields as a tuple.
 
 ## Loops
 
-`static for` is unrolled at compile time; `while` loops at runtime. `var`
-locals carry across iterations with fixed types.
+`static for` is unrolled at compile time; `while` and `for` loop at runtime.
+`var` locals carry across iterations with fixed types.
 
 ```linnet
 static for layer in layers { ... }          // over a sub array, expanded at compile time
 static for i in 0..Steps { ... }            // over a compile-time range; i is an i64 scalar
 while running && count < MaxNew { ... }     // runtime loop over a scalar bool
+for i in 0..Steps { ... }                   // runtime loop over a compile-time range
+```
+
+A `for` bound to a name is a scan: its body ends with `yield`, and the
+loop's value stacks each iteration's along a new first axis.
+
+```linnet
+var h = h0
+let hs = for t in 0..T {                    // hs: Tensor[T, H; f32]
+    h = tanh(h * w + xs[t])
+    yield h
+}
 ```
 
 ## Slicing and built-ins

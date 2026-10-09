@@ -264,7 +264,7 @@ private:
         const bool breaks_inside =
             std::holds_alternative<CallExpr>(data) || std::holds_alternative<MatchExpr>(data) ||
             std::holds_alternative<TupleExpr>(data) || std::holds_alternative<ShapeExpr>(data) ||
-            std::holds_alternative<SomeExpr>(data);
+            std::holds_alternative<SomeExpr>(data) || std::holds_alternative<ForLoop>(data);
         if (breaks_inside) {
             return b_.concat({prefix, b_.text(" "), expr(value)});
         }
@@ -566,11 +566,23 @@ private:
                                       b_.text(" "),
                                       braced(arms, node.span.end - 1)});
                 },
+                [&](const ForLoop& loop) { return for_loop(loop, node.span); },
             },
             node.data);
     }
 
     // -------------------------------------------------------------- statements
+
+    DocId for_loop(const ForLoop& loop, SourceSpan span) {
+        const DocId head = b_.concat({b_.text("for "),
+                                      name(loop.index),
+                                      b_.text(" in "),
+                                      expr(loop.start),
+                                      b_.text(".."),
+                                      expr(loop.stop),
+                                      b_.text(" ")});
+        return b_.concat({head, braced(statement_elements(loop.body), span.end - 1)});
+    }
 
     std::vector<Element> statement_elements(const std::vector<StmtId>& ids) {
         std::vector<Element> elements;
@@ -634,6 +646,10 @@ private:
                         b_.concat({b_.text("while "), expr(loop.condition), b_.text(" ")});
                     return b_.concat(
                         {head, braced(statement_elements(loop.body), node.span.end - 1)});
+                },
+                [&](const ForLoop& loop) { return for_loop(loop, node.span); },
+                [&](const YieldStmt& yield) {
+                    return b_.concat({b_.text("yield "), expr(yield.value)});
                 },
                 [&](const StaticForStmt& loop) {
                     DocId iterable = expr(loop.iterable);

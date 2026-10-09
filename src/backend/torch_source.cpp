@@ -1020,6 +1020,40 @@ public:
         return loop_names_.back();
     }
 
+    // A Python `for` over the range: no condition to read back each
+    // iteration. The index enters the body as a tensor.
+    bool supports_counted() const override { return true; }
+
+    std::vector<std::string> begin_counted(std::int64_t start,
+                                           std::int64_t stop,
+                                           const std::vector<TensorInfo>& initial) override {
+        const std::string prefix = "f" + std::to_string(loops_++) + "_";
+        std::vector<std::string> names;
+        for (std::size_t i = 0; i < initial.size(); ++i) {
+            names.push_back(prefix + std::to_string(i));
+            body_ += indent_ + names.back() + " = " + initial[i].name + "\n";
+        }
+        body_ += indent_ + "for " + prefix + "n in range(" + std::to_string(start) + ", " +
+                 std::to_string(stop) + "):\n";
+        indent_ += "    ";
+        body_ += indent_ + prefix + "i = torch.tensor(" + prefix +
+                 "n, dtype=torch.int64, device=" + device() + ")\n";
+        loop_names_.push_back(names);
+        cse_.emplace_back();
+        names.insert(names.begin(), prefix + "i");
+        return names;
+    }
+
+    std::vector<std::string> end_counted(const std::vector<TensorInfo>& next) override {
+        return end_while(next);
+    }
+
+    std::optional<std::string>
+    update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
+        return define(stack.name + ".index_copy(0, " + index.name + ".reshape(1), " + value.name +
+                      ".unsqueeze(0))");
+    }
+
     std::vector<std::string> end_while(const std::vector<TensorInfo>& next) override {
         const std::vector<std::string> names = std::move(loop_names_.back());
         loop_names_.pop_back();

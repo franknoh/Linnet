@@ -386,16 +386,185 @@ private:
         }
     }
 
-    // A `while` loop: the target's loop form over the carried values — the
-    // loop's own, then every state member, so writes inside the body flow
-    // out of it — with the condition and body regions emitted into it.
+    // A `while` loop: the target's loop form over the carried values, with
+    // the condition and body regions emitted into it.
     void run_while(const ir::Operation& op) {
-        if (!target_.supports_while()) {
-            fail("runtime `while` loops are not exported to this format yet; they run in the "
-                 "PyTorch interpreter");
-        }
         if (!grid_.empty()) {
             fail("a `while` loop inside index notation is not supported");
+        }
+        std::vector<Val> own;
+        for (const ir::ValueId id : op.operands) {
+            own.push_back(whole_tensor(value(id), "while"));
+        }
+        const std::vector<Val> finals = run_loop(
+            own,
+            [&](const std::vector<Val>& values) {
+                const std::vector<Val> results = run_region(op.regions.front(), values);
+                if (results.size() != 1 || results.front().kind != Val::Kind::Tensor) {
+                    fail("a `while` condition must be one scalar");
+                }
+                return info(results.front());
+            },
+            [&](const std::vector<Val>& values) {
+                std::vector<Val> next = run_region(op.regions.back(), values);
+                if (next.size() != values.size()) {
+                    fail("internal: a `while` body yielded " + std::to_string(next.size()) +
+                         " values");
+                }
+                return next;
+            });
+        for (std::size_t i = 0; i < op.results.size(); ++i) {
+            frame().values[op.results[i]] = finals[i];
+        }
+    }
+
+    // A `for` loop: a `while` over its index, its carried values and, for a
+    // loop with a value, the stacked value's parts, zeros to begin with and
+    // filled a row an iteration.
+    void run_for(const ir::Operation& op) {
+        if (!grid_.empty()) {
+            fail("a `for` loop inside index notation is not supported");
+        }
+        const std::int64_t start = range_bound(op.operands[0]);
+        const std::int64_t stop = range_bound(op.operands[1]);
+        const std::size_t carried = op.operands.size() - 2;
+        const bool yields = op.results.size() > carried;
+        // A counted loop keeps its own index; a `while` carries it first.
+        const bool counts = target_.supports_counted();
+        const std::size_t first = counts ? 0 : 1;
+        std::vector<Val> own;
+        if (!counts) {
+            own.push_back(constant_int(start, ScalarKind::I64));
+        }
+        for (std::size_t i = 2; i < op.operands.size(); ++i) {
+            own.push_back(whole_tensor(value(op.operands[i]), "for"));
+        }
+        bool is_tuple = false;
+        if (yields) {
+            const TypeId stacked =
+                types_.substitute(module_.value(op.results.back()).type, frame().subst);
+            const TypeData data = types_.get(stacked);
+            is_tuple = data.kind == TypeKind::Tuple;
+            for (const TypeId part : is_tuple ? data.elements : std::vector<TypeId>{stacked}) {
+                const Val shape = tensor_value(part, frame().subst);
+                own.push_back(zeros(shape.shape, shape.dtype));
+            }
+        }
+        const std::vector<Val> finals = run_loop(
+            own,
+            [&](const std::vector<Val>& values) {
+                const Val bound = constant_int(stop, ScalarKind::I64);
+                return TensorInfo{
+                    target_.compare(ir::CompareKind::Lt, info(values[0]), info(bound), {}),
+                    {},
+                    ScalarKind::Bool};
+            },
+            [&](const std::vector<Val>& values) {
+                const Val& index = values[0];
+                const std::vector<Val> arguments(
+                    values.begin(), values.begin() + static_cast<std::ptrdiff_t>(1 + carried));
+                const std::vector<Val> outputs = run_region(op.regions.front(), arguments);
+                if (outputs.size() != carried + (yields ? 1 : 0)) {
+                    fail("internal: a `for` body yielded " + std::to_string(outputs.size()) +
+                         " values");
+                }
+                std::vector<Val> next{elementwise(Elementwise::Add,
+                                                  {index, constant_int(1, ScalarKind::I64)},
+                                                  {},
+                                                  ScalarKind::I64)};
+                next.insert(next.end(),
+                            outputs.begin(),
+                            outputs.begin() + static_cast<std::ptrdiff_t>(carried));
+                if (yields) {
+                    const Val row = start == 0
+                                        ? index
+                                        : elementwise(Elementwise::Sub,
+                                                      {index, constant_int(start, ScalarKind::I64)},
+                                                      {},
+                                                      ScalarKind::I64);
+                    const Val& element = outputs.back();
+                    const std::vector<Val> parts =
+                        is_tuple ? element.elements : std::vector<Val>{element};
+                    for (std::size_t k = 0; k < parts.size(); ++k) {
+                        next.push_back(update_row(
+                            values[1 + carried + k], row, whole_tensor(parts[k], "for")));
+                    }
+                }
+                return next;
+            },
+            counts ? std::optional(Counted{start, stop}) : std::nullopt);
+        for (std::size_t i = 0; i < carried; ++i) {
+            frame().values[op.results[i]] = finals[first + i];
+        }
+        if (yields) {
+            Val stacked;
+            if (is_tuple) {
+                stacked.kind = Val::Kind::Tuple;
+                stacked.elements.assign(
+                    finals.begin() + static_cast<std::ptrdiff_t>(first + carried), finals.end());
+            } else {
+                stacked = finals.back();
+            }
+            frame().values[op.results.back()] = stacked;
+        }
+    }
+
+    // A tensor a loop carries: whole, outside index notation.
+    Val whole_tensor(const Val& carried_value, const char* loop) {
+        if (carried_value.kind != Val::Kind::Tensor || carried_value.grid_rank != 0) {
+            fail(std::string("a `") + loop + "` loop carries whole tensors only");
+        }
+        return carried_value;
+    }
+
+    Val zeros(const Dims& shape, ScalarKind dtype) {
+        const Val zero = constant_int(0, dtype);
+        return shape.empty() ? zero
+                             : tensor(target_.broadcast(info(zero), {}, shape), shape, dtype);
+    }
+
+    // `stack` with row `index` of its leading axis replaced by `row_value`:
+    // the target's own operation, or a select over every row.
+    Val update_row(const Val& stack, const Val& index, const Val& row_value) {
+        const Dims& shape = stack.shape;
+        if (const auto name = target_.update_row(info(stack), info(index), info(row_value))) {
+            return tensor(*name, shape, stack.dtype);
+        }
+        const Dims rows{shape.front()};
+        const TensorInfo positions{target_.iota(shape.front()), rows, ScalarKind::I64};
+        const TensorInfo at{target_.broadcast(info(index), {}, rows), rows, ScalarKind::I64};
+        const TensorInfo is_row{
+            target_.compare(ir::CompareKind::Eq, positions, at, rows), rows, ScalarKind::Bool};
+        const TensorInfo mask{target_.broadcast(is_row, {0}, shape), shape, ScalarKind::Bool};
+        Dims value_axes;
+        for (std::size_t axis = 1; axis < shape.size(); ++axis) {
+            value_axes.push_back(static_cast<std::int64_t>(axis));
+        }
+        const TensorInfo spread{
+            target_.broadcast(info(row_value), value_axes, shape), shape, stack.dtype};
+        return tensor(
+            target_.select(mask, spread, info(stack), shape, stack.dtype), shape, stack.dtype);
+    }
+
+    // A range known at export time, for a target with counted loops.
+    struct Counted {
+        std::int64_t start = 0;
+        std::int64_t stop = 0;
+    };
+
+    // The target's loop form over `own` values and every state member, so
+    // writes inside the body flow out of it: `predicate` emits the condition
+    // over the own values, `body` their next values. A `counted` loop is the
+    // target's counted form instead: no condition, the body taking the index
+    // first and returning its next value first, which is dropped. Returns
+    // the final own values; the states take theirs.
+    std::vector<Val> run_loop(const std::vector<Val>& own_initial,
+                              const std::function<TensorInfo(const std::vector<Val>&)>& predicate,
+                              const std::function<std::vector<Val>(const std::vector<Val>&)>& body,
+                              std::optional<Counted> counted = std::nullopt) {
+        if (!target_.supports_while()) {
+            fail("runtime loops are not exported to this format yet; they run in the "
+                 "PyTorch interpreter");
         }
         for (const auto& [path, declared] : state_types_) {
             if (!states_.contains(path)) {
@@ -404,20 +573,13 @@ private:
                 states_.emplace(path, value);
             }
         }
-        std::vector<Val> carried;
-        for (const ir::ValueId id : op.operands) {
-            const Val& carried_value = value(id);
-            if (carried_value.kind != Val::Kind::Tensor || carried_value.grid_rank != 0) {
-                fail("a `while` loop carries whole tensors only");
-            }
-            carried.push_back(carried_value);
-        }
+        std::vector<Val> carried = own_initial;
         std::vector<std::string> state_paths;
         for (const auto& [path, value] : states_) {
             state_paths.push_back(path);
             carried.push_back(value);
         }
-        const std::size_t own = op.operands.size();
+        const std::size_t own = own_initial.size();
         std::vector<TensorInfo> initial;
         initial.reserve(carried.size());
         for (const Val& value : carried) {
@@ -443,23 +605,30 @@ private:
             return std::vector<Val>(values.begin(),
                                     values.begin() + static_cast<std::ptrdiff_t>(own));
         };
-        const auto predicate = [&](const std::vector<Val>& arguments) {
-            const std::vector<Val> results = run_region(op.regions.front(), arguments);
-            if (results.size() != 1 || results.front().kind != Val::Kind::Tensor) {
-                fail("a `while` condition must be one scalar");
+        std::vector<Val> body_values;
+        std::vector<Val> next;
+        if (counted) {
+            std::vector<std::string> names =
+                target_.begin_counted(counted->start, counted->stop, initial);
+            if (names.empty()) {
+                fail("internal: the target named no index for a counted loop");
             }
-            return info(results.front());
-        };
-        if (target_.while_needs_initial_condition()) {
-            target_.while_initial_condition(predicate(own_values(carried)));
-        }
-        const std::vector<Val> condition_values = renamed(target_.begin_while(initial));
-        moved_.emplace_back();
-        const std::vector<Val> body_values =
-            renamed(target_.while_condition(predicate(own_values(condition_values))));
-        std::vector<Val> next = run_region(op.regions.back(), own_values(body_values));
-        if (next.size() != own) {
-            fail("internal: a `while` body yielded " + std::to_string(next.size()) + " values");
+            std::vector<Val> arguments{tensor(names.front(), {}, ScalarKind::I64)};
+            names.erase(names.begin());
+            moved_.emplace_back();
+            body_values = renamed(names);
+            const std::vector<Val> own_body = own_values(body_values);
+            arguments.insert(arguments.end(), own_body.begin(), own_body.end());
+            next = body(arguments);
+            next.erase(next.begin());
+        } else {
+            if (target_.while_needs_initial_condition()) {
+                target_.while_initial_condition(predicate(own_values(carried)));
+            }
+            const std::vector<Val> condition_values = renamed(target_.begin_while(initial));
+            moved_.emplace_back();
+            body_values = renamed(target_.while_condition(predicate(own_values(condition_values))));
+            next = body(own_values(body_values));
         }
         for (std::size_t j = 0; j < state_paths.size(); ++j) {
             const Val& current = states_.at(state_paths[j]);
@@ -478,7 +647,7 @@ private:
                 next[i] = on_slot(next[i], entered_on);
             }
         }
-        if (target_.while_needs_trailing_condition()) {
+        if (!counted && target_.while_needs_trailing_condition()) {
             target_.while_trailing_condition(predicate(own_values(next)));
         }
         std::vector<TensorInfo> outputs;
@@ -486,26 +655,31 @@ private:
         for (const Val& value : next) {
             outputs.push_back(info(value));
         }
-        const std::vector<std::string> finals = target_.end_while(outputs);
+        const std::vector<std::string> finals =
+            counted ? target_.end_counted(outputs) : target_.end_while(outputs);
         moved_.pop_back();
         if (finals.size() != next.size()) {
             fail("internal: the target returned " + std::to_string(finals.size()) +
                  " loop results");
         }
+        std::vector<Val> results;
+        results.reserve(own);
         for (std::size_t i = 0; i < own; ++i) {
             Val value = next[i];
             value.name = finals[i];
-            frame().values[op.results[i]] = value;
+            results.push_back(value);
         }
         for (std::size_t j = 0; j < state_paths.size(); ++j) {
             Val value = next[own + j];
             value.name = finals[own + j];
             states_[state_paths[j]] = value;
         }
+        return results;
     }
 
     // A bound of a `static for` range: a compile-time integer, possibly
     // arithmetic on dimensions and literals.
+
     std::int64_t range_bound(ir::ValueId value) {
         const ir::OpId producer = module_.value(value).producer;
         if (producer == ir::no_id) {
@@ -1404,6 +1578,9 @@ private:
         }
         case ir::OpKind::While:
             run_while(op);
+            return;
+        case ir::OpKind::For:
+            run_for(op);
             return;
         case ir::OpKind::StaticRange: {
             const std::int64_t start = range_bound(op.operands[0]);

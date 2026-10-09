@@ -45,6 +45,7 @@ namespace linnet {
     X(KwFor, "for")                                                                                \
     X(KwIn, "in")                                                                                  \
     X(KwWhile, "while")                                                                            \
+    X(KwYield, "yield")                                                                            \
     X(KwWhere, "where")                                                                            \
     X(KwTrue, "true")                                                                              \
     X(KwFalse, "false")                                                                            \

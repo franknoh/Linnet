@@ -257,3 +257,27 @@ code = "E2102"
 file = "invalid/131_struct_field_type.linnet"
 expect = "error"
 code = "E2101"
+
+[[case]]
+file = "valid/028_for_loops.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/132_yield_outside_for.linnet"
+expect = "error"
+code = "E2124"
+
+[[case]]
+file = "invalid/133_for_runtime_bound.linnet"
+expect = "error"
+code = "E2123"
+
+[[case]]
+file = "invalid/134_for_value_without_yield.linnet"
+expect = "error"
+code = "E2124"
+
+[[case]]
+file = "invalid/135_for_value_as_operand.linnet"
+expect = "error"
+code = "E2124"

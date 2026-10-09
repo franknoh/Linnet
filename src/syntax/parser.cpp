@@ -103,6 +103,7 @@ constexpr bool starts_expression(K kind) {
     case K::KwSome:
     case K::KwIf:
     case K::KwMatch:
+    case K::KwFor:
     case K::LParen:
     case K::LBracket:
     case K::Bang:
@@ -845,10 +846,10 @@ private:
             loop.body = parse_body();
             data = loop;
         } else if (at(K::KwFor)) {
-            unsupported(peek().span,
-                        "`for` loops are reserved; use `static for` for structural iteration or "
-                        "`while` for a runtime loop");
+            data = parse_for();
+        } else if (at(K::KwYield)) {
             advance();
+            data = YieldStmt{parse_expr()};
         } else {
             Diagnostic* diagnostic =
                 error_at(peek().span,
@@ -895,6 +896,20 @@ private:
         expect(K::Equal);
         stmt.value = parse_expr();
         return stmt;
+    }
+
+    ForLoop parse_for() {
+        advance();
+        ForLoop loop{expect_identifier("loop index"), no_id, no_id, {}};
+        expect(K::KwIn);
+        loop.start = parse_expr();
+        if (expect(K::DotDot)) {
+            loop.stop = parse_expr();
+        } else {
+            loop.stop = add_expr(here(), ErrorExpr{});
+        }
+        loop.body = parse_body();
+        return loop;
     }
 
     StmtData parse_static_for() {
@@ -1098,6 +1113,9 @@ private:
         }
         if (at(K::KwMatch)) {
             return parse_match();
+        }
+        if (at(K::KwFor)) {
+            return add_expr(begin, parse_for());
         }
         return parse_binary(1);
     }

@@ -155,6 +155,12 @@ public:
         return define("jnp.arange(" + std::to_string(length) + ", dtype=jnp.int64)");
     }
 
+    std::optional<std::string>
+    update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
+        return define("jax.lax.dynamic_update_index_in_dim(" + stack.name + ", " + value.name +
+                      ", " + index.name + ", 0)");
+    }
+
     std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) override {
         (void)shape;

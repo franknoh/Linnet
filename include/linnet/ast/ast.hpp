@@ -143,6 +143,18 @@ struct MatchExpr {
     ExprId scrutinee;
     std::vector<MatchArm> arms;
 };
+// `for i in start..stop { ... }`: a runtime loop over the integers
+// `start <= i < stop`, both known at compile time. `var` locals the body
+// assigns carry from one iteration to the next, as in `while`. As a
+// statement it yields nothing; as the value of a binding its body ends with
+// `yield value`, and the loop's value is each iteration's stacked along a new
+// leading axis (a scan).
+struct ForLoop {
+    Name index;
+    ExprId start;
+    ExprId stop;
+    std::vector<StmtId> body;
+};
 
 using ExprData = std::variant<ErrorExpr,
                               LiteralExpr,
@@ -159,7 +171,8 @@ using ExprData = std::variant<ErrorExpr,
                               MemberExpr,
                               ReductionExpr,
                               IfExpr,
-                              MatchExpr>;
+                              MatchExpr,
+                              ForLoop>;
 
 struct Expr {
     SourceSpan span;
@@ -267,6 +280,12 @@ struct WhileStmt {
     std::vector<StmtId> body;
 };
 
+// `yield value`: the last statement of a `for` loop that is a binding's
+// value, giving the iteration's element of the result.
+struct YieldStmt {
+    ExprId value;
+};
+
 using StmtData = std::variant<ErrorStmt,
                               LetStmt,
                               ComprehensionStmt,
@@ -274,7 +293,9 @@ using StmtData = std::variant<ErrorStmt,
                               AssignStmt,
                               ReturnStmt,
                               StaticForStmt,
-                              WhileStmt>;
+                              WhileStmt,
+                              ForLoop,
+                              YieldStmt>;
 
 struct Stmt {
     SourceSpan span;

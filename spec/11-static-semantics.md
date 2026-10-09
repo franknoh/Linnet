@@ -38,7 +38,7 @@ In a tensor comprehension:
 
 ## 11.8 Recursion
 
-Direct or indirect recursive calls are errors (§8.5).
+Direct or indirect recursive calls are errors (§8.6).
 
 ## 11.9 Exhaustive match
 

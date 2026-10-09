@@ -19,6 +19,10 @@
 // generic parameters of their source declaration; dimensions stay symbolic.
 // Operations with regions (`if`, `option.match`, `comprehension`, `reduce`,
 // `static_for`) evaluate their regions to the values their terminator yields.
+// `for` takes its range's start and stop, then the carried values; its body
+// receives the `i64` index and the carried values and yields the next ones,
+// then, for a loop with a value, the iteration's element; its results are the
+// final carried values and, last, the elements stacked along a leading axis.
 //
 // The IR is an implementation detail: its textual form (`inspect --core-ir`)
 // is for debugging and is not stable.
@@ -95,6 +99,7 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(StaticFor, "static_for", -1, 1)                                                              \
     X(StaticRange, "static_range", -1, 1)                                                          \
     X(While, "while", -1, 2)                                                                       \
+    X(For, "for", -1, 1)                                                                           \
     X(Yield, "yield", -1, 0)                                                                       \
     X(Return, "return", -1, 0)
 

@@ -126,7 +126,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.linnet",
-                    "match": "\\b(?:if|else|match|return|static|for|in|where)\\b"
+                    "match": "\\b(?:if|else|match|return|static|for|in|while|yield|where)\\b"
                 },
                 {
                     "name": "storage.type.linnet",
@@ -150,7 +150,7 @@
                 },
                 {
                     "name": "invalid.illegal.reserved.linnet",
-                    "match": "\\b(?:state|extern|while|async|await|effect|unsafe|macro|trait|impl|derive|random|rng|mut|ref|yield|kernel|device)\\b"
+                    "match": "\\b(?:extern|async|await|effect|unsafe|macro|trait|impl|derive|rng|mut|ref|kernel|device)\\b"
                 }
             ]
         },

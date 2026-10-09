@@ -287,3 +287,22 @@ TEST("format: CRLF input and trailing whitespace") {
              "    return\n"
              "}\n");
 }
+
+TEST("format: for loops, statements and scans") {
+    CHECK_EQ(fmt("module m\nfn f(x: Tensor[4; f32]) -> Tensor[3, 4; f32] {\n"
+                 "var y=x\nfor _i in 0..2{y=y+x}\n"
+                 "let ys=for i in 1..4{y=y*2.0\nyield y}\nreturn ys}\n"),
+             "module m\n"
+             "\n"
+             "fn f(x: Tensor[4; f32]) -> Tensor[3, 4; f32] {\n"
+             "    var y = x\n"
+             "    for _i in 0..2 {\n"
+             "        y = y + x\n"
+             "    }\n"
+             "    let ys = for i in 1..4 {\n"
+             "        y = y * 2.0\n"
+             "        yield y\n"
+             "    }\n"
+             "    return ys\n"
+             "}\n");
+}

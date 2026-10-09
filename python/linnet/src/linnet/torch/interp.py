@@ -172,6 +172,21 @@ class Interpreter:
             found = self._read[(id(op), key)] = read(cast(_A, op.attrs[key]))
         return cast(_R, found)
 
+    def _stacked(self, elements: list[Value], kind: ir.Type, env: ir.Bindings) -> Value:
+        """A `for` loop's elements along a new leading axis; a tuple's parts
+        each apiece."""
+        if isinstance(kind, ir.TupleType):
+            return tuple(
+                self._stacked([cast(tuple[Value, ...], e)[i] for e in elements], part, env)
+                for i, part in enumerate(kind.elements)
+            )
+        assert isinstance(kind, ir.TensorType)
+        if not elements:
+            return torch.empty(
+                env.shape(kind.shape), dtype=torch_dtype(env, kind.dtype), device=self.device
+            )
+        return torch.stack([cast(torch.Tensor, e) for e in elements])
+
     def _shape_attr(self, op: ir.Op) -> ir.Shape:
         return self._attr(op, "shape", ir.parse_shape)
 
@@ -422,10 +437,13 @@ class Interpreter:
                     inner[arg.id] = value
                 carried = self.run_region(body, env, inner, grid)
             return carried
-        if kind == "static_range":
+        if kind in ("static_range", "for"):
             start, stop = int(tensor(0).item()), int(tensor(1).item())
             carried = list(operands[2:])
             region = op.regions[0]
+            # A `for` with a value yields each iteration's element last.
+            yields = kind == "for" and len(op.results) > len(carried)
+            elements: list[Value] = []
             for position in range(start, stop):
                 inner = dict(values)
                 inner[region.args[0].id] = torch.tensor(
@@ -433,7 +451,12 @@ class Interpreter:
                 )
                 for arg, value in zip(region.args[1:], carried, strict=True):
                     inner[arg.id] = value
-                carried = self.run_region(region, env, inner, grid)
+                outputs = self.run_region(region, env, inner, grid)
+                carried = outputs[: len(carried)]
+                if yields:
+                    elements.append(outputs[-1])
+            if yields:
+                return [*carried, self._stacked(elements, op.results[-1].type, env)]
             return carried
 
         raise PlanError(f"unsupported Core IR operation `{kind}`")

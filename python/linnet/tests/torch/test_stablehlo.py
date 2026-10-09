@@ -249,6 +249,23 @@ def test_llama_sample_draws_the_same_tokens_under_xla(tmp_path: Path) -> None:
     np.testing.assert_array_equal(np.asarray(actual), expected.numpy())
 
 
+def test_for_loop_runs_under_xla() -> None:
+    """A scan exports as a `stablehlo.while` over its index, each element
+    written into its row with `dynamic_update_slice`."""
+    source = REPO / "spec-tests/valid/028_for_loops.linnet"
+    xs = np.array([[0.5, -1.0], [1.5, 0.0], [0.25, 0.75]], dtype=np.float32)
+    h0 = np.array([0.1, -0.2], dtype=np.float32)
+    h = h0
+    expected: list[NDArray[np.float32]] = []
+    for x in xs:
+        h = np.tanh(h * 0.5 + x).astype(np.float32)
+        expected.append(h)
+    text = _export(source, {"T": 3, "H": 2}, entry="recurrent")
+    assert '"stablehlo.dynamic_update_slice"' in text
+    actual = _run_xla(text, [xs, h0])
+    np.testing.assert_allclose(np.asarray(actual, np.float32), np.stack(expected), rtol=1e-6)
+
+
 def test_while_loop_runs_under_xla(tmp_path: Path) -> None:
     """A `while` exports as `stablehlo.while` and iterates as the interpreter
     does: here until an element reaches 1000 or the limit is hit."""
