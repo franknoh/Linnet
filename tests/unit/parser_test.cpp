@@ -365,6 +365,19 @@ TEST("parser: reserved syntax is rejected, not reinterpreted") {
     CHECK_EQ(Parsed("module m\nfn f(mut: f32) { return }\n").codes(), "E1004");
 }
 
+TEST("parser: an op's grad clause") {
+    const Parsed parsed("module m\nop f(x: Tensor[4; f32]) -> Tensor[4; f32] { return x }\n"
+                        "grad(y, dy) { return dy }\n");
+    CHECK_EQ(parsed.codes(), "");
+    CHECK(parsed.tree.find("grad y, dy") != std::string::npos);
+    // `grad` is a keyword only there: elsewhere it names things.
+    CHECK_EQ(
+        Parsed("module m\nfn f(grad: f32) -> f32 { let grad2 = grad\nreturn grad2 }\n").codes(),
+        "");
+    CHECK_EQ(Parsed("module m\nop f(x: f32) -> f32 { return x } grad(y) { return y }\n").codes(),
+             "E1101");
+}
+
 TEST("parser: a match arm cannot start with a tuple pattern") {
     const Parsed first("module m\nfn f() { return match o { (c, d) => c none => x } }\n");
     CHECK_EQ(first.codes(), "E1101");

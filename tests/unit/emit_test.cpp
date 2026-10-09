@@ -183,6 +183,21 @@ TEST("emit: for loops with and without a value") {
     check_round_trip(source);
 }
 
+TEST("emit: an op's grad clause") {
+    const std::string source =
+        "module m\n"
+        "pub op f<N: Dim, T: Float>(x: Tensor[N; T], w: Tensor[N; T], k: i64) -> Tensor[N; T] {\n"
+        "    return x * w\n"
+        "} grad(y, dy) {\n"
+        "    let gw = dy * x\n"
+        "    return (dy * w, gw + y)\n"
+        "}\n";
+    const std::string text = emitted(source);
+    CHECK(contains(text, "} grad(y, dy) {\n"));
+    CHECK(contains(text, "(dy * w)"));
+    check_round_trip(source);
+}
+
 TEST("emit: values used inside a region keep their own binding") {
     const std::string source = "module m\n"
                                "pub fn f<N: Dim>() -> Tensor[N; i64] {\n"

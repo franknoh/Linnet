@@ -1,0 +1,28 @@
+module m
+
+// Truncation toward zero, with the gradient passed straight through.
+pub op truncate<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return cast<T>(cast<i64>(x))
+} grad(y, dy) {
+    return dy
+}
+
+// x * w, with the gradient of w clipped; the integer `k` takes none.
+pub op scaled<N: Dim, T: Float>(x: Tensor[N; T], w: Tensor[N; T], k: i64) -> Tensor[N; T] {
+    return x * w
+} grad(y, dy) {
+    let gw = dy * x
+    return (dy * w, max(min(gw, 1.0), -1.0))
+}
+
+// The result itself in the gradient: d softplus = sigmoid = 1 - exp(-y).
+pub op softplus<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return log(exp(x) + 1.0)
+} grad(y, dy) {
+    return dy * (1.0 - exp(-y))
+}
+
+pub entry loss<N: Dim>(x: Tensor[N; f32], w: Tensor[N; f32]) -> f32 {
+    let y = scaled(truncate(x), softplus(w), 3)
+    return sum[n] y[n] * y[n]
+}

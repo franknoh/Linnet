@@ -38,6 +38,20 @@ pub op linear<*S: Shape, In: Dim, Out: Dim, T: Float>(
 
 A backend MAY preserve the op, inline its body, or replace it with a proven equivalent native implementation. Unless declared `extern` (a future extension), the body is the normative fallback semantics.
 
+An op MAY follow its body with a `grad` clause, its backward pass:
+
+```text
+pub op truncate<*S: Shape, T: Float>(x: Tensor[*S; T]) -> Tensor[*S; T] {
+    return cast<T>(cast<i64>(x))
+} grad(y, dy) {
+    return dy
+}
+```
+
+`grad` is a keyword only in this position. Its two names bind the op's result and the gradient arriving at it, both of the result's type; the op's generics and parameters are in scope. It returns the gradient of each parameter that is a tensor of a floating dtype or of a dtype generic bounded by `Float`, in declaration order: one value, or a tuple when there are several. Other parameters, floating scalars among them, take no gradient.
+
+An op with `grad` MUST return one floating tensor or scalar, and its parameters MUST be tensors or scalars. Wherever an entry is differentiated, by a framework running exported code or by the compiler (§15.4), the clause replaces the backward pass of the op's body. The body still defines the op's value.
+
 ## 7.3 Semantic identity
 
 An op's identity includes at least:

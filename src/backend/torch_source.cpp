@@ -722,6 +722,7 @@ public:
             out += "from linnet.torch.paged import prefill as _paged_prefill\n";
             out += "from linnet.torch.paged import prefill_blocks as _paged_prefill_blocks\n\n";
         }
+        out += definitions_;
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
         std::vector<std::string> next_states;
@@ -1056,6 +1057,37 @@ public:
     update_row(const TensorInfo& stack, const TensorInfo& index, const TensorInfo& value) override {
         return define(stack.name + ".index_copy(0, " + index.name + ".reshape(1), " + value.name +
                       ".unsqueeze(0))");
+    }
+
+    // `class _GradN(torch.autograd.Function)`: forward hands the result
+    // (computed from detached arguments) through; backward is the op's `grad`.
+    std::string end_custom_gradient(const std::vector<TensorInfo>& arguments,
+                                    const TensorInfo& result,
+                                    const Pullback& pullback) override {
+        const std::string name = "_Grad" + std::to_string(custom_gradients_++);
+        const Backward backward = emit_backward(arguments, result, pullback, "        ");
+        const std::string inputs = join(backward.arguments, ", ");
+        std::string text = "class " + name + "(torch.autograd.Function):\n";
+        text += "    @staticmethod\n";
+        text += "    def forward(ctx, out" + (inputs.empty() ? "" : ", " + inputs) + "):\n";
+        text += "        ctx.save_for_backward(" + (inputs.empty() ? "" : inputs + ", ") + "out)\n";
+        text += "        return out\n\n";
+        text += "    @staticmethod\n";
+        text += "    def backward(ctx, grad_out):\n";
+        text += "        " + (inputs.empty() ? "" : inputs + ", ") + "out = ctx.saved_tensors\n";
+        text += "        _device = grad_out.device\n";
+        text += backward.body;
+        std::vector<std::string> returned{"None"};
+        for (const auto& gradient : backward.gradients) {
+            returned.push_back(gradient.value_or("None"));
+        }
+        text += "        return " + join(returned, ", ") + "\n\n\n";
+        definitions_ += text;
+        std::vector<std::string> operands{result.name};
+        for (const TensorInfo& argument : arguments) {
+            operands.push_back(argument.name);
+        }
+        return define(name + ".apply(" + join(operands, ", ") + ")");
     }
 
     std::optional<std::string> scatter_add(const Dims& shape,
@@ -1755,6 +1787,7 @@ private:
         return value + ".expand(" + python_tuple(shape) + ")";
     }
     std::string infinity() const override { return "float(\"inf\")"; }
+    std::string detach(const std::string& value) const override { return value + ".detach()"; }
 
     bool placed_ = false; // with placement, `main` and `constants` take `_dev`
     bool fuse_ = true;    // with `prepare`, join sibling linear layers

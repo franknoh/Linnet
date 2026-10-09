@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TypeAlias, TypedDict, TypeVar, cast
+from typing import Protocol, TypeAlias, TypedDict, TypeVar, cast
 
 import torch
 
@@ -396,6 +396,8 @@ class Interpreter:
                 ]
             callee = self.program.functions[cast(str, attrs["callee"])]
             callee_env = self._callee_env(callee, self._substitution(op), env, operands)
+            if callee.gradient is not None:
+                return [self._call_with_gradient(callee, callee_env, operands)]
             return [self.call(callee, callee_env, operands)]
         if kind == "block.param":
             return [cast(BlockInstance, operands[0]).params[cast(str, attrs["name"])]]
@@ -523,6 +525,36 @@ class Interpreter:
         dims = tuple(range(first_new_axis, inner_grid.rank()))
         return REDUCTIONS[cast(str, op.attrs["reduce"])](body, dims)
 
+    def _call_with_gradient(
+        self, function: ir.Function, env: ir.Bindings, arguments: list[Value]
+    ) -> torch.Tensor:
+        """An op with a `grad`: its body computes from detached arguments, and
+        autograd takes the op's gradient from `grad` instead."""
+        gradient = cast(ir.Region, function.gradient)
+        tensors = [i for i, value in enumerate(arguments) if isinstance(value, torch.Tensor)]
+        takes = [ir.takes_gradient(function, arg.type) for arg in gradient.args]
+        detached = [
+            value.detach() if isinstance(value, torch.Tensor) else value for value in arguments
+        ]
+        result = cast(torch.Tensor, self.call(function, env, detached))
+
+        def pullback(
+            inputs: Sequence[torch.Tensor], out: torch.Tensor, grad_out: torch.Tensor
+        ) -> list[torch.Tensor | None]:
+            bound: list[Value] = list(arguments)
+            for position, value in zip(tensors, inputs, strict=True):
+                bound[position] = value
+            values = {
+                arg.id: value
+                for arg, value in zip(gradient.args, [*bound, out, grad_out], strict=True)
+            }
+            returned = self.run_region(gradient, env, values, Grid())[0]
+            grads = iter(returned if isinstance(returned, tuple) else (returned,))
+            return [cast(torch.Tensor, next(grads)) if takes[i] else None for i in tensors]
+
+        inputs = [cast(torch.Tensor, arguments[i]) for i in tensors]
+        return cast(torch.Tensor, _CustomGradient.apply(pullback, result, *inputs))
+
     @staticmethod
     def _generic_dim(callee: ir.Function, env: ir.Bindings, name: str) -> int:
         """A dimension generic of the callee, by name, as bound for this call."""
@@ -550,6 +582,37 @@ class Interpreter:
             callee_env.packs = {**receiver.env.packs, **callee_env.packs}
             callee_env.dtypes = {**receiver.env.dtypes, **callee_env.dtypes}
         return callee_env
+
+
+_Pullback: TypeAlias = Callable[
+    [Sequence[torch.Tensor], torch.Tensor, torch.Tensor], list[torch.Tensor | None]
+]
+
+
+class _PullbackCtx(Protocol):
+    pullback: _Pullback
+    saved_tensors: tuple[torch.Tensor, ...]
+
+    def save_for_backward(self, *tensors: torch.Tensor) -> None: ...
+
+
+class _CustomGradient(torch.autograd.Function):
+    """Hands an op's result through; its backward pass is the op's `grad`."""
+
+    @staticmethod
+    def forward(
+        ctx: _PullbackCtx, pullback: _Pullback, out: torch.Tensor, *inputs: torch.Tensor
+    ) -> torch.Tensor:
+        ctx.pullback = pullback
+        ctx.save_for_backward(*inputs, out)
+        return out
+
+    @staticmethod
+    def backward(  # pyright: ignore[reportIncompatibleMethodOverride] - one gradient in
+        ctx: _PullbackCtx, grad_out: torch.Tensor
+    ) -> tuple[torch.Tensor | None, ...]:
+        *inputs, out = ctx.saved_tensors
+        return (None, None, *ctx.pullback(inputs, out, grad_out))
 
 
 @dataclass(frozen=True)

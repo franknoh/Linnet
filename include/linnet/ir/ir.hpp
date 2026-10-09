@@ -186,6 +186,11 @@ struct Function {
     std::vector<sema::ConstraintInfo> constraints;
     RegionId body = no_id;
     std::vector<sema::TypeId> results;
+    // An op's `grad`: its backward pass, a region whose arguments are the
+    // op's parameters, its result, and the gradient arriving at the result,
+    // returning the gradient of each parameter that `sema::takes_gradient`
+    // (a tuple when several). `no_id` when the op has none.
+    RegionId gradient = no_id;
 
     // `op`, `entry` or `fn`, as source declares it.
     std::string_view keyword() const { return is_op ? "op" : is_entry ? "entry" : "fn"; }

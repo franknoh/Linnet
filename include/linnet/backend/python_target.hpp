@@ -44,6 +44,11 @@ public:
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override;
     bool broadcasts_elementwise() const override { return true; }
+    // An op with a `grad`: its body computes from detached arguments, so
+    // that the library's autodiff takes the op's gradient from a function
+    // the target defines at module level (`end_custom_gradient`).
+    std::vector<std::string>
+    begin_custom_gradient(const std::vector<TensorInfo>& arguments) override;
     std::optional<std::string> contract(const TensorInfo& lhs,
                                         const Dims& lhs_axes,
                                         const TensorInfo& rhs,
@@ -74,6 +79,8 @@ protected:
     virtual std::string expand(const std::string& value, const Dims& shape) = 0;
     // Positive infinity, as Python text.
     virtual std::string infinity() const = 0;
+    // `value` cut from the library's autodiff.
+    virtual std::string detach(const std::string& value) const = 0;
 
     // ---- shared
 
@@ -101,6 +108,19 @@ protected:
     adapters(const std::string& path, const Dims& weight, sema::ScalarKind dtype);
     static std::string string_list(const std::vector<std::string>& items);
 
+    // An op's backward pass, emitted at `indent` in a scope of its own: the
+    // arguments named `a0`, `a1`, ..., the result `out`, its gradient
+    // `grad_out`. Nothing in `body` reads a name of `main`'s.
+    struct Backward {
+        std::string body;
+        std::vector<std::optional<std::string>> gradients; // per argument
+        std::vector<std::string> arguments;                // `a0`, `a1`, ...
+    };
+    Backward emit_backward(const std::vector<TensorInfo>& arguments,
+                           const TensorInfo& result,
+                           const Pullback& pullback,
+                           const std::string& indent);
+
     std::string library_;   // `torch`, `jnp`
     std::string bool_name_; // the library's boolean dtype, after `library_.`
     bool prepare_ = false;  // split weight-only work into `prepare`
@@ -118,6 +138,9 @@ protected:
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::string body_;
     std::string indent_ = "    ";
+    // Module-level definitions before `main`: ops' gradients.
+    std::string definitions_;
+    std::size_t custom_gradients_ = 0;
     std::size_t next_ = 0;
 };
 

@@ -500,9 +500,18 @@ private:
 
         out.body = module_.add_region(ir::no_id);
         const ir::RegionId body = out.body;
+        const Json& gradient = function["gradient"];
+        if (!gradient.is_null()) {
+            out.gradient = module_.add_region(ir::no_id);
+        }
+        const ir::RegionId gradient_region = out.gradient;
         module_.add_function(std::move(out));
         values_.clear();
         fill_region(body, require(function, "body", "function"));
+        if (gradient_region != ir::no_id) {
+            values_.clear();
+            fill_region(gradient_region, gradient);
+        }
     }
 
     void define_constant(const Json& description) {

@@ -1684,10 +1684,14 @@ private:
         if (found == functions_.end()) {
             fail("callee `" + op.attributes.name + "` is not defined in this program");
         }
+        const ir::Function& callee = *found->second;
+        if (callee.gradient != ir::no_id) {
+            call_with_gradient(op, callee);
+            return;
+        }
         if (op.kind == ir::OpKind::SemanticCall && try_native(op)) {
             return;
         }
-        const ir::Function& callee = *found->second;
         Frame inner;
         inner.subst = types_.substitute(op.attributes.substitution, frame().subst);
         std::vector<Val> arguments;
@@ -1759,6 +1763,93 @@ private:
             result.grid_rank = grid_.size();
             define(op, result);
         }
+    }
+
+    // An op with a `grad`: its canonical body runs, bracketed for the
+    // target, which takes the backward pass from `grad` instead of the body.
+    void call_with_gradient(const ir::Operation& op, const ir::Function& callee) {
+        const Substitution subst = types_.substitute(op.attributes.substitution, frame().subst);
+        std::vector<Val> arguments;
+        arguments.reserve(op.operands.size());
+        for (const ir::ValueId id : op.operands) {
+            arguments.push_back(value(id));
+        }
+        // The tensor arguments cross to the target; which of them `grad`
+        // returns a gradient for, the parameter types say.
+        const ir::Block& gradient = module_.block(module_.region(callee.gradient).blocks.front());
+        std::vector<std::size_t> tensors;
+        std::vector<TensorInfo> infos;
+        std::vector<bool> takes;
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            takes.push_back(
+                sema::takes_gradient(types_, module_.value(gradient.arguments[i]).type));
+            if (arguments[i].kind == Val::Kind::Tensor) {
+                tensors.push_back(i);
+                infos.push_back(info(arguments[i]));
+            }
+        }
+        const std::vector<std::string> names = target_.begin_custom_gradient(infos);
+        std::vector<Val> inside = arguments;
+        for (std::size_t k = 0; k < tensors.size(); ++k) {
+            inside[tensors[k]].name = names[k];
+        }
+        const std::vector<Val> results = run_call_region(callee.body, subst, inside);
+        if (results.empty() || results.front().kind != Val::Kind::Tensor) {
+            fail("internal: an op with a `grad` must return one tensor");
+        }
+        const ir::RegionId region = callee.gradient;
+        const GraphTarget::Pullback pullback =
+            [this, region, subst, arguments, tensors, takes](
+                const std::vector<TensorInfo>& given,
+                const TensorInfo& result,
+                const TensorInfo& grad) -> std::vector<std::optional<std::string>> {
+            std::vector<Val> bound = arguments;
+            for (std::size_t k = 0; k < tensors.size(); ++k) {
+                bound[tensors[k]].name = given[k].name;
+            }
+            Val y;
+            y.name = result.name;
+            y.shape = result.shape;
+            y.dtype = result.dtype;
+            Val dy = y;
+            dy.name = grad.name;
+            bound.push_back(y);
+            bound.push_back(dy);
+            const std::vector<Val> returned = run_call_region(region, subst, bound);
+            if (returned.empty()) {
+                fail("internal: a `grad` without a result");
+            }
+            const std::vector<Val> gradients = returned.front().kind == Val::Kind::Tuple
+                                                   ? returned.front().elements
+                                                   : std::vector<Val>{returned.front()};
+            std::vector<std::optional<std::string>> out(tensors.size());
+            std::size_t next = 0;
+            for (std::size_t k = 0; k < tensors.size(); ++k) {
+                if (takes[tensors[k]] && next < gradients.size()) {
+                    out[k] = gradients[next++].name;
+                }
+            }
+            return out;
+        };
+        Val result = results.front();
+        result.name = target_.end_custom_gradient(infos, info(result), pullback);
+        result.grid_rank = grid_.size();
+        define(op, result);
+    }
+
+    // A region run as a call's: a frame of its own, outside any grid.
+    std::vector<Val> run_call_region(ir::RegionId region,
+                                     const Substitution& subst,
+                                     const std::vector<Val>& arguments) {
+        Frame inner;
+        inner.subst = subst;
+        const Dims saved_grid = grid_;
+        grid_.clear();
+        frames_.push_back(std::move(inner));
+        std::vector<Val> results = run_region(region, arguments);
+        frames_.pop_back();
+        grid_ = saved_grid;
+        return results;
     }
 
     // ------------------------------------------------- index notation

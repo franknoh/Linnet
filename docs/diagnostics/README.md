@@ -57,6 +57,7 @@ warnings (`W`) fail only under `--strict` (`linnet lint`).
 | E2122 | self-referential constant, alias, or struct |
 | E2123 | compile-time integer required |
 | E2124 | `yield` outside the end of a `for` that is a binding's value, or such a `for` elsewhere |
+| E2125 | `grad` on something other than an op, or on an op that does not return one floating tensor or scalar, takes a parameter that is not a tensor or scalar, or has no floating tensor parameter |
 | E2190 | unimplemented feature |
 
 ## Shapes

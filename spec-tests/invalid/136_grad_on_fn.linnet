@@ -1,0 +1,7 @@
+module m
+
+fn same(x: Tensor[4; f32]) -> Tensor[4; f32] {
+    return x
+} grad(y, dy) {
+    return dy
+}

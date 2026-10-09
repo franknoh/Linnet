@@ -18,11 +18,10 @@ A `for` with a value (§8.5) collects per-iteration outputs. Iterating a tensor'
 
 Training works by differentiating exported entries in the target framework. Objectives are entries: module-level ones (§7.6), or a block's entries over packed sequences that return each position's loss or log-probability. `std.nn.loss` defines the losses as semantic ops (§7.3). A backend MAY compute `linear_cross_entropy` and `linear_token_log_probs` a block of rows at a time, with its own backward pass, so the `[N, Vocab]` logits are never whole. Low-rank adapters, gathering sharded parameters, and recomputing blocks in the backward pass are code-generation options and leave source semantics unchanged.
 
-The compiler differentiates exports too: `--grad` (docs/tooling.md) emits an entry's loss and its gradient with respect to the parameters, the backward pass written from the exported operations. Runtime loops are not differentiated yet.
+The compiler differentiates exports too: `--grad` (docs/tooling.md) emits an entry's loss and its gradient with respect to the parameters, the backward pass written from the exported operations. Runtime loops are not differentiated yet. An op's `grad` clause (§7.2) replaces the backward pass of its body wherever an entry is differentiated.
 
 Possible additions are:
 
-- `@custom_vjp` or equivalent annotations;
 - gradient-specific semantic ops;
 - optimizer-state structures.
 

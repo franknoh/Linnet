@@ -136,6 +136,9 @@ std::vector<BlockId> Module::all_blocks() const {
     roots.reserve(functions_.size() + constants_.size());
     for (const Function& function : functions_) {
         roots.push_back(function.body);
+        if (function.gradient != no_id) {
+            roots.push_back(function.gradient);
+        }
     }
     for (const Constant& constant : constants_) {
         roots.push_back(constant.body);
@@ -171,6 +174,9 @@ public:
             const Function& function = module_.functions()[i];
             const std::set<ValueId> visible;
             check_region(function.body, visible, "function " + function.name, &function);
+            if (function.gradient != no_id) {
+                check_region(function.gradient, visible, "grad of " + function.name, &function);
+            }
         }
         for (const Constant& constant : module_.constants()) {
             // A constant body is a nested region: it yields its value.
@@ -323,6 +329,20 @@ private:
         line(header + " {");
         ++indent_;
         print_block(body);
+        --indent_;
+        if (function.gradient == no_id) {
+            line("}");
+            return;
+        }
+        const Block& gradient = module_.block(module_.region(function.gradient).blocks.front());
+        std::string clause = "} grad(";
+        for (std::size_t i = 0; i < gradient.arguments.size(); ++i) {
+            clause += i == 0 ? "" : ", ";
+            clause += value(gradient.arguments[i]);
+        }
+        line(clause + ") {");
+        ++indent_;
+        print_block(gradient);
         --indent_;
         line("}");
     }

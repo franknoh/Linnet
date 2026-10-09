@@ -535,6 +535,29 @@ void Checker::resolve_function(EntityId entity) {
         info.param_entities.push_back(created);
     }
     info.result = decl.return_type == ast::no_id ? types_.unit() : eval_type(decl.return_type);
+    if (decl.gradient) {
+        // `grad(y, dy)`: the result and the gradient arriving at it.
+        for (const ast::Name& name : {decl.gradient->result, decl.gradient->grad}) {
+            Entity local;
+            local.kind = EntityKind::Local;
+            local.name = name.text;
+            local.span = name.span;
+            local.module = env.module;
+            local.type = info.result;
+            local.is_parameter = true;
+            local.state = ResolveState::Done;
+            const EntityId created = add_entity(local);
+            declare(seen, created, codes::duplicate_name);
+            info.gradient_entities.push_back(created);
+        }
+        std::vector<TypeId> gradients;
+        for (const ParamInfo& param : info.params) {
+            if (takes_gradient(types_, param.type)) {
+                gradients.push_back(param.type);
+            }
+        }
+        info.gradient_result = gradients.size() == 1 ? gradients.front() : types_.tuple(gradients);
+    }
     info.scope = env.scopes.front();
 }
 
@@ -747,6 +770,81 @@ void Checker::check_function_body(EntityId entity) {
     }
     env.scopes.emplace_back();
     check_body(decl.body, true);
+    if (decl.gradient) {
+        check_gradient(entity);
+    }
+}
+
+// An op's `grad`: its backward pass, checked as a second body in which
+// `y` and `dy` are the result and its gradient, returning the gradient of
+// every parameter that takes one.
+void Checker::check_gradient(EntityId entity) {
+    const Entity& target = entities_[entity];
+    const auto& decl = std::get<ast::FunctionDecl>(modules_[target.module]->item(target.item).data);
+    if (!decl.gradient) {
+        return;
+    }
+    const ast::GradientClause& clause = *decl.gradient;
+    const DeclInfo& info = decls_[entity];
+    const SourceSpan head{clause.span.file, clause.span.begin, clause.span.begin + 4};
+    if (decl.kind != ast::FunctionKind::Op) {
+        error(codes::invalid_gradient, head, "only an `op` has a `grad`")
+            .note("an op is a semantic boundary; its `grad` replaces the backward pass of its "
+                  "body");
+        return;
+    }
+    const TypeData& result = types_.get(info.result);
+    const bool floating_result =
+        (result.kind == TypeKind::Tensor || result.kind == TypeKind::Scalar) &&
+        types_.class_of(result.dtype) == DTypeClass::Float;
+    if (!floating_result && !types_.is_error(info.result)) {
+        error(codes::invalid_gradient,
+              ast().type(decl.return_type).span,
+              "an op with a `grad` returns one floating tensor or scalar")
+            .note("it returns `" + str(info.result) + "`");
+        return;
+    }
+    for (std::size_t i = 0; i < info.params.size(); ++i) {
+        const TypeKind kind = types_.kind(info.params[i].type);
+        if (kind != TypeKind::Tensor && kind != TypeKind::Scalar && kind != TypeKind::Error) {
+            error(codes::invalid_gradient,
+                  info.params[i].span,
+                  "a parameter of an op with a `grad` is a tensor or a scalar")
+                .note("`" + std::string(info.params[i].name) + "` is `" + str(info.params[i].type) +
+                      "`");
+            return;
+        }
+    }
+    if (std::ranges::none_of(info.params, [&](const ParamInfo& param) {
+            return takes_gradient(types_, param.type);
+        })) {
+        error(codes::invalid_gradient, head, "this op has no parameter to return a gradient for")
+            .note("`grad` returns the gradients of the op's floating tensor parameters");
+        return;
+    }
+
+    Env env = make_env(entity);
+    env.function = entity;
+    env.result = info.gradient_result;
+    env.owner = std::string(target.name);
+    env.scopes.push_back(info.scope);
+    env.scopes.emplace_back();
+    for (const ConstraintInfo& constraint : info.constraints) {
+        env.solver.assume(constraint.relation, constraint.lhs, constraint.rhs);
+    }
+    const EnvGuard guard(*this, env);
+    for (const EntityId param : info.param_entities) {
+        if (!entities_[param].name.empty() && !is_prelude_name(entities_[param].name)) {
+            env.scopes.back().emplace(entities_[param].name, param);
+        }
+    }
+    for (const EntityId local : info.gradient_entities) {
+        if (!is_prelude_name(entities_[local].name)) {
+            env.scopes.back().emplace(entities_[local].name, local);
+        }
+    }
+    env.scopes.emplace_back();
+    check_body(clause.body, true);
 }
 
 void Checker::report_import_cycles() {

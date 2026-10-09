@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -308,6 +309,37 @@ public:
     virtual std::vector<std::string> end_while(const std::vector<TensorInfo>& next) {
         (void)next;
         return {};
+    }
+
+    // An op with a `grad`, its backward pass written in source. The
+    // evaluator brackets the op's body: `begin_custom_gradient` takes the
+    // call's tensor arguments and returns the names the body computes from
+    // -- a target whose framework differentiates what it runs (generated
+    // PyTorch, JAX) detaches them there, so that the result's gradient comes
+    // from `pullback` alone. `end_custom_gradient` takes the body's result
+    // and returns the name the caller uses. `pullback` emits the backward
+    // pass from the names it is given -- the arguments, the result, the
+    // result's gradient -- and returns each argument's gradient, nothing for
+    // one the op takes none for. Another target runs the body as it is.
+    using Pullback = std::function<std::vector<std::optional<std::string>>(
+        const std::vector<TensorInfo>& arguments,
+        const TensorInfo& result,
+        const TensorInfo& grad)>;
+    virtual std::vector<std::string>
+    begin_custom_gradient(const std::vector<TensorInfo>& arguments) {
+        std::vector<std::string> names;
+        names.reserve(arguments.size());
+        for (const TensorInfo& argument : arguments) {
+            names.push_back(argument.name);
+        }
+        return names;
+    }
+    virtual std::string end_custom_gradient(const std::vector<TensorInfo>& arguments,
+                                            const TensorInfo& result,
+                                            const Pullback& pullback) {
+        (void)arguments;
+        (void)pullback;
+        return result.name;
     }
 
     // `values` added into zeros of `shape` and `dtype` at `indices` -- shaped

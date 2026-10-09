@@ -306,3 +306,15 @@ TEST("format: for loops, statements and scans") {
              "    return ys\n"
              "}\n");
 }
+
+TEST("format: an op's grad clause") {
+    CHECK_EQ(fmt("module m\nop f(x: Tensor[4; f32]) -> Tensor[4; f32] {return x}\n"
+                 "grad( y,dy ){\nreturn dy*2.0}\n"),
+             "module m\n"
+             "\n"
+             "op f(x: Tensor[4; f32]) -> Tensor[4; f32] {\n"
+             "    return x\n"
+             "} grad(y, dy) {\n"
+             "    return dy * 2.0\n"
+             "}\n");
+}
