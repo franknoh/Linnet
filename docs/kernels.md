@@ -1,8 +1,8 @@
 # Kernels
 
 Write a tile kernel in Linnet and let an op run it in place of its body.
-Generated PyTorch launches it with Triton. Every other backend runs the op's
-body, which stays the op's definition.
+Generated PyTorch launches it with Triton, generated JAX with Pallas. Every
+other backend runs the op's body, which stays the op's definition.
 
 ```linnet
 pub kernel row_softmax<R: Dim, C: Dim, B: Dim>(x: Tensor[R, C; f32]) -> y: Tensor[R, C; f32] grid(R)
@@ -50,24 +50,25 @@ parameters and writes what the op returns.
 | Backend | Runs |
 | --- | --- |
 | generated PyTorch (`linnet torch`, `load(compile=True)`) | the kernel through `@triton.jit`, on CUDA tensors |
-| generated PyTorch on the CPU, or without Triton | the op's body |
-| JAX, ONNX, StableHLO, `--grad`, the interpreter | the op's body |
+| generated JAX (`linnet jax`, `load_function`, `load_source`) | the kernel through `pl.pallas_call`, on a GPU |
+| either on the CPU, or without Triton or Pallas | the op's body |
+| ONNX, StableHLO, `--grad`, the PyTorch interpreter | the op's body |
 
 The body also runs where the kernel's `where` clause does not hold for the
 shapes (above, rows longer than 1024), and under `--numerics exact`.
-`TRITON_INTERPRET=1` runs kernels on the CPU in Triton's interpreter, for
-tests.
+`TRITON_INTERPRET=1` and `LINNET_PALLAS_INTERPRET=1` run kernels on the
+CPU in Triton's and Pallas's interpreters, for tests.
 
 ## Gradients
 
-Under autograd, a kernel's backward pass is the op's `grad` clause. Without
-one, it runs the op's body again and differentiates that.
+Under autograd and `jax.grad`, a kernel's backward pass is the op's `grad`
+clause. Without one, it differentiates the op's body, run again.
 
 ## Limits
 
-- Triton tile sizes are powers of two.
+- Tile sizes are powers of two.
 - Tiles cannot be sliced, joined, or gathered from; `load` the memory
   instead. `prod` over a tile is not supported yet.
-- A product of two tiles at least 16 a side becomes `tl.dot`, in `f32` at
-  full precision unless `--numerics fast`.
+- A product of two tiles at least 16 a side becomes `tl.dot` (`jnp.dot` in
+  Pallas), in `f32` at full precision unless `--numerics fast`.
 - Inputs are made contiguous, so strides are constants.
