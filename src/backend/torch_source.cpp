@@ -1,5 +1,6 @@
 #include "linnet/backend/torch_source.hpp"
 
+#include "linnet/backend/kernel.hpp"
 #include "linnet/backend/python_target.hpp"
 #include "linnet/support/text.hpp"
 
@@ -30,7 +31,7 @@ public:
                        "bool",
                        options.prepare,
                        {options.lora, options.lora_rank, options.lora_alpha}),
-          fuse_(options.fuse) {}
+          fuse_(options.fuse), full_precision_(options.full_precision) {}
 
     using PythonTarget::gather;
 
@@ -722,6 +723,7 @@ public:
             out += "from linnet.torch.paged import prefill as _paged_prefill\n";
             out += "from linnet.torch.paged import prefill_blocks as _paged_prefill_blocks\n\n";
         }
+        out += helpers_;
         out += definitions_;
         out += "PARAMETERS = " + string_list(parameters_) + "\n";
         out += "STATES = " + string_list(states_) + "\n";
@@ -1064,6 +1066,134 @@ public:
     std::string end_custom_gradient(const std::vector<TensorInfo>& arguments,
                                     const TensorInfo& result,
                                     const Pullback& pullback) override {
+        const std::string name = gradient_class(arguments, result, pullback);
+        std::vector<std::string> operands{result.name};
+        for (const TensorInfo& argument : arguments) {
+            operands.push_back(argument.name);
+        }
+        return define(name + ".apply(" + join(operands, ", ") + ")");
+    }
+
+    std::unique_ptr<KernelTarget> kernel_target() const override {
+        return make_triton_target(full_precision_);
+    }
+
+    // `_opN(...)`: the kernel where Triton runs (a CUDA device, or Triton's
+    // interpreter), the op's body elsewhere. Under autograd the backward
+    // pass is the op's `grad`, or else its body run again.
+    std::optional<std::vector<std::string>> launch_kernel(const KernelLaunch& launch) override {
+        if (launch.arguments.empty() || placed_) {
+            return std::nullopt;
+        }
+        if (!kernel_helpers_) {
+            kernel_helpers_ = true;
+            helpers_ += kernel_helpers();
+        }
+        std::vector<std::string> operands;
+        operands.reserve(launch.arguments.size());
+        for (const TensorInfo& argument : launch.arguments) {
+            operands.push_back(argument.name);
+        }
+        // An op launched again at the same shapes reuses its `_opN`.
+        std::string key = launch.op;
+        for (const TensorInfo& argument : launch.arguments) {
+            key += ";" + python_tuple(argument.shape) + dtype_name(argument.dtype);
+        }
+        const auto [launched, is_first] = launched_.try_emplace(key, launches_);
+        if (!is_first) {
+            return results_of(launch,
+                              define("_op" + std::to_string(launched->second) + "(" +
+                                     join(operands, ", ") + ")"));
+        }
+        // The kernel, once a program.
+        const std::string program_key =
+            join(launch.program.parameters, ",") + "\n" + launch.program.body;
+        auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
+        if (is_new) {
+            kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+            definitions_ += "if triton is not None:\n\n";
+            definitions_ += "    @triton.jit  # " + launch.name + "\n";
+            definitions_ +=
+                "    def " + kernel->second + "(" + join(launch.program.parameters, ", ") + "):\n";
+            definitions_ += indented(launch.program.body, "    ") + "\n\n";
+        }
+        const std::string id = std::to_string(launches_++);
+        std::vector<std::string> inputs;
+        inputs.reserve(launch.arguments.size());
+        for (std::size_t i = 0; i < launch.arguments.size(); ++i) {
+            inputs.push_back("a" + std::to_string(i));
+        }
+        const std::string parameters = join(inputs, ", ");
+        // The launch: results allocated, inputs made contiguous.
+        std::string text = "def _launch" + id + "(" + parameters + "):\n";
+        std::vector<std::string> outputs;
+        std::vector<std::string> call;
+        outputs.reserve(launch.results.size());
+        call.reserve(inputs.size() + launch.results.size());
+        for (const std::string& input : inputs) {
+            call.push_back(input + ".contiguous()");
+        }
+        for (std::size_t i = 0; i < launch.results.size(); ++i) {
+            outputs.push_back("out" + std::to_string(i));
+            text += "    " + outputs.back() + " = torch.empty(" +
+                    python_tuple(launch.results[i].shape) +
+                    ", dtype=" + dtype_name(launch.results[i].dtype) + ", device=a0.device)\n";
+            call.push_back(outputs.back());
+        }
+        text += "    " + kernel->second + "[" + python_tuple(launch.grid) + "](" +
+                join(call, ", ") + ")\n";
+        text += "    return " + join(outputs, ", ") + "\n\n\n";
+        // The op's body, for another device and for the backward pass.
+        const auto [body, results] = emit_body(launch.arguments, launch.body, "    ");
+        text += "def _body" + id + "(" + parameters + "):\n";
+        text += "    _device = a0.device\n" + body;
+        text += "    return " + join(results, ", ") + "\n\n\n";
+        const std::string runs = "triton is not None and (a0.is_cuda or _INTERPRET)";
+        text += "def _op" + id + "(" + parameters + "):\n";
+        if (launch.pullback) {
+            std::vector<std::string> detached;
+            detached.reserve(inputs.size());
+            for (const std::string& input : inputs) {
+                detached.push_back(input + ".detach()");
+            }
+            const std::string name =
+                gradient_class(launch.arguments,
+                               {"", launch.results.front().shape, launch.results.front().dtype},
+                               launch.pullback);
+            text += "    if " + runs + ":\n";
+            text += "        out = _launch" + id + "(" + join(detached, ", ") + ")\n";
+            text += "    else:\n";
+            text += "        out = _body" + id + "(" + join(detached, ", ") + ")\n";
+            text += "    return " + name + ".apply(out, " + parameters + ")\n\n\n";
+        } else {
+            text += "    if not (" + runs + "):\n";
+            text += "        return _body" + id + "(" + parameters + ")\n";
+            text += "    if torch.is_grad_enabled():\n";
+            text += "        return _KernelCall.apply(_launch" + id + ", _body" + id + ", " +
+                    parameters + ")\n";
+            text += "    return _launch" + id + "(" + parameters + ")\n\n\n";
+        }
+        definitions_ += text;
+        return results_of(launch, define("_op" + id + "(" + join(operands, ", ") + ")"));
+    }
+
+    // The names of a launch's results: `value`, or its elements.
+    std::vector<std::string> results_of(const KernelLaunch& launch, const std::string& value) {
+        if (launch.results.size() == 1) {
+            return {value};
+        }
+        std::vector<std::string> names;
+        names.reserve(launch.results.size());
+        for (std::size_t i = 0; i < launch.results.size(); ++i) {
+            names.push_back(define(value + "[" + std::to_string(i) + "]"));
+        }
+        return names;
+    }
+
+    // The class for an op's `grad` (see `end_custom_gradient`); its name.
+    std::string gradient_class(const std::vector<TensorInfo>& arguments,
+                               const TensorInfo& result,
+                               const Pullback& pullback) {
         const std::string name = "_Grad" + std::to_string(custom_gradients_++);
         const Backward backward = emit_backward(arguments, result, pullback, "        ");
         const std::string inputs = join(backward.arguments, ", ");
@@ -1083,11 +1213,7 @@ public:
         }
         text += "        return " + join(returned, ", ") + "\n\n\n";
         definitions_ += text;
-        std::vector<std::string> operands{result.name};
-        for (const TensorInfo& argument : arguments) {
-            operands.push_back(argument.name);
-        }
-        return define(name + ".apply(" + join(operands, ", ") + ")");
+        return name;
     }
 
     std::optional<std::string> scatter_add(const Dims& shape,
@@ -1808,6 +1934,63 @@ private:
     std::map<ScalarKind, std::string> zeros_;         // per-dtype zero constants
     std::vector<std::vector<std::string>> loop_names_;
     std::size_t loops_ = 0;
+    bool full_precision_ = false;                // f32 kernel products in f32, not TF32
+    bool kernel_helpers_ = false;                // Triton's import and `_KernelCall` are used
+    std::string helpers_;                        // module-level helpers before `definitions_`
+    std::map<std::string, std::string> kernels_; // a kernel's program -> its function
+    std::size_t launches_ = 0;
+    std::map<std::string, std::size_t> launched_; // an op at its shapes -> its `_opN`
+
+    static std::string kernel_helpers() {
+        return "import os\n"
+               "\n"
+               "try:\n"
+               "    import triton\n"
+               "    import triton.language as tl\n"
+               "except ImportError:  # without Triton, ops run their bodies\n"
+               "    triton = None\n"
+               "\n"
+               "_INTERPRET = os.environ.get(\"TRITON_INTERPRET\") == \"1\"\n"
+               "\n"
+               "\n"
+               "class _KernelCall(torch.autograd.Function):\n"
+               "    # An op's kernel; its backward pass runs the op's body again.\n"
+               "\n"
+               "    @staticmethod\n"
+               "    def forward(ctx, launch, body, *inputs):\n"
+               "        ctx.body = body\n"
+               "        ctx.save_for_backward(*inputs)\n"
+               "        return launch(*inputs)\n"
+               "\n"
+               "    @staticmethod\n"
+               "    def backward(ctx, *grads):\n"
+               "        inputs = ctx.saved_tensors\n"
+               "        with torch.enable_grad():\n"
+               "            leaves = [t.detach().requires_grad_(t.is_floating_point()) for t in "
+               "inputs]\n"
+               "            outs = ctx.body(*leaves)\n"
+               "        outs = outs if isinstance(outs, tuple) else (outs,)\n"
+               "        wanted = [t for t in leaves if t.requires_grad]\n"
+               "        found = iter(torch.autograd.grad(outs, wanted, grads, allow_unused=True))\n"
+               "        return (None, None, *(next(found) if t.requires_grad else None for t in "
+               "leaves))\n"
+               "\n"
+               "\n";
+    }
+
+    // Every line of `text` with `prefix` before it, blank lines left blank.
+    static std::string indented(const std::string& text, const std::string& prefix) {
+        std::string out;
+        std::size_t start = 0;
+        while (start < text.size()) {
+            std::size_t end = text.find('\n', start);
+            end = end == std::string::npos ? text.size() : end + 1;
+            const std::string line = text.substr(start, end - start);
+            out += (line == "\n" ? "" : prefix) + line;
+            start = end;
+        }
+        return out;
+    }
 };
 
 } // namespace

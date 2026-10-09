@@ -164,6 +164,25 @@ PythonTarget::Backward PythonTarget::emit_backward(const std::vector<TensorInfo>
     return out;
 }
 
+std::pair<std::string, std::vector<std::string>> PythonTarget::emit_body(
+    const std::vector<TensorInfo>& arguments,
+    const std::function<std::vector<std::string>(const std::vector<TensorInfo>&)>& body,
+    const std::string& indent) {
+    std::vector<TensorInfo> locals;
+    locals.reserve(arguments.size());
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        locals.push_back({"a" + std::to_string(i), arguments[i].shape, arguments[i].dtype});
+    }
+    std::string saved = std::exchange(body_, std::string());
+    std::string saved_indent = std::exchange(indent_, indent);
+    auto scopes = std::exchange(cse_, {{}});
+    std::vector<std::string> results = body(locals);
+    std::string text = std::exchange(body_, std::move(saved));
+    indent_ = std::move(saved_indent);
+    cse_ = std::move(scopes);
+    return {std::move(text), std::move(results)};
+}
+
 std::string PythonTarget::define(const std::string& expression) {
     for (auto scope = cse_.rbegin(); scope != cse_.rend(); ++scope) {
         const auto found = scope->find(expression);

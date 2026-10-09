@@ -6,6 +6,7 @@
 #include <expected>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -90,6 +91,9 @@ struct Literal {
 // One graph format. Each method appends an operation and returns the name
 // of its result; operands carry their names and types, results the shape
 // and dtype the evaluator computed.
+class KernelTarget;
+struct KernelLaunch;
+
 class GraphTarget {
 public:
     virtual ~GraphTarget() = default;
@@ -311,6 +315,13 @@ public:
         return {};
     }
 
+    // Kernels (an op's `kernel`): the format the target writes kernels in,
+    // nothing when it runs none; and the launch of one in place of an op's
+    // body, nothing when it declines. It returns the names of the kernel's
+    // results.
+    virtual std::unique_ptr<KernelTarget> kernel_target() const;
+    virtual std::optional<std::vector<std::string>> launch_kernel(const KernelLaunch& launch);
+
     // An op with a `grad`, its backward pass written in source. The
     // evaluator brackets the op's body: `begin_custom_gradient` takes the
     // call's tensor arguments and returns the names the body computes from
@@ -488,6 +499,9 @@ struct GraphExportOptions {
     // TF32: a 10-bit mantissa, errors near 1e-3 against the canonical body.
     // Every `--numerics` but `fast` sets it.
     bool full_precision = false;
+    // Ops launch their kernels where the target runs them (not under
+    // `--numerics exact`, which keeps every canonical body).
+    bool kernels = true;
 };
 
 std::expected<std::string, std::string>
@@ -532,6 +546,30 @@ PreparedSplit split_prepared(const std::string& body,
                              const std::string& constants);
 
 std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes);
+
+// A kernel's program as a kernel target wrote it: its parameters in order --
+// the op's arguments, then the kernel's results -- and its body, indented
+// as a function's.
+struct KernelProgram {
+    std::vector<std::string> parameters;
+    std::string body;
+};
+
+// An op computed by its kernel: the program, its launch grid, the op's
+// arguments (the kernel's parameters, in order), and the shapes and dtypes
+// the kernel writes. `body` emits the op's body from the names it is given
+// and returns its results' names: where the kernel cannot run, and for the
+// backward pass of an op without a `grad`; `pullback` is the op's `grad`.
+struct KernelLaunch {
+    std::string op;   // the op's name: with the shapes, what a launch computes
+    std::string name; // the kernel's
+    KernelProgram program;
+    std::vector<std::int64_t> grid;
+    std::vector<TensorInfo> arguments;
+    std::vector<TensorInfo> results;
+    std::function<std::vector<std::string>(const std::vector<TensorInfo>&)> body;
+    GraphTarget::Pullback pullback;
+};
 
 // Python literals the source targets (`torch`, `jax`) print: a tuple of
 // sizes, `(2, 3)` or `(4,)`, and a float with every digit kept and a

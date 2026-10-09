@@ -304,20 +304,21 @@ def one_shot_all_reduce_kernel(
     tl.store(mine + slot + offsets, x, mask=live)
     tl.debug_barrier()
     # This block's part is in place: tell every peer, in its flags at
-    # (block, rank), then wait until every peer has told us.
-    for peer in tl.static_range(world):
+    # (block, rank), then wait until every peer has told us. (`static_range`
+    # unrolls as Triton compiles; its Python type is not iterable.)
+    for peer in tl.static_range(world):  # pyright: ignore[reportGeneralTypeIssues]
         if peer != rank:
             theirs = tl.load(flags_ptr + peer).to(tl.pointer_type(tl.int32))
             tl.atomic_xchg(theirs + block * world + rank, epoch, sem="release", scope="sys")
     own = tl.load(flags_ptr + rank).to(tl.pointer_type(tl.int32))
-    for peer in tl.static_range(world):
+    for peer in tl.static_range(world):  # pyright: ignore[reportGeneralTypeIssues]
         if peer != rank:
             seen = tl.atomic_add(own + block * world + peer, 0, sem="acquire", scope="sys")
             while seen < epoch:
                 seen = tl.atomic_add(own + block * world + peer, 0, sem="acquire", scope="sys")
     tl.debug_barrier()
     total = x.to(tl.float32)
-    for peer in tl.static_range(world):
+    for peer in tl.static_range(world):  # pyright: ignore[reportGeneralTypeIssues]
         if peer != rank:
             part = tl.load(buffers_ptr + peer).to(tl.pointer_type(dtype))
             read = tl.load(part + slot + offsets, mask=live, other=0.0, volatile=True)

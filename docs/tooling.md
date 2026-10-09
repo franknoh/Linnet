@@ -192,6 +192,9 @@ load a model. A block is named by its path: `layers.3`, `lm_head`.
 | `equivalent` | the format's own operators (`MatMul`, `F.scaled_dot_product_attention`, ...) with f32 accumulation | up to floating-point rounding |
 | `fast` | also softmax, normalization, and attention in the input dtype, as framework reference models do in `bf16` and `f16` | rounding of the input dtype |
 
+Ops with a [kernel](kernels.md) launch it under `equivalent` and `fast`;
+`exact` runs their bodies.
+
 ## explain
 
 ```bash
