@@ -22,7 +22,7 @@ STDLIB = REPO / "stdlib"
 SOURCE = """\
 module cached
 
-pub fn double(x: f32) -> f32 {
+pub entry double(x: Tensor[4; f32]) -> Tensor[4; f32] {
     return x * 2.0
 }
 """
