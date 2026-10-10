@@ -56,7 +56,7 @@ LINNET_OFFLINE=1 "$LINNET_BIN" check "$app"
 # A new commit under the same tag: the lock keeps the first until `update`.
 echo "// second" >> "$upstream/packages/layers/src/lib.linnet"
 git -C "$upstream" commit -q -am second
-git -C "$upstream" tag -f -q v1
+git -C "$upstream" tag -f v1 > /dev/null
 second=$(git -C "$upstream" rev-parse HEAD)
 "$LINNET_BIN" check "$app"
 grep -q "$first" "$app/linnet.lock"
