@@ -461,7 +461,7 @@ public:
             const std::string fp8_type = tensor_type(at[0]->shape, "f8E4M3FN");
             body_ += indent_ + fp8 + " = \"stablehlo.bitcast_convert\"(" + at[0]->name + ") : (" +
                      tensor_type(*at[0]) + ") -> " + fp8_type + "\n";
-            const std::string widened = fresh();
+            std::string widened = fresh();
             body_ += indent_ + widened + " = \"stablehlo.convert\"(" + fp8 + ") : (" + fp8_type +
                      ") -> " + tensor_type(shape, dtype) + "\n";
             return widened;
