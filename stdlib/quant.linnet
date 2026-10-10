@@ -168,18 +168,18 @@ pub op dequantize_fp8<*S: Shape, N: Dim, T: Float>(
 pub op linear_fp8<*S: Shape, In: Dim, Out: Dim, T: Float>(
     x: Tensor[*S, In; T],
     weight: Tensor[Out, In; u8],
-    scale: Tensor[Out; f32],
+    scale: Tensor[Out; T],
     bias: Tensor[Out; T]?,
 ) -> Tensor[*S, Out; T] {
-    return linear(x, dequantize_fp8<[Out], In, T>(weight, scale), bias)
+    return linear(x, dequantize_fp8<[Out], In, T>(weight, cast<f32>(scale)), bias)
 }
 
 // A linear layer whose weight is stored as FP8 E4M3 with one scale a row,
 // as `compressed-tensors` checkpoints store it (`weight`, and `weight_scale`
-// of shape `[Out, 1]`).
+// of shape `[Out, 1]` in the model's dtype).
 pub block Fp8Linear<In: Dim, Out: Dim, T: Float = bf16> {
     param weight: Tensor[Out, In; u8]
-    param scale: Tensor[Out, 1; f32]
+    param scale: Tensor[Out, 1; T]
     param bias: Tensor[Out; T]? = none
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
