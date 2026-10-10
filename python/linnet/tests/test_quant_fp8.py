@@ -223,6 +223,7 @@ def test_cuda_fast_multiplies_in_fp8(
         std_root=STDLIB,
         weights=weights,
         bindings=bindings,
+        cast_dtype=True,  # the checkpoint's scales are f32
         device="cuda",
         compile=True,
         numerics="fast",

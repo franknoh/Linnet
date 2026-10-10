@@ -24,7 +24,7 @@ nibble.
 | `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out; f32]`, optional bias |
 | `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale`, optional bias |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
-| `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; u8]` (FP8 E4M3 bytes), `scale: Tensor[Out, 1; f32]`, optional bias |
+| `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; u8]` (FP8 E4M3 bytes), `scale: Tensor[Out, 1; T]`, optional bias |
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `unpack_int4<R, H>(packed)`, `unpack_uint4<R, H>(packed)` | signed or unsigned nibbles |
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
