@@ -232,3 +232,52 @@ def test_cuda_fast_multiplies_in_fp8(
     got = model.run_entry("forward", [x]).float().cpu().numpy()
     want = x.float().cpu().numpy() @ dequantized.T
     assert np.abs(got - want).max() <= 0.06 * np.abs(want).max()
+
+
+SIBLINGS = """\
+module tests.fp8_siblings
+
+use std.quant::{Fp8Linear}
+
+pub block Model<In: Dim, Out: Dim, T: Float = f32> {
+    sub q: Fp8Linear<In, Out, T>
+    sub k: Fp8Linear<In, Out, T>
+
+    pub entry forward<B: Dim>(x: Tensor[B, In; T]) -> Tensor[B, Out; T] {
+        return q.forward(x) * k.forward(x)
+    }
+}
+"""
+
+
+def test_siblings_run_as_one_product(tmp_path: Path) -> None:
+    """Two FP8 layers reading one input multiply by their weights and
+    scales side by side, as `F.linear`'s siblings do."""
+    from linnet.torch import CompiledLinnetModule
+
+    source = tmp_path / "siblings.linnet"
+    source.write_text(SIBLINGS, encoding="utf-8")
+    generator = torch.Generator().manual_seed(3)
+    tensors: dict[str, torch.Tensor] = {}
+    dequantized: dict[str, NDArray[np.float32]] = {}
+    for name in ("q", "k"):
+        full = torch.randn(OUT, IN, generator=generator)
+        scale = full.abs().amax(dim=1, keepdim=True) / 448.0
+        weight = (full / scale).to(torch.float8_e4m3fn)
+        tensors[f"{name}.weight"], tensors[f"{name}.scale"] = weight, scale
+        dequantized[name] = (weight.float() * scale).numpy()
+    save_file(tensors, str(tmp_path / "siblings.safetensors"))
+    model = load(
+        source,
+        generics={"In": IN, "Out": OUT},
+        std_root=STDLIB,
+        weights=tmp_path / "siblings.safetensors",
+        compile=True,
+    )
+    got = model.run_entry("forward", [torch.from_numpy(_input())]).detach().numpy()
+    want = (_input() @ dequantized["q"].T) * (_input() @ dequantized["k"].T)
+    np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-4)
+    assert isinstance(model, CompiledLinnetModule)
+    generated = model.generated_source("forward")
+    assert generated.count("_fp8_linear(") == 2  # the helper and one call
+    assert "_adjacent(" in generated

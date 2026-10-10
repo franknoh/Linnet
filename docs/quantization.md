@@ -115,12 +115,13 @@ run eagerly:
 
 | | Perplexity | Time to first token | Decoding | Peak memory |
 | --- | ---: | ---: | ---: | ---: |
-| bf16 | 9.55 | 19.0 ms | 162 tokens/s | 16.3 GiB |
-| FP8 | 9.62 | 24.5 ms | 183 tokens/s | 9.9 GiB |
+| bf16 | 9.55 | 19.1 ms | 162 tokens/s | 16.3 GiB |
+| FP8 | 9.62 | 20.3 ms | 197 tokens/s | 9.9 GiB |
 
-The prompt's FP8 products take less device time than bf16's (7.1 against
-about 12 ms), but each of a layer's seven projections rounds its input
-separately, and run eagerly the calls cost the host more than they save.
+Projections that read one input (a layer's query, key and value, its gate
+and up) multiply as one FP8 product, as bf16's do. The prompt's FP8
+products take less device time than bf16's, but run eagerly its calls
+cost the host about as much as they save.
 
 ## MXFP4 experts
 
