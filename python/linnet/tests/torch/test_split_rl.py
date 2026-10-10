@@ -195,7 +195,7 @@ def _run(
     optimizer = torch.optim.SGD(trained, lr=0.3)
     if method == "dpo":
         history = dpo(policy, _pairs(), optimizer=optimizer, steps=2, pairs_per_step=4, tokens=24)
-        steps = [(step.loss, step.margin, step.grad_norm) for step in history]
+        steps = [v for step in history for v in (step.loss, step.margin, step.grad_norm)]
     else:
         sampler = _Sampler(_model(source, weights, tensor_parallel=mesh))
         grpo_history = grpo(
@@ -211,11 +211,15 @@ def _run(
             tokens=32,
             seed=0,
         )
-        steps = [(step.reward, step.loss, step.grad_norm) for step in grpo_history]
+        steps = [v for step in grpo_history for v in (step.reward, step.loss, step.grad_norm)]
+    # The weights the checkpoint holds; an absent bias is left out.
+    bound = set(getattr(policy, "weight_names", {}))
     return {
         "steps": steps,
         "trained": {
-            name.removeprefix("root."): p.detach() for name, p in policy.named_parameters()
+            name.removeprefix("root."): p.detach()
+            for name, p in policy.named_parameters()
+            if name.removeprefix("root.") in bound
         },
         "parts": dict(getattr(policy, "shard_parts", {})),
     }
