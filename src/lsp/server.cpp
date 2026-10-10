@@ -3,6 +3,7 @@
 #include "linnet/ast/ast.hpp"
 #include "linnet/diagnostic/diagnostic.hpp"
 #include "linnet/format/formatter.hpp"
+#include "linnet/package/fetch.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/sema/model.hpp"
 #include "linnet/sema/types.hpp"
@@ -230,11 +231,21 @@ struct Server::State {
     void analyze(const std::string& key, Document& document) {
         document.sources = std::make_unique<SourceManager>();
         DiagnosticSink sink;
-        LoaderOptions loader{options.std_root, {}};
+        LoaderOptions loader{options.std_root, {}, {}};
         for (const auto& [other_key, other] : documents) {
             loader.overlays[other_key] = other.text;
         }
         const std::vector<std::filesystem::path> files{std::filesystem::path(key)};
+        // Git dependencies as the cache holds them: an editor never fetches.
+        if (const std::filesystem::path root = find_package_root(files.front());
+            !root.empty() && has_git_dependencies(root)) {
+            FetchOptions fetch;
+            fetch.offline = true;
+            fetch.write_lock = false;
+            if (auto checkouts = fetch_dependencies(root, fetch)) {
+                loader.git_checkouts = std::move(*checkouts);
+            }
+        }
         document.program = load_program(*document.sources, files, loader, sink);
         document.file = document.program.modules.empty() ? invalid_file_id
                                                          : document.program.modules.front().file;

@@ -6,6 +6,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 
 namespace linnet {
@@ -102,8 +103,24 @@ private:
         if (dependency == manifest->dependencies.end()) {
             return std::nullopt;
         }
-        return path.size() == 1 ? dependency->second / "src" / "lib.linnet"
-                                : dependency->second / "src" / relative_file(path, 1);
+        fs::path directory = dependency->second.path;
+        if (const std::optional<GitSource>& git = dependency->second.git) {
+            const auto checkout = options_.git_checkouts.find(git->key());
+            if (checkout == options_.git_checkouts.end()) {
+                if (missing_.insert(git->key()).second) {
+                    Diagnostic diagnostic;
+                    diagnostic.code = codes::missing_dependency;
+                    diagnostic.message = "dependency `" + dependency->first + "` (" + git->key() +
+                                         ") is not fetched";
+                    diagnostic.help.emplace_back("run `linnet fetch` in the package");
+                    sink_.report(std::move(diagnostic));
+                }
+                return std::nullopt;
+            }
+            directory = checkout->second / git->subdir;
+        }
+        return path.size() == 1 ? directory / "src" / "lib.linnet"
+                                : directory / "src" / relative_file(path, 1);
     }
 
     // The manifest of a package root, read once; null when it is malformed.
@@ -119,6 +136,19 @@ private:
             diagnostic.code = codes::invalid_manifest;
             diagnostic.message = manifest.error();
             sink_.report(std::move(diagnostic));
+        }
+        if (manifest) {
+            for (const auto& [name, dependency] : manifest->dependencies) {
+                if (dependency.git && !is_known_git_host(dependency.git->url)) {
+                    Diagnostic diagnostic;
+                    diagnostic.severity = Severity::Warning;
+                    diagnostic.code = codes::unknown_git_host;
+                    diagnostic.message = "dependency `" + name + "` comes from `" +
+                                         dependency.git->url +
+                                         "`, not GitHub or the Hugging Face Hub";
+                    sink_.report(std::move(diagnostic));
+                }
+            }
         }
         auto& slot = manifests_[key];
         slot = manifest ? std::optional<PackageManifest>(std::move(*manifest)) : std::nullopt;
@@ -160,6 +190,7 @@ private:
     std::vector<fs::path> package_roots_;
     std::map<std::string, std::uint32_t> loaded_;
     std::map<std::string, std::optional<PackageManifest>> manifests_;
+    std::set<std::string> missing_; // git dependencies reported as not fetched
 };
 
 } // namespace
