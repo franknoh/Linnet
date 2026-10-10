@@ -15,12 +15,16 @@ namespace {
 
 using sema::ScalarKind;
 
-std::string tensor_type(const Dims& shape, ScalarKind dtype) {
+std::string tensor_type(const Dims& shape, std::string_view element) {
     std::string text = "tensor<";
     for (const std::int64_t dim : shape) {
         text += std::to_string(dim) + "x";
     }
-    return text + std::string(dtype_names(dtype).mlir) + ">";
+    return text + std::string(element) + ">";
+}
+
+std::string tensor_type(const Dims& shape, ScalarKind dtype) {
+    return tensor_type(shape, dtype_names(dtype).mlir);
 }
 
 std::string tensor_type(const TensorInfo& info) {
@@ -448,6 +452,19 @@ public:
                             i64_array({1, table.shape[1]}),
                         shape,
                         table.dtype);
+        }
+        if (implementation == "linnet.decode_fp8" && operands.size() == 1 && at[0] != nullptr &&
+            at[0]->dtype == ScalarKind::U8) {
+            // The bytes as FP8 E4M3 values (a type `ScalarKind` has no name
+            // for), then widened.
+            const std::string fp8 = fresh();
+            const std::string fp8_type = tensor_type(at[0]->shape, "f8E4M3FN");
+            body_ += indent_ + fp8 + " = \"stablehlo.bitcast_convert\"(" + at[0]->name + ") : (" +
+                     tensor_type(*at[0]) + ") -> " + fp8_type + "\n";
+            const std::string widened = fresh();
+            body_ += indent_ + widened + " = \"stablehlo.convert\"(" + fp8 + ") : (" + fp8_type +
+                     ") -> " + tensor_type(shape, dtype) + "\n";
+            return widened;
         }
         if (implementation == "torch.Tensor.index_copy" && operands.size() == 3 &&
             at[0] != nullptr && at[1] != nullptr && at[2] != nullptr) {

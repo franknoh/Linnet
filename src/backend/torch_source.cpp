@@ -360,6 +360,15 @@ public:
             return define("_int4_linear(" + name(0) + ", " + packed + ", " + name(4) + ", " +
                           name(1) + ", " + name(2) + ", " + name(3) + ")");
         }
+        if (implementation_base == "linnet.decode_fp8" && at.size() == 1 && at[0] != nullptr) {
+            return define(name(0) + ".view(torch.float8_e4m3fn).float()");
+        }
+        if (implementation_base == "torch._scaled_mm" && operands.size() == 4 && at[0] != nullptr &&
+            at[1] != nullptr && at[2] != nullptr) {
+            fp8_helper_ = true;
+            return define("_fp8_linear(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ")");
+        }
         if (implementation_base == "torch._grouped_mm" && operands.size() == 3 && operands[0] &&
             operands[1] && operands[2]) {
             experts_helper_ = true;
@@ -696,6 +705,9 @@ public:
         }
         if (experts_helper_) {
             out += experts_helper();
+        }
+        if (fp8_helper_) {
+            out += fp8_helper();
         }
         if (flex_helpers_) {
             out += flex_helpers();
@@ -1458,6 +1470,46 @@ private:
                "    return first.as_strided((rows, *first.shape[1:]), first.stride())\n\n\n";
     }
 
+    // `std.quant::linear_fp8` natively. On a GPU with FP8 products, each row
+    // of the input is rounded to FP8 with a scale of its own (its largest
+    // magnitude over 448, FP8's largest value), and `torch._scaled_mm`
+    // multiplies the two in FP8 and applies both scales. Elsewhere the weight
+    // is decoded for the call.
+    static std::string fp8_helper() {
+        return "import functools\n"
+               "\n\n"
+               "@functools.cache\n"
+               "def _fp8_products(index):\n"
+               "    return torch.cuda.get_device_capability(index) >= (9, 0)\n"
+               "\n\n"
+               "def _fp8_linear(x, weight, scale, bias):\n"
+               "    flat = x.reshape(-1, x.shape[-1])\n"
+               "    out_features, in_features = weight.shape\n"
+               "    if (\n"
+               "        flat.is_cuda\n"
+               "        and flat.dtype == torch.bfloat16\n"
+               "        and in_features % 16 == 0\n"
+               "        and out_features % 16 == 0\n"
+               "        and _fp8_products(flat.device.index)\n"
+               "    ):\n"
+               "        rows = flat.abs().amax(dim=-1, keepdim=True).float().clamp(min=1e-12) / "
+               "448.0\n"
+               "        q = (flat.float() / rows).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)\n"
+               "        y = torch._scaled_mm(\n"
+               "            q,\n"
+               "            weight.view(torch.float8_e4m3fn).t(),\n"
+               "            scale_a=rows,\n"
+               "            scale_b=scale.float().reshape(1, -1),\n"
+               "            out_dtype=flat.dtype,\n"
+               "        )\n"
+               "    else:\n"
+               "        decoded = weight.view(torch.float8_e4m3fn).float() * scale.float()[:, None]\n"
+               "        y = F.linear(flat, decoded.to(flat.dtype))\n"
+               "    y = y.reshape(*x.shape[:-1], out_features)\n"
+               "    return y if bias is None else y + bias\n"
+               "\n\n";
+    }
+
     static std::string int4_helpers() {
         return "def _int4_pack(packed, scale, zero):\n"
                "    out_features, groups, half = packed.shape\n"
@@ -1949,6 +2001,7 @@ private:
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
     bool experts_helper_ = false;                     // `_linear_experts` is used
+    bool fp8_helper_ = false;                         // `_fp8_linear` is used
     bool flex_helpers_ = false;                       // `_flex_blocks` and `_attend` are used
     bool sink_helper_ = false;                        // `_sink_attend` is used
     bool shards_helper_ = false;                      // `_all_reduce` is used

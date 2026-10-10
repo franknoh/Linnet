@@ -1,7 +1,7 @@
 # Quantization
 
-Run int8, int4, group-wise 4-bit (GPTQ, AWQ), and MXFP4 weights on every
-backend. A quantized weight is an ordinary parameter, an integer tensor plus
+Run int8, int4, group-wise 4-bit (GPTQ, AWQ), FP8, and MXFP4 weights on
+every backend. A quantized weight is an ordinary parameter, an integer tensor plus
 scales, that `std.quant` dequantizes; there is no quantized dtype, and the
 arithmetic dtype `T` is separate from the storage.
 
@@ -24,11 +24,15 @@ nibble.
 | `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out; f32]`, optional bias |
 | `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale`, optional bias |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
+| `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; u8]` (FP8 E4M3 bytes), `scale: Tensor[Out, 1; f32]`, optional bias |
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `unpack_int4<R, H>(packed)`, `unpack_uint4<R, H>(packed)` | signed or unsigned nibbles |
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
+| `decode_fp8(bits)` | FP8 E4M3 bytes as `f32` values |
+| `dequantize_fp8<*S, N, T>(q, scale)` | per-row FP8: `decode_fp8(q) * scale`, cast to `T` |
+| `linear_fp8(x, weight, scale, bias)` | a linear layer over per-row FP8 weights |
 | `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: E2M1 values in blocks of 32, one E8M0 scale byte a block |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
@@ -91,6 +95,19 @@ GPTQ checkpoints in activation order (`desc_act`) import without rounding
 again: the layer gets an `order` and gathers its inputs first, at some cost
 in speed.
 
+## FP8 weights
+
+`Fp8Linear` reads FP8 E4M3 weights with one scale a row, the layout of
+`compressed-tensors` checkpoints (`FP8-dynamic`): bind `scale` to the
+checkpoint's `weight_scale`. An `F8_E4M3` tensor binds to a `u8`
+parameter as its bytes, and `decode_fp8` turns them into values; PyTorch,
+JAX and StableHLO decode them as their own FP8 type.
+
+| Backend | `linear_fp8` runs as |
+| --- | --- |
+| PyTorch, CUDA (compute capability 9 or later), `bf16`, `numerics="fast"` | each input row rounded to FP8 with its own scale, then `torch._scaled_mm` |
+| everywhere else | the weight decoded and scaled, then `linear` |
+
 ## MXFP4 experts
 
 MXFP4 is a 4-bit microscaling float format, 4.25 bits a weight; gpt-oss
@@ -118,5 +135,6 @@ With `triton_kernels` and CUDA graphs, gpt-oss-20b on one H100 decodes at
 overhead to every routed product. More measurements:
 [Benchmarks](https://linnet.franknoh.dev/benchmarks).
 
-Not supported yet: activation quantization, and per-group scales for 8-bit
+Not supported yet: activation quantization other than FP8's, and per-group
+scales for 8-bit
 weights.

@@ -443,6 +443,10 @@ public:
             at[1] != nullptr) {
             return define("jnp.take(" + name(0) + ", " + name(1) + ", axis=-1)");
         }
+        if (implementation_base == "linnet.decode_fp8" && at.size() == 1 && at[0] != nullptr) {
+            return define("jax.lax.bitcast_convert_type(" + name(0) +
+                          ", jnp.float8_e4m3fn).astype(jnp.float32)");
+        }
         if (implementation_base == "torch.tril" && at.empty() && shape.size() == 2) {
             std::string mask = define("jnp.tril(jnp.ones((" + std::to_string(shape[0]) + ", " +
                                       std::to_string(shape[1]) + "), dtype=bool), " +
