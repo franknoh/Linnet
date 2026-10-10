@@ -446,6 +446,8 @@ def _spawned(rank: int, world: int, port: int, out: str) -> None:
     import torch.distributed as dist
 
     os.environ.update({"MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(port)})
+    # A group of its own, even when started from a `torchrun` process.
+    os.environ.pop("TORCHELASTIC_USE_AGENT_STORE", None)
     torch.cuda.set_device(rank)
     device = torch.device("cuda", rank)
     dist.init_process_group("nccl", rank=rank, world_size=world, device_id=device)
