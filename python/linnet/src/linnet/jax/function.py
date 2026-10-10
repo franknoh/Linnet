@@ -14,7 +14,6 @@ generics the same way.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,7 +25,7 @@ import numpy as np
 from .. import ir
 from ..compiler import LinnetError, bind_arguments, check_numerics, run_compiler, std_arguments
 from ..dtypes import BY_NUMPY
-from ..generated import import_generated
+from ..generated import generated_directory, import_generated
 from ..plan import compile_plan
 from .dtypes import NUMPY_TYPES
 
@@ -62,7 +61,6 @@ class Function:
         self._std_root = std_root
         self._numerics = numerics
         self._compiled: dict[tuple[tuple[str, str], ...], tuple[_Compiled, Path]] = {}
-        self._work: Path | None = None
 
     @property
     def inputs(self) -> list[str]:
@@ -120,9 +118,7 @@ class Function:
         arguments = ["jax", "--entry", self.name, "--numerics", self._numerics]
         arguments += bind_arguments(bindings)
         text = run_compiler(*arguments, *std_arguments(self._std_root), str(self._source))
-        if self._work is None:
-            self._work = Path(tempfile.mkdtemp(prefix="linnet-jax-function-"))
-        module = import_generated(self._work, f"{self.name}_{len(self._compiled)}", text)
+        module = import_generated(generated_directory(), self.name, text)
         path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise LinnetError(f"internal: `{self.name}` compiled with parameters or state")

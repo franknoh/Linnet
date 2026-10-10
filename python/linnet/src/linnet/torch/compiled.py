@@ -12,7 +12,6 @@ work unchanged.
 from __future__ import annotations
 
 import fnmatch
-import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -24,7 +23,7 @@ import torch
 
 from .. import ir, lora
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
-from ..generated import import_generated
+from ..generated import generated_directory, import_generated, write_generated
 from ..plan import PlanError
 from .module import BlockModule, LinnetModule, Result, argument, bind_input, owner_of
 from .placement import Placement
@@ -125,7 +124,7 @@ class CompiledLinnetModule(LinnetModule):
         # The memory every hand-captured CUDA graph allocates from (its type,
         # `torch.cuda._POOL_HANDLE`, is private).
         self._graph_pool = None
-        self._work = Path(tempfile.mkdtemp(prefix="linnet-torch-"))
+        self._work = generated_directory()
 
     def _run_entry(
         self,
@@ -629,8 +628,7 @@ class CompiledLinnetModule(LinnetModule):
             # The step as `linnet torch` printed it stays the one to read
             # (`generated_source`); its regions are what runs.
             module = self.import_source(regions.source, f"{name}_regions")
-            path = self._work / f"{name}.py"
-            path.write_text(source, encoding="utf-8")
+            path = write_generated(self._work, name, source)
         if self.shard_group is not None and hasattr(module, "_GROUP"):
             module._GROUP = self.shard_group
         if self.tensor_parallel is not None:

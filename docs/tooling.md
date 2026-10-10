@@ -35,9 +35,11 @@ default:
 | `nest/` | Nest model directories fetched from the registry |
 | `converted/` | Hub checkpoints converted to cards, by commit |
 | `devices/` | device profiles measured on this machine (`--device local`) |
+| `compiled/` | the Python package's compiler outputs, by everything they were compiled from, and the generated modules it imports |
 
 Checkpoints stay in Hugging Face's cache (`HF_HOME`), shared with other
-tools.
+tools. Everything here can be deleted; it is downloaded or computed again
+when needed.
 
 ## check and lint
 
