@@ -1300,6 +1300,8 @@ private:
             std::string input;
             std::size_t weight;
             std::optional<std::size_t> bias;
+            // `_fp8_linear`'s per-row scales (a parameter of shape [Out, 1]).
+            std::optional<std::size_t> scale;
         };
         std::vector<std::string> lines;
         std::size_t highest = 0;
@@ -1326,13 +1328,27 @@ private:
         };
         std::vector<Linear> linears;
         const std::string prefix = "    ";
+        // `    vS = pK.reshape((N,))`: an FP8 layer's scales as `_fp8_linear`
+        // takes them.
+        std::map<std::string, std::size_t> scales;
         for (std::size_t i = 0; i < lines.size(); ++i) {
             const std::string& line = lines[i];
             for (const std::string& name : value_names(line)) {
                 highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
             }
-            // `    vN = F.linear(x, pW, pB | None)`, at the top level.
-            const std::string call = " = F.linear(";
+            if (const std::size_t view = line.find(" = p");
+                line.starts_with(prefix) && line[prefix.size()] != ' ' &&
+                view != std::string::npos && line.find(".reshape((") != std::string::npos) {
+                const std::string name = line.substr(prefix.size(), view - prefix.size());
+                const std::string source = line.substr(view + 3, line.find('.', view) - view - 3);
+                if (const auto index = parameter_index(source); index && numbered(name, 'v')) {
+                    scales[name] = *index;
+                }
+            }
+            // `    vN = F.linear(x, pW, pB | None)` or `    vN = _fp8_linear(x,
+            // pW, vS, pB | None)`, at the top level.
+            const bool fp8 = line.find(" = _fp8_linear(") != std::string::npos;
+            const std::string call = fp8 ? " = _fp8_linear(" : " = F.linear(";
             const std::size_t equals = line.find(call);
             if (!line.starts_with(prefix) || line[prefix.size()] == ' ' ||
                 equals == std::string::npos || !line.ends_with(")")) {
@@ -1349,8 +1365,17 @@ private:
                 start = comma + 2;
             }
             parts.push_back(arguments.substr(start));
-            if (parts.size() != 3 || out.find_first_of(" ,") != std::string::npos) {
+            if (parts.size() != (fp8 ? 4U : 3U) || out.find_first_of(" ,") != std::string::npos) {
                 continue;
+            }
+            std::optional<std::size_t> scale;
+            if (fp8) {
+                const auto found = scales.find(parts[2]);
+                if (found == scales.end()) {
+                    continue;
+                }
+                scale = found->second;
+                parts.erase(parts.begin() + 2);
             }
             const auto weight = parameter_index(parts[1]);
             const auto bias = parameter_index(parts[2]);
@@ -1361,7 +1386,7 @@ private:
             if (shape.size() != 2) {
                 continue;
             }
-            linears.push_back({i, out, parts[0], *weight, bias});
+            linears.push_back({i, out, parts[0], *weight, bias, scale});
         }
         // Groups: one input, all biased or none, the same input width and
         // dtype, distinct weights.
@@ -1370,8 +1395,8 @@ private:
             const Linear& linear = linears[i];
             const auto& [shape, dtype] = parameter_types_[linear.weight];
             const std::string key = linear.input + "|" + (linear.bias ? "b" : "-") + "|" +
-                                    std::to_string(shape[1]) + "|" +
-                                    std::to_string(static_cast<int>(dtype));
+                                    (linear.scale ? "fp8" : "") + "|" + std::to_string(shape[1]) +
+                                    "|" + std::to_string(static_cast<int>(dtype));
             auto& members = groups[key];
             const bool repeated = std::any_of(members.begin(), members.end(), [&](std::size_t j) {
                 return linears[j].weight == linear.weight;
@@ -1398,10 +1423,16 @@ private:
             };
             std::vector<std::size_t> weights;
             std::vector<std::size_t> biases;
+            std::vector<std::size_t> row_scales;
+            std::int64_t total = 0;
             for (const std::size_t i : members) {
                 weights.push_back(linears[i].weight);
+                total += parameter_types_[linears[i].weight].first[0];
                 if (const std::optional<std::size_t>& bias = linears[i].bias; bias.has_value()) {
                     biases.push_back(bias.value());
+                }
+                if (const std::optional<std::size_t>& scale = linears[i].scale; scale.has_value()) {
+                    row_scales.push_back(scale.value());
                 }
             }
             const Linear& first = linears[members.front()];
@@ -1412,14 +1443,26 @@ private:
                 bias = "v" + std::to_string(++highest);
                 text += prefix + bias + " = _adjacent(" + join(biases) + ")\n";
             }
+            std::string scale;
+            if (!row_scales.empty()) {
+                const std::string joined = "v" + std::to_string(++highest);
+                text += prefix + joined + " = _adjacent(" + join(row_scales) + ")\n";
+                scale = "v" + std::to_string(++highest);
+                text += prefix + scale + " = " + joined + ".reshape((" + std::to_string(total) +
+                        ",))\n";
+            }
             const std::string product = "v" + std::to_string(++highest);
             text += prefix;
             text += product;
-            text += " = F.linear(";
+            text += scale.empty() ? " = F.linear(" : " = _fp8_linear(";
             text += first.input;
             text += ", ";
             text += weight;
             text += ", ";
+            if (!scale.empty()) {
+                text += scale;
+                text += ", ";
+            }
             text += bias;
             text += ")\n";
             std::int64_t offset = 0;
