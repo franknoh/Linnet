@@ -373,6 +373,23 @@ def _int4_groups_linear(args: OptionalArgs, _result: torch.dtype | None) -> torc
     return y if bias is None else y + bias
 
 
+def _decode_fp8(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    """`std.quant::decode_fp8`: the bytes as `float8_e4m3fn`, widened."""
+    (bits,) = cast(tuple[torch.Tensor], args)
+    return bits.view(torch.float8_e4m3fn).float()
+
+
+def _fp8_linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    """`std.quant::linear_fp8`: the weight decoded and scaled, then
+    `F.linear`; the generated code multiplies in FP8 where it can."""
+    x, weight, scale, bias = cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None], args
+    )
+    decoded = weight.view(torch.float8_e4m3fn).float() * scale.float()[:, None]
+    y = functional.linear(x, decoded.to(x.dtype))
+    return y if bias is None else y + bias
+
+
 def _grouped(x: torch.Tensor, weight: torch.Tensor) -> bool:
     """Whether `torch._grouped_mm` runs these: CUDA, Hopper or later, bf16."""
     return (
@@ -436,6 +453,8 @@ def _combine_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
 
 NATIVE: dict[str, Native] = {
     "torch.ops.aten._weight_int4pack_mm": _int4_groups_linear,
+    "linnet.decode_fp8": _decode_fp8,
+    "torch._scaled_mm": _fp8_linear,
     "torch._grouped_mm": _linear_experts,
     "torch._grouped_mm(shared)": _linear_experts_shared,
     "torch._grouped_mm(combined)": _combine_experts,

@@ -134,6 +134,59 @@ where
     }
 }
 
+// FP8 E4M3 (`float8_e4m3fn`), one byte a value: a sign bit, four exponent
+// bits biased by 7, and three mantissa bits, with no infinities. A
+// checkpoint's `F8_E4M3` tensor binds to a `u8` parameter as its bytes. A
+// normal value is `(8 + m) * 2 ** (e - 10)` and a subnormal one (`e == 0`)
+// `m * 2 ** -9`; the powers of two come from integer shifts, so every value
+// is exact in `f32`. The one NaN byte pattern (`e == 15`, `m == 7`) reads as
+// 480; checkpoints never hold it.
+pub op decode_fp8<*S: Shape>(bits: Tensor[*S; u8]) -> Tensor[*S; f32] {
+    let wide = cast<i32>(bits)
+    let exponent = shr(wide, 3) & 15
+    let mantissa = wide & 7
+    let magnitude = select(exponent == 0, mantissa, mantissa + 8)
+    let power = cast<f32>(shl(1, max(exponent, 1) - 1)) * 0.001953125
+    let value = cast<f32>(magnitude) * power
+    return select((wide & 128) == 0, value, -value)
+}
+
+// Per-row FP8 E4M3: `weight[o, i] = decode_fp8(q[o, i]) * scale[o]`.
+pub op dequantize_fp8<*S: Shape, N: Dim, T: Float>(
+    q: Tensor[*S, N; u8],
+    scale: Tensor[*S; f32],
+) -> Tensor[*S, N; T] {
+    let decoded = decode_fp8(q)
+    let scaled[*s, n] = decoded[*s, n] * scale[*s]
+    return cast<T>(scaled)
+}
+
+// A linear layer over per-row FP8 E4M3 weights. Its body decodes the weight
+// and multiplies in `T`; PyTorch on a GPU with FP8 products (compute
+// capability 9 or later), in bf16 under `numerics="fast"`, also rounds each
+// row of `x` to FP8 with a scale of its own, and multiplies the two in FP8.
+pub op linear_fp8<*S: Shape, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[*S, In; T],
+    weight: Tensor[Out, In; u8],
+    scale: Tensor[Out; f32],
+    bias: Tensor[Out; T]?,
+) -> Tensor[*S, Out; T] {
+    return linear(x, dequantize_fp8<[Out], In, T>(weight, scale), bias)
+}
+
+// A linear layer whose weight is stored as FP8 E4M3 with one scale a row,
+// as `compressed-tensors` checkpoints store it (`weight`, and `weight_scale`
+// of shape `[Out, 1]`).
+pub block Fp8Linear<In: Dim, Out: Dim, T: Float = bf16> {
+    param weight: Tensor[Out, In; u8]
+    param scale: Tensor[Out, 1; f32]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear_fp8(x, weight, reshape(scale, [Out]), bias)
+    }
+}
+
 // MXFP4, the format OpenAI's gpt-oss checkpoints publish their expert
 // weights in. A row of `N` weights is cut into blocks of 32. Each block is 16
 // bytes, two four-bit values per byte, plus one byte of scale: `4 + 8/32 =

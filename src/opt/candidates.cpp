@@ -31,6 +31,19 @@ std::vector<NativeCandidate> torch_candidates() {
          "torch.ops.aten._weight_int4pack_mm",
          fast,
          {"CUDA, bf16, and a group size the kernel takes; otherwise the body runs"}},
+        // FP8 bytes read as `float8_e4m3fn` and widened: the same values the
+        // body computes from the bits.
+        {"std.quant::decode_fp8",
+         "linnet.decode_fp8",
+         Legality::Exact,
+         {"no byte is the NaN pattern, which the body reads as 480"}},
+        // The input rounded to FP8 a row at a time and multiplied in FP8
+        // (`torch._scaled_mm`): the body multiplies it unrounded.
+        {"std.quant::linear_fp8",
+         "torch._scaled_mm",
+         fast,
+         {"CUDA (compute capability 9 or later), bf16, both widths multiples of 16; otherwise the "
+          "weight is decoded and multiplied"}},
         // A grouped matrix product over rows sorted by expert, reading each
         // chosen expert's weight where it lies; it accumulates in f32 and
         // rounds once to bf16, as the body's cast does.

@@ -68,6 +68,8 @@ CLASSES: dict[str, frozenset[str]] = {
 }
 
 BY_SAFETENSORS: dict[str, DType] = {d.safetensors: d for d in DTYPES.values()}
+# FP8 E4M3 bytes are read as their bits, which `std.quant::decode_fp8` decodes.
+BY_SAFETENSORS["F8_E4M3"] = DTYPES["u8"]
 BY_ONNX: dict[int, DType] = {d.onnx: d for d in DTYPES.values()}
 BY_MLIR: dict[str, DType] = {d.mlir: d for d in DTYPES.values()}
 BY_NUMPY: dict[str, DType] = {d.numpy: d for d in DTYPES.values()}

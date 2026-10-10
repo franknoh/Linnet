@@ -360,6 +360,15 @@ public:
             return define("_int4_linear(" + name(0) + ", " + packed + ", " + name(4) + ", " +
                           name(1) + ", " + name(2) + ", " + name(3) + ")");
         }
+        if (implementation_base == "linnet.decode_fp8" && at.size() == 1 && at[0] != nullptr) {
+            return define(name(0) + ".view(torch.float8_e4m3fn).float()");
+        }
+        if (implementation_base == "torch._scaled_mm" && operands.size() == 4 && at[0] != nullptr &&
+            at[1] != nullptr && at[2] != nullptr) {
+            fp8_helper_ = true;
+            return define("_fp8_linear(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ")");
+        }
         if (implementation_base == "torch._grouped_mm" && operands.size() == 3 && operands[0] &&
             operands[1] && operands[2]) {
             experts_helper_ = true;
@@ -696,6 +705,9 @@ public:
         }
         if (experts_helper_) {
             out += experts_helper();
+        }
+        if (fp8_helper_) {
+            out += fp8_helper();
         }
         if (flex_helpers_) {
             out += flex_helpers();
@@ -1458,6 +1470,61 @@ private:
                "    return first.as_strided((rows, *first.shape[1:]), first.stride())\n\n\n";
     }
 
+    // `std.quant::linear_fp8` natively, on a GPU with FP8 products. One row
+    // (a decoding step of one sequence) multiplies the weight widened inside
+    // Linnet's kernel, reading its bytes once. More rows are each rounded to
+    // FP8 with a scale of their own (the largest magnitude over 448, FP8's
+    // largest value), and `torch._scaled_mm` multiplies the two in FP8 and
+    // applies both scales. Elsewhere the weight is decoded for the call. The
+    // GPU is asked once, when the module loads, so compiled code sees a
+    // constant.
+    static std::string fp8_helper() {
+        return "try:\n"
+               "    from linnet.torch.kernels import fp8_gemv as _fp8_gemv\n"
+               "    from linnet.torch.kernels import fp8_rows as _fp8_rows\n"
+               "except ImportError:  # no Triton: FP8 products for every row count\n"
+               "    _fp8_gemv = _fp8_rows = None\n"
+               "\n"
+               "_FP8_PRODUCTS = torch.cuda.is_available() and "
+               "torch.cuda.get_device_capability() >= (9, 0)\n"
+               "\n\n"
+               "def _fp8_linear(x, weight, scale, bias):\n"
+               "    flat = x.reshape(-1, x.shape[-1])\n"
+               "    out_features, in_features = weight.shape\n"
+               "    if (\n"
+               "        _FP8_PRODUCTS\n"
+               "        and flat.is_cuda\n"
+               "        and flat.dtype == torch.bfloat16\n"
+               "        and in_features % 16 == 0\n"
+               "        and out_features % 16 == 0\n"
+               "    ):\n"
+               "        if flat.shape[0] == 1 and in_features % 512 == 0 and _fp8_gemv is not "
+               "None:\n"
+               "            y = _fp8_gemv(flat, weight, scale)\n"
+               "        else:\n"
+               "            if _fp8_rows is not None:\n"
+               "                q, rows = _fp8_rows(flat)\n"
+               "            else:\n"
+               "                top = flat.abs().amax(dim=-1, keepdim=True).float()\n"
+               "                rows = top.clamp(min=1e-12) / 448.0\n"
+               "                q = (flat.float() / rows).clamp(-448.0, 448.0)\n"
+               "                q = q.to(torch.float8_e4m3fn)\n"
+               "            y = torch._scaled_mm(\n"
+               "                q,\n"
+               "                weight.view(torch.float8_e4m3fn).t(),\n"
+               "                scale_a=rows,\n"
+               "                scale_b=scale.float().reshape(1, -1),\n"
+               "                out_dtype=flat.dtype,\n"
+               "            )\n"
+               "    else:\n"
+               "        decoded = weight.view(torch.float8_e4m3fn).float() * scale.float()[:, "
+               "None]\n"
+               "        y = F.linear(flat, decoded.to(flat.dtype))\n"
+               "    y = y.reshape(*x.shape[:-1], out_features)\n"
+               "    return y if bias is None else y + bias\n"
+               "\n\n";
+    }
+
     static std::string int4_helpers() {
         return "def _int4_pack(packed, scale, zero):\n"
                "    out_features, groups, half = packed.shape\n"
@@ -1949,6 +2016,7 @@ private:
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
     bool experts_helper_ = false;                     // `_linear_experts` is used
+    bool fp8_helper_ = false;                         // `_fp8_linear` is used
     bool flex_helpers_ = false;                       // `_flex_blocks` and `_attend` are used
     bool sink_helper_ = false;                        // `_sink_attend` is used
     bool shards_helper_ = false;                      // `_all_reduce` is used

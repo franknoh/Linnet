@@ -598,7 +598,10 @@ def bind_weights(
                     loaded = handle.get_slice(source)[index]
                 else:
                     loaded = handle.get_tensor(source)
-            getattr(owner, leaf).copy_(loaded)
+            target = getattr(owner, leaf)
+            if loaded.dtype == torch.float8_e4m3fn and target.dtype == torch.uint8:
+                loaded = loaded.view(torch.uint8)  # the bytes, as `decode_fp8` reads them
+            target.copy_(loaded)
             module.weight_names[path] = source
     # The paths bound to a part of their tensor: split across processes.
     module.shard_parts.update(parts)
