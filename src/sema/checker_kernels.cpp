@@ -70,9 +70,10 @@ void Checker::check_kernel_signature(EntityId entity) {
             continue;
         }
         const TypeData& data = types_.get(check_expr(value));
-        const auto count = data.kind == TypeKind::CompileInt ? data.value.constant() : std::nullopt;
+        const std::int64_t count =
+            data.kind == TypeKind::CompileInt ? data.value.constant().value_or(0) : 0;
         const bool is_warps = std::string_view(hint) == "warps";
-        if (!count || *count <= 0 || (is_warps && (*count & (*count - 1)) != 0)) {
+        if (count <= 0 || (is_warps && (count & (count - 1)) != 0)) {
             error(codes::invalid_kernel,
                   ast().expr(value).span,
                   is_warps ? "`warps` is a power of two written as a literal"
