@@ -105,8 +105,22 @@ JAX and StableHLO decode them as their own FP8 type.
 
 | Backend | `linear_fp8` runs as |
 | --- | --- |
-| PyTorch, CUDA (compute capability 9 or later), `bf16`, `numerics="fast"` | each input row rounded to FP8 with its own scale, then `torch._scaled_mm` |
+| PyTorch, CUDA (compute capability 9 or later), `bf16`, `numerics="fast"`, one row | a Triton kernel that widens the FP8 bytes in registers; the input stays in `bf16` |
+| the same, more rows | each input row rounded to FP8 with its own scale, then `torch._scaled_mm` |
 | everywhere else | the weight decoded and scaled, then `linear` |
+
+RedHatAI's Llama 3.1 8B Instruct FP8-dynamic checkpoint against the bf16
+one, on one H100. Same host, CUDA graphs for decoding, a 512-token prompt
+run eagerly:
+
+| | Perplexity | Time to first token | Decoding | Peak memory |
+| --- | ---: | ---: | ---: | ---: |
+| bf16 | 9.55 | 19.0 ms | 162 tokens/s | 16.3 GiB |
+| FP8 | 9.62 | 24.5 ms | 183 tokens/s | 9.9 GiB |
+
+The prompt's FP8 products take less device time than bf16's (7.1 against
+about 12 ms), but each of a layer's seven projections rounds its input
+separately, and run eagerly the calls cost the host more than they save.
 
 ## MXFP4 experts
 
