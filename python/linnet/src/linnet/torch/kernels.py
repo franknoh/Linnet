@@ -12,10 +12,20 @@ generated code falls back to plain PyTorch arithmetic without it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Protocol
+
 import torch
 import triton  # type: ignore[import-untyped]
 import triton.language as tl  # type: ignore[import-untyped]
 from torch.library import triton_op, wrap_triton
+
+
+class _Launcher(Protocol):
+    """A Triton kernel, or one wrapped for `torch.compile` (`wrap_triton`):
+    indexed by its grid, then called."""
+
+    def __getitem__(self, grid: Callable[..., tuple[int, ...]], /) -> Callable[..., object]: ...
 
 
 @triton.jit
@@ -308,8 +318,9 @@ def _fp8_gemv_kernel(
     tl.store(y_ptr + part * width + rn, y, mask=live)
 
 
-@triton_op("linnet::fp8_gemv", mutates_args=())
-def fp8_gemv(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+def _gemv(
+    kernel: _Launcher, x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
     """`F.linear(x, W)` for one row `x` [1, In] (`bf16` or `f16`), with `W`
     the per-row FP8 E4M3 weights of `std.quant::linear_fp8` -- `weight`
     ([Out, In] bytes) and `scale` ([Out]) -- read once, at half of `bf16`'s
@@ -336,7 +347,7 @@ def fp8_gemv(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torc
     def grid(_meta: dict[str, object]) -> tuple[int, int]:
         return (programs, split)
 
-    wrap_triton(_fp8_gemv_kernel)[grid](
+    kernel[grid](
         x.contiguous(),
         weight.contiguous(),
         scale.float().contiguous(),
@@ -348,7 +359,20 @@ def fp8_gemv(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torc
         num_warps=1 if small else 4,
         num_stages=4 if small else 2,
     )
-    return torch.sum(y, dim=0, dtype=x.dtype).reshape(1, width)
+    return y.sum(0).to(x.dtype).reshape(1, width)
+
+
+@triton_op("linnet::fp8_gemv", mutates_args=())
+def _fp8_gemv_op(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    return _gemv(wrap_triton(_fp8_gemv_kernel), x, weight, scale)
+
+
+def fp8_gemv(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """See `_gemv`: a custom op inside `torch.compile`, and outside it the
+    kernel launched directly, whose host cost is a quarter of the op's."""
+    if torch.compiler.is_compiling():
+        return _fp8_gemv_op(x, weight, scale)
+    return _gemv(_fp8_gemv_kernel, x, weight, scale)
 
 
 @triton.jit
@@ -372,8 +396,7 @@ def _fp8_rows_kernel(x_ptr, q_ptr, scale_ptr, depth, block: tl.constexpr):
     tl.store(scale_ptr + row, scale)
 
 
-@triton_op("linnet::fp8_rows", mutates_args=())
-def fp8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _rows(kernel: _Launcher, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Each row of `x` [rows, In] rounded to FP8 E4M3 with a scale of its
     own: the rounded rows and the scales ([rows, 1], f32), in one kernel,
     as `torch._scaled_mm` takes them."""
@@ -384,8 +407,20 @@ def fp8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     def grid(_meta: dict[str, object]) -> tuple[int]:
         return (rows,)
 
-    wrap_triton(_fp8_rows_kernel)[grid](x.contiguous(), q, scale, depth, block=1024, num_warps=4)
+    kernel[grid](x.contiguous(), q, scale, depth, block=1024, num_warps=4)
     return q, scale
+
+
+@triton_op("linnet::fp8_rows", mutates_args=())
+def _fp8_rows_op(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    return _rows(wrap_triton(_fp8_rows_kernel), x)
+
+
+def fp8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """See `_rows`, launched as `fp8_gemv` is."""
+    if torch.compiler.is_compiling():
+        return _fp8_rows_op(x)
+    return _rows(_fp8_rows_kernel, x)
 
 
 @triton.jit
