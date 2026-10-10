@@ -652,6 +652,7 @@ private:
             break;
         }
         case ir::OpKind::Concat:
+        case ir::OpKind::Cumsum:
             a.axis = attrs["axis"].as_int();
             break;
         case ir::OpKind::Reshape:

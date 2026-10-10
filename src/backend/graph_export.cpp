@@ -1398,6 +1398,13 @@ private:
             define(op, tensor(target_.concat(parts, axis, shape), shape, parts.front().dtype));
             return;
         }
+        case ir::OpKind::Cumsum: {
+            const Val x = whole_tensor(operand(0), "cumsum");
+            const auto rank = static_cast<std::int64_t>(x.shape.size());
+            const std::int64_t axis = a.axis < 0 ? a.axis + rank : a.axis;
+            define(op, tensor(target_.cumsum(info(x), axis), x.shape, x.dtype));
+            return;
+        }
         case ir::OpKind::Fill:
             define(op, broadcast(operand(0), result_shape(op), {}));
             return;

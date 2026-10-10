@@ -83,6 +83,7 @@ inline constexpr std::uint32_t no_id = 0xFFFFFFFFU;
     X(Broadcast, "broadcast", 1, 0)                                                                \
     X(Slice, "slice", 1, 0)                                                                        \
     X(Concat, "concat", -1, 0)                                                                     \
+    X(Cumsum, "cumsum", 1, 0)                                                                      \
     X(Fill, "fill", 1, 0)                                                                          \
     X(Iota, "iota", 0, 0)                                                                          \
     X(Element, "tensor.element", -1, 0)                                                            \
@@ -153,7 +154,7 @@ struct Attributes {
     std::vector<bool> squeezed;      // slice: axes removed by an integer index
     std::vector<bool> whole;         // slice: axes kept entirely (shape packs)
     sema::Shape pack_units;          // slice: the shape unit of each axis (the pack for whole axes)
-    std::int64_t axis = 0;           // concat
+    std::int64_t axis = 0;           // concat, cumsum
     sema::Substitution substitution; // call: generic bindings
     std::vector<sema::GenericValue> generic_args; // call: the same, in the callee's order
 

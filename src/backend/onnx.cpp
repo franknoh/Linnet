@@ -746,6 +746,11 @@ public:
         return node("Concat", parts, "axis = " + std::to_string(axis), shape, parts.front().dtype);
     }
 
+    std::string cumsum(const TensorInfo& value, std::int64_t axis) override {
+        const TensorInfo along = scalar_constant(Literal::of_integer(axis), ScalarKind::I64);
+        return node("CumSum", {value, along}, "", value.shape, value.dtype);
+    }
+
     std::string iota(std::int64_t length) override {
         const TensorInfo start = scalar_constant(Literal::of_integer(0), ScalarKind::I64);
         const TensorInfo stop = scalar_constant(Literal::of_integer(length), ScalarKind::I64);

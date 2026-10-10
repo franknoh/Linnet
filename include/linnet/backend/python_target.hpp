@@ -44,6 +44,7 @@ public:
                       const Dims& shape) override;
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override;
+    std::string cumsum(const TensorInfo& value, std::int64_t axis) override;
     bool broadcasts_elementwise() const override { return true; }
     // An op with a `grad`: its body computes from detached arguments, so
     // that the library's autodiff takes the op's gradient from a function

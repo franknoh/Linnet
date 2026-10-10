@@ -292,6 +292,9 @@ class Interpreter:
             return [tensor(0).expand(env.shape(self._shape_attr(op)))]
         if kind == "slice":
             return [self._slice(tensor(0), self._attr(op, "axes", _slice_axes), env)]
+        if kind == "cumsum":
+            x = tensor(0)
+            return [torch.cumsum(x, dim=int(cast(int, attrs["axis"])), dtype=x.dtype)]
         if kind == "concat":
             return [
                 torch.cat(cast(list[torch.Tensor], operands), dim=int(cast(int, attrs["axis"])))

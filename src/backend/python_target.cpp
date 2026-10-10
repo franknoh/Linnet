@@ -100,6 +100,13 @@ std::string PythonTarget::slice(const TensorInfo& value,
     return define(value.name + "[" + index + "]");
 }
 
+// In the operand's own dtype: both libraries widen small integers otherwise.
+std::string PythonTarget::cumsum(const TensorInfo& value, std::int64_t axis) {
+    return define(library_ + ".cumsum(" + value.name +
+                  (library_ == "torch" ? ", dim=" : ", axis=") + std::to_string(axis) +
+                  ", dtype=" + dtype_name(value.dtype) + ")");
+}
+
 std::string
 PythonTarget::gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) {
     (void)shape;

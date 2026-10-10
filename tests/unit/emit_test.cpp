@@ -234,6 +234,15 @@ TEST("emit: atomic writes and launch hints") {
     check_round_trip(source);
 }
 
+TEST("emit: running sums") {
+    const std::string source = "module m\n"
+                               "pub fn f<N: Dim>(x: Tensor[3, N; f32]) -> Tensor[3, N; f32] {\n"
+                               "    return cumsum(x, axis = -1)\n"
+                               "}\n";
+    CHECK(contains(emitted(source), "cumsum(x, axis = -1)"));
+    check_round_trip(source);
+}
+
 TEST("emit: values used inside a region keep their own binding") {
     const std::string source = "module m\n"
                                "pub fn f<N: Dim>() -> Tensor[N; i64] {\n"
