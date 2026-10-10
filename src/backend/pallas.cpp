@@ -216,6 +216,10 @@ private:
                (full_precision ? ", precision=jax.lax.Precision.HIGHEST" : "") + ")";
     }
 
+    std::string product(const std::string& value, std::int64_t axis) const override {
+        return "jnp.prod(" + value + ", axis=" + std::to_string(axis) + ")";
+    }
+
     // `x.at[rows[:, None], cols[None, :]]`: index arrays broadcast against
     // one another, each tile in its axes' place.
     static std::string

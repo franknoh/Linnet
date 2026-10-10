@@ -179,6 +179,12 @@ private:
                ")";
     }
 
+    // Triton has no product reduction of its own: `tl.reduce` with the
+    // generated module's `_multiply` (`TorchSourceTarget` writes it).
+    std::string product(const std::string& value, std::int64_t axis) const override {
+        return "tl.reduce(" + value + ", " + std::to_string(axis) + ", _multiply)";
+    }
+
     // `memory + offset`: contiguous strides; index `k`'s tile takes its
     // axes' place among the result's `rank` (`rows[:, None] * K`). Offsets
     // are 64-bit where 32 bits cannot count the elements.

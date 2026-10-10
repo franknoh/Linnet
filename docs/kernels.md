@@ -37,7 +37,7 @@ shapes are known when the kernel is compiled.
 | `load(x[i, j], mask, other)` | read a tensor parameter; `mask` and `other` (default `0`) are optional |
 | `store(y[i, j], value, mask)` | write a result; `value` is a tile or a scalar |
 | `atomic_add`, `atomic_max`, `atomic_min` | write the same way, combining atomically with what is there; the result starts at zero, the lowest, or the highest value |
-| everything else | arithmetic, index notation, reductions, `cumsum` (a scan within a tile), `iota`, `fill`, `for` loops, `fn` calls |
+| everything else | arithmetic, index notation, reductions (`sum`, `prod`, `max`, `min`, `any`, `all`), `cumsum` (a scan within a tile), `iota`, `fill`, `for` loops, `fn` calls |
 
 Each index is an integer or an integer tile, and each tile adds its axes in
 order: `x[rows, cols]` with `rows: [BM]` and `cols: [BN]` is a `[BM, BN]`
@@ -73,7 +73,7 @@ clause. Without one, it differentiates the op's body, run again.
 
 - Tile sizes are powers of two.
 - Tiles cannot be sliced, joined, or gathered from; `load` the memory
-  instead. `prod` over a tile is not supported yet.
+  instead.
 - A product of two tiles at least 16 a side becomes `tl.dot` (`jnp.dot` in
   Pallas), in `f32` at full precision unless `--numerics fast`.
 - Inputs are made contiguous, so strides are constants.

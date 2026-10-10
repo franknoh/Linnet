@@ -1124,6 +1124,13 @@ public:
         auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
         if (is_new) {
             kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+            if (launch.program.body.find("_multiply)") != std::string::npos && !multiply_) {
+                // The combining function a tile's `prod` reduces with.
+                multiply_ = true;
+                definitions_ += "if triton is not None:\n\n";
+                definitions_ += "    @triton.jit\n";
+                definitions_ += "    def _multiply(a, b):\n        return a * b\n\n\n";
+            }
             definitions_ += "if triton is not None:\n\n";
             definitions_ += "    @triton.jit  # " + launch.name + "\n";
             definitions_ +=
@@ -2062,9 +2069,11 @@ private:
     bool fuse_ = true;    // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
-    bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
-    bool experts_helper_ = false;                     // `_linear_experts` is used
-    bool fp8_helper_ = false;                         // `_fp8_linear` is used
+    bool int4_helpers_ = false;   // `_int4_pack` and `_int4_linear` are used
+    bool experts_helper_ = false; // `_linear_experts` is used
+    bool fp8_helper_ = false;
+    bool multiply_ = false; // `_multiply`, a tile `prod`'s combining function, is written //
+                            // `_fp8_linear` is used
     bool flex_helpers_ = false;                       // `_flex_blocks` and `_attend` are used
     bool sink_helper_ = false;                        // `_sink_attend` is used
     bool shards_helper_ = false;                      // `_all_reduce` is used

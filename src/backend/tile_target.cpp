@@ -382,7 +382,11 @@ std::string
 TileTarget::reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) {
     (void)shape;
     if (kind == Reduction::Prod) {
-        throw KernelError("a kernel cannot take a tile's `prod` yet");
+        std::string value = body.name;
+        for (auto axis = dims.rbegin(); axis != dims.rend(); ++axis) {
+            value = define(product(value, *axis));
+        }
+        return value;
     }
     const bool is_logical = kind == Reduction::Any || kind == Reduction::All;
     const std::string function =

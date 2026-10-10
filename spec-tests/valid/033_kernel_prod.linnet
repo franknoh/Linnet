@@ -1,0 +1,28 @@
+module m
+
+// Each program a block of rows: each row's product, a reduction within the tile.
+pub kernel row_product<R: Dim, C: Dim, BR: Dim, B: Dim>(
+    x: Tensor[R, C; f32],
+) -> y: Tensor[R; f32] grid((R + BR - 1) / BR)
+where
+    BR > 0,
+    B >= C
+{
+    let rows = program_id(0) * BR + iota<i32>(BR)
+    let cols = iota<i32>(B)
+    let inside[i, j] = rows[i] < R && cols[j] < C
+    let v = load(x[rows, cols], inside, 1.0)
+    let p[i] = prod[j] v[i, j]
+    store(y[rows], p, rows < R)
+}
+
+pub op products<R: Dim, C: Dim>(
+    x: Tensor[R, C; f32],
+) -> Tensor[R; f32] kernel row_product<R, C, 4, 64> {
+    let y[r] = prod[c] x[r, c]
+    return y
+}
+
+pub entry run<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> Tensor[R; f32] {
+    return products(x)
+}

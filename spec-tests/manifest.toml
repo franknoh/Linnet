@@ -364,6 +364,10 @@ file = "valid/032_cumsum.linnet"
 expect = "ok"
 
 [[case]]
+file = "valid/033_kernel_prod.linnet"
+expect = "ok"
+
+[[case]]
 file = "invalid/149_cumsum_bool.linnet"
 expect = "error"
 code = "E2112"
