@@ -155,13 +155,13 @@ pub op softmax<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> Tensor[R, C; f32] kernel
 }
 ```
 
-A kernel is declared at module level. Its parameters are tensors in memory or scalars; its named results are tensors in memory. Every tensor has a known rank: no shape pack. `grid(...)` gives one to three compile-time integers, the number of programs along each axis.
+A kernel is declared at module level. Its parameters are tensors in memory or scalars; its named results are tensors in memory. Every tensor has a known rank: no shape pack. `grid(...)` gives one to three compile-time integers, the number of programs along each axis. `warps(n)` (a power of two) and `stages(n)`, integer literals after the grid, are launch hints: the warps a program runs on and the software-pipelining stages of its loops. They change no result.
 
 In the body:
 
 - `program_id(axis)` is the program's `i32` index along grid axis 0, 1, or 2.
 - `load(x[i, j], mask, other)` reads a tensor parameter. Each index is an integer scalar or an integer tile, and each tile adds its axes to the result in order: with tiles `rows: [BM]` and `cols: [BN]`, `x[rows, cols]` is a `[BM, BN]` tile. Where the optional `bool` mask, of the result's shape or a scalar, is false, the element is `other` (default `0`) and memory is not read.
-- `store(y[i, j], value, mask)` writes a result: `value` is a tile of the indexed shape or a scalar, written where the optional mask is true. `store` is the one call that stands as a statement.
+- `store(y[i, j], value, mask)` writes a result: `value` is a tile of the indexed shape or a scalar, written where the optional mask is true. `atomic_add`, `atomic_max` and `atomic_min`, of the same form, combine the value with what the result holds, atomically, so that programs may write the same elements; the result then starts at the operation's identity (zero, the lowest value, the highest). They write `f32`, `i32`, `u32`, `i64` or `u64`, and `atomic_add` also `f16`. A result takes one kind of write. These are the calls that stand as statements.
 - A tensor parameter or result appears only in `load` or `store`. Tiles use the rest of the language: arithmetic, index notation, reductions, `iota`, `fill`, `for` and `while` loops, `fn` calls. A kernel returns nothing and is not called.
 
 An op's `kernel name<args>` binds the kernel's generics in terms of the op's. The kernel takes the op's parameters, in order and of the same types, and writes what the op returns, one result or a tuple. A backend MAY launch the kernel in place of the op's body where the kernel's `where` clause holds for the bound generics; the body remains the op's definition. A kernel that disagrees with it is a program error the compiler cannot detect.

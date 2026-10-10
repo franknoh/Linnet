@@ -213,8 +213,24 @@ public:
         auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
         if (is_new) {
             kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
-            definitions_ += "def " + kernel->second + "(" + join(launch.program.parameters, ", ") +
-                            "):  # " + launch.name + "\n" + launch.program.body + "\n\n";
+            // An atomically written result arrives twice: as the input its
+            // starting values come in (aliased to it), unread, and as itself.
+            std::vector<std::string> parameters(
+                launch.program.parameters.begin(),
+                launch.program.parameters.begin() +
+                    static_cast<std::ptrdiff_t>(launch.arguments.size()));
+            for (std::size_t i = launch.arguments.size(); i < launch.program.parameters.size();
+                 ++i) {
+                if (launch.program.atomics.contains(launch.program.parameters[i])) {
+                    parameters.push_back("_" + launch.program.parameters[i] + "_start");
+                }
+            }
+            parameters.insert(parameters.end(),
+                              launch.program.parameters.begin() +
+                                  static_cast<std::ptrdiff_t>(launch.arguments.size()),
+                              launch.program.parameters.end());
+            definitions_ += "def " + kernel->second + "(" + join(parameters, ", ") + "):  # " +
+                            launch.name + "\n" + launch.program.body + "\n\n";
         }
         const std::string id = std::to_string(launches_++);
         std::vector<std::string> inputs;
@@ -241,6 +257,44 @@ public:
         text += "        out_shape=" +
                 (shapes.size() == 1 ? shapes.front() : "(" + join(shapes, ", ") + ")") + ",\n";
         text += "        grid=" + python_tuple(launch.grid) + ",\n";
+        // Atomically written results start from the operation's identity:
+        // inputs aliased to them.
+        std::vector<std::string> aliases;
+        for (std::size_t i = 0; i < launch.results.size(); ++i) {
+            const TensorInfo& result = launch.results[i];
+            const auto atomic =
+                launch.program.atomics.find(launch.program.parameters[launch.arguments.size() + i]);
+            if (atomic == launch.program.atomics.end()) {
+                continue;
+            }
+            aliases.push_back(std::to_string(passed.size()) + ": " + std::to_string(i));
+            const std::string dtype = dtype_name(result.dtype);
+            const bool lowest = atomic->second == Reduction::Max;
+            std::string start = lowest ? "-jnp.inf" : "jnp.inf";
+            if (atomic->second == Reduction::Sum) {
+                start = "0";
+            } else if (!sema::is_float(result.dtype)) {
+                start = "jnp.iinfo(" + dtype + ").";
+                start += lowest ? "min" : "max";
+            }
+            passed.push_back(join(std::vector<std::string>{"jnp.full(" + python_tuple(result.shape),
+                                                           start,
+                                                           dtype + ")"},
+                                  ", "));
+        }
+        if (!aliases.empty()) {
+            text += "        input_output_aliases={" + join(aliases, ", ") + "},\n";
+        }
+        if (launch.warps != 0 || launch.stages != 0) {
+            std::vector<std::string> hints;
+            if (launch.warps != 0) {
+                hints.push_back("num_warps=" + std::to_string(launch.warps));
+            }
+            if (launch.stages != 0) {
+                hints.push_back("num_stages=" + std::to_string(launch.stages));
+            }
+            text += "        compiler_params=plgpu.CompilerParams(" + join(hints, ", ") + "),\n";
+        }
         text += "        interpret=_INTERPRET,\n";
         text += "    )(" + join(passed, ", ") + ")\n\n\n";
         // The op's body, for another device and for the backward pass.

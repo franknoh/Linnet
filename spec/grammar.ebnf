@@ -39,7 +39,8 @@ grad_clause        = "grad", "(", identifier, ",", identifier, ")", block_body ;
 (* `grid` is a keyword only here, after a kernel's results. *)
 kernel_decl        = "kernel", identifier, [ generic_params ], parameter_list,
                      "->", kernel_results, "grid", "(", expr, { ",", expr }, ")",
-                     [ where_clause ], block_body ;
+                     { launch_hint }, [ where_clause ], block_body ;
+launch_hint        = ( "warps" | "stages" ), "(", expr, ")" ;
 kernel_results     = kernel_result | "(", kernel_result, { ",", kernel_result }, ")" ;
 kernel_result      = identifier, ":", type ;
 entry_decl         = "entry", identifier, [ generic_params ], parameter_list,
@@ -83,8 +84,9 @@ while_stmt         = "while", expr, block_body ;
 for_stmt           = for_loop ;
 (* Only as the last statement of a `for` that is a binding's value. *)
 yield_stmt         = "yield", expr ;
-(* Only in a kernel; `store` is a keyword only at a statement's start. *)
-store_stmt         = "store", "(", expr, ",", expr, [ ",", expr ], ")" ;
+(* Only in a kernel; these words are keywords only at a statement's start. *)
+store_stmt         = ( "store" | "atomic_add" | "atomic_max" | "atomic_min" ),
+                     "(", expr, ",", expr, [ ",", expr ], ")" ;
 for_loop           = "for", identifier, "in", expr, "..", expr, block_body ;
 
 pattern            = identifier

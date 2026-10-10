@@ -120,10 +120,13 @@ private:
     struct MemoryAccess {
         DType dtype;
         Shape shape;
+        EntityId memory = no_entity;
     };
     std::optional<MemoryAccess> check_memory_access(ast::ExprId target, bool is_store);
     void check_mask(ast::ExprId mask, const Shape& shape);
     bool memory_access_ = false; // checking the memory a `load` or `store` names
+    // How the kernel being checked writes each result: one kind of write each.
+    std::map<EntityId, std::pair<ast::StoreKind, SourceSpan>> kernel_writes_;
     void report_recursion();
     void collect_manifests();
 

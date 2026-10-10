@@ -32,14 +32,19 @@ shapes are known when the kernel is compiled.
 | In a kernel | Meaning |
 | --- | --- |
 | `-> y: T grid(a, b)` | named results; one to three compile-time grid sizes |
+| `warps(4) stages(3)` | optional launch hints after the grid: warps a program, pipelining stages |
 | `program_id(axis)` | the program's `i32` index along a grid axis |
 | `load(x[i, j], mask, other)` | read a tensor parameter; `mask` and `other` (default `0`) are optional |
 | `store(y[i, j], value, mask)` | write a result; `value` is a tile or a scalar |
+| `atomic_add`, `atomic_max`, `atomic_min` | write the same way, combining atomically with what is there; the result starts at zero, the lowest, or the highest value |
 | everything else | arithmetic, index notation, reductions, `iota`, `fill`, `for` loops, `fn` calls |
 
 Each index is an integer or an integer tile, and each tile adds its axes in
 order: `x[rows, cols]` with `rows: [BM]` and `cols: [BN]` is a `[BM, BN]`
-tile. Tensor parameters and results appear only in `load` and `store`.
+tile. Tensor parameters and results appear only in `load`, `store`, and
+the atomics; a result takes one kind of write. Atomics write `f32`, `i32`,
+`u32`, `i64` and `u64` (and `f16` adds), so programs can share outputs:
+column sums one row a program, split-K products, histograms.
 
 The op names the kernel in its header, `kernel name<args>`, binding the
 kernel's generics. The compiler checks that the kernel takes the op's

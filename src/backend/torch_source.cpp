@@ -1136,10 +1136,37 @@ public:
         }
         for (std::size_t i = 0; i < launch.results.size(); ++i) {
             outputs.push_back("out" + std::to_string(i));
-            text += "    " + outputs.back() + " = torch.empty(" +
-                    python_tuple(launch.results[i].shape) +
-                    ", dtype=" + dtype_name(launch.results[i].dtype) + ", device=a0.device)\n";
+            // A result written atomically starts from the operation's identity.
+            const TensorInfo& result = launch.results[i];
+            const std::string& parameter = launch.program.parameters[launch.arguments.size() + i];
+            const auto atomic = launch.program.atomics.find(parameter);
+            const std::string options =
+                ", dtype=" + dtype_name(result.dtype) + ", device=a0.device)\n";
+            if (atomic == launch.program.atomics.end()) {
+                text += "    " + outputs.back() + " = torch.empty(" + python_tuple(result.shape) +
+                        options;
+            } else if (atomic->second == Reduction::Sum) {
+                text += "    " + outputs.back() + " = torch.zeros(" + python_tuple(result.shape) +
+                        options;
+            } else {
+                const bool lowest = atomic->second == Reduction::Max;
+                std::string limit = lowest ? "-float(\"inf\")" : "float(\"inf\")";
+                if (!sema::is_float(result.dtype)) {
+                    limit = "torch.iinfo(" + dtype_name(result.dtype) + ").";
+                    limit += lowest ? "min" : "max";
+                }
+                text += "    " + outputs.back() + " = torch.full(" + python_tuple(result.shape);
+                text += ", ";
+                text += limit;
+                text += options;
+            }
             call.push_back(outputs.back());
+        }
+        if (launch.warps != 0) {
+            call.push_back("num_warps=" + std::to_string(launch.warps));
+        }
+        if (launch.stages != 0) {
+            call.push_back("num_stages=" + std::to_string(launch.stages));
         }
         text += "    " + kernel->second + "[" + python_tuple(launch.grid) + "](" +
                 join(call, ", ") + ")\n";

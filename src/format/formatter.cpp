@@ -652,8 +652,10 @@ private:
                     return b_.concat({b_.text("yield "), expr(yield.value)});
                 },
                 [&](const StoreStmt& store) {
-                    std::vector<DocId> parts{
-                        b_.text("store("), expr(store.target), b_.text(", "), expr(store.value)};
+                    std::vector<DocId> parts{b_.text(std::string(store_spelling(store.kind)) + "("),
+                                             expr(store.target),
+                                             b_.text(", "),
+                                             expr(store.value)};
                     if (store.mask != no_id) {
                         parts.push_back(b_.text(", "));
                         parts.push_back(expr(store.mask));
@@ -745,6 +747,14 @@ private:
                 parts.push_back(expr(decl.grid[i]));
             }
             parts.push_back(b_.text(")"));
+            for (const auto& [hint, value] :
+                 {std::pair{"warps", decl.warps}, std::pair{"stages", decl.stages}}) {
+                if (value != no_id) {
+                    parts.push_back(b_.text(std::string(" ") + hint + "("));
+                    parts.push_back(expr(value));
+                    parts.push_back(b_.text(")"));
+                }
+            }
         }
         if (decl.kernel) {
             parts.push_back(b_.text(" kernel "));

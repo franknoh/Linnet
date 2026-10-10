@@ -407,6 +407,12 @@ private:
         if (function.is_kernel) {
             // The body's last `outputs` arguments are the results it writes.
             out += ",\"outputs\":" + std::to_string(function.outputs);
+            if (function.warps != 0) {
+                out += ",\"warps\":" + std::to_string(function.warps);
+            }
+            if (function.stages != 0) {
+                out += ",\"stages\":" + std::to_string(function.stages);
+            }
             out += ",\"grid\":" + region_json(function.grid);
         }
         if (!function.kernel.empty()) {
@@ -527,8 +533,13 @@ private:
         case ir::OpKind::StructGet:
         case ir::OpKind::KernelProgramId: // the grid axis
         case ir::OpKind::KernelLoad:      // the number of indices
+            attrs.push_back("\"value\":" + std::to_string(a.integer));
+            break;
         case ir::OpKind::KernelStore:
             attrs.push_back("\"value\":" + std::to_string(a.integer));
+            if (!a.name.empty()) {
+                attrs.push_back("\"atomic\":" + json_string(a.name));
+            }
             break;
         case ir::OpKind::ConstFloat: {
             char buffer[64];

@@ -110,18 +110,43 @@ public:
     void store(const TensorInfo& memory,
                const std::vector<TensorInfo>& indices,
                const TensorInfo& value,
-               const std::optional<TensorInfo>& mask) override {
+               const std::optional<TensorInfo>& mask,
+               std::optional<Reduction> atomic) override {
         Dims shape;
         for (const TensorInfo& index : indices) {
             shape.insert(shape.end(), index.shape.begin(), index.shape.end());
         }
-        // Pallas stores a value of the indexed shape.
+        // Pallas writes a value of the indexed shape.
         const std::string stored =
             value.shape == shape
                 ? value.name
                 : define("jnp.broadcast_to(" + value.name + ", " + shape_list(shape) + ")");
-        body_ += indent_ + "plgpu.store(" + view(memory, indices, shape.size()) + ", " + stored +
-                 (mask ? ", mask=" + mask->name : "") + ")\n";
+        if (!atomic) {
+            body_ += indent_ + "plgpu.store(" + view(memory, indices, shape.size()) + ", " +
+                     stored + (mask ? ", mask=" + mask->name : "") + ")\n";
+            return;
+        }
+        atomics_[memory.name] = *atomic;
+        const std::string function = *atomic == Reduction::Sum   ? "plgpu.atomic_add("
+                                     : *atomic == Reduction::Max ? "plgpu.atomic_max("
+                                                                 : "plgpu.atomic_min(";
+        const std::string at = memory.name + ", " + index_tuple(indices, shape.size());
+        if (!mask) {
+            body_ += indent_ + function + at + ", " + stored + ")\n";
+            return;
+        }
+        // Pallas's interpreter takes no mask on an atomic: there, masked-off
+        // elements combine the identity instead (and those out of bounds drop).
+        const std::string identity =
+            constant(Literal::of(*atomic == Reduction::Sum   ? Literal::Kind::Integer
+                                 : *atomic == Reduction::Max ? Literal::Kind::Lowest
+                                                             : Literal::Kind::Highest),
+                     value.dtype);
+        body_ += indent_ + "if _INTERPRET:\n";
+        body_ += indent_ + "    " + function + at + ", " + library_ + ".where(" + mask->name +
+                 ", " + stored + ", " + identity + "))\n";
+        body_ += indent_ + "else:\n";
+        body_ += indent_ + "    " + function + at + ", " + stored + ", mask=" + mask->name + ")\n";
     }
 
 private:
@@ -193,9 +218,18 @@ private:
 
     // `x.at[rows[:, None], cols[None, :]]`: index arrays broadcast against
     // one another, each tile in its axes' place.
-    std::string
-    view(const TensorInfo& memory, const std::vector<TensorInfo>& indices, std::size_t rank) const {
-        std::string text = memory.name + ".at[";
+    static std::string
+    view(const TensorInfo& memory, const std::vector<TensorInfo>& indices, std::size_t rank) {
+        return memory.name + ".at[" + indices_text(indices, rank) + "]";
+    }
+
+    // The same indices as a tuple, as the atomics take them.
+    static std::string index_tuple(const std::vector<TensorInfo>& indices, std::size_t rank) {
+        return "(" + indices_text(indices, rank) + (indices.size() == 1 ? ",)" : ")");
+    }
+
+    static std::string indices_text(const std::vector<TensorInfo>& indices, std::size_t rank) {
+        std::string text;
         std::size_t position = 0;
         for (std::size_t k = 0; k < indices.size(); ++k) {
             const std::size_t own = indices[k].shape.size();
@@ -205,7 +239,7 @@ private:
             }
             position += own;
         }
-        return text + "]";
+        return text;
     }
 
     std::vector<Loop> open_;

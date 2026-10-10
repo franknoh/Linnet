@@ -68,6 +68,20 @@ std::optional<ReductionKind> parse_reduction_kind(std::string_view spelling) {
     return std::nullopt;
 }
 
+std::string_view store_spelling(StoreKind kind) {
+    switch (kind) {
+    case StoreKind::Store:
+        return "store";
+    case StoreKind::AtomicAdd:
+        return "atomic_add";
+    case StoreKind::AtomicMax:
+        return "atomic_max";
+    case StoreKind::AtomicMin:
+        return "atomic_min";
+    }
+    return "store";
+}
+
 std::string_view reduction_kind_spelling(ReductionKind kind) {
     switch (kind) {
     case ReductionKind::Sum:

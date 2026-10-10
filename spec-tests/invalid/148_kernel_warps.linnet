@@ -1,0 +1,6 @@
+module m
+
+kernel copy(x: Tensor[4; f32]) -> y: Tensor[4; f32] grid(1) warps(3) {
+    let i = iota<i32>(4)
+    store(y[i], load(x[i]))
+}

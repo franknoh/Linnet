@@ -29,7 +29,8 @@
 // `kernel.load` takes a tensor parameter, its `integer` indices (scalars or
 // integer tiles, each adding its axes to the result), then an optional mask
 // and value for masked-off elements; `kernel.store` takes a result, its
-// indices, the value, and an optional mask.
+// indices, the value, and an optional mask, and its `name` is empty for a
+// plain store or `add`, `max` or `min` for an atomic one.
 //
 // The IR is an implementation detail: its textual form (`inspect --core-ir`)
 // is for debugging and is not stable.
@@ -207,6 +208,9 @@ struct Function {
     bool is_kernel = false;
     std::size_t outputs = 0;
     RegionId grid = no_id;
+    // Launch hints, 0 when unset: warps a program, pipelining stages.
+    std::int64_t warps = 0;
+    std::int64_t stages = 0;
     // An op's `kernel`: the kernel's name and its generic arguments, in the
     // kernel's order and in terms of the op's generics. Empty without one.
     std::string kernel;

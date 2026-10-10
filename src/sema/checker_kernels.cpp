@@ -63,6 +63,23 @@ void Checker::check_kernel_signature(EntityId entity) {
                   "a grid size is a compile-time integer, found `" + str(type) + "`");
         }
     }
+    // Launch hints: integer literals, warps a power of two.
+    for (const auto& [hint, value] :
+         {std::pair{"warps", decl.warps}, std::pair{"stages", decl.stages}}) {
+        if (value == ast::no_id) {
+            continue;
+        }
+        const TypeData& data = types_.get(check_expr(value));
+        const auto count = data.kind == TypeKind::CompileInt ? data.value.constant() : std::nullopt;
+        const bool is_warps = std::string_view(hint) == "warps";
+        if (!count || *count <= 0 || (is_warps && (*count & (*count - 1)) != 0)) {
+            error(codes::invalid_kernel,
+                  ast().expr(value).span,
+                  is_warps ? "`warps` is a power of two written as a literal"
+                           : "`stages` is a positive integer written as a literal");
+        }
+    }
+    kernel_writes_.clear();
 }
 
 TypeId Checker::check_kernel_call(const ast::Expr& node,
@@ -123,10 +140,11 @@ TypeId Checker::check_kernel_call(const ast::Expr& node,
 }
 
 void Checker::check_store(const ast::StoreStmt& store, SourceSpan span) {
+    const std::string name(ast::store_spelling(store.kind));
     if (!env_->in_kernel) {
         error(codes::invalid_kernel,
               span,
-              "`store` writes a kernel's result; it stands only in a kernel");
+              "`" + name + "` writes a kernel's result; it stands only in a kernel");
         return;
     }
     const auto access = check_memory_access(store.target, true);
@@ -134,6 +152,33 @@ void Checker::check_store(const ast::StoreStmt& store, SourceSpan span) {
         check_expr(store.value);
         check_expr(store.mask);
         return;
+    }
+    if (store.kind != ast::StoreKind::Store) {
+        // What Triton and Pallas both write atomically.
+        const ScalarKind dtype = access->dtype.is_var ? ScalarKind::F32 : access->dtype.scalar;
+        const bool is_supported =
+            !access->dtype.is_var &&
+            (dtype == ScalarKind::F32 || dtype == ScalarKind::I32 || dtype == ScalarKind::U32 ||
+             dtype == ScalarKind::I64 || dtype == ScalarKind::U64 ||
+             (dtype == ScalarKind::F16 && store.kind == ast::StoreKind::AtomicAdd));
+        if (!is_supported) {
+            error(codes::invalid_kernel,
+                  span,
+                  "`" + name +
+                      "` writes `f32`, `i32`, `u32`, `i64` or `u64` (and `f16` adds), not `" +
+                      types_.to_string(access->dtype) + "`");
+        }
+    }
+    // One kind of write a result: an atomic's result starts from the
+    // operation's identity, which a plain store would not keep.
+    const auto [written, is_first] = kernel_writes_.try_emplace(access->memory, store.kind, span);
+    if (!is_first && written->second.first != store.kind) {
+        error(codes::invalid_kernel,
+              span,
+              "`" + std::string(entities_[access->memory].name) + "` is written with both `" +
+                  std::string(ast::store_spelling(written->second.first)) + "` and `" + name + "`")
+            .label(written->second.second, "first written here")
+            .note("a result takes one kind of write");
     }
     const TypeId element = types_.scalar(access->dtype);
     const TypeId tile =
@@ -186,7 +231,7 @@ std::optional<Checker::MemoryAccess> Checker::check_memory_access(ast::ExprId ta
     }
     // Each index tile adds its axes, in order: `x[rows, cols]` with tiles
     // `[BM]` and `[BN]` is a `[BM, BN]` tile.
-    MemoryAccess access{data.dtype, {}};
+    MemoryAccess access{data.dtype, {}, entity};
     bool is_valid = true;
     for (const ast::IndexComponent& component : index->components) {
         if (component.kind != ast::IndexKind::Expr) {

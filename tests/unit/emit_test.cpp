@@ -220,6 +220,20 @@ TEST("emit: kernels and an op's kernel") {
     check_round_trip(source);
 }
 
+TEST("emit: atomic writes and launch hints") {
+    const std::string source =
+        "module m\n"
+        "pub kernel sums<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> y: Tensor[C; f32] grid(R) "
+        "warps(8) stages(2) {\n"
+        "    let cols = iota<i32>(C)\n"
+        "    atomic_add(y[cols], load(x[program_id(0), cols]))\n"
+        "}\n";
+    const std::string text = emitted(source);
+    CHECK(contains(text, "grid(R) warps(8) stages(2)"));
+    CHECK(contains(text, "atomic_add(y["));
+    check_round_trip(source);
+}
+
 TEST("emit: values used inside a region keep their own binding") {
     const std::string source = "module m\n"
                                "pub fn f<N: Dim>() -> Tensor[N; i64] {\n"

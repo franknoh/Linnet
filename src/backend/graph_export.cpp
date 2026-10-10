@@ -1641,7 +1641,15 @@ private:
             if (op.operands.size() > rank + 2) {
                 mask = info(operand(rank + 2));
             }
-            kernel_target().store(info(operand(0)), indices, info(operand(rank + 1)), mask);
+            std::optional<Reduction> atomic;
+            if (a.name == "add") {
+                atomic = Reduction::Sum;
+            } else if (a.name == "max") {
+                atomic = Reduction::Max;
+            } else if (a.name == "min") {
+                atomic = Reduction::Min;
+            }
+            kernel_target().store(info(operand(0)), indices, info(operand(rank + 1)), mask, atomic);
             return;
         }
         case ir::OpKind::EnumConst: {
@@ -1934,6 +1942,8 @@ private:
         KernelLaunch launch;
         launch.op = callee.name;
         launch.name = kernel.name;
+        launch.warps = kernel.warps;
+        launch.stages = kernel.stages;
         // The grid's sizes, compile-time integers of the kernel's generics.
         Frame sizes;
         sizes.subst = bound;

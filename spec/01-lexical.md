@@ -48,7 +48,7 @@ true false none some
 extern
 ```
 
-`grad` is a keyword only after an op's body (§7.2), and `grid` and `store` only in a kernel's header and at the start of a kernel's statement (§7.9); elsewhere they are identifiers.
+`grad` is a keyword only after an op's body (§7.2), and `grid`, `warps`, `stages`, `store`, `atomic_add`, `atomic_max` and `atomic_min` only in a kernel's header and at the start of a kernel's statement (§7.9); elsewhere they are identifiers.
 
 Words reserved for future syntax MUST NOT be accepted as identifiers:
 

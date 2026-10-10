@@ -28,10 +28,12 @@ public:
                              const std::optional<TensorInfo>& other,
                              const Dims& shape,
                              sema::ScalarKind dtype) = 0;
+    // `store`, or with `atomic` an atomic sum, maximum or minimum.
     virtual void store(const TensorInfo& memory,
                        const std::vector<TensorInfo>& indices,
                        const TensorInfo& value,
-                       const std::optional<TensorInfo>& mask) = 0;
+                       const std::optional<TensorInfo>& mask,
+                       std::optional<Reduction> atomic) = 0;
     virtual KernelProgram program() = 0;
 };
 

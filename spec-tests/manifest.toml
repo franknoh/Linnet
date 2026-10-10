@@ -339,3 +339,22 @@ code = "E2127"
 file = "invalid/145_kernel_runtime_grid.linnet"
 expect = "error"
 code = "E2123"
+
+[[case]]
+file = "valid/031_kernel_atomics.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/146_kernel_mixed_writes.linnet"
+expect = "error"
+code = "E2127"
+
+[[case]]
+file = "invalid/147_kernel_atomic_dtype.linnet"
+expect = "error"
+code = "E2127"
+
+[[case]]
+file = "invalid/148_kernel_warps.linnet"
+expect = "error"
+code = "E2127"

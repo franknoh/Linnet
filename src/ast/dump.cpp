@@ -355,7 +355,7 @@ private:
                        [&](const ForLoop& loop) { for_loop(loop); },
                        [&](const YieldStmt& yield) { nested("yield", [&] { expr(yield.value); }); },
                        [&](const StoreStmt& store) {
-                           nested("store", [&] {
+                           nested(std::string(store_spelling(store.kind)), [&] {
                                expr(store.target);
                                expr(store.value);
                                if (store.mask != no_id) {
@@ -454,6 +454,12 @@ private:
                                            expr(dim);
                                        }
                                    });
+                               }
+                               if (decl.warps != no_id) {
+                                   nested("warps", [&] { expr(decl.warps); });
+                               }
+                               if (decl.stages != no_id) {
+                                   nested("stages", [&] { expr(decl.stages); });
                                }
                                if (decl.kernel) {
                                    line("kernel " + name(decl.kernel->name) +

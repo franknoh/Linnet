@@ -1,0 +1,26 @@
+module m
+
+// Each program adds its row into the column sums and raises the column maxima.
+pub kernel column_stats<R: Dim, C: Dim, B: Dim>(
+    x: Tensor[R, C; f32],
+) -> (total: Tensor[C; f32], top: Tensor[C; f32]) grid(R) warps(4) stages(1)
+where B >= C {
+    let row = program_id(0)
+    let cols = iota<i32>(B)
+    let inside = cols < C
+    let v = load(x[row, cols], inside)
+    atomic_add(total[cols], v, inside)
+    atomic_max(top[cols], v, inside)
+}
+
+pub op stats<R: Dim, C: Dim>(
+    x: Tensor[R, C; f32],
+) -> (Tensor[C; f32], Tensor[C; f32]) kernel column_stats<R, C, 64> {
+    let total[c] = sum[r] x[r, c]
+    let top[c] = max[r] x[r, c]
+    return (total, top)
+}
+
+pub entry run<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> (Tensor[C; f32], Tensor[C; f32]) {
+    return stats(x)
+}

@@ -336,3 +336,15 @@ TEST("format: kernels and an op's kernel") {
              "    return x\n"
              "}\n");
 }
+
+TEST("format: atomic writes and launch hints") {
+    CHECK_EQ(fmt("module m\nkernel k(x: Tensor[4; f32])->y: Tensor[4; f32] grid(1)stages( 2 ) "
+                 "warps(4){\n"
+                 "let i=iota<i32>(4)\natomic_max(y[i],load(x[i]),i<4)}\n"),
+             "module m\n"
+             "\n"
+             "kernel k(x: Tensor[4; f32]) -> y: Tensor[4; f32] grid(1) warps(4) stages(2) {\n"
+             "    let i = iota<i32>(4)\n"
+             "    atomic_max(y[i], load(x[i]), i < 4)\n"
+             "}\n");
+}

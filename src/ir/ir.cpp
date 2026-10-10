@@ -340,6 +340,12 @@ private:
                       std::string(shape::relation_spelling(constraint.relation)) + " " +
                       module_.model().dims.to_string(constraint.rhs);
         }
+        if (function.warps != 0) {
+            header += " warps " + std::to_string(function.warps);
+        }
+        if (function.stages != 0) {
+            header += " stages " + std::to_string(function.stages);
+        }
         if (function.grid != no_id) {
             // The launch grid, yielded by a region of its own.
             line(header + " grid {");
@@ -400,6 +406,8 @@ private:
         case OpKind::StructGet:
         case OpKind::KernelProgramId:
             return " " + std::to_string(a.integer);
+        case OpKind::KernelStore:
+            return a.name.empty() ? "" : " atomic " + a.name;
         case OpKind::Concat:
             return " axis " + std::to_string(a.axis);
         case OpKind::Reshape:
