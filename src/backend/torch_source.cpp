@@ -292,21 +292,29 @@ public:
             if (cache.size() != 4 || value.size() != 4) {
                 return std::nullopt;
             }
-            const std::string device = name(0) + ".device";
+            // The index tensors are their own statements: a range is the same
+            // for every layer's caches (hoisted into `constants` unless the
+            // caches are placed on devices of their own), and the positions
+            // are converted once a step, not once a cache.
+            const std::string device = placed_ ? name(0) + ".device" : "_device";
+            const auto range = [&](std::int64_t length) {
+                return define("torch.arange(" + std::to_string(length) + ", device=" + device +
+                              ")");
+            };
             const std::string put = "torch.ops.aten.index_put(" + name(0) + ", [";
             if (operands.size() == 3) {
                 // `write_rows`: row b at at[b]; the values are [B, H, D].
-                return define(put + "torch.arange(" + std::to_string(cache[0]) +
-                              ", device=" + device + "), None, " + name(2) + ".long()], " +
-                              name(1) + "[:, :, 0])");
+                const std::string rows = range(cache[0]);
+                const std::string positions = define(name(2) + ".long()");
+                return define(put + rows + ", None, " + positions + "], " + name(1) + "[:, :, 0])");
             }
-            const std::string span = "(" + name(3) + ".long() + torch.arange(" +
-                                     std::to_string(value[2]) + ", device=" + device +
-                                     "))[None, :]";
+            const std::string start = define(name(3) + ".long()");
+            const std::string span = define("(" + start + " + " + range(value[2]) + ")[None, :]");
             // `write_slots` (rows `slots`) or `write_slot` (one row): [M, N]
             // indices, the values [M, N, H, D].
-            const std::string rows = at[2]->shape.empty() ? name(2) + ".long().reshape(1, 1)"
-                                                          : name(2) + ".long()[:, None]";
+            const std::string slots = define(name(2) + ".long()");
+            const std::string rows =
+                at[2]->shape.empty() ? slots + ".reshape(1, 1)" : slots + "[:, None]";
             return define(put + rows + ", None, " + span + "], " + name(1) +
                           ".permute(0, 2, 1, 3))");
         }
