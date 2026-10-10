@@ -348,7 +348,44 @@ def fp8_gemv(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torc
         num_warps=1 if small else 4,
         num_stages=4 if small else 2,
     )
-    return y.sum(0).to(x.dtype).reshape(1, width)
+    return torch.sum(y, dim=0, dtype=x.dtype).reshape(1, width)
+
+
+@triton.jit
+def _fp8_rows_kernel(x_ptr, q_ptr, scale_ptr, depth, block: tl.constexpr):
+    # One row per program: its largest magnitude, then the row over its
+    # scale (that magnitude over 448, FP8's largest value) rounded to FP8.
+    row = tl.program_id(0).to(tl.int64)
+    base = row * depth
+    top = tl.zeros((block,), dtype=tl.float32)
+    for k0 in range(0, depth, block):
+        offsets = k0 + tl.arange(0, block)
+        x = tl.load(x_ptr + base + offsets, mask=offsets < depth, other=0.0).to(tl.float32)
+        top = tl.maximum(top, tl.abs(x))
+    scale = tl.maximum(tl.max(top, axis=0), 1e-12) / 448.0
+    for k0 in range(0, depth, block):
+        offsets = k0 + tl.arange(0, block)
+        live = offsets < depth
+        x = tl.load(x_ptr + base + offsets, mask=live, other=0.0).to(tl.float32)
+        q = tl.clamp(x / scale, -448.0, 448.0).to(q_ptr.dtype.element_ty)
+        tl.store(q_ptr + base + offsets, q, mask=live)
+    tl.store(scale_ptr + row, scale)
+
+
+@triton_op("linnet::fp8_rows", mutates_args=())
+def fp8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each row of `x` [rows, In] rounded to FP8 E4M3 with a scale of its
+    own: the rounded rows and the scales ([rows, 1], f32), in one kernel,
+    as `torch._scaled_mm` takes them."""
+    rows, depth = x.shape
+    q = torch.empty(rows, depth, dtype=torch.float8_e4m3fn, device=x.device)
+    scale = torch.empty(rows, 1, dtype=torch.float32, device=x.device)
+
+    def grid(_meta: dict[str, object]) -> tuple[int]:
+        return (rows,)
+
+    wrap_triton(_fp8_rows_kernel)[grid](x.contiguous(), q, scale, depth, block=1024, num_warps=4)
+    return q, scale
 
 
 @triton.jit
