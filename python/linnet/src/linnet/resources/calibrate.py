@@ -457,7 +457,9 @@ def _spawned(rank: int, world: int, port: int, out: str) -> None:
         Path(out).write_text(json.dumps(found), encoding="utf-8")
 
 
-def measure(name: str) -> dict[str, object]:
+def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
+    """This device's rates; under `torchrun`, with `collectives`, those of
+    the collectives between its processes too."""
     import torch
 
     torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
@@ -498,7 +500,7 @@ def measure(name: str) -> dict[str, object]:
         "latency": 0.0,
         "reduce": 0.0,
     }
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+    if collectives and int(os.environ.get("WORLD_SIZE", "1")) > 1:
         import torch.distributed as dist
 
         dist.init_process_group("nccl")
@@ -543,7 +545,9 @@ def profile(devices: int = 1, *, refresh: bool = False) -> DeviceSpec:
     path = cache_directory() / f"{key}{'' if count < 2 else f'-x{count}'}.json"
     if path.is_file() and not refresh:
         return DeviceSpec.load(path)
-    found = measure("local")
+    # The collectives in processes of their own, below: this one may be
+    # one of a group already (`validate --time` under `torchrun`).
+    found = measure("local", collectives=False)
     found["source"] = f"{found['source']}, on {platform.node()}"
     if count > 1:
         import socket
