@@ -213,6 +213,10 @@ public:
         auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
         if (is_new) {
             kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+            if (launch.program.body.find("jnp.prod(") != std::string::npos && !products_) {
+                products_ = true;
+                helpers_ += product_rule();
+            }
             // An atomically written result arrives twice: as the input its
             // starting values come in (aliased to it), unread, and as itself.
             std::vector<std::string> parameters(
@@ -882,10 +886,35 @@ private:
 
     bool full_precision_ = false;                 // f32 products at full precision (`precise`)
     bool uses_kernels_ = false;                   // Pallas's import and `_kernel_call` are used
+    bool products_ = false;                       // a kernel takes a tile's `prod`
     std::string helpers_;                         // module-level helpers before `definitions_`
     std::map<std::string, std::string> kernels_;  // a kernel's program -> its function
     std::map<std::string, std::size_t> launched_; // an op at its shapes -> its `_opN`
     std::size_t launches_ = 0;
+
+    // Pallas lowers a tile's `prod` to Triton through the reduction it
+    // lowers `sum`, `max` and `min` through, which it registers for those
+    // three alone: registered here for products too, unless JAX has a rule
+    // of its own. The module is private, so its absence leaves the body.
+    static std::string product_rule() {
+        return "def _register_product():\n"
+               "    try:\n"
+               "        import functools\n"
+               "\n"
+               "        from jax._src.pallas.triton import lowering\n"
+               "    except ImportError:\n"
+               "        return\n"
+               "    rules = getattr(lowering, \"triton_lowering_rules\", None)\n"
+               "    reduce = getattr(lowering, \"_reduce_lowering\", None)\n"
+               "    if rules is not None and reduce is not None and jax.lax.reduce_prod_p not in "
+               "rules:\n"
+               "        rules[jax.lax.reduce_prod_p] = functools.partial(reduce, jnp.multiply)\n"
+               "\n"
+               "\n"
+               "_register_product()\n"
+               "\n"
+               "\n";
+    }
 
     // Pallas, imported where it exists, and the `jax.custom_vjp` wrapper of
     // a kernel whose backward pass differentiates the op's body.
