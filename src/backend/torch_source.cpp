@@ -989,7 +989,8 @@ public:
                 const std::string word = expression.substr(i, j - i);
                 const bool value = word.size() > 1 && word[0] == 'v' &&
                                    word.find_first_not_of("0123456789", 1) == std::string::npos;
-                const bool loop_variable = word.size() > 1 && word[0] == 'w' &&
+                // `wN` from a `while`, `fN_k` from a counted `for`.
+                const bool loop_variable = word.size() > 1 && (word[0] == 'w' || word[0] == 'f') &&
                                            std::isdigit(static_cast<unsigned char>(word[1]));
                 if (arguments.contains(word) || loop_variable ||
                     (value && !constant_names.contains(word))) {
