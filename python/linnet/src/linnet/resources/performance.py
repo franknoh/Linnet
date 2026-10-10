@@ -707,11 +707,13 @@ def _costs(
             )
         elif implementation in _WRITES:
             update = _bytes(graph, step.inputs[1], env)
-            # The generated write's index arguments are calls of their own:
-            # a position as a long, and per row an `arange` and a slice.
+            # The generated write's index arguments: a position as a long for
+            # `index_copy`; for `index_put` a slice of the values (and of the
+            # slots), its ranges made once with the constants and its
+            # positions converted once a step.
             calls = {
                 "torch.Tensor.index_copy": ("write", "view", "cast"),
-                "torch.Tensor.index_put": ("write", "elementwise", "cast", "view"),
+                "torch.Tensor.index_put": ("write", "view") + ("view",) * (operands > 3),
             }.get(full, ("write", "cast", "cast", "view", "view"))
             forward.append(_Op(host(*calls), memory(2 * update), "memory"))
         elif implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):

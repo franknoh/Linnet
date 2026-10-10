@@ -296,6 +296,7 @@ def _timing(
 ) -> Timing:
     """The median of six timed steps against the predicted step time. The
     first process measures this machine's rates when none are kept yet."""
+    import gc
     import statistics
     import time
 
@@ -316,17 +317,24 @@ def _timing(
     if host is not None and dist.get_rank() == 0:
         dist.barrier(group=host)
     seconds: list[float] = []
-    for _ in range(6):
-        if dist.is_initialized():
-            dist.barrier()
-        torch.cuda.synchronize()
-        begin = time.perf_counter()
-        step()
-        if optimizer is not None:
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-        torch.cuda.synchronize()
-        seconds.append(time.perf_counter() - begin)
+    # The analysis leaves a large heap; a collection of it inside a step
+    # would be timed as the model's. The steps' own garbage waits.
+    gc.collect()
+    gc.disable()
+    try:
+        for _ in range(6):
+            if dist.is_initialized():
+                dist.barrier()
+            torch.cuda.synchronize()
+            begin = time.perf_counter()
+            step()
+            if optimizer is not None:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            torch.cuda.synchronize()
+            seconds.append(time.perf_counter() - begin)
+    finally:
+        gc.enable()
     return Timing(model.throughput(spec).seconds, statistics.median(seconds))
 
 
