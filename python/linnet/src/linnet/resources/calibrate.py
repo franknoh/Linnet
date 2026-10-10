@@ -514,13 +514,10 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
 
 
 def cache_directory() -> Path:
-    """Where `profile` keeps the profiles it measured: `$LINNET_CACHE/devices`,
-    else `$XDG_CACHE_HOME/linnet/devices`, else `~/.cache/linnet/devices`."""
-    base = os.environ.get("LINNET_CACHE")
-    if base:
-        return Path(base) / "devices"
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    return Path(xdg or Path.home() / ".cache") / "linnet" / "devices"
+    """Where `profile` keeps the profiles it measured: `$LINNET_HOME/devices`."""
+    from ..home import home
+
+    return home() / "devices"
 
 
 def profile(devices: int = 1, *, refresh: bool = False) -> DeviceSpec:

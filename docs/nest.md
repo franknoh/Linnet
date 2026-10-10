@@ -20,7 +20,7 @@ logits = model(tokens)
 
 | `name_or_dir` | Where |
 | --- | --- |
-| `"tinyllama-1.1b-chat"` | a Nest name, fetched from the registry |
+| `"tinyllama-1.1b-chat"` | a Nest name, fetched from the registry into `$LINNET_HOME/nest` |
 | `"org/name"`, `"hf://org/name@revision"` | a Hugging Face Hub repo with `nest.toml` at its root |
 | `"path/to/model"` | a model directory on disk |
 
@@ -64,7 +64,7 @@ python -m linnet.nest convert Qwen/Qwen2.5-7B-Instruct -o qwen2.5-7b   # nest.co
 ```
 
 writes the model directory to edit, check or `push`. Without `-o` it goes
-to the Nest cache, keyed by the repo's commit.
+to `$LINNET_HOME/converted`, keyed by the repo's commit.
 
 | `backend=` | Loader |
 | --- | --- |

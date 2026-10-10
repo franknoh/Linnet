@@ -23,6 +23,20 @@ line. `--std <dir>` or `LINNET_STD` sets the standard library directory.
 `plan`, `explain`, and the exporters optimize the program first;
 `--no-optimize` skips that.
 
+## Files Linnet keeps
+
+What Linnet downloads or measures goes under `LINNET_HOME`, `~/.linnet` by
+default:
+
+| Directory | Holds |
+| --- | --- |
+| `nest/` | Nest model directories fetched from the registry |
+| `converted/` | Hub checkpoints converted to cards, by commit |
+| `devices/` | device profiles measured on this machine (`--device local`) |
+
+Checkpoints stay in Hugging Face's cache (`HF_HOME`), shared with other
+tools.
+
 ## check and lint
 
 ```bash

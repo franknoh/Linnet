@@ -176,7 +176,7 @@ def hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Hub:
     monkeypatch.setattr("huggingface_hub.hf_hub_download", hf_hub_download)
     monkeypatch.setattr(nest, "hub_safetensors_header", header)
     monkeypatch.setattr(nest, "fetch", fetch)
-    monkeypatch.setenv("LINNET_NEST_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("LINNET_HOME", str(tmp_path / "home"))
     return fake
 
 

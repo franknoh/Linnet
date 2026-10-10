@@ -31,6 +31,7 @@ from . import ir, nest
 from .compiler import LinnetError
 from .dtypes import from_safetensors
 from .hf import DECODER_KEYS, LLAMA3_SCALING
+from .home import home
 from .weights import header_tensors, read_bindings, write_bindings
 
 if TYPE_CHECKING:
@@ -280,8 +281,8 @@ def convert(
     std_root: str | Path | None = None,
 ) -> Path:
     """Writes a Nest model directory for a `transformers` checkpoint on the
-    Hub and returns it. Without `output` it goes to the Nest cache, where a
-    later call for the same commit finds it."""
+    Hub and returns it. Without `output` it goes to `$LINNET_HOME/converted`,
+    where a later call for the same commit finds it."""
     hub = nest.huggingface_hub()
     try:
         info = hub.HfApi().model_info(repo, revision=revision)
@@ -290,9 +291,7 @@ def convert(
     sha = str(info.sha)
     # A card is named after its directory, so `check` passes on it as it is.
     target = (
-        Path(output)
-        if output is not None
-        else nest.cache_dir() / "hub" / sha / repo.replace("/", "--")
+        Path(output) if output is not None else home() / "converted" / sha / repo.replace("/", "--")
     )
     name = target.name
     if output is None and (target / "nest.toml").exists():
