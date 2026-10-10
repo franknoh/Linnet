@@ -275,100 +275,80 @@ def int4_linear(
 
 
 @triton.jit
-def _fp8_linear_kernel(
+def _fp8_gemv_kernel(
     x_ptr,
     weight_ptr,
     scale_ptr,
     y_ptr,
-    rows,
     width,
     depth,
-    block_m: tl.constexpr,
     block_n: tl.constexpr,
     block_k: tl.constexpr,
 ):
-    # A block_m by block_n tile of the output per program, over one of the
-    # split's equal stretches of the inputs (axis 2): each step reads block_k
-    # FP8 bytes of every weight row, widens them to the input's type, and
-    # multiplies on tensor cores; each row's scale applies once, at the end.
-    tile_m = tl.program_id(0)
-    tile_n = tl.program_id(1)
-    part = tl.program_id(2)
-    split = tl.num_programs(2)
-    rm = tile_m * block_m + tl.arange(0, block_m)
+    # One input row times block_n weight rows per program, over one of the
+    # split's equal stretches of the inputs (axis 1), on CUDA cores: each
+    # step widens block_k FP8 bytes of every row to f32 in registers. Tensor
+    # cores, which want 16 rows, ran these slower.
+    tile_n = tl.program_id(0)
+    part = tl.program_id(1)
+    span = depth // tl.num_programs(1)
     rn = tile_n * block_n + tl.arange(0, block_n)
     inputs = tl.arange(0, block_k)
-    span = depth // split
-    live_m = rm < rows
-    live_n = rn < width
-    acc = tl.zeros((block_m, block_n), dtype=tl.float32)
+    live = rn < width
+    acc = tl.zeros((block_n, block_k), dtype=tl.float32)
     for k0 in range(part * span, (part + 1) * span, block_k):
         bits = tl.load(
             weight_ptr + rn[:, None].to(tl.int64) * depth + (k0 + inputs)[None, :],
-            mask=live_n[:, None],
+            mask=live[:, None],
             other=0,
         )
-        weight = bits.to(tl.float8e4nv, bitcast=True).to(x_ptr.dtype.element_ty)
-        x = tl.load(
-            x_ptr + rm[:, None] * depth + (k0 + inputs)[None, :], mask=live_m[:, None], other=0.0
-        )
-        acc = tl.dot(x, tl.trans(weight), acc)
-    step = tl.load(scale_ptr + rn, mask=live_n, other=0).to(tl.float32)
-    acc = acc * step[None, :]
-    out = y_ptr + part * rows * width + rm[:, None] * width + rn[None, :]
-    tl.store(out, acc.to(y_ptr.dtype.element_ty), mask=live_m[:, None] & live_n[None, :])
+        x = tl.load(x_ptr + k0 + inputs).to(tl.float32)
+        acc += bits.to(tl.float8e4nv, bitcast=True).to(tl.float32) * x[None, :]
+    y = tl.sum(acc, axis=1) * tl.load(scale_ptr + rn, mask=live, other=0.0)
+    tl.store(y_ptr + part * width + rn, y, mask=live)
 
 
-# Tiles by row count, as `_INT4_TILES`: (rows up to, block_m, block_n,
-# block_k, warps, stages, waves).
-_FP8_TILES = (
-    (16, 16, 64, 128, 4, 4, 2),
-    (32, 32, 64, 128, 4, 4, 1),
-    (64, 64, 64, 128, 4, 4, 1),
-)
-
-
-@triton_op("linnet::fp8_linear", mutates_args=())
-def fp8_linear(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """`F.linear(x, W)` for `x` [rows, In] (`bf16` or `f16`), with `W` the
-    per-row FP8 E4M3 weights of `std.quant::linear_fp8` -- `weight` ([Out,
-    In] bytes) and `scale` ([Out]) -- widened inside the product, so the
-    weight is read once, at half of `bf16`'s bytes. Meant for a decoding
-    step's few rows (up to 64); In is a multiple of 128."""
-    rows, depth = x.shape
+@triton_op("linnet::fp8_gemv", mutates_args=())
+def fp8_gemv(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """`F.linear(x, W)` for one row `x` [1, In] (`bf16` or `f16`), with `W`
+    the per-row FP8 E4M3 weights of `std.quant::linear_fp8` -- `weight`
+    ([Out, In] bytes) and `scale` ([Out]) -- read once, at half of `bf16`'s
+    bytes, and multiplied without rounding `x`: a decoding step of one
+    sequence. In is a multiple of 512."""
+    depth = x.shape[-1]
     width = weight.shape[0]
-    tiles = next((tiles for tiles in _FP8_TILES if rows <= tiles[0]), _FP8_TILES[-1])
-    _, block_m, block_n, block_k, warps, stages, waves = tiles
+    # Tiles measured on an H100 over Llama 3.1 8B's projections: small
+    # weights take wider steps. Each program covers at most 2048 inputs, and
+    # the inputs split further while there are fewer than 1024 programs.
+    small = width <= 4096 and depth <= 4096
+    block_n, block_k = (8, 512) if small else (4, 256)
+    programs = triton.cdiv(width, block_n)
+    steps = depth // block_k
     if depth % block_k:
-        raise ValueError(f"fp8_linear: {depth} inputs are not a multiple of {block_k}")
-    programs = triton.cdiv(rows, block_m) * triton.cdiv(width, block_n)
-    budget = waves * torch.cuda.get_device_properties(x.device).multi_processor_count
-    split = 1
-    while split < 8 and programs * split * 2 <= budget and depth % (2 * split * block_k) == 0:
-        split *= 2
-    if split == 1:
-        y = torch.empty(rows, width, dtype=x.dtype, device=x.device)
-    else:
-        y = torch.empty(split, rows, width, dtype=torch.float32, device=x.device)
+        raise ValueError(f"fp8_gemv: {depth} inputs are not a multiple of {block_k}")
+    parts = [d for d in range(1, steps + 1) if steps % d == 0]
+    split = next(d for d in parts if steps // d * block_k <= 2048)
+    for d in parts:
+        if split < d <= 16 and programs * split < 1024:
+            split = d
+    y = torch.empty(split, width, dtype=torch.float32, device=x.device)
 
-    def grid(_meta: dict[str, object]) -> tuple[int, int, int]:
-        return (triton.cdiv(rows, block_m), triton.cdiv(width, block_n), split)
+    def grid(_meta: dict[str, object]) -> tuple[int, int]:
+        return (programs, split)
 
-    wrap_triton(_fp8_linear_kernel)[grid](
+    wrap_triton(_fp8_gemv_kernel)[grid](
         x.contiguous(),
         weight.contiguous(),
         scale.float().contiguous(),
         y,
-        rows,
         width,
         depth,
-        block_m=block_m,
         block_n=block_n,
         block_k=block_k,
-        num_warps=warps,
-        num_stages=stages,
+        num_warps=1 if small else 4,
+        num_stages=4 if small else 2,
     )
-    return y if split == 1 else y.sum(0).to(x.dtype)
+    return y.sum(0).to(x.dtype).reshape(1, width)
 
 
 @triton.jit
