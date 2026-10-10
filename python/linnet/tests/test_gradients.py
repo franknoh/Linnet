@@ -56,7 +56,7 @@ pub block Model<V: Dim, H: Dim, C: Dim> {
     pub entry shapes<N: Dim>(x: Tensor[N, H; f32]) -> f32 {
         let y[n, c] = sum[h] tanh(x[n, h]) * w[h, c]
         let z = sqrt(y * y + 1.0) + rsqrt(abs(y) + 2.0) + sin(y) * cos(y)
-        let p = softmax(z / (b * b + 1.0))
+        let p = softmax(cumsum(z, axis = 1) * 0.3 / (b * b + 1.0))
         let halves = concat(p[:, 0::2], max(p[:, 1::2], 0.1), axis = 1)
         let turned = permute(halves, [1, 0])
         let pick[c, n] = min(turned[c, n], 0.9) * norm[0]

@@ -663,7 +663,8 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
     bool is_valid = true;
     for (const ast::Argument& arg : call.args) {
         if (!arg.keyword.text.empty()) {
-            if (name == "concat" && arg.keyword.text == "axis" && axis_argument == nullptr) {
+            if ((name == "concat" || name == "cumsum") && arg.keyword.text == "axis" &&
+                axis_argument == nullptr) {
                 axis_argument = &arg;
                 continue;
             }
@@ -726,6 +727,27 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
               arg_span(i),
               "`" + callee + "` expects a tensor here, found `" + str(args[i]) + "`");
         return nullptr;
+    };
+    // Axis `k` of `x`: non-negative axes count from the front and negative
+    // ones from the back; a shape pack on that side would make the position
+    // unknown.
+    const auto addressed_axis = [&](const TypeData& x,
+                                    std::int64_t k) -> std::optional<std::int64_t> {
+        const auto rank = static_cast<std::int64_t>(x.shape.size());
+        const std::int64_t position = k < 0 ? rank + k : k;
+        bool is_addressable = position >= 0 && position < rank;
+        for (std::int64_t i = 0; is_addressable && i < rank; ++i) {
+            const bool is_on_counted_side = k < 0 ? i >= position : i <= position;
+            is_addressable = !(is_on_counted_side && x.shape[static_cast<std::size_t>(i)].is_pack);
+        }
+        if (!is_addressable) {
+            error(codes::invalid_axis,
+                  ast().expr(axis_argument->value).span,
+                  "axis " + std::to_string(k) + " does not name a dimension of `" + str(args[0]) +
+                      "`");
+            return std::nullopt;
+        }
+        return position;
     };
 
     if (name == "pad" || name == "gather" || name == "scatter") {
@@ -920,6 +942,30 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
         return types_.tensor(std::move(result), tensor->dtype);
     }
 
+    // `cumsum(x, axis = k)`: running sums along one axis, of the same type.
+    if (name == "cumsum") {
+        if (!is_valid) {
+            return types_.error();
+        }
+        if (args.size() != 1 || axis_argument == nullptr) {
+            error(codes::bad_arguments, node.span, "`cumsum` takes a tensor and a keyword `axis`")
+                .note("signature: `cumsum(x, axis = k)`");
+            return types_.error();
+        }
+        const auto axis = constant_index(axis_argument->value, "`axis`");
+        const TypeData* x = tensor_argument(0);
+        if (!axis || x == nullptr || !addressed_axis(*x, *axis)) {
+            return types_.error();
+        }
+        if (!class_contains(DTypeClass::Numeric, types_.class_of(x->dtype))) {
+            error(codes::dtype_constraint,
+                  arg_span(0),
+                  "`cumsum` sums numbers, found `" + str(args[0]) + "`");
+            return types_.error();
+        }
+        return args[0];
+    }
+
     if (name == "concat") {
         if (!is_valid) {
             return types_.error();
@@ -936,25 +982,12 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
         if (!axis || first == nullptr) {
             return types_.error();
         }
-        // Non-negative axes count from the front and negative ones from the
-        // back; a shape pack on that side would make the position unknown.
-        const auto rank = static_cast<std::int64_t>(first->shape.size());
-        const std::int64_t position = *axis < 0 ? rank + *axis : *axis;
-        bool is_addressable = position >= 0 && position < rank;
-        for (std::int64_t i = 0; is_addressable && i < rank; ++i) {
-            const bool is_on_counted_side = *axis < 0 ? i >= position : i <= position;
-            is_addressable =
-                !(is_on_counted_side && first->shape[static_cast<std::size_t>(i)].is_pack);
-        }
-        if (!is_addressable) {
-            error(codes::invalid_axis,
-                  ast().expr(axis_argument->value).span,
-                  "axis " + std::to_string(*axis) + " does not name a dimension of `" +
-                      str(args[0]) + "`");
+        const auto position = addressed_axis(*first, *axis);
+        if (!position) {
             return types_.error();
         }
         Shape result = first->shape;
-        const auto at = static_cast<std::size_t>(position);
+        const auto at = static_cast<std::size_t>(*position);
         for (std::size_t i = 1; i < args.size(); ++i) {
             const TypeData* next = tensor_argument(i);
             if (next == nullptr) {

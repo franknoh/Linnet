@@ -45,7 +45,7 @@ A trusted escape hatch for operations with externally supplied backend implement
 
 ## 15.9 Kernel language
 
-Kernels (§7.9) are tile programs an op may run in place of its body. Scans within a tile, explicit shared memory, atomics that return the old value, and kernels outside an op are open.
+Kernels (§7.9) are tile programs an op may run in place of its body; `cumsum` scans within a tile. Explicit shared memory, atomics that return the old value, and kernels outside an op are open.
 
 ## 15.10 Distributed execution
 

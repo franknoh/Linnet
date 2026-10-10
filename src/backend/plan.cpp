@@ -561,6 +561,7 @@ private:
             attrs.push_back("\"compare\":" + json_string(ir::compare_spelling(a.compare)));
             break;
         case ir::OpKind::Concat:
+        case ir::OpKind::Cumsum:
             attrs.push_back("\"axis\":" + std::to_string(a.axis));
             break;
         case ir::OpKind::Reshape:

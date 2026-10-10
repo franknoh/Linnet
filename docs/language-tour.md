@@ -225,6 +225,7 @@ permute(x, [0, 2, 1])
 concat(a, b, axis = -1)
 select(mask, a, b)
 iota(N)                      // 0, 1, ..., N - 1
+cumsum(x, axis = -1)         // running sums along the last axis
 fill<f32>([B, S], 0.0)
 ```
 

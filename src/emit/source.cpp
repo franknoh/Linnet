@@ -913,6 +913,8 @@ private:
             return "permute(" + expr(op.operands[0]) + ", " + shape_list(a.shape) + ")";
         case ir::OpKind::Concat:
             return "concat(" + operand_list(op) + ", axis = " + std::to_string(a.axis) + ")";
+        case ir::OpKind::Cumsum:
+            return "cumsum(" + expr(op.operands[0]) + ", axis = " + std::to_string(a.axis) + ")";
         case ir::OpKind::Fill:
             return "fill<" + dtype_of(result) + ">(" + shape_list(a.shape) + ", " +
                    expr(op.operands[0]) + ")";

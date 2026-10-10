@@ -353,6 +353,10 @@ public:
         return result.name;
     }
 
+    // Running sums of `value` along `axis` (counted from the front), in its
+    // own dtype. Every format writes them.
+    virtual std::string cumsum(const TensorInfo& value, std::int64_t axis) = 0;
+
     // `values` added into zeros of `shape` and `dtype` at `indices` -- shaped
     // as `gather` takes them, `[..., k]` positions along the first `k` axes --
     // where several may hit the same position: the backward pass of a

@@ -57,7 +57,7 @@ Every module has an implicit prelude of compiler-defined names, including:
 - scalar dtype names and `Tensor`;
 - generic kinds and constraints: `Dim`, `Shape`, `DType`, `Numeric`, `Integer`, `Float`;
 - casts and shape functions: `cast`, `reshape`, `permute`, `broadcast_to`, `concat`, `pad`;
-- data functions: `iota`, `fill`, `gather`, `scatter`;
+- data functions: `iota`, `fill`, `cumsum`, `gather`, `scatter`;
 - elementwise math: `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `tanh`, `abs`;
 - `min`, `max`, `shl`, `shr`, and `select`.
 
@@ -86,6 +86,8 @@ concat(a, b, ..., axis = k)    equal shapes except along axis k; `axis` is a key
                                no shape pack may lie on the side being counted
 iota<T = i64>(n)               Tensor[n; T] holding 0, 1, ..., n - 1
 fill<T>(shape, value)          T may be omitted when `value` is a typed scalar
+cumsum(x, axis = k)            running sums of a Numeric tensor along axis k, same type;
+                               k counts axes as in `concat`
 ```
 
 `shape` and `axes` arguments are shape literals. `pad`, `gather`, and `scatter` have no specified signature; an implementation MUST reject calls to them.

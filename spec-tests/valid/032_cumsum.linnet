@@ -1,0 +1,35 @@
+module m
+
+// Running sums along the last axis, and along the first of an integer tensor.
+pub entry run<R: Dim, C: Dim>(
+    x: Tensor[R, C; f32],
+    counts: Tensor[R, C; i32],
+) -> (Tensor[R, C; f32], Tensor[R, C; i32]) {
+    return (cumsum(x, axis = -1), cumsum(counts, axis = 0))
+}
+
+// A loss through running sums, for its gradient.
+pub entry loss<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> f32 {
+    let running = cumsum(x * x, axis = 1)
+    let weighted[r, c] = running[r, c] * (cast<f32>(iota(C)[c]) + 1.0)
+    return sum[r, c] weighted[r, c]
+}
+
+// Each program's row: its running sums, a scan within the tile.
+pub kernel row_cumsum<R: Dim, C: Dim, B: Dim>(x: Tensor[R, C; f32]) -> y: Tensor[R, C; f32] grid(R)
+where B >= C {
+    let row = program_id(0)
+    let cols = iota<i32>(B)
+    let inside = cols < C
+    store(y[row, cols], cumsum(load(x[row, cols], inside), axis = 0), inside)
+}
+
+pub op prefix<R: Dim, C: Dim>(
+    x: Tensor[R, C; f32],
+) -> Tensor[R, C; f32] kernel row_cumsum<R, C, 64> {
+    return cumsum(x, axis = 1)
+}
+
+pub entry scanned<R: Dim, C: Dim>(x: Tensor[R, C; f32]) -> Tensor[R, C; f32] {
+    return prefix(x)
+}

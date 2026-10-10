@@ -1529,6 +1529,18 @@ private:
             attributes.shape = shape_argument(call.args[1].value);
             return emit(OpKind::Permute, {arg(0, no_type)}, type, attributes, node.span);
         }
+        if (name == "cumsum") {
+            ValueId x = no_id;
+            for (const ast::Argument& argument : call.args) {
+                if (argument.keyword.text == "axis") {
+                    const TypeData& axis = types().get(substituted(facts(argument.value).type));
+                    attributes.axis = axis.value.constant().value_or(0);
+                } else {
+                    x = lower_expr(argument.value, type);
+                }
+            }
+            return emit(OpKind::Cumsum, {x}, type, attributes, node.span);
+        }
         if (name == "concat") {
             std::vector<ValueId> operands;
             for (const ast::Argument& argument : call.args) {

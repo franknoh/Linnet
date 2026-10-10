@@ -64,6 +64,7 @@ public:
     std::string
     concat(const std::vector<TensorInfo>& parts, std::int64_t axis, const Dims& shape) override;
     std::string iota(std::int64_t length) override;
+    std::string cumsum(const TensorInfo& value, std::int64_t axis) override;
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override;
     std::string

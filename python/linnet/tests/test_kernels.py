@@ -7,6 +7,7 @@ the op's `grad`, or else its body's."""
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from linnet.compiler import find_compiler
 
 REPO = Path(__file__).resolve().parents[3]
 ATOMICS = REPO / "spec-tests/valid/031_kernel_atomics.linnet"
+SCANS = REPO / "spec-tests/valid/032_cumsum.linnet"
 # Set by conftest.py without a GPU, before Triton loaded: Triton then runs
 # kernels in its interpreter.
 TRITON_INTERPRETS = os.environ.get("TRITON_INTERPRET") == "1"
@@ -62,9 +64,9 @@ def _interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _module(
-    source: Path, numerics: str, *binds: str, target: str = "torch"
+    source: Path, numerics: str, *binds: str, target: str = "torch", entry: str = "run"
 ) -> tuple[str, Callable[..., tuple[object, ...]]]:
-    command = [find_compiler(), target, "--entry", "run", "--numerics", numerics]
+    command = [find_compiler(), target, "--entry", entry, "--numerics", numerics]
     for bind in binds:
         command += ["--bind", bind]
     completed = subprocess.run([*command, str(source)], capture_output=True, text=True, check=False)
@@ -199,3 +201,21 @@ def test_pallas_atomic_writes() -> None:
     x = np.random.default_rng(4).standard_normal((37, 40)).astype(np.float32)
     for got, want in zip(kernels(x), bodies(x), strict=True):
         np.testing.assert_allclose(np.asarray(got), np.asarray(want), rtol=1e-5, atol=1e-5)
+
+
+def test_tile_scans() -> None:
+    # A row's running sums in one tile, `tl.cumsum` and `jnp.cumsum`.
+    import numpy as np
+
+    x = np.random.default_rng(5).standard_normal((3, 50)).astype(np.float32)
+    want = np.cumsum(x, axis=1)
+    if TRITON_INTERPRETS and importlib.util.find_spec("triton") is not None:
+        text, run = _module(SCANS, "equivalent", "R=3", "C=50", entry="scanned")
+        assert "tl.cumsum" in text
+        (got,) = run(torch.tensor(x))
+        np.testing.assert_allclose(cast(torch.Tensor, got).numpy(), want, rtol=1e-5, atol=1e-5)
+    if importlib.util.find_spec("jax") is not None:
+        text, run = _module(SCANS, "equivalent", "R=3", "C=50", entry="scanned", target="jax")
+        assert "pl.pallas_call" in text
+        (got,) = run(x)
+        np.testing.assert_allclose(np.asarray(got), want, rtol=1e-5, atol=1e-5)

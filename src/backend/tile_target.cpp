@@ -354,6 +354,13 @@ TileTarget::concat(const std::vector<TensorInfo>& parts, std::int64_t axis, cons
     throw KernelError("tiles cannot be joined with `concat`");
 }
 
+// A scan within a tile; integer sums cast back, as the libraries widen them.
+std::string TileTarget::cumsum(const TensorInfo& value, std::int64_t axis) {
+    const std::string sum =
+        library_ + ".cumsum(" + value.name + ", axis=" + std::to_string(axis) + ")";
+    return define(sema::is_float(value.dtype) ? sum : cast(sum, value.dtype));
+}
+
 std::string TileTarget::iota(std::int64_t length) {
     if (!is_power_of_two(length)) {
         throw KernelError("a tile's sizes are powers of two; `iota(" + std::to_string(length) +

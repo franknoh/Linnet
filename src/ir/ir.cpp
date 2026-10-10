@@ -409,6 +409,7 @@ private:
         case OpKind::KernelStore:
             return a.name.empty() ? "" : " atomic " + a.name;
         case OpKind::Concat:
+        case OpKind::Cumsum:
             return " axis " + std::to_string(a.axis);
         case OpKind::Reshape:
         case OpKind::Broadcast:

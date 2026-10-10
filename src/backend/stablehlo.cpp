@@ -314,6 +314,28 @@ public:
         return emit("iota", {}, "iota_dimension = 0 : i64", {length}, ScalarKind::I64);
     }
 
+    // Running sums as a window over each position and those before it.
+    std::string cumsum(const TensorInfo& value, std::int64_t axis) override {
+        const auto at = static_cast<std::size_t>(axis);
+        Dims window(value.shape.size(), 1);
+        window[at] = value.shape[at];
+        std::string padding = "padding = dense<[";
+        for (std::size_t i = 0; i < value.shape.size(); ++i) {
+            padding +=
+                (i == 0 ? "[" : ", [") + std::to_string(i == at ? value.shape[at] - 1 : 0) + ", 0]";
+        }
+        padding += "]> : tensor<" + std::to_string(value.shape.size()) + "x2xi64>";
+        const Literal zero =
+            sema::is_float(value.dtype) ? Literal::of_real(0.0) : Literal::of_integer(0);
+        return emit("reduce_window",
+                    {value, scalar_constant(zero, value.dtype)},
+                    padding + ", window_dimensions = " + i64_array(window) +
+                        ", window_strides = " + i64_array(Dims(value.shape.size(), 1)),
+                    value.shape,
+                    value.dtype,
+                    combiner("add", value.dtype));
+    }
+
     std::string
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override {
         // The leading source axes are gathered, one per index column; the

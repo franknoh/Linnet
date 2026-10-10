@@ -358,3 +358,22 @@ code = "E2127"
 file = "invalid/148_kernel_warps.linnet"
 expect = "error"
 code = "E2127"
+
+[[case]]
+file = "valid/032_cumsum.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/149_cumsum_bool.linnet"
+expect = "error"
+code = "E2112"
+
+[[case]]
+file = "invalid/150_cumsum_axis.linnet"
+expect = "error"
+code = "E2210"
+
+[[case]]
+file = "invalid/151_cumsum_without_axis.linnet"
+expect = "error"
+code = "E2102"

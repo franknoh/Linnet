@@ -202,6 +202,17 @@ GradientTarget::concat(const std::vector<TensorInfo>& parts, std::int64_t axis, 
     return name;
 }
 
+std::string GradientTarget::cumsum(const TensorInfo& value, std::int64_t axis) {
+    Step step;
+    step.kind = Step::Kind::Cumsum;
+    step.operands = {value};
+    step.axis = axis;
+    step.result = {inner_.cumsum(value, axis), value.shape, value.dtype};
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.cumsum(renamed(value), axis); });
+    return name;
+}
+
 std::string GradientTarget::iota(std::int64_t length) {
     std::string name = inner_.iota(length);
     replayable(name, [=, this] { return inner_.iota(length); });
@@ -1017,6 +1028,23 @@ void GradientTarget::propagate(const Step& step, const TensorInfo& g) {
     }
     case Step::Kind::Loop:
         return; // see `propagate_loop`
+    case Step::Kind::Cumsum: {
+        // Each element reaches the sums from its own position on: the
+        // gradient's suffix sums, its total less the running sum before.
+        const auto axis = static_cast<std::size_t>(step.axis);
+        const TensorInfo total = sum_over(g, {axis});
+        Dims kept;
+        for (std::size_t i = 0; i < g.shape.size(); ++i) {
+            if (i != axis) {
+                kept.push_back(static_cast<std::int64_t>(i));
+            }
+        }
+        const TensorInfo spread{inner_.broadcast(total, kept, g.shape), g.shape, g.dtype};
+        const TensorInfo running{inner_.cumsum(g, step.axis), g.shape, g.dtype};
+        accumulate(ops.front(),
+                   apply(Elementwise::Add, {apply(Elementwise::Sub, {spread, running}), g}));
+        return;
+    }
     case Step::Kind::Custom: {
         // `pullbacks_` grows only while recording: the reference stays valid.
         const std::vector<std::optional<std::string>> gradients =
