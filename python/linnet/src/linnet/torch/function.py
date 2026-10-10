@@ -14,7 +14,6 @@ model's parameters.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +23,7 @@ import torch
 
 from .. import ir
 from ..compiler import bind_arguments, run_compiler, std_arguments
-from ..generated import import_generated
+from ..generated import generated_directory, import_generated
 from ..plan import PlanError, compile_plan
 from ..results import Result
 from .dtypes import torch_dtype
@@ -61,7 +60,6 @@ class Function:
         self._compile = compile
         self._interpreters: dict[torch.device, Interpreter] = {}
         self._generated: dict[_Key, _Generated] = {}
-        self._work: Path | None = None
 
     @property
     def inputs(self) -> list[str]:
@@ -166,9 +164,7 @@ class Function:
             str(self._source),
             error=PlanError,
         )
-        if self._work is None:
-            self._work = Path(tempfile.mkdtemp(prefix="linnet-function-"))
-        module = import_generated(self._work, f"{self.name}_{len(self._generated)}", text)
+        module = import_generated(generated_directory(), self.name, text)
         path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise PlanError(f"internal: `{self.name}` compiled with parameters or state")

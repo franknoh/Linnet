@@ -7,6 +7,9 @@ default `~/.linnet`, laid out as Hugging Face's cache is.
                   by commit
       devices/    device profiles measured on this machine
                   (`linnet.resources.calibrate`)
+      compiled/   compiler outputs by everything they were compiled from
+                  (`outputs/`), and the generated modules imported
+                  (`modules/`, named by their content)
 
 Checkpoints themselves stay in Hugging Face's cache (`HF_HOME`), shared
 with every other tool that reads them.

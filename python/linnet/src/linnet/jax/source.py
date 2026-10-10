@@ -11,7 +11,6 @@ trained in JAX — and `jax.jit`/`jax.vmap` compose with it as usual.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,7 +19,7 @@ import jax
 
 from .. import lora
 from ..compiler import LinnetError
-from ..generated import import_generated
+from ..generated import generated_directory, import_generated
 from .load import CompiledEntry, LinnetFunction, jit_with_options, load
 
 if TYPE_CHECKING:
@@ -56,7 +55,7 @@ class SourceFunction(LinnetFunction):
             source, program, generics, weights, std_root, root, entry, numerics, cast_dtype
         )
         self.parameters: dict[str, jax.Array] = {}
-        self._work = Path(tempfile.mkdtemp(prefix="linnet-jax-"))
+        self._work = generated_directory()
         # Low-rank adapters (`add_lora`): patterns, rank, alpha; and the seed
         # their first values are drawn from.
         self.lora: tuple[tuple[str, ...], int, float] | None = None
