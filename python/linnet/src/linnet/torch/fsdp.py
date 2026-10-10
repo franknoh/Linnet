@@ -48,7 +48,7 @@ from torch.utils.checkpoint import (
 from .. import lora
 from ..parallel import units as parallel_units
 from ..plan import PlanError
-from .module import LinnetModule, owner_of
+from .module import BlockModule, LinnetModule, owner_of
 
 if TYPE_CHECKING:
     from torch.distributed import ProcessGroup, Work
@@ -87,6 +87,8 @@ def fully_shard(
         raise PlanError("a sharded model runs on one device per process")
     if model.fully_sharded:
         raise PlanError("the model is sharded already")
+    if any(isinstance(block, BlockModule) and block.tied_parts for block in model.modules()):
+        raise PlanError("a split output head tied to an embedding cannot be sharded yet")
     if "forward_dtype" not in inspect.signature(DTensor.redistribute).parameters:
         raise PlanError("this PyTorch is too old to shard: DTensor.redistribute has no dtypes")
     if mesh is None:

@@ -119,7 +119,10 @@ train(model, pack(examples_of_this_copy, tokens=4096), optimizer=optimizer, step
   (`split_cross_entropy`, `split_token_log_probs`) combine each row's
   maximum, sum and target logit across the vocabulary's parts, never the
   logits.
-- An output head tied to the embedding trains apart from it when split.
+- An output head tied to the embedding stays tied when split: each
+  process's head is its rows of the embedding, which every process holds
+  whole, and the embedding's gradient adds every process's rows. Such a
+  model cannot be sharded (`fully_shard`, a pipeline's `data_parallel`) yet.
 - `grpo` and `dpo` train split models the same way. The processes of a
   split take the same pairs, or the same prompts and `seed`, and `grpo`
   samples with an engine whose model is split as the policy is.
