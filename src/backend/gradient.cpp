@@ -691,9 +691,6 @@ std::string GradientTarget::finish(const std::vector<TensorInfo>& results,
                                    const std::string& module_path,
                                    const std::string& block_name,
                                    const std::string& entry_name) {
-    if (!states.empty()) {
-        throw GradientError("an entry that assigns `state` has no gradient");
-    }
     if (results.size() != 1 || !results.front().shape.empty() || !differentiable(results.front())) {
         throw GradientError("a gradient is of an entry whose one result is a floating scalar, its "
                             "loss");

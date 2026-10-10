@@ -22,8 +22,9 @@ namespace linnet::backend {
 // every floating parameter (a block's entry) or every floating input (a
 // module-level entry), in the order the export takes them; the format is
 // told their paths (`GraphTarget::gradients`). Library calls run as their
-// canonical bodies, whose primitive operations all have rules. Runtime
-// loops and entries that assign `state` are refused.
+// canonical bodies, whose primitive operations all have rules. `while`
+// loops are refused. An entry that assigns `state` returns its new values
+// after the gradients, as its forward export does.
 class GradientTarget final : public GraphTarget {
 public:
     explicit GradientTarget(GraphTarget& inner) : inner_(inner) {}

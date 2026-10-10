@@ -266,20 +266,91 @@ def test_stablehlo(source: Path, entry: str) -> None:
     _check([np.asarray(o) for o in executable.execute(buffers)], labels, expected)
 
 
+STATEFUL = """\
+module tests.stateful
+
+pub block Model<H: Dim> {
+    param w: Tensor[H; f32]
+    state seen: Tensor[H; f32]
+
+    // A running statistic, updated as the loss is computed; the loss reads
+    // its new value.
+    pub entry tracked<N: Dim>(x: Tensor[N, H; f32]) -> f32 {
+        let column[h] = sum[n] x[n, h] * w[h]
+        seen = seen * 0.9 + column * 0.1
+        return (sum[h] seen[h] * w[h]) + (sum[n, h] x[n, h] * x[n, h] * w[h])
+    }
+}
+"""
+
+
+def _run(
+    target: str, text: str, arguments: Sequence[NDArray[np.float32]]
+) -> list[NDArray[np.float32]]:
+    """An export's outputs for `arguments` in the order it takes them."""
+    if target in ("torch", "jax"):
+        values = [torch.tensor(a) for a in arguments] if target == "torch" else list(arguments)
+        outputs = _run_python(_python(text), values)
+        return [
+            np.asarray(o.detach() if isinstance(o, torch.Tensor) else o, np.float32)
+            for o in outputs
+        ]
+    if target == "onnx":
+        onnxruntime = pytest.importorskip("onnxruntime")
+        import onnx.parser
+
+        model = onnx.parser.parse_model(text)
+        names = [graph_input.name for graph_input in model.graph.input]
+        session = onnxruntime.InferenceSession(
+            model.SerializeToString(), providers=["CPUExecutionProvider"]
+        )
+        feed = dict(zip(names, arguments, strict=True))
+        return [np.asarray(o, np.float32) for o in session.run(None, feed)]
+    jax = pytest.importorskip("jax")
+    import jax.extend as jex
+
+    options = importlib.import_module("jaxlib._jax")
+    backend = jex.backend.get_backend()
+    device = backend.local_devices()[0]
+    executable = backend.compile_and_load(
+        text, options.DeviceList((device,)), options.CompileOptions()
+    )
+    buffers = [jax.device_put(a, device) for a in arguments]
+    return [np.asarray(o, np.float32) for o in executable.execute(buffers)]
+
+
+@pytest.mark.parametrize("target", ["torch", "jax", "onnx", "stablehlo"])
+def test_an_entry_that_assigns_state(tmp_path: Path, target: str) -> None:
+    """The loss and its gradient, then the state's new value, as the
+    forward export returns it: the inputs, the parameter, then the state."""
+    if target == "jax":
+        pytest.importorskip("jax")
+    path = tmp_path / "stateful.linnet"
+    path.write_text(STATEFUL, encoding="utf-8")
+    command = [find_compiler(), target, "--grad", "--entry", "tracked", "--numerics", "exact"]
+    command += ["--bind", "H=3", "--bind", "N=2", str(path)]
+    text = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    rng = np.random.default_rng(4)
+    x, w, seen = (rng.standard_normal(s).astype(np.float32) for s in ((2, 3), (3,), (3,)))
+    loss, grad, new = _run(target, text, [x, w, seen])
+    weight = torch.tensor(w, requires_grad=True)
+    inputs = torch.tensor(x)
+    expected = torch.tensor(seen) * 0.9 + (inputs * weight).sum(0) * 0.1
+    total = (expected * weight).sum() + (inputs * inputs * weight).sum()
+    (want,) = torch.autograd.grad(total, [weight])
+    np.testing.assert_allclose(float(loss), float(total), rtol=1e-5)
+    np.testing.assert_allclose(grad, want.numpy(), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(new, expected.detach().numpy(), rtol=1e-5, atol=1e-6)
+
+
 REFUSED = """\
 module tests.refused
 
 pub block Model<N: Dim> {
     param w: Tensor[N; f32]
-    state count: Tensor[N; f32]
 
     pub entry vector(x: Tensor[N; f32]) -> Tensor[N; f32] {
         return x * w
-    }
-
-    pub entry counted(x: Tensor[N; f32]) -> f32 {
-        count = count + x
-        return sum[n] x[n] * w[n]
     }
 
     pub entry looped(x: Tensor[N; f32]) -> f32 {
@@ -299,7 +370,6 @@ pub block Model<N: Dim> {
     ("entry", "message"),
     [
         ("vector", "one result is a floating scalar"),
-        ("counted", "assigns `state`"),
         ("looped", "`while` loop"),
     ],
 )

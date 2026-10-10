@@ -166,8 +166,9 @@ ONNX and StableHLO models can be trained by a runtime with no autograd.
 Each format lists the paths: `linnet.gradients` on `@main`,
 `linnet.gradient.output<N>` metadata, or `GRADIENTS` in Python. Library
 calls run as their canonical bodies. A `for` loop keeps each iteration's
-starting values and runs its iterations backward; `while` loops and entries
-that assign `state` have no gradient yet.
+starting values and runs its iterations backward; `while` loops have no
+gradient yet. An entry that assigns `state` returns the states' new values
+after the gradients, as its forward export does.
 
 ### Generated Python
 
