@@ -100,12 +100,20 @@ public:
     void store(const TensorInfo& memory,
                const std::vector<TensorInfo>& indices,
                const TensorInfo& value,
-               const std::optional<TensorInfo>& mask) override {
+               const std::optional<TensorInfo>& mask,
+               std::optional<Reduction> atomic) override {
         std::size_t rank = 0;
         for (const TensorInfo& index : indices) {
             rank += index.shape.size();
         }
-        body_ += indent_ + "tl.store(" + pointer(memory, indices, rank) + ", " + value.name +
+        std::string write = "tl.store(";
+        if (atomic) {
+            atomics_[memory.name] = *atomic;
+            write = *atomic == Reduction::Sum   ? "tl.atomic_add("
+                    : *atomic == Reduction::Max ? "tl.atomic_max("
+                                                : "tl.atomic_min(";
+        }
+        body_ += indent_ + write + pointer(memory, indices, rank) + ", " + value.name +
                  (mask ? ", mask=" + mask->name : "") + ")\n";
     }
 

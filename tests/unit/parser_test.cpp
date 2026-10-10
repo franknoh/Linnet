@@ -398,6 +398,16 @@ TEST("parser: kernels, their stores, and an op's kernel") {
         "");
     CHECK_EQ(Parsed("module m\nkernel k(x: Tensor[4; f32]) -> y: Tensor[4; f32] { }\n").codes(),
              "E1101");
+    const Parsed atomics("module m\n"
+                         "kernel k(x: Tensor[4; f32]) -> y: Tensor[4; f32] grid(1) stages(2) "
+                         "warps(4) {\n"
+                         "    let i = iota<i32>(4)\n"
+                         "    atomic_add(y[i], load(x[i]))\n"
+                         "}\n");
+    CHECK_EQ(atomics.codes(), "");
+    CHECK(atomics.tree.find("atomic_add") != std::string::npos);
+    CHECK(atomics.tree.find("warps") != std::string::npos);
+    CHECK(atomics.tree.find("stages") != std::string::npos);
 }
 
 TEST("parser: a match arm cannot start with a tuple pattern") {

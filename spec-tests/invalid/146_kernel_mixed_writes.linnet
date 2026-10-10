@@ -1,0 +1,7 @@
+module m
+
+kernel twice(x: Tensor[4; f32]) -> y: Tensor[4; f32] grid(1) {
+    let i = iota<i32>(4)
+    store(y[i], load(x[i]))
+    atomic_add(y[i], load(x[i]))
+}

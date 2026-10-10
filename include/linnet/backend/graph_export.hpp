@@ -553,6 +553,9 @@ std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Di
 struct KernelProgram {
     std::vector<std::string> parameters;
     std::string body;
+    // The results written atomically, by parameter, and how: each starts
+    // from the operation's identity (zero, the lowest value, the highest).
+    std::map<std::string, Reduction> atomics;
 };
 
 // An op computed by its kernel: the program, its launch grid, the op's
@@ -569,6 +572,8 @@ struct KernelLaunch {
     std::vector<TensorInfo> results;
     std::function<std::vector<std::string>(const std::vector<TensorInfo>&)> body;
     GraphTarget::Pullback pullback;
+    std::int64_t warps = 0; // launch hints, 0 when unset
+    std::int64_t stages = 0;
 };
 
 // Python literals the source targets (`torch`, `jax`) print: a tuple of

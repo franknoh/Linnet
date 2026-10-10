@@ -19,6 +19,7 @@ import torch
 from linnet.compiler import find_compiler
 
 REPO = Path(__file__).resolve().parents[3]
+ATOMICS = REPO / "spec-tests/valid/031_kernel_atomics.linnet"
 # Set by conftest.py without a GPU, before Triton loaded: Triton then runs
 # kernels in its interpreter.
 TRITON_INTERPRETS = os.environ.get("TRITON_INTERPRET") == "1"
@@ -170,3 +171,31 @@ def test_a_pallas_kernel_takes_the_ops_grad(tmp_path: Path) -> None:
     loss, grad = jax.value_and_grad(total)(x)
     np.testing.assert_allclose(float(loss), 2.0 * float(x.sum()), rtol=1e-5)
     np.testing.assert_allclose(np.asarray(grad), np.full(37, 3.0), rtol=1e-6)
+
+
+def test_atomic_writes() -> None:
+    # Column sums by `atomic_add` and maxima by `atomic_max`, one row a
+    # program; the results start from the operations' identities.
+    pytest.importorskip("triton")
+    if not TRITON_INTERPRETS:
+        pytest.skip("Triton's interpreter was not on as Triton loaded")
+    text, kernels = _module(ATOMICS, "equivalent", "R=37", "C=40")
+    assert "tl.atomic_add" in text
+    assert "num_warps=4" in text
+    _, bodies = _module(ATOMICS, "exact", "R=37", "C=40")
+    x = torch.randn(37, 40)
+    for got, want in zip(kernels(x), bodies(x), strict=True):
+        torch.testing.assert_close(got, want, rtol=1e-5, atol=1e-5)
+
+
+def test_pallas_atomic_writes() -> None:
+    pytest.importorskip("jax")
+    import numpy as np
+
+    text, kernels = _module(ATOMICS, "equivalent", "R=37", "C=40", target="jax")
+    assert "plgpu.atomic_add" in text
+    assert "input_output_aliases" in text
+    _, bodies = _module(ATOMICS, "exact", "R=37", "C=40", target="jax")
+    x = np.random.default_rng(4).standard_normal((37, 40)).astype(np.float32)
+    for got, want in zip(kernels(x), bodies(x), strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want), rtol=1e-5, atol=1e-5)

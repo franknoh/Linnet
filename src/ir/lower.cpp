@@ -219,6 +219,17 @@ private:
         function.is_entry = decl.kind == ast::FunctionKind::Entry;
         function.is_kernel = decl.kind == ast::FunctionKind::Kernel;
         function.outputs = info.kernel_results.size();
+        const auto hint = [&](ast::ExprId value) {
+            return value == ast::no_id ? std::int64_t{0}
+                   : model_facts(target.module, value).type == no_type
+                       ? std::int64_t{0}
+                       : types()
+                             .get(model_facts(target.module, value).type)
+                             .value.constant()
+                             .value_or(0);
+        };
+        function.warps = hint(decl.warps);
+        function.stages = hint(decl.stages);
         if (info.kernel != no_entity) {
             function.kernel = qualified_name(info.kernel);
             function.kernel_args = info.kernel_args;
@@ -461,6 +472,10 @@ private:
                     }
                     Attributes attributes;
                     attributes.integer = static_cast<std::int64_t>(target.components.size());
+                    attributes.name = store.kind == ast::StoreKind::AtomicAdd   ? "add"
+                                      : store.kind == ast::StoreKind::AtomicMax ? "max"
+                                      : store.kind == ast::StoreKind::AtomicMin ? "min"
+                                                                                : "";
                     module_.add_op(block_,
                                    OpKind::KernelStore,
                                    std::move(operands),

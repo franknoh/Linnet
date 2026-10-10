@@ -72,7 +72,7 @@ public:
     bool supports_while() const override { return false; }
     bool supports_counted() const override { return true; }
 
-    KernelProgram program() override { return {parameters_, body_}; }
+    KernelProgram program() override { return {parameters_, body_, atomics_}; }
 
 protected:
     TileTarget(std::string library, bool full_precision)
@@ -106,6 +106,7 @@ protected:
     std::string library_; // `tl`, `jnp`
     bool full_precision_ = false;
     std::vector<std::string> parameters_;
+    std::map<std::string, Reduction> atomics_; // results written atomically
     std::set<std::string> used_;
     std::set<std::string> literals_;
     std::vector<std::map<std::string, std::string>> scopes_{1};

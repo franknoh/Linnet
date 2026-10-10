@@ -287,11 +287,15 @@ struct YieldStmt {
 };
 
 // `store(out[i, j], value, mask)`: a kernel's write of a tile to one of its
-// results; `mask` is optional.
+// results; `mask` is optional. `atomic_add`, `atomic_max` and `atomic_min`
+// combine the value with what the result holds, atomically.
+enum class StoreKind : std::uint8_t { Store, AtomicAdd, AtomicMax, AtomicMin };
+std::string_view store_spelling(StoreKind kind);
 struct StoreStmt {
     ExprId target;
     ExprId value;
     ExprId mask = no_id;
+    StoreKind kind = StoreKind::Store;
 };
 
 using StmtData = std::variant<ErrorStmt,
@@ -390,9 +394,12 @@ struct FunctionDecl {
     SourceSpan parameters_span{}; // `(` through `)`
     std::optional<GradientClause> gradient;
     std::optional<KernelBinding> kernel; // an op's
-    // A kernel's named results and launch grid: `-> y: T grid(R, C / B)`.
+    // A kernel's named results and launch grid: `-> y: T grid(R, C / B)`,
+    // then its optional launch hints, `warps(4) stages(3)`.
     std::vector<Parameter> results;
     std::vector<ExprId> grid;
+    ExprId warps = no_id;
+    ExprId stages = no_id;
 };
 
 struct BlockDecl {

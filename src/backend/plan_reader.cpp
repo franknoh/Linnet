@@ -492,6 +492,8 @@ private:
         out.is_entry = kind == "entry";
         out.is_kernel = kind == "kernel";
         out.outputs = static_cast<std::size_t>(function["outputs"].as_int());
+        out.warps = function["warps"].as_int();
+        out.stages = function["stages"].as_int();
         if (const Json& kernel = function["kernel"]; !kernel.is_null()) {
             out.kernel = kernel["name"].as_string();
             for (const Json& value : kernel["generics"].as_array()) {
@@ -621,8 +623,11 @@ private:
         case ir::OpKind::StructGet:
         case ir::OpKind::KernelProgramId:
         case ir::OpKind::KernelLoad:
+            a.integer = attrs["value"].as_int();
+            break;
         case ir::OpKind::KernelStore:
             a.integer = attrs["value"].as_int();
+            a.name = attrs["atomic"].as_string();
             break;
         case ir::OpKind::ConstFloat:
             a.number = attrs["value"].as_number();

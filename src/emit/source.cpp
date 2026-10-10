@@ -322,6 +322,12 @@ private:
             const ir::Block& grid = module_.block(module_.region(function.grid).blocks.front());
             const ir::Operation& sizes = module_.op(grid.ops.back());
             header += operand_list(sizes) + ")";
+            if (function.warps != 0) {
+                header += " warps(" + std::to_string(function.warps) + ")";
+            }
+            if (function.stages != 0) {
+                header += " stages(" + std::to_string(function.stages) + ")";
+            }
         }
         if (!function.kernel.empty()) {
             header += " kernel " + kernel_name(function.kernel) + kernel_arguments(function);
@@ -617,9 +623,11 @@ private:
                 out += pad + op.attributes.name + " = " + expr(op.operands[1]) + "\n";
                 break;
             case ir::OpKind::KernelStore: {
-                // `store(out[i, j], value, mask)`
+                // `store(out[i, j], value, mask)`, or an atomic write.
                 const auto rank = static_cast<std::size_t>(op.attributes.integer);
-                out += pad + "store(" + memory_access(op, rank) + ", " +
+                const std::string write =
+                    op.attributes.name.empty() ? "store" : "atomic_" + op.attributes.name;
+                out += pad + write + "(" + memory_access(op, rank) + ", " +
                        expr(op.operands[rank + 1]) +
                        (op.operands.size() > rank + 2 ? ", " + expr(op.operands[rank + 2]) : "") +
                        ")\n";

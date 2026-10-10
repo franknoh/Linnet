@@ -652,7 +652,9 @@ private:
                           std::nullopt,
                           std::nullopt,
                           {},
-                          {}};
+                          {},
+                          no_id,
+                          no_id};
         decl.generics = parse_generic_params(decl.generics_span);
         decl.parameters = parse_parameters(decl.parameters_span);
         if (kind == FunctionKind::Kernel) {
@@ -696,8 +698,23 @@ private:
         return decl;
     }
 
+    // The write a statement starting with this identifier makes, if any.
+    std::optional<StoreKind> store_kind() const {
+        if (!at(K::Identifier)) {
+            return std::nullopt;
+        }
+        for (const StoreKind kind :
+             {StoreKind::Store, StoreKind::AtomicAdd, StoreKind::AtomicMax, StoreKind::AtomicMin}) {
+            if (text(peek()) == store_spelling(kind)) {
+                return kind;
+            }
+        }
+        return std::nullopt;
+    }
+
     // `-> y: T grid(...)` or `-> (a: T, b: U) grid(...)`: a kernel's named
-    // results, then its launch grid (`grid` is a keyword only here).
+    // results, then its launch grid (`grid` is a keyword only here), then
+    // `warps(n)` and `stages(n)`, in either order.
     void parse_kernel_header(FunctionDecl& decl) {
         if (!expect(K::Arrow)) {
             return;
@@ -734,6 +751,14 @@ private:
             }
         }
         expect(K::RParen);
+        while (at(K::Identifier) && peek(1).kind == K::LParen &&
+               (text(peek()) == "warps" || text(peek()) == "stages")) {
+            ExprId& hint = text(peek()) == "warps" ? decl.warps : decl.stages;
+            advance();
+            advance();
+            hint = parse_expr();
+            expect(K::RParen);
+        }
     }
 
     BlockDecl parse_block() {
@@ -935,12 +960,12 @@ private:
         } else if (at(K::KwYield)) {
             advance();
             data = YieldStmt{parse_expr()};
-        } else if (at(K::Identifier) && text(peek()) == "store" && peek(1).kind == K::LParen) {
-            // `store(target, value[, mask])`: a kernel's write, the one call
-            // that stands as a statement.
+        } else if (const auto kind = store_kind(); kind && peek(1).kind == K::LParen) {
+            // `store(target, value[, mask])` and the atomics: a kernel's
+            // writes, the calls that stand as statements.
             advance();
             advance();
-            StoreStmt store{parse_expr(), no_id, no_id};
+            StoreStmt store{parse_expr(), no_id, no_id, *kind};
             expect(K::Comma);
             store.value = parse_expr();
             if (accept(K::Comma) && !at(K::RParen)) {
