@@ -516,12 +516,10 @@ def format_parameters(count: int | None) -> str:
 
 
 def cache_dir() -> Path:
-    override = os.environ.get("LINNET_NEST_CACHE")
-    if override:
-        return Path(override)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".cache"
-    return base / "linnet" / "nest"
+    """Where fetched model directories go: `$LINNET_HOME/nest`."""
+    from .home import home
+
+    return home() / "nest"
 
 
 # Seconds a registry request may wait for the server.

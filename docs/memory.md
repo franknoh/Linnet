@@ -240,7 +240,7 @@ bubble and the transfers between stages.
 `--device` is `h100-80gb` (measured), `h200`, `a100-80gb`, `a100-40gb`,
 `l4` (the H100's measurements scaled by the data sheets), or `local`: the
 GPU this machine has, measured once (about two minutes) and kept in
-`~/.cache/linnet/devices`. `--recalibrate` measures it again; with
+`$LINNET_HOME/devices` (`~/.linnet/devices` by default). `--recalibrate` measures it again; with
 `--devices 2` or more, the collectives between this machine's GPUs are
 measured too.
 
