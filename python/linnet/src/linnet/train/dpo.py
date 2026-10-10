@@ -36,7 +36,9 @@ from ..packing import Pair, empty
 from ..runs import DpoStep, pair_examples, pair_slots, unsaved
 from . import (
     Batch,
+    Copies,
     clip_gradients,
+    copies,
     load_checkpoint,
     pack,
     reduce_gradients,
@@ -102,16 +104,15 @@ def dpo(
     Under `torch.distributed`, each process takes its own pairs: the loss
     is the mean over every process's pairs, gradients are summed (or reduced
     into the parts of a model split by `fully_shard`), and a process with
-    fewer batches runs empty ones."""
+    fewer batches runs empty ones. A model split across processes
+    (`load(tensor_parallel=...)`) is one copy over its group, as in `train`:
+    those processes take the same pairs, and the sums run across the
+    copies. A `reference` is split the same way."""
     import torch.distributed as dist
 
     device = next(model.parameters()).device
-    if getattr(model, "shard_group", None) is not None:
-        raise ValueError(
-            "dpo trains a model whole on each process or split by `fully_shard`, "
-            "not by `tensor_parallel`"
-        )
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+    layout = copies(model) if distributed else Copies()
     trained = [p for group in optimizer.param_groups for p in group["params"]]
     precomputed: list[tuple[float, float]] | None = None
     if reference is None:
@@ -120,7 +121,9 @@ def dpo(
                 "without a reference model, pairs must be a sequence: their reference "
                 "log-probabilities are computed first"
             )
-        precomputed = _reference(model, pairs, pairs_per_step, tokens, entry, device, distributed)
+        precomputed = _reference(
+            model, pairs, pairs_per_step, tokens, entry, device, distributed, layout
+        )
     source = iter(pairs)
     start = 0
     if checkpoint is not None:
@@ -132,7 +135,7 @@ def dpo(
     while steps is None or step < steps:
         offset = step * pairs_per_step
         chosen_pairs = list(itertools.islice(source, pairs_per_step))
-        rounds = _rounds(chosen_pairs, tokens, device, distributed)
+        rounds = _rounds(chosen_pairs, tokens, device, distributed, layout)
         if rounds is None:
             break
         batches, total = rounds
@@ -170,9 +173,9 @@ def dpo(
                 ]
             )
         if distributed:
-            reduce_gradients(trained)
-            dist.all_reduce(sums)
-        norm = clip_gradients(trained, clip_grad) if clip_grad is not None else None
+            reduce_gradients(trained, layout.copies)
+            dist.all_reduce(sums, group=layout.copies)
+        norm = clip_gradients(trained, clip_grad, layout) if clip_grad is not None else None
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         if schedule is not None:
@@ -207,12 +210,13 @@ def _reference(
     entry: str,
     device: torch.device,
     distributed: bool,
+    layout: Copies,
 ) -> list[tuple[float, float]]:
     """Every pair's answers' log-probabilities under `model` as it is."""
     known: list[tuple[float, float]] = []
     for offset in itertools.count(0, per_round):
         chosen_pairs = list(pairs[offset : offset + per_round])
-        rounds = _rounds(chosen_pairs, tokens, device, distributed)
+        rounds = _rounds(chosen_pairs, tokens, device, distributed, layout)
         if rounds is None:
             break
         found: dict[int, tuple[float, float]] = {}
@@ -226,11 +230,15 @@ def _reference(
 
 
 def _rounds(
-    chosen_pairs: list[Pair], tokens: int, device: torch.device, distributed: bool
+    chosen_pairs: list[Pair],
+    tokens: int,
+    device: torch.device,
+    distributed: bool,
+    layout: Copies,
 ) -> tuple[list[Batch], float] | None:
     """The pairs' batches, as many on every process as on the one with the
-    most, and the count of pairs over every process; None when any process
-    has run out."""
+    most, and the count of pairs over every copy of the model; None when any
+    process has run out."""
     import torch.distributed as dist
 
     batches = list(pack(pair_examples(chosen_pairs), tokens, together=2))
@@ -242,7 +250,7 @@ def _rounds(
         if not least.item():
             return None
         summed = state[1:2].clone()
-        dist.all_reduce(summed)
+        dist.all_reduce(summed, group=layout.copies)
         most = state[2:].clone()
         dist.all_reduce(most, op=dist.ReduceOp.MAX)
         total = float(summed.item())

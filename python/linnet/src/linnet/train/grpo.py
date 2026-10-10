@@ -46,7 +46,9 @@ from ..runs import (
 )
 from . import (
     Batch,
+    Copies,
     clip_gradients,
+    copies,
     load_checkpoint,
     pack,
     reduce_gradients,
@@ -162,6 +164,12 @@ def grpo(
     empty ones, so every process makes the same calls. Give each process its
     own `seed`; all stop when any runs out of prompts.
 
+    A policy split across processes (`load(tensor_parallel=...)`) is one
+    copy over its group, as in `train`: those processes take the same
+    `prompts` and `seed`, and sample with an engine whose model is split the
+    same way, so that they draw the same completions. The sums run across
+    the copies. A `reference` is split as the policy is.
+
     `drop_uniform` leaves out the groups whose rewards are all equal: they
     have no advantage, and the loss is then the mean over the tokens that
     have one. `correction_cap` corrects for the engine sampling from a
@@ -179,12 +187,8 @@ def grpo(
 
     check_grpo(beta, reference, correction_cap, temperature, top_k, top_p)
     device = next(policy.parameters()).device
-    if getattr(policy, "shard_group", None) is not None:
-        raise ValueError(
-            "grpo trains a policy whole on each process or split by `fully_shard`, "
-            "not by `tensor_parallel`"
-        )
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+    layout = copies(policy) if distributed else Copies()
     trained = [p for group_ in optimizer.param_groups for p in group_["params"]]
     draws = random.Random(seed)
     stop = frozenset(eos)
@@ -239,7 +243,7 @@ def grpo(
             # The count over every process, and as many batches as the
             # process with the most: a sharded policy gathers in each call.
             totals = torch.tensor([count], dtype=torch.float64, device=device)
-            dist.all_reduce(totals)
+            dist.all_reduce(totals, group=layout.copies)
             count = float(totals.item())
             most = torch.tensor([len(batches)], device=device)
             dist.all_reduce(most, op=dist.ReduceOp.MAX)
@@ -287,17 +291,17 @@ def grpo(
                 if kl is not None:
                     kl_total = (kl_total or 0.0) + float(kl)
             if distributed:
-                reduce_gradients(trained)
+                reduce_gradients(trained, layout.copies)
                 sums = torch.tensor(
                     [loss_total, clipped_total, kl_total or 0.0, mismatch],
                     dtype=torch.float64,
                     device=device,
                 )
-                dist.all_reduce(sums)
+                dist.all_reduce(sums, group=layout.copies)
                 loss_total, clipped_total = float(sums[0]), float(sums[1])
                 kl_total = float(sums[2]) if kl_total is not None else None
                 mismatch = float(sums[3])
-            norm = clip_gradients(trained, clip_grad) if clip_grad is not None else None
+            norm = clip_gradients(trained, clip_grad, layout) if clip_grad is not None else None
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             if schedule is not None:
