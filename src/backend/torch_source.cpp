@@ -1470,38 +1470,47 @@ private:
                "    return first.as_strided((rows, *first.shape[1:]), first.stride())\n\n\n";
     }
 
-    // `std.quant::linear_fp8` natively. On a GPU with FP8 products, each row
-    // of the input is rounded to FP8 with a scale of its own (its largest
-    // magnitude over 448, FP8's largest value), and `torch._scaled_mm`
-    // multiplies the two in FP8 and applies both scales. Elsewhere the weight
-    // is decoded for the call.
+    // `std.quant::linear_fp8` natively, on a GPU with FP8 products. A
+    // decoding step's few rows multiply the weight widened inside Linnet's
+    // kernel, reading its bytes once. More rows are each rounded to FP8 with
+    // a scale of its own (its largest magnitude over 448, FP8's largest
+    // value), and `torch._scaled_mm` multiplies the two in FP8 and applies
+    // both scales. Elsewhere the weight is decoded for the call. The GPU is
+    // asked once, when the module loads, so compiled code sees a constant.
     static std::string fp8_helper() {
-        return "import functools\n"
-               "\n\n"
-               "@functools.cache\n"
-               "def _fp8_products(index):\n"
-               "    return torch.cuda.get_device_capability(index) >= (9, 0)\n"
+        return "try:\n"
+               "    from linnet.torch.kernels import fp8_linear as _fp8_kernel\n"
+               "except ImportError:  # no Triton: FP8 products for every row count\n"
+               "    _fp8_kernel = None\n"
+               "\n"
+               "_FP8_PRODUCTS = torch.cuda.is_available() and "
+               "torch.cuda.get_device_capability() >= (9, 0)\n"
                "\n\n"
                "def _fp8_linear(x, weight, scale, bias):\n"
                "    flat = x.reshape(-1, x.shape[-1])\n"
                "    out_features, in_features = weight.shape\n"
                "    if (\n"
-               "        flat.is_cuda\n"
+               "        _FP8_PRODUCTS\n"
+               "        and flat.is_cuda\n"
                "        and flat.dtype == torch.bfloat16\n"
-               "        and in_features % 16 == 0\n"
+               "        and in_features % 128 == 0\n"
                "        and out_features % 16 == 0\n"
-               "        and _fp8_products(flat.device.index)\n"
                "    ):\n"
-               "        rows = flat.abs().amax(dim=-1, keepdim=True).float().clamp(min=1e-12) / "
+               "        if flat.shape[0] <= 64 and _fp8_kernel is not None:\n"
+               "            y = _fp8_kernel(flat, weight, scale)\n"
+               "        else:\n"
+               "            rows = flat.abs().amax(dim=-1, keepdim=True).float().clamp(min=1e-12) "
+               "/ "
                "448.0\n"
-               "        q = (flat.float() / rows).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)\n"
-               "        y = torch._scaled_mm(\n"
-               "            q,\n"
-               "            weight.view(torch.float8_e4m3fn).t(),\n"
-               "            scale_a=rows,\n"
-               "            scale_b=scale.float().reshape(1, -1),\n"
-               "            out_dtype=flat.dtype,\n"
-               "        )\n"
+               "            q = (flat.float() / rows).clamp(-448.0, "
+               "448.0).to(torch.float8_e4m3fn)\n"
+               "            y = torch._scaled_mm(\n"
+               "                q,\n"
+               "                weight.view(torch.float8_e4m3fn).t(),\n"
+               "                scale_a=rows,\n"
+               "                scale_b=scale.float().reshape(1, -1),\n"
+               "                out_dtype=flat.dtype,\n"
+               "            )\n"
                "    else:\n"
                "        decoded = weight.view(torch.float8_e4m3fn).float() * scale.float()[:, "
                "None]\n"

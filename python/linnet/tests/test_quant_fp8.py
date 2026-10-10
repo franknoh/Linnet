@@ -46,7 +46,7 @@ pub entry values(bits: Tensor[256; u8]) -> Tensor[256; f32] {
 }
 """
 
-IN, OUT, ROWS = 64, 32, 3
+IN, OUT, ROWS = 256, 32, 3
 BYTES = np.arange(256, dtype=np.uint8)
 # The two NaN bytes: PyTorch's NaN, the body's 480.
 VALID = (BYTES & 0x7F) != 0x7F
@@ -209,11 +209,13 @@ def test_onnx_embeds_and_multiplies(
     not torch.cuda.is_available() or torch.cuda.get_device_capability() < (9, 0),
     reason="FP8 products need compute capability 9 or later",
 )
+@pytest.mark.parametrize("rows", [ROWS, 80])
 def test_cuda_fast_multiplies_in_fp8(
-    source: Path, checkpoint: tuple[Path, Path, NDArray[np.float32]]
+    source: Path, checkpoint: tuple[Path, Path, NDArray[np.float32]], rows: int
 ) -> None:
-    """The input rounded to FP8 a row at a time: within FP8's rounding of
-    the bf16 product with the dequantized weight."""
+    """A few rows widen the weight inside Linnet's kernel; more round the
+    input to FP8 a row at a time. Both within FP8's rounding of the product
+    with the dequantized weight."""
     weights, bindings, dequantized = checkpoint
     model = load(
         source,
@@ -225,7 +227,8 @@ def test_cuda_fast_multiplies_in_fp8(
         compile=True,
         numerics="fast",
     )
-    x = torch.from_numpy(_input()).to("cuda", torch.bfloat16)
+    inputs = np.random.default_rng(2).standard_normal((rows, IN)).astype(np.float32)
+    x = torch.from_numpy(inputs).to("cuda", torch.bfloat16)
     got = model.run_entry("forward", [x]).float().cpu().numpy()
     want = x.float().cpu().numpy() @ dequantized.T
     assert np.abs(got - want).max() <= 0.06 * np.abs(want).max()
