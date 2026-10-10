@@ -1448,8 +1448,13 @@ private:
                 const std::string joined = "v" + std::to_string(++highest);
                 text += prefix + joined + " = _adjacent(" + join(row_scales) + ")\n";
                 scale = "v" + std::to_string(++highest);
-                text += prefix + scale + " = " + joined + ".reshape((" + std::to_string(total) +
-                        ",))\n";
+                text += prefix;
+                text += scale;
+                text += " = ";
+                text += joined;
+                text += ".reshape((";
+                text += std::to_string(total);
+                text += ",))\n";
             }
             const std::string product = "v" + std::to_string(++highest);
             text += prefix;
