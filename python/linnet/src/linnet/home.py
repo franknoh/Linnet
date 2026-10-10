@@ -2,6 +2,8 @@
 default `~/.linnet`, laid out as Hugging Face's cache is.
 
     ~/.linnet/
+      git/        git dependencies: a bare clone per repository and the
+                  files of each commit used (`linnet fetch`)
       nest/       Nest model directories (`linnet.nest.fetch`)
       converted/  Hub checkpoints converted to cards (`linnet.convert`),
                   by commit

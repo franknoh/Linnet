@@ -22,6 +22,10 @@ struct LoaderOptions {
     // Contents to use instead of the file on disk, keyed by the file's
     // canonical path. Editors supply their unsaved buffers this way.
     std::map<std::string, std::string> overlays;
+
+    // Where each git dependency is checked out, by `GitSource::key`
+    // (`fetch_dependencies`). A git dependency missing here is reported.
+    std::map<std::string, std::filesystem::path> git_checkouts;
 };
 
 // A set of parsed modules closed under their imports.
@@ -42,7 +46,8 @@ struct Program {
 //
 // where <package> is the nearest directory above the importing file that
 // contains `linnet.toml`, and `dep` is a key of that manifest's
-// [dependencies] table naming <dependency>. Loading only reads and parses
+// [dependencies] table naming <dependency>: a directory, or a git
+// repository's checkout from `LoaderOptions::git_checkouts`. Loading only reads and parses
 // files; nothing from a package is ever executed. Imports that cannot be
 // mapped are left out of the import table for semantic analysis to report;
 // malformed manifests are reported to `sink`.

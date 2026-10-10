@@ -75,6 +75,7 @@ add_library(linnet_core STATIC
     src/opt/candidates.cpp
     src/opt/egraph.cpp
     src/opt/passes.cpp
+    src/package/fetch.cpp
     src/package/manifest.cpp
     src/package/spec_manifest.cpp
     src/package/toml.cpp

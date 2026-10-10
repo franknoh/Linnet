@@ -78,12 +78,17 @@ add_test(NAME cli_lint_fails_on_warning
 set_tests_properties(cli_lint_fails_on_warning PROPERTIES WILL_FAIL TRUE)
 
 linnet_add_test(manifest_test unit/manifest_test.cpp)
+linnet_add_test(fetch_test unit/fetch_test.cpp)
 
 if(NOT WIN32)
     add_test(NAME cli_init_and_check
         COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/init_and_check.sh
                 ${CMAKE_CURRENT_BINARY_DIR}/init_scratch)
+    add_test(NAME cli_git_dependencies
+        COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
+                bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/git_dependencies.sh
+                ${CMAKE_CURRENT_BINARY_DIR}/git_scratch)
 endif()
 linnet_add_test(lsp_test unit/lsp_test.cpp)
 

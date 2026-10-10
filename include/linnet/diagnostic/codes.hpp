@@ -85,10 +85,12 @@ inline constexpr const char* param_payload = "E4102";
 
 // Packages
 inline constexpr const char* invalid_manifest = "E5001";
+inline constexpr const char* missing_dependency = "E5002";
 
 // Lints
 inline constexpr const char* unused_import = "W1001";
 inline constexpr const char* unused_local = "W1002";
 inline constexpr const char* unused_member = "W1003";
+inline constexpr const char* unknown_git_host = "W1004";
 
 } // namespace linnet::codes

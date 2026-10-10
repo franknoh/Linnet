@@ -113,21 +113,23 @@ language = "0.1"
 
 [dependencies]
 foo = { path = "../foo" }
+bar = { github = "owner/repo", tag = "v0.2" }
 ```
 
 `language` is the targeted language version; a toolchain MUST reject a version it does not implement.
 
-Future dependency forms MAY include pinned Git revisions and a registry. Dependency resolution MUST be reproducible when a lockfile exists.
+A dependency is a path relative to the manifest, or a git repository: `github = "owner/repo"`, `hf = "owner/repo"` (a Hugging Face Hub repository), or `git = "<url>"`, with at most one of `tag`, `branch` or `rev` (the default branch otherwise) and an optional `subdir` inside the repository. A toolchain SHOULD warn about a repository not on GitHub or the Hub. A registry MAY follow. Dependency resolution MUST be reproducible when a lockfile exists.
 
 ## 2.6 Lockfile
 
-The canonical lockfile is `linnet.lock`. It MUST record the exact dependency identities that deterministic resolution requires; its serialization is implementation-defined.
+The canonical lockfile is `linnet.lock`, beside the root package's manifest. It MUST record the commit each git dependency resolved to, and resolution MUST use those commits until the lockfile is updated on request; its serialization is implementation-defined.
 
 ## 2.7 Package safety
 
 A package MAY contain source, metadata, tests, and non-executable assets.
 
 - Fetching a package MUST NOT execute package-provided scripts.
+- Fetching a package MUST NOT pass its manifest's text to a shell.
 - Resolving or checking a package MUST NOT execute arbitrary code.
 
 ## 2.8 Cycles

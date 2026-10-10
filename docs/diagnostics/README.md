@@ -95,6 +95,7 @@ warnings (`W`) fail only under `--strict` (`linnet lint`).
 | E4101 | member of a type it cannot have |
 | E4102 | `param` with a value in source |
 | E5001 | `linnet.toml` unreadable or malformed |
+| E5002 | a git dependency is not fetched: run `linnet fetch` |
 
 ## Warnings
 
@@ -103,3 +104,4 @@ warnings (`W`) fail only under `--strict` (`linnet lint`).
 | W1001 | unused import |
 | W1002 | unused local; prefix it with `_` to keep it |
 | W1003 | unused `param`, `buffer`, or `sub` |
+| W1004 | a git dependency comes from a host other than GitHub or the Hugging Face Hub |

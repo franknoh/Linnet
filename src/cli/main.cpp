@@ -16,6 +16,7 @@
 #include "linnet/opt/candidates.hpp"
 #include "linnet/opt/egraph.hpp"
 #include "linnet/opt/passes.hpp"
+#include "linnet/package/fetch.hpp"
 #include "linnet/package/manifest.hpp"
 #include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
@@ -133,6 +134,10 @@ void print_usage(std::FILE* out) {
         "                                       Show how each semantic operation would be\n"
         "                                       implemented and why\n"
         "  init [<dir>]                         Create linnet.toml and src/lib.linnet\n"
+        "  fetch [--offline] [<dir>]            Fetch a package's git dependencies into\n"
+        "                                       $LINNET_HOME/git (~/.linnet/git) and\n"
+        "                                       record their commits in linnet.lock\n"
+        "  update [<dir>]                       Fetch them again at their newest commits\n"
         "  serve <model> [options]              Serve a model over HTTP with OpenAI's API;\n"
         "                                       runs `python -m linnet.serve`, whose\n"
         "                                       --help lists the options\n"
@@ -320,6 +325,72 @@ std::filesystem::path find_std_root(const std::string& option, const char* progr
     return {};
 }
 
+// Progress and warnings from fetching git dependencies, on stderr.
+void note(std::string_view line) {
+    std::fprintf(stderr, "linnet: %.*s\n", static_cast<int>(line.size()), line.data());
+}
+
+// The loader's options for `files`: the standard library, and the git
+// dependencies of their package, fetched first when the cache does not hold
+// them (`LINNET_OFFLINE=1` uses only the cache).
+LoaderOptions loader_for(const std::vector<std::filesystem::path>& files,
+                         std::filesystem::path std_root) {
+    LoaderOptions options{std::move(std_root), {}, {}};
+    const std::filesystem::path root =
+        files.empty() ? std::filesystem::path() : find_package_root(files.front());
+    if (root.empty() || !has_git_dependencies(root)) {
+        return options;
+    }
+    FetchOptions fetch;
+    const char* offline = std::getenv("LINNET_OFFLINE"); // NOLINT(concurrency-mt-unsafe)
+    fetch.offline = offline != nullptr && std::string_view(offline) == "1";
+    fetch.note = note;
+    auto checkouts = fetch_dependencies(root, fetch);
+    if (checkouts) {
+        options.git_checkouts = std::move(*checkouts);
+    } else {
+        note(checkouts.error());
+    }
+    return options;
+}
+
+// `linnet fetch` and `linnet update`: a package's git dependencies into
+// `$LINNET_HOME/git`, their commits into `linnet.lock`.
+int run_fetch(std::span<const std::string_view> args, bool update) {
+    std::filesystem::path directory;
+    bool offline = false;
+    for (const std::string_view arg : args) {
+        if (arg == "--offline" && !update) {
+            offline = true;
+        } else if (arg.starts_with("-") || !directory.empty()) {
+            return usage_error(std::string(update ? "update" : "fetch") +
+                               " takes at most one package directory");
+        } else {
+            directory = arg;
+        }
+    }
+    std::error_code error;
+    if (directory.empty()) {
+        directory = std::filesystem::current_path(error);
+    }
+    const std::filesystem::path root = find_package_root(directory / "linnet.toml");
+    if (root.empty()) {
+        std::fprintf(
+            stderr, "linnet: no linnet.toml at or above %s\n", directory.generic_string().c_str());
+        return exit_failure;
+    }
+    FetchOptions fetch;
+    fetch.update = update;
+    fetch.offline = offline;
+    fetch.note = note;
+    const auto checkouts = fetch_dependencies(root, fetch);
+    if (!checkouts) {
+        note(checkouts.error());
+        return exit_failure;
+    }
+    return exit_success;
+}
+
 // Files and everything they import, parsed and checked: `analysis` is set
 // when both succeeded, and `sink` holds what they reported.
 struct Checked {
@@ -379,7 +450,7 @@ int run_check(std::span<const std::string_view> args, Options options, const cha
     }
     std::sort(paths.begin(), paths.end());
 
-    Checked checked(paths, {find_std_root(std_option, program), {}});
+    Checked checked(paths, loader_for(paths, find_std_root(std_option, program)));
     return report(checked.sources, checked.sink, options);
 }
 
@@ -453,7 +524,8 @@ int run_explain(std::span<const std::string_view> args,
     if (path.empty()) {
         return usage_error("explain requires a file");
     }
-    Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+    Checked checked({std::filesystem::path(path)},
+                    loader_for({std::filesystem::path(path)}, find_std_root(std_option, program)));
     if (!checked.analysis) {
         return report(checked.sources, checked.sink, options);
     }
@@ -606,7 +678,8 @@ int run_graph_export(std::span<const std::string_view> args,
     if (path.empty()) {
         return usage_error(std::string(format) + " requires a file");
     }
-    Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+    Checked checked({std::filesystem::path(path)},
+                    loader_for({std::filesystem::path(path)}, find_std_root(std_option, program)));
     if (!checked.analysis) {
         return report(checked.sources, checked.sink, options);
     }
@@ -732,7 +805,8 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     if (functions && !root.empty()) {
         return usage_error("plan takes --root or --functions, not both");
     }
-    Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+    Checked checked({std::filesystem::path(path)},
+                    loader_for({std::filesystem::path(path)}, find_std_root(std_option, program)));
     if (!checked.analysis) {
         return report(checked.sources, checked.sink, options);
     }
@@ -792,7 +866,7 @@ int run_spec_test(std::span<const std::string_view> args,
         return exit_failure;
     }
 
-    const LoaderOptions loader_options{find_std_root(std_option, program), {}};
+    const LoaderOptions loader_options{find_std_root(std_option, program), {}, {}};
     std::size_t failures = 0;
     for (const SpecCase& spec_case : *cases) {
         Checked checked({root / spec_case.file}, loader_options);
@@ -939,7 +1013,9 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
     }
 
     if (view == "--parameters" || view == "--core-ir" || view == "--emit") {
-        Checked checked({std::filesystem::path(path)}, {find_std_root(std_option, program), {}});
+        Checked checked(
+            {std::filesystem::path(path)},
+            loader_for({std::filesystem::path(path)}, find_std_root(std_option, program)));
         if (!checked.analysis) {
             return report(checked.sources, checked.sink, options);
         }
@@ -1190,6 +1266,9 @@ int main(int argc, char** argv) {
     }
     if (command == "init") {
         return run_init(rest);
+    }
+    if (command == "fetch" || command == "update") {
+        return run_fetch(rest, command == "update");
     }
     if (command == "lint") {
         options.strict = true;

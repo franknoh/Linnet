@@ -13,6 +13,7 @@ and writes text, and runs no model.
 | `emit` | Linnet source from a plan |
 | `explain` | which implementation each library operation gets |
 | `init` | create a package ([Modules and packages](modules-and-packages.md)) |
+| `fetch`, `update` | fetch a package's git dependencies, record them in `linnet.lock` ([Git dependencies](modules-and-packages.md#git-dependencies)) |
 | `lsp` | language server |
 | `serve` | serve a model over HTTP: `python -m linnet.serve` ([Serving](integrations.md#over-http)) |
 | `memory`, `fit` | the memory a configuration needs, and the largest that fits a device ([Memory planning](memory.md)) |
@@ -30,6 +31,7 @@ default:
 
 | Directory | Holds |
 | --- | --- |
+| `git/` | git dependencies: a bare clone per repository, the files of each commit |
 | `nest/` | Nest model directories fetched from the registry |
 | `converted/` | Hub checkpoints converted to cards, by commit |
 | `devices/` | device profiles measured on this machine (`--device local`) |
