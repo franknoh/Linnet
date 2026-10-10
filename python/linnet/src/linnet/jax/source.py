@@ -21,7 +21,7 @@ import jax
 from .. import lora
 from ..compiler import LinnetError
 from ..generated import import_generated
-from .load import CompiledEntry, LinnetFunction, load
+from .load import CompiledEntry, LinnetFunction, jit_with_options, load
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -125,7 +125,7 @@ class SourceFunction(LinnetFunction):
             compiled.state_inputs,
             compiled.state_outputs,
         )
-        jitted = jax.jit(module.main, donate_argnums=donated, compiler_options=compiled.options)
+        jitted = jit_with_options(module.main, donated, compiled.options)
         compiled.module = module
         compiled.prepared = self._prepared_values(module, compiled.arrays)
 

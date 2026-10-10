@@ -19,7 +19,7 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import jax
 import jax.numpy as jnp
@@ -54,6 +54,9 @@ if TYPE_CHECKING:
     State: TypeAlias = dict[str, jax.Array]
     # The cache key of one compilation: its generic bindings, sorted.
     _Key: TypeAlias = tuple[tuple[str, int | str], ...]
+
+
+_Out = TypeVar("_Out")
 
 
 class LinnetFunction:
@@ -190,7 +193,7 @@ class LinnetFunction:
         # loaded weights go to the device once rather than per call.
         donated = self._donated(len(exported.in_avals), state_inputs, state_outputs)
         options = compiler_options(text)
-        call = jax.jit(exported.call, donate_argnums=donated, compiler_options=options)
+        call = jit_with_options(exported.call, donated, options)
         first = len(exported.in_avals) - len(state_inputs) - len(paths)
         declared = exported.in_avals[first : first + len(paths)]
         arrays: list[jax.Array] = []
@@ -391,6 +394,24 @@ _DOT = re.compile(
 )
 _DOT_OPERAND = re.compile(r": \(tensor<([^>]*)>")
 _ARGUMENT = re.compile(r"%[\w.]+: tensor<([^>]*)>")
+
+
+def jit_with_options(
+    function: Callable[..., _Out], donated: Sequence[int], options: dict[str, str | bool] | None
+) -> Callable[..., _Out]:
+    """`function` under `jax.jit` with XLA's `options`; called inside
+    another trace (a training step's `jit` or `grad`), under a plain `jit`,
+    since only the outermost one takes options."""
+    top = jax.jit(function, donate_argnums=tuple(donated), compiler_options=options)
+    if options is None:
+        return top
+    nested = jax.jit(function)
+
+    def call(*arguments: object) -> _Out:
+        traced = any(isinstance(leaf, Tracer) for leaf in jax.tree.leaves(arguments))
+        return (nested if traced else top)(*arguments)
+
+    return call
 
 
 def compiler_options(text: str) -> dict[str, str | bool] | None:
