@@ -278,7 +278,7 @@ pub block Model<H: Dim> {
     pub entry tracked<N: Dim>(x: Tensor[N, H; f32]) -> f32 {
         let column[h] = sum[n] x[n, h] * w[h]
         seen = seen * 0.9 + column * 0.1
-        return sum[h] seen[h] * w[h] + sum[n, h] x[n, h] * x[n, h] * w[h]
+        return (sum[h] seen[h] * w[h]) + (sum[n, h] x[n, h] * x[n, h] * w[h])
     }
 }
 """
