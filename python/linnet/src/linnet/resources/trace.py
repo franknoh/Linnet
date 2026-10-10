@@ -893,7 +893,16 @@ def _domain(op: ir.Op, env: SymEnv) -> ex.Expr:
 def _contraction(op: ir.Op) -> bool:
     """`sum[k] a[i, k] * b[k, j]`: a sum of the product of two element
     reads, each perhaps cast, which the generated code computes as one
-    product (`einsum`), as the compiler's `try_contract` decides."""
+    product (`einsum`), as the compiler's `try_contract` decides; or a
+    comprehension (`let c[i, j] = ...`) that yields one."""
+    if op.kind == "comprehension" and len(op.regions) == 1:
+        ops = [o for o in op.regions[0].ops if o.kind != "block.param"]
+        return (
+            len(ops) == 2
+            and _contraction(ops[0])
+            and ops[1].kind == "yield"
+            and ops[1].operands == (ops[0].results[0].id,)
+        )
     if op.kind != "reduce" or op.attrs.get("reduce") != "sum" or len(op.regions) != 1:
         return False
     elements: set[int] = set()
