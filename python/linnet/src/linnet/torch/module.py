@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -30,6 +31,7 @@ from .dtypes import (
 from .interp import BlockInstance, Interpreter
 
 if TYPE_CHECKING:
+    from torch.distributed import ProcessGroup
     from torch.distributed.device_mesh import DeviceMesh
 
     from ..train import Copies
@@ -54,6 +56,9 @@ class BlockModule(nn.Module):
         self.optional_subs: set[str] = set()
         self.absent_subs: set[str] = set()
         self.state_names: set[str] = set()
+        # Parameters that are a part of another's tensor (`TiedPart`): an
+        # output head tied to a whole embedding, split across processes.
+        self.tied_parts: dict[str, TiedPart] = {}
         definition = program.blocks[name]
         for constraint in definition.constraints:
             if not env.holds(constraint):
@@ -110,6 +115,8 @@ class BlockModule(nn.Module):
         states: dict[str, torch.Tensor] = {}
         for name, parameter in self.named_parameters(recurse=False):
             params[name] = None if name in self.absent_params else parameter
+        for name, part in self.tied_parts.items():
+            params[name] = part.value()
         for name, buffer in self.named_buffers(recurse=False):
             if name in self.state_names:
                 states[name] = buffer
@@ -596,7 +603,9 @@ def bind_weights(
     # The paths bound to a part of their tensor: split across processes.
     module.shard_parts.update(parts)
     if tie:
-        _tie(module, [(path, source, parts.get(path)) for path, source, _ in assignments])
+        tie_parameters(
+            module, [(path, source, parts.get(path)) for path, source, _ in assignments], shard
+        )
     # An optional sub-block is present when every parameter it requires was
     # bound (and something was): a checkpoint without its weights leaves it out.
     bound = {path for path, _, _ in assignments}
@@ -645,9 +654,15 @@ class _SafeTensorsFile(Protocol):
     def get_tensor(self, name: str, /) -> torch.Tensor: ...
 
 
-def _tie(module: LinnetModule, bound: list[tuple[str, str, tuple[int, int] | None]]) -> None:
+def tie_parameters(
+    module: LinnetModule,
+    bound: list[tuple[str, str, tuple[int, int] | None]],
+    shard: tuple[int, int] | None,
+) -> None:
     """Makes the parameters bound from the same checkpoint tensor, and the
-    same part of it, one parameter: the first path's."""
+    same part of it, one parameter: the first path's. A part of a tensor
+    also bound whole (an output head split across processes, tied to an
+    embedding each holds whole) becomes that part of the whole parameter."""
     first: dict[tuple[str, tuple[int, int] | None], torch.nn.Parameter] = {}
     for path, source, part in bound:
         owner, leaf = owner_of(module, path)
@@ -657,6 +672,99 @@ def _tie(module: LinnetModule, bound: list[tuple[str, str, tuple[int, int] | Non
         kept = first.setdefault((source, part), tensor)
         if kept is not tensor and kept.shape == tensor.shape and kept.dtype == tensor.dtype:
             setattr(owner, leaf, kept)
+    if shard is None:
+        return
+    wholes = {source: path for path, source, part in bound if part is None}
+    for path, source, part in bound:
+        whole_path = wholes.get(source)
+        if part is None or whole_path is None:
+            continue
+        axis, extent = part
+        owner, leaf = owner_of(module, path)
+        whole_owner, whole_leaf = owner_of(module, whole_path)
+        whole = getattr(whole_owner, whole_leaf)
+        tensor = getattr(owner, leaf)
+        start = shard[0] * extent
+        if (
+            not isinstance(whole, torch.nn.Parameter)
+            or whole.narrow(axis, start, extent).shape != tensor.shape
+            or whole.dtype != tensor.dtype
+        ):
+            continue
+        delattr(owner, leaf)
+        owner.tied_parts[leaf] = TiedPart(module, whole_owner, whole_leaf, axis, start, extent)
+        module.shard_parts.pop(path, None)
+
+
+class _PartOfWhole(torch.autograd.Function):
+    """A part of a tensor every process holds whole: forward the part,
+    backward each process's part's gradient summed into the whole across
+    the processes, so that every one's whole gets all of them."""
+
+    @staticmethod
+    def forward(
+        ctx: _PartContext,
+        whole: torch.Tensor,
+        axis: int,
+        start: int,
+        extent: int,
+        group: ProcessGroup | None,
+    ) -> torch.Tensor:
+        ctx.axis, ctx.start, ctx.extent, ctx.group = axis, start, extent, group
+        ctx.shape = whole.shape
+        return whole.narrow(axis, start, extent)
+
+    @staticmethod
+    def backward(  # pyright: ignore[reportIncompatibleMethodOverride] - one gradient in
+        ctx: _PartContext, grad: torch.Tensor
+    ) -> tuple[torch.Tensor, None, None, None, None]:
+        import torch.distributed as dist
+
+        full = grad.new_zeros(ctx.shape)
+        full.narrow(ctx.axis, ctx.start, ctx.extent).copy_(grad)
+        if ctx.group is not None:
+            dist.all_reduce(full, group=ctx.group)
+        return full, None, None, None, None
+
+
+class _PartContext(Protocol):
+    axis: int
+    start: int
+    extent: int
+    group: ProcessGroup | None
+    shape: torch.Size
+
+
+@dataclass(eq=False)
+class TiedPart:
+    """A parameter that is a part of another parameter's tensor: on each
+    process of a split, its part of a whole that every process holds (an
+    output head tied to an embedding). It is computed from the whole at
+    each call, its gradient summed into the whole across the processes."""
+
+    model: LinnetModule
+    owner: BlockModule
+    leaf: str
+    axis: int
+    start: int
+    extent: int
+
+    def value(self) -> torch.Tensor:
+        whole: torch.Tensor = getattr(self.owner, self.leaf)
+        if torch.is_grad_enabled() and whole.requires_grad:
+            group: ProcessGroup | None = getattr(self.model, "shard_group", None)
+            return cast(
+                torch.Tensor,
+                _PartOfWhole.apply(whole, self.axis, self.start, self.extent, group),
+            )
+        return whole.narrow(self.axis, self.start, self.extent)
+
+
+def argument(owner: BlockModule, leaf: str) -> torch.Tensor:
+    """The tensor an entry takes for `owner`'s member `leaf`: its parameter
+    or buffer, or its part of a tied whole."""
+    part = owner.tied_parts.get(leaf)
+    return part.value() if part is not None else cast(torch.Tensor, getattr(owner, leaf))
 
 
 def _shard_axis(full: list[int], local: list[int], count: int) -> int | None:

@@ -20,6 +20,7 @@ from safetensors.torch import save_file  # type: ignore[import-untyped]
 from torch.multiprocessing.spawn import spawn
 
 from linnet.torch import load
+from linnet.weights import write_bindings
 
 if TYPE_CHECKING:
     from linnet.train import Batch
@@ -222,7 +223,9 @@ def training_batches() -> list[Batch]:
     return list(pack(examples, tokens=16))[:2]
 
 
-def _train_split(rank: int, port: int, source: str, weights: str, out: str) -> None:
+def _train_split(
+    rank: int, port: int, source: str, weights: str, bindings: str | None, out: str
+) -> None:
     os.environ.update({"MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(port)})
     dist.init_process_group("gloo", rank=rank, world_size=2)
     try:
@@ -236,6 +239,7 @@ def _train_split(rank: int, port: int, source: str, weights: str, out: str) -> N
             generics=TRAINING_GENERICS,
             std_root=STDLIB,
             weights=weights,
+            bindings=bindings,
             compile=True,
             trainable=True,
             tensor_parallel=mesh,
@@ -267,19 +271,25 @@ def _train_split(rank: int, port: int, source: str, weights: str, out: str) -> N
         dist.destroy_process_group()
 
 
-def test_split_training_matches_one_process(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tied", [False, True])
+def test_split_training_matches_one_process(tmp_path: Path, tied: bool) -> None:
     """Two processes, each with half of every split weight, train as the
     whole model does: the same loss, each its part of every split weight's
     gradient and the whole of every other, and `train`'s steps -- the
-    clipped norm summed across the parts -- the same."""
+    clipped norm summed across the parts -- the same. A head tied to the
+    embedding is its part of the whole embedding, which trains as one."""
     from linnet.train import train
 
     source, weights = training_files(tmp_path)
+    bindings = None
+    if tied:
+        bindings = write_bindings(tmp_path / "tied.json", {"head.weight": "embedding.weight"})
     whole = load(
         source,
         generics=TRAINING_GENERICS,
         std_root=STDLIB,
         weights=weights,
+        bindings=bindings,
         compile=True,
         trainable=True,
     )
@@ -299,12 +309,15 @@ def test_split_training_matches_one_process(tmp_path: Path) -> None:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     out = str(tmp_path / "split")
-    spawn(_train_split, args=(port, str(source), str(weights), out), nprocs=2, join=True)
+    tie = str(bindings) if bindings is not None else None
+    spawn(_train_split, args=(port, str(source), str(weights), tie, out), nprocs=2, join=True)
     for rank in range(2):
         result = torch.load(f"{out}.{rank}")
         torch.testing.assert_close(result["loss"], loss.detach(), atol=1e-5, rtol=1e-5)
         parts = result["parts"]
-        assert set(parts) >= {"head.weight", "layers.0.up.weight", "layers.1.down.weight"}
+        assert set(parts) >= {"layers.0.up.weight", "layers.1.down.weight"}
+        assert ("head.weight" in parts) != tied
+        assert set(result["grads"]) == set(expected)
         for name, want in expected.items():
             got = result["grads"][name]
             if name in parts:

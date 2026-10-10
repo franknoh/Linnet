@@ -199,8 +199,9 @@ Llama-shaped decoders, declares its own split. A shard holds
 `Heads / Shards` query heads, `KvHeads / Shards` key and value heads and
 `Inner / Shards` hidden units; projections back out end in
 `std.nn.parallel::all_reduce`.
-An output projection not tied to the embedding splits into
-`Vocab / Shards` rows, joined by `std.nn.parallel::all_gather`. On one
+The output projection splits into `Vocab / Shards` rows, joined by
+`std.nn.parallel::all_gather`; one tied to the embedding is each
+process's rows of it. On one
 device both return their input. `tensor_parallel=mesh` binds `Shards` to
 the mesh size, and each process reads only its part of the checkpoint.
 Such a model trains split as well: see [Split training](training.md#split-training).

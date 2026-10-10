@@ -50,7 +50,7 @@ from ..results import Result
 from ..weights import paths_by_tensor
 from .compiled import CompiledLinnetModule
 from .fsdp import Held, sharded
-from .module import bind_weights, owner_of
+from .module import BlockModule, argument, bind_weights, owner_of, tie_parameters
 from .placement import units_of
 from .stages import Split, Stage, split
 
@@ -277,13 +277,13 @@ class Pipeline:
             for unit, stage_index in zip(self.units, self.assigned, strict=True)
             if stage_index == self.stage
         ]
-        locations: list[tuple[nn.Module, str]] = []
+        locations: list[tuple[BlockModule, str]] = []
         dtypes: list[torch.dtype] = []
         for index in stage.parameters:
             path = pieces.parameters[index]
             owner, leaf = owner_of(self.module, path)
             locations.append((owner, leaf))
-            parameter: torch.Tensor = getattr(owner, leaf)
+            parameter = argument(owner, leaf).detach()
             dtypes.append(self.module.gathered_dtypes.get(path, parameter.dtype))
         wrapped = _StageModule(
             function,
@@ -317,8 +317,7 @@ class Pipeline:
             mine = [p for p in paths if self.stage_of(p) == self.stage]
             if not mine:
                 continue
-            owner, leaf = owner_of(self.module, mine[0])
-            parameter: torch.Tensor = getattr(owner, leaf)
+            path, parameter = self._tied(mine)
             if not parameter.requires_grad:
                 continue
             if parameter.grad is None:
@@ -326,7 +325,31 @@ class Pipeline:
             grad = parameter.grad
             if isinstance(grad, DTensor):
                 grad = grad.to_local()  # a sharded weight's: this process's part
-            dist.all_reduce(grad, group=group)
+            part = self.module.shard_parts.get(path)
+            if part is None or all(p in self.module.shard_parts for p in paths):
+                dist.all_reduce(grad, group=group)
+                continue
+            # A split head tied to an embedding another stage holds whole:
+            # the parts joined across the split, summed with the whole's.
+            axis, extent = part
+            split_group = self.module.shard_group
+            shape = list(grad.shape)
+            shape[axis] = extent * dist.get_world_size(split_group)
+            full = grad.new_zeros(shape)
+            start = dist.get_rank(split_group) * extent
+            full.narrow(axis, start, extent).copy_(grad)
+            dist.all_reduce(full, group=split_group)
+            dist.all_reduce(full, group=group)
+            grad.copy_(full.narrow(axis, start, extent))
+
+    def _tied(self, mine: list[str]) -> tuple[str, torch.Tensor]:
+        """The parameter this stage holds for paths tied to one tensor: a
+        whole one before a part, which may be computed from it."""
+        for path in sorted(mine, key=lambda p: p in self.module.shard_parts):
+            owner, leaf = owner_of(self.module, path)
+            if leaf not in owner.tied_parts:
+                return path, getattr(owner, leaf)
+        raise PlanError(f"`{mine[0]}` holds no parameter")
 
     def _summed(self) -> list[nn.Parameter]:
         """This stage's parameters whose gradients a step sums with other
@@ -336,8 +359,7 @@ class Pipeline:
         for paths, _ in self.ties:
             mine = [p for p in paths if self.stage_of(p) == self.stage]
             if mine:
-                owner, leaf = owner_of(self.module, mine[0])
-                parameter = getattr(owner, leaf)
+                _, parameter = self._tied(mine)
                 if isinstance(parameter, nn.Parameter) and parameter.requires_grad:
                     found[id(parameter)] = parameter
         if self.data_parallel is not None:
@@ -376,7 +398,7 @@ class _StageModule(nn.Module):
     def __init__(
         self,
         function: StageFunction,
-        parameters: list[tuple[nn.Module, str]],
+        parameters: list[tuple[BlockModule, str]],
         dtypes: list[torch.dtype],
         constants: list[torch.Tensor],
         blocks: list[nn.Module],
@@ -399,7 +421,7 @@ class _StageModule(nn.Module):
         self.held: Held | None = None
 
     def forward(self, *received: torch.Tensor, **inputs: torch.Tensor) -> Result:  # pyright: ignore[reportExplicitAny]
-        weights = [getattr(owner, leaf) for owner, leaf in self.locations]
+        weights = [argument(owner, leaf) for owner, leaf in self.locations]
         if self.held is not None:
             weights = [
                 self.held.whole(weight, dtype)
@@ -563,11 +585,7 @@ def pipeline(
             continue
         local = [p for p in paths if mine(p)]
         if len(local) > 1:
-            first_owner, first_leaf = owner_of(module, local[0])
-            kept = getattr(first_owner, first_leaf)
-            for path in local[1:]:
-                owner, leaf = owner_of(module, path)
-                setattr(owner, leaf, kept)
+            tie_parameters(module, [(p, tensor, module.shard_parts.get(p)) for p in local], shard)
         holders = sorted({stage_of_path(names, assigned, p) or 0 for p in paths})
         if len(holders) > 1:
             own: ProcessGroup | None = None
@@ -596,6 +614,12 @@ def pipeline(
     if data_parallel is not None:
         from .fsdp import fully_shard
 
+        parts = module.shard_parts
+        if any(
+            any(p in parts for p in paths) and not all(p in parts for p in paths)
+            for paths, _ in ties
+        ):
+            raise PlanError("a split output head tied to an embedding cannot be sharded yet")
         fully_shard(module, data_parallel, only=mine)
     return Pipeline(
         module,

@@ -26,7 +26,7 @@ from .. import ir, lora
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import import_generated
 from ..plan import PlanError
-from .module import BlockModule, LinnetModule, Result, bind_input, owner_of
+from .module import BlockModule, LinnetModule, Result, argument, bind_input, owner_of
 from .placement import Placement
 from .regions import regional
 
@@ -268,7 +268,7 @@ class CompiledLinnetModule(LinnetModule):
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
                     owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
-                    inputs.append(getattr(owner, leaf))
+                    inputs.append(argument(owner, leaf))
                 else:
                     inputs.append(generated.constants[generated.constant_names.index(name)])
             with torch.no_grad():
@@ -301,7 +301,7 @@ class CompiledLinnetModule(LinnetModule):
             # Inputs enter where the first unit runs.
             inputs = [value.to(self.placement.devices[0]) for value in inputs]
         arguments: list[object] = list(inputs)
-        arguments += [getattr(owner, leaf) for owner, leaf in prepared.parameters]
+        arguments += [argument(owner, leaf) for owner, leaf in prepared.parameters]
         arguments += [getattr(owner, leaf) for owner, leaf in prepared.states]
         arguments += generated.constants
         arguments += prepared.prepared
@@ -393,7 +393,7 @@ class CompiledLinnetModule(LinnetModule):
 
     def _capture(self, prepared: _Prepared, static: list[torch.Tensor]) -> _Graph:
         generated = prepared.generated
-        parameters = [getattr(owner, leaf) for owner, leaf in prepared.parameters]
+        parameters = [argument(owner, leaf) for owner, leaf in prepared.parameters]
         states = [getattr(owner, leaf) for owner, leaf in prepared.states]
         arguments = [*static, *parameters, *states, *generated.constants, *prepared.prepared]
         by_path = dict(zip(generated.states, states, strict=True))
@@ -470,7 +470,7 @@ class CompiledLinnetModule(LinnetModule):
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
                     owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
-                    inputs.append(getattr(owner, leaf))
+                    inputs.append(argument(owner, leaf))
                 else:
                     inputs.append(generated.constants[generated.constant_names.index(name)])
             assert generated.prepare is not None
@@ -757,7 +757,11 @@ def _copy_into(kept: PreparedValue | int, value: PreparedValue | int) -> None:
 
 
 def _table(owner: BlockModule, leaf: str) -> tuple[Mapping[str, torch.Tensor | None], str]:
-    """Where a module keeps `leaf`: its parameters, or its buffers (states)."""
+    """Where a module keeps `leaf`: its parameters, or its buffers (states).
+    A part of a tied whole is watched through the whole."""
+    part = owner.tied_parts.get(leaf)
+    if part is not None:
+        owner, leaf = part.owner, part.leaf
     parameters: Mapping[str, torch.Tensor | None] = owner._parameters  # pyright: ignore[reportPrivateUsage]
     return (parameters if leaf in parameters else owner._buffers), leaf  # pyright: ignore[reportPrivateUsage]
 
