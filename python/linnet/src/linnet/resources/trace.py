@@ -716,7 +716,8 @@ class _Tracer:
             if op.kind == "comprehension"
             else ex.mul(numel, domain, ex.add(body, ex.ONE))
         )
-        step = self.emit(op.kind, op.kind, reads, flops)
+        label = "contraction" if _contraction(op) else op.kind
+        step = self.emit(op.kind, label, reads, flops)
         out = self.tensor_result(result, env, step)
         self.finish(step, [out])
         return TensorValue(out)
@@ -887,6 +888,33 @@ def _domain(op: ir.Op, env: SymEnv) -> ex.Expr:
     for index in cast(list[dict[str, ir.JsonValue]], op.attrs.get("indices", [])):
         sizes.extend(env.shape(ir.parse_shape(cast(list[ir.JsonValue], index.get("domain", [])))))
     return ex.product(sizes)
+
+
+def _contraction(op: ir.Op) -> bool:
+    """`sum[k] a[i, k] * b[k, j]`: a sum of the product of two element
+    reads, each perhaps cast, which the generated code computes as one
+    product (`einsum`), as the compiler's `try_contract` decides."""
+    if op.kind != "reduce" or op.attrs.get("reduce") != "sum" or len(op.regions) != 1:
+        return False
+    elements: set[int] = set()
+    product: int | None = None
+    for inner in op.regions[0].ops:
+        if inner.kind == "block.param":
+            continue
+        if inner.kind == "tensor.element" or (
+            inner.kind == "cast" and inner.operands and inner.operands[0] in elements
+        ):
+            elements.add(inner.results[0].id)
+        elif (
+            inner.kind == "mul"
+            and product is None
+            and len(inner.operands) == 2
+            and all(o in elements for o in inner.operands)
+        ):
+            product = inner.results[0].id
+        elif not (inner.kind == "yield" and product is not None and inner.operands == (product,)):
+            return False
+    return product is not None
 
 
 def _region_flops(region: ir.Region, env: SymEnv, program: ir.Program, depth: int = 0) -> ex.Expr:
