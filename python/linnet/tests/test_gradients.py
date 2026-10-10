@@ -62,6 +62,26 @@ pub block Model<V: Dim, H: Dim, C: Dim> {
         let pick[c, n] = min(turned[c, n], 0.9) * norm[0]
         return sum[c, n] pick[c, n]
     }
+
+    // A runtime loop and a scan: their gradients run the iterations backward.
+    pub entry looped<N: Dim>(x: Tensor[N, H; f32]) -> f32 {
+        var y = x
+        for _i in 0..3 {
+            y = tanh(y * norm) + x
+        }
+        let out[n, c] = sum[h] y[n, h] * w[h, c]
+        return sum[n, c] out[n, c] * out[n, c]
+    }
+
+    pub entry scanned<N: Dim>(x: Tensor[N, H; f32]) -> f32 {
+        var hidden = x
+        let hiddens = for i in 1..4 {
+            hidden = tanh(hidden * norm + cast<f32>(i) * 0.1)
+            yield hidden
+        }
+        let weighted[t, n, k] = hiddens[t, n, k] * hiddens[t, n, k] * norm[k]
+        return sum[t, n, k] weighted[t, n, k]
+    }
 }
 
 // A module-level entry: its gradient is with respect to its inputs.
@@ -123,6 +143,8 @@ CASES = {
         np.array([2, 0, 5, 1, 2], dtype=np.int64),
     ],
     "shapes": [np.random.default_rng(1).standard_normal((5, 4)).astype(np.float32)],
+    "looped": [np.random.default_rng(2).standard_normal((5, 4)).astype(np.float32)],
+    "scanned": [np.random.default_rng(3).standard_normal((5, 4)).astype(np.float32)],
     "mse": [
         np.array([0.5, -1.0, 2.0, 0.0, 1.5], dtype=np.float32),
         np.array([1.0, -1.0, 0.0, 0.5, 1.0], dtype=np.float32),
@@ -262,8 +284,10 @@ pub block Model<N: Dim> {
 
     pub entry looped(x: Tensor[N; f32]) -> f32 {
         var y = x
-        for _i in 0..3 {
+        var k = 0
+        while k < 3 {
             y = y * w
+            k = k + 1
         }
         return sum[n] y[n]
     }
@@ -276,7 +300,7 @@ pub block Model<N: Dim> {
     [
         ("vector", "one result is a floating scalar"),
         ("counted", "assigns `state`"),
-        ("looped", "runtime loop"),
+        ("looped", "`while` loop"),
     ],
 )
 def test_what_has_no_gradient_is_refused(tmp_path: Path, entry: str, message: str) -> None:

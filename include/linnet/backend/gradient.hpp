@@ -3,6 +3,7 @@
 #include "linnet/backend/graph_export.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -80,7 +81,10 @@ public:
                                            sema::ScalarKind dtype) override;
     bool supports_while() const override { return inner_.supports_while(); }
     std::vector<std::string> begin_while(const std::vector<TensorInfo>& initial) override;
-    bool supports_counted() const override { return inner_.supports_counted(); }
+    // A `for` loop, written in the format's counted form or as a `while`
+    // over its index. Each iteration's starting values are kept, and the
+    // backward pass runs the iterations in reverse, computing each again.
+    bool supports_counted() const override { return true; }
     // An op's `grad` stands for the backward pass of its body.
     std::vector<std::string>
     begin_custom_gradient(const std::vector<TensorInfo>& arguments) override;
@@ -90,6 +94,7 @@ public:
     std::vector<std::string> begin_counted(std::int64_t start,
                                            std::int64_t stop,
                                            const std::vector<TensorInfo>& initial) override;
+    std::vector<std::string> end_counted(const std::vector<TensorInfo>& next) override;
     std::string finish(const std::vector<TensorInfo>& results,
                        const std::vector<std::pair<std::string, TensorInfo>>& states,
                        const std::string& module_path,
@@ -112,6 +117,7 @@ private:
             Gather,
             Reduce,
             Custom, // an op's `grad`: `pullbacks_[custom]`
+            Loop,   // a `for` loop: `loops_[custom]`
         };
         Kind kind = Kind::Elementwise;
         Elementwise op = Elementwise::Add;
@@ -124,6 +130,48 @@ private:
         std::int64_t axis = 0;
         std::size_t custom = 0;
     };
+
+    // One `for` loop as recorded: its values before, inside and after it,
+    // each iteration's starting values (`stacks`, `[iterations, ...]` each),
+    // and its body, as backward rules and as calls to emit again.
+    struct Replay {
+        std::function<std::string()> call;
+        std::string result;
+    };
+    struct Loop {
+        std::int64_t start = 0;
+        std::int64_t stop = 0;
+        std::vector<TensorInfo> initial;
+        TensorInfo index;
+        std::vector<TensorInfo> carried; // as the body sees them
+        std::vector<TensorInfo> next;    // as the body leaves them
+        std::vector<TensorInfo> finals;
+        std::vector<TensorInfo> stacks; // after the loop; inside it, `written`
+        std::vector<TensorInfo> written;
+        std::size_t tape_mark = 0;
+        std::vector<Step> steps;
+        std::vector<Replay> log;
+    };
+    // A format's loop over `start <= i < stop`: its counted form, or a
+    // `while` carrying the index first. The names the body sees, index
+    // first; then the final values.
+    struct Lowered {
+        bool is_counted = false;
+        std::int64_t stop = 0;
+        std::string index;
+    };
+    std::vector<std::string>
+    open_loop(std::int64_t start, std::int64_t stop, const std::vector<TensorInfo>& initial);
+    std::vector<std::string> close_loop(const std::vector<TensorInfo>& next);
+    void propagate_loop(const Loop& loop);
+    // Inside a loop being recorded, `call` emits the operation that made
+    // `result` again, from the renamed values of an iteration.
+    void replayable(const std::string& result, std::function<std::string()> call);
+    std::string renamed(const std::string& name) const;
+    TensorInfo renamed(TensorInfo value) const;
+    std::vector<TensorInfo> renamed(std::vector<TensorInfo> values) const;
+    TensorInfo zeros(const Dims& shape, sema::ScalarKind dtype);
+    TensorInfo scalar_integer(std::int64_t value);
 
     std::string record(Step step);
     // Notes where `name` is first defined, with its shape.
@@ -165,6 +213,10 @@ private:
     // Open `grad` ops: where each began, on the tape and among definitions.
     std::vector<std::pair<std::size_t, std::size_t>> customs_;
     std::vector<Pullback> pullbacks_;
+    std::vector<Loop> loops_;
+    std::vector<std::size_t> open_;              // the loop being recorded
+    std::vector<Lowered> lowered_;               // the format's loops being written
+    std::map<std::string, std::string> renames_; // an iteration's names, while it is emitted again
     // The backward pass is being emitted: the evaluator's calls are part of
     // it, not recorded.
     bool replaying_ = false;

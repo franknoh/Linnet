@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <numeric>
+#include <set>
 #include <utility>
 
 namespace linnet::backend {
@@ -51,6 +52,7 @@ std::string GradientTarget::state(const std::string& path, const Dims& shape, Sc
 std::string GradientTarget::constant(const Literal& literal, ScalarKind dtype) {
     std::string id = inner_.constant(literal, dtype);
     define(id, Dims{});
+    replayable(id, [=, this] { return inner_.constant(literal, dtype); });
     return id;
 }
 
@@ -63,14 +65,19 @@ std::string GradientTarget::elementwise(Elementwise kind,
     step.op = kind;
     step.operands = operands;
     step.result = {inner_.elementwise(kind, operands, shape, dtype), shape, dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name,
+               [=, this] { return inner_.elementwise(kind, renamed(operands), shape, dtype); });
+    return name;
 }
 
 std::string GradientTarget::compare(ir::CompareKind kind,
                                     const TensorInfo& a,
                                     const TensorInfo& b,
                                     const Dims& shape) {
-    return inner_.compare(kind, a, b, shape);
+    std::string name = inner_.compare(kind, a, b, shape);
+    replayable(name, [=, this] { return inner_.compare(kind, renamed(a), renamed(b), shape); });
+    return name;
 }
 
 std::string GradientTarget::select(const TensorInfo& condition,
@@ -82,7 +89,11 @@ std::string GradientTarget::select(const TensorInfo& condition,
     step.kind = Step::Kind::Select;
     step.operands = {condition, on_true, on_false};
     step.result = {inner_.select(condition, on_true, on_false, shape, dtype), shape, dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] {
+        return inner_.select(renamed(condition), renamed(on_true), renamed(on_false), shape, dtype);
+    });
+    return name;
 }
 
 std::string GradientTarget::convert(const TensorInfo& value, ScalarKind dtype) {
@@ -90,7 +101,9 @@ std::string GradientTarget::convert(const TensorInfo& value, ScalarKind dtype) {
     step.kind = Step::Kind::Convert;
     step.operands = {value};
     step.result = {inner_.convert(value, dtype), value.shape, dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.convert(renamed(value), dtype); });
+    return name;
 }
 
 std::string GradientTarget::reshape(const TensorInfo& value, const Dims& shape) {
@@ -98,7 +111,9 @@ std::string GradientTarget::reshape(const TensorInfo& value, const Dims& shape) 
     step.kind = Step::Kind::Reshape;
     step.operands = {value};
     step.result = {inner_.reshape(value, shape), shape, value.dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.reshape(renamed(value), shape); });
+    return name;
 }
 
 std::string
@@ -108,7 +123,9 @@ GradientTarget::transpose(const TensorInfo& value, const Dims& permutation, cons
     step.operands = {value};
     step.first = permutation;
     step.result = {inner_.transpose(value, permutation, shape), shape, value.dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.transpose(renamed(value), permutation, shape); });
+    return name;
 }
 
 std::string
@@ -118,7 +135,9 @@ GradientTarget::broadcast(const TensorInfo& value, const Dims& dims, const Dims&
     step.operands = {value};
     step.first = dims;
     step.result = {inner_.broadcast(value, dims, shape), shape, value.dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.broadcast(renamed(value), dims, shape); });
+    return name;
 }
 
 std::optional<std::string> GradientTarget::contract(const TensorInfo& lhs,
@@ -139,7 +158,16 @@ std::optional<std::string> GradientTarget::contract(const TensorInfo& lhs,
     step.second = rhs_axes;
     step.third = out_axes;
     step.result = {*name, shape, dtype};
-    return record(std::move(step));
+    std::string recorded = record(std::move(step));
+    replayable(recorded, [=, this] {
+        const auto made =
+            inner_.contract(renamed(lhs), lhs_axes, renamed(rhs), rhs_axes, out_axes, shape, dtype);
+        if (!made) {
+            throw GradientError("internal: a product the format wrote once it declines again");
+        }
+        return *made;
+    });
+    return recorded;
 }
 
 std::string GradientTarget::slice(const TensorInfo& value,
@@ -154,7 +182,10 @@ std::string GradientTarget::slice(const TensorInfo& value,
     step.second = limits;
     step.third = strides;
     step.result = {inner_.slice(value, starts, limits, strides, shape), shape, value.dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name,
+               [=, this] { return inner_.slice(renamed(value), starts, limits, strides, shape); });
+    return name;
 }
 
 std::string
@@ -166,11 +197,15 @@ GradientTarget::concat(const std::vector<TensorInfo>& parts, std::int64_t axis, 
     step.result = {inner_.concat(parts, axis, shape),
                    shape,
                    parts.empty() ? ScalarKind::F32 : parts.front().dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.concat(renamed(parts), axis, shape); });
+    return name;
 }
 
 std::string GradientTarget::iota(std::int64_t length) {
-    return inner_.iota(length);
+    std::string name = inner_.iota(length);
+    replayable(name, [=, this] { return inner_.iota(length); });
+    return name;
 }
 
 std::string
@@ -179,7 +214,9 @@ GradientTarget::gather(const TensorInfo& source, const TensorInfo& indices, cons
     step.kind = Step::Kind::Gather;
     step.operands = {source, indices};
     step.result = {inner_.gather(source, indices, shape), shape, source.dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.gather(renamed(source), renamed(indices), shape); });
+    return name;
 }
 
 std::string GradientTarget::reduce(Reduction kind,
@@ -192,7 +229,9 @@ std::string GradientTarget::reduce(Reduction kind,
     step.operands = {body};
     step.first = dims;
     step.result = {inner_.reduce(kind, body, dims, shape), shape, body.dtype};
-    return record(std::move(step));
+    std::string name = record(std::move(step));
+    replayable(name, [=, this] { return inner_.reduce(kind, renamed(body), dims, shape); });
+    return name;
 }
 
 std::optional<std::string>
@@ -209,16 +248,339 @@ GradientTarget::native_call(const std::string& implementation,
 
 std::vector<std::string> GradientTarget::begin_while(const std::vector<TensorInfo>& initial) {
     (void)initial;
-    throw GradientError("the gradient of a runtime loop (`while`, `for`) is not supported yet");
+    throw GradientError("the gradient of a `while` loop is not supported yet; a `for` loop, "
+                        "whose iterations are counted, has one");
 }
 
+// ------------------------------------------------------------------ loops
+
+std::vector<std::string> GradientTarget::open_loop(std::int64_t start,
+                                                   std::int64_t stop,
+                                                   const std::vector<TensorInfo>& initial) {
+    if (inner_.supports_counted()) {
+        lowered_.push_back({true, stop, ""});
+        return inner_.begin_counted(start, stop, initial);
+    }
+    if (!inner_.supports_while()) {
+        throw GradientError("this format writes no runtime loops");
+    }
+    // As the evaluator writes a `for`: a `while` over the index, carried first.
+    std::vector<TensorInfo> carried{scalar_integer(start)};
+    carried.insert(carried.end(), initial.begin(), initial.end());
+    if (inner_.while_needs_initial_condition()) {
+        inner_.while_initial_condition(
+            {inner_.compare(ir::CompareKind::Lt, carried.front(), scalar_integer(stop), {}),
+             {},
+             ScalarKind::Bool});
+    }
+    const std::vector<std::string> condition = inner_.begin_while(carried);
+    const TensorInfo index{condition.front(), {}, ScalarKind::I64};
+    std::vector<std::string> body = inner_.while_condition(
+        {inner_.compare(ir::CompareKind::Lt, index, scalar_integer(stop), {}),
+         {},
+         ScalarKind::Bool});
+    lowered_.push_back({false, stop, body.front()});
+    return body;
+}
+
+std::vector<std::string> GradientTarget::close_loop(const std::vector<TensorInfo>& next) {
+    const Lowered loop = lowered_.back();
+    lowered_.pop_back();
+    if (loop.is_counted) {
+        return inner_.end_counted(next);
+    }
+    const TensorInfo advanced{
+        inner_.elementwise(Elementwise::Add,
+                           {{loop.index, {}, ScalarKind::I64}, scalar_integer(1)},
+                           {},
+                           ScalarKind::I64),
+        {},
+        ScalarKind::I64};
+    std::vector<TensorInfo> carried{advanced};
+    carried.insert(carried.end(), next.begin(), next.end());
+    if (inner_.while_needs_trailing_condition()) {
+        inner_.while_trailing_condition(
+            {inner_.compare(ir::CompareKind::Lt, advanced, scalar_integer(loop.stop), {}),
+             {},
+             ScalarKind::Bool});
+    }
+    std::vector<std::string> finals = inner_.end_while(carried);
+    finals.erase(finals.begin());
+    return finals;
+}
+
+// Each carried value is written, as the iteration starts, into a stack of
+// every iteration's: the backward pass reads them back in reverse.
 std::vector<std::string> GradientTarget::begin_counted(std::int64_t start,
                                                        std::int64_t stop,
                                                        const std::vector<TensorInfo>& initial) {
-    (void)start;
-    (void)stop;
-    (void)initial;
-    throw GradientError("the gradient of a runtime loop (`while`, `for`) is not supported yet");
+    if (replaying_) {
+        return open_loop(start, stop, initial);
+    }
+    if (!open_.empty()) {
+        throw GradientError("the gradient of a runtime loop inside another is not supported yet");
+    }
+    const std::int64_t count = std::max<std::int64_t>(stop - start, 0);
+    Loop loop;
+    loop.start = start;
+    loop.stop = stop;
+    loop.initial = initial;
+    std::vector<TensorInfo> carried = initial;
+    for (const TensorInfo& value : initial) {
+        Dims shape{count};
+        shape.insert(shape.end(), value.shape.begin(), value.shape.end());
+        carried.push_back(zeros(shape, value.dtype));
+    }
+    const std::vector<std::string> names = open_loop(start, stop, carried);
+    const std::size_t n = initial.size();
+    loop.index = {names.front(), {}, ScalarKind::I64};
+    const TensorInfo row = start == 0
+                               ? loop.index
+                               : TensorInfo{inner_.elementwise(Elementwise::Sub,
+                                                               {loop.index, scalar_integer(start)},
+                                                               {},
+                                                               ScalarKind::I64),
+                                            {},
+                                            ScalarKind::I64};
+    for (std::size_t k = 0; k < n; ++k) {
+        const TensorInfo value{names[1 + k], initial[k].shape, initial[k].dtype};
+        define(value.name, value.shape);
+        // A carried value may come to depend on anything the body reads.
+        if (differentiable(value)) {
+            sources_[value.name] |= from_inputs | from_parameters;
+        }
+        loop.carried.push_back(value);
+        const TensorInfo stack{names[1 + n + k], carried[n + k].shape, value.dtype};
+        const auto written = inner_.update_row(stack, row, value);
+        if (!written) {
+            throw GradientError("this format cannot keep a loop's iterations for its gradient");
+        }
+        loop.written.push_back({*written, stack.shape, stack.dtype});
+    }
+    loop.tape_mark = tape_.size();
+    open_.push_back(loops_.size());
+    loops_.push_back(std::move(loop));
+    return {names.begin(), names.begin() + static_cast<std::ptrdiff_t>(1 + n)};
+}
+
+// One step stands for the loop; its body's leave the tape.
+std::vector<std::string> GradientTarget::end_counted(const std::vector<TensorInfo>& next) {
+    if (replaying_) {
+        return close_loop(next);
+    }
+    const std::size_t at = open_.back();
+    open_.pop_back();
+    Loop& loop = loops_[at];
+    loop.next = next;
+    std::vector<TensorInfo> carried = next;
+    carried.insert(carried.end(), loop.written.begin(), loop.written.end());
+    const std::vector<std::string> finals = close_loop(carried);
+    const std::size_t n = loop.initial.size();
+    for (std::size_t k = 0; k < n; ++k) {
+        const TensorInfo value{finals[k], loop.initial[k].shape, loop.initial[k].dtype};
+        define(value.name, value.shape);
+        if (differentiable(value)) {
+            sources_[value.name] |= from_inputs | from_parameters;
+        }
+        loop.finals.push_back(value);
+        loop.stacks.push_back({finals[n + k], loop.written[k].shape, loop.written[k].dtype});
+    }
+    loop.steps.assign(tape_.begin() + static_cast<std::ptrdiff_t>(loop.tape_mark), tape_.end());
+    tape_.resize(loop.tape_mark);
+    Step step;
+    step.kind = Step::Kind::Loop;
+    step.custom = at;
+    step.operands = loop.initial;
+    step.result = loop.finals.empty() ? TensorInfo{} : loop.finals.front();
+    tape_.push_back(std::move(step));
+    return {finals.begin(), finals.begin() + static_cast<std::ptrdiff_t>(n)};
+}
+
+void GradientTarget::replayable(const std::string& result, std::function<std::string()> call) {
+    if (!replaying_ && !open_.empty()) {
+        loops_[open_.back()].log.push_back({std::move(call), result});
+    }
+}
+
+std::string GradientTarget::renamed(const std::string& name) const {
+    const auto found = renames_.find(name);
+    return found == renames_.end() ? name : found->second;
+}
+
+TensorInfo GradientTarget::renamed(TensorInfo value) const {
+    value.name = renamed(value.name);
+    return value;
+}
+
+std::vector<TensorInfo> GradientTarget::renamed(std::vector<TensorInfo> values) const {
+    for (TensorInfo& value : values) {
+        value.name = renamed(value.name);
+    }
+    return values;
+}
+
+TensorInfo GradientTarget::zeros(const Dims& shape, ScalarKind dtype) {
+    const Literal zero = dtype == ScalarKind::Bool ? Literal{Literal::Kind::Boolean, 0, 0.0}
+                         : sema::is_float(dtype)   ? Literal::of_real(0.0)
+                                                   : Literal::of_integer(0);
+    return widen({inner_.constant(zero, dtype), {}, dtype}, shape);
+}
+
+TensorInfo GradientTarget::scalar_integer(std::int64_t value) {
+    return {inner_.constant(Literal::of_integer(value), ScalarKind::I64), {}, ScalarKind::I64};
+}
+
+// The loop's gradient: a loop over its iterations in reverse, carrying the
+// gradients of the carried values and summing those of what the body reads
+// from outside. Each iteration's values are read back from the stacks, its
+// body emitted again from them, and that body's backward pass run.
+void GradientTarget::propagate_loop(const Loop& loop) {
+    const std::size_t n = loop.initial.size();
+    const std::int64_t count = std::max<std::int64_t>(loop.stop - loop.start, 0);
+    std::vector<std::size_t> floats;
+    bool is_reached = false;
+    for (std::size_t k = 0; k < n; ++k) {
+        if (differentiable(loop.initial[k])) {
+            floats.push_back(k);
+            is_reached = is_reached || adjoints_.contains(loop.finals[k].name);
+        }
+    }
+    if (!is_reached) {
+        return;
+    }
+    const auto is_active = [&](const TensorInfo& value) {
+        const auto found = sources_.find(value.name);
+        return differentiable(value) && found != sources_.end() && (found->second & wanted_) != 0;
+    };
+    // What the body reads from outside: defined neither in it nor by the loop.
+    std::set<std::string> inside{loop.index.name};
+    for (const TensorInfo& value : loop.carried) {
+        inside.insert(value.name);
+    }
+    for (const Replay& entry : loop.log) {
+        inside.insert(entry.result);
+    }
+    std::vector<TensorInfo> outside;
+    std::set<std::string> seen;
+    const auto note = [&](const TensorInfo& value) {
+        if (!inside.contains(value.name) && is_active(value) && seen.insert(value.name).second) {
+            const auto shape = shapes_.find(value.name);
+            outside.push_back(
+                {value.name, shape == shapes_.end() ? value.shape : shape->second, value.dtype});
+        }
+    };
+    for (const Step& step : loop.steps) {
+        for (const TensorInfo& operand : step.operands) {
+            note(operand);
+        }
+    }
+    for (const TensorInfo& value : loop.next) {
+        note(value);
+    }
+
+    std::vector<TensorInfo> carried;
+    for (const std::size_t k : floats) {
+        const auto found = adjoints_.find(loop.finals[k].name);
+        carried.push_back(found != adjoints_.end()
+                              ? found->second
+                              : full(0.0, loop.initial[k].shape, loop.initial[k].dtype));
+    }
+    for (const TensorInfo& value : outside) {
+        carried.push_back(full(0.0, value.shape, value.dtype));
+    }
+    const std::vector<std::string> names = open_loop(0, count, carried);
+
+    // Iteration `count - 1 - j`, its index and its values.
+    const TensorInfo step_index{names.front(), {}, ScalarKind::I64};
+    const TensorInfo row{
+        inner_.elementwise(
+            Elementwise::Sub, {scalar_integer(count - 1), step_index}, {}, ScalarKind::I64),
+        {},
+        ScalarKind::I64};
+    const TensorInfo index = loop.start == 0
+                                 ? row
+                                 : TensorInfo{inner_.elementwise(Elementwise::Add,
+                                                                 {row, scalar_integer(loop.start)},
+                                                                 {},
+                                                                 ScalarKind::I64),
+                                              {},
+                                              ScalarKind::I64};
+    const TensorInfo position{inner_.reshape(row, {1}), {1}, ScalarKind::I64};
+    const auto copy = [&](const std::string& original, const std::string& made) {
+        if (const auto shape = shapes_.find(original); shape != shapes_.end()) {
+            shapes_.emplace(made, shape->second);
+        }
+        if (const auto source = sources_.find(original); source != sources_.end()) {
+            sources_[made] |= source->second;
+        }
+    };
+    renames_.clear();
+    renames_[loop.index.name] = index.name;
+    for (std::size_t k = 0; k < n; ++k) {
+        const std::string value = inner_.gather(loop.stacks[k], position, loop.initial[k].shape);
+        renames_[loop.carried[k].name] = value;
+        copy(loop.carried[k].name, value);
+    }
+    for (const Replay& entry : loop.log) {
+        const std::string made = entry.call();
+        if (made != entry.result) {
+            renames_[entry.result] = made;
+            copy(entry.result, made);
+        }
+    }
+
+    // The body's backward pass, from the gradients the next iteration left.
+    std::map<std::string, TensorInfo> outer = std::exchange(adjoints_, {});
+    for (std::size_t j = 0; j < floats.size(); ++j) {
+        const TensorInfo& initial = loop.initial[floats[j]];
+        accumulate(renamed(loop.next[floats[j]]), {names[1 + j], initial.shape, initial.dtype});
+    }
+    std::vector<Step> steps;
+    steps.reserve(loop.steps.size());
+    for (const Step& step : loop.steps) {
+        Step copied = step;
+        copied.operands = renamed(step.operands);
+        copied.result = renamed(step.result);
+        steps.push_back(std::move(copied));
+    }
+    std::map<std::string, std::size_t> first;
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        first.emplace(steps[i].result.name, i);
+    }
+    for (std::size_t i = steps.size(); i-- > 0;) {
+        const Step& step = steps[i];
+        if (first.at(step.result.name) != i || !differentiable(step.result)) {
+            continue;
+        }
+        const auto found = adjoints_.find(step.result.name);
+        if (found != adjoints_.end()) {
+            const TensorInfo grad = found->second;
+            propagate(step, grad);
+        }
+    }
+    std::vector<TensorInfo> next;
+    for (const std::size_t k : floats) {
+        const auto found = adjoints_.find(renames_.at(loop.carried[k].name));
+        next.push_back(found != adjoints_.end()
+                           ? found->second
+                           : full(0.0, loop.initial[k].shape, loop.initial[k].dtype));
+    }
+    for (std::size_t j = 0; j < outside.size(); ++j) {
+        const TensorInfo sum{names[1 + floats.size() + j], outside[j].shape, outside[j].dtype};
+        const auto found = adjoints_.find(outside[j].name);
+        next.push_back(found != adjoints_.end() ? apply(Elementwise::Add, {sum, found->second})
+                                                : sum);
+    }
+    adjoints_ = std::move(outer);
+    renames_.clear();
+    const std::vector<std::string> finals = close_loop(next);
+    for (std::size_t j = 0; j < floats.size(); ++j) {
+        const TensorInfo& initial = loop.initial[floats[j]];
+        accumulate(initial, {finals[j], initial.shape, initial.dtype});
+    }
+    for (std::size_t j = 0; j < outside.size(); ++j) {
+        accumulate(outside[j], {finals[floats.size() + j], outside[j].shape, outside[j].dtype});
+    }
 }
 
 // An operation whose result is one of its operands (a no-op the format
@@ -259,6 +621,10 @@ void GradientTarget::define(const std::string& name, const Dims& shape) {
 
 std::vector<std::string>
 GradientTarget::begin_custom_gradient(const std::vector<TensorInfo>& arguments) {
+    if (!replaying_ && !open_.empty()) {
+        throw GradientError("the gradient of an op with a `grad` inside a runtime loop is not "
+                            "supported yet");
+    }
     if (!replaying_) {
         customs_.emplace_back(tape_.size(), order_.size());
     }
@@ -356,6 +722,10 @@ void GradientTarget::backward(const TensorInfo& loss) {
     adjoints_[loss.name] = full(1.0, {}, loss.dtype);
     for (std::size_t i = tape_.size(); i-- > 0;) {
         const Step& step = tape_[i];
+        if (step.kind == Step::Kind::Loop) {
+            propagate_loop(loops_[step.custom]);
+            continue;
+        }
         if (first.at(step.result.name) != i || !differentiable(step.result)) {
             continue;
         }
@@ -645,6 +1015,8 @@ void GradientTarget::propagate(const Step& step, const TensorInfo& g) {
         }
         return;
     }
+    case Step::Kind::Loop:
+        return; // see `propagate_loop`
     case Step::Kind::Custom: {
         // `pullbacks_` grows only while recording: the reference stays valid.
         const std::vector<std::optional<std::string>> gradients =
