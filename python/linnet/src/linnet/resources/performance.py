@@ -720,6 +720,17 @@ def _costs(
             seconds = memory(2 * written) + memory(2 * written, rate=spread)
             forward.append(_Op(host("normalization", "elementwise"), seconds, "memory"))
             backward.append(_Op(2 * node, 2 * seconds, "memory"))
+        elif step.label == "contraction" and owned:
+            # `sum[k] a[i, k] * b[k, j]` is one product (`einsum`): at the
+            # rate of a weight as tall as the result's last axis and as wide
+            # as the summed one.
+            out = owned[0]
+            width = max(1, round(flops / (2 * max(1, _numel(graph, out, env)))))
+            last = (_dims(graph, out, env) or [1])[-1]
+            dtype = graph.objects[step.inputs[0]].dtype
+            op = bounded(flops, device.product(dtype, last, width), read + written, host("batched"))
+            forward.append(op)
+            backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by))
         elif owned:
             # An operand broadcast, or a strided view (a permute, a slice of
             # a joined product), takes PyTorch's unvectorized kernel.

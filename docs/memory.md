@@ -215,7 +215,8 @@ the analysis refuses, says why. `--batch` or `--seq-len` fixes the size.
 Each operation of the step is costed at rates measured on the device:
 
 - matrix products at the rate measured for their weight's shape and dtype,
-  or reading their operands (a few rows read the weight at their own rate);
+  or reading their operands (a few rows read the weight at their own rate),
+  index-notation contractions (`sum[k] a[i, k] * b[k, j]`) among them;
 - fused attention at its kernel's rate: causal, under a mask, by head width
   and dtype; one query under a mask as the generated code runs it;
 - other kernels at the bandwidth an elementwise kernel reaches, about half
@@ -264,13 +265,14 @@ zero weights), the median of six; rates calibrated on the same pair:
 | TinyLlama 1.1B | batch 8, 2,048 tokens | 88.4 ms | 92.8 ms | -4.8% |
 | TinyLlama 1.1B | decode, batch 1, cache 2,048 | 7.80 ms | 7.47 ms | +4.5% |
 | Qwen2.5 0.5B | batch 4, 4,096 tokens | 56.1 ms | 58.7 ms | -4.4% |
-| GPT-2 (f32) | batch 8, 1,024 tokens | 46.6 ms | 62.8 ms | -25.8% |
+| GPT-2 (f32) | batch 8, 1,024 tokens | 51.1 ms | 52.2 ms | -2.0% |
 | BERT base (f32) | batch 8, 512 tokens | 22.8 ms | 24.6 ms | -7.4% |
 | TinyLlama 1.1B | training, 8,192 tokens, AdamW | 346 ms | 334 ms | +3.5% |
 | Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 199 ms | 210 ms | -5.1% |
 | Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 149 ms | 162 ms | -8.0% |
 | Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 13.9 ms | 15.5 ms | -10.1% |
-| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 14.0 ms | 17.6 ms | -20.2% |
+| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 24.3 ms | 24.8 ms | -2.3% |
+| Llama 3.1 8B | `decode_rows`, batch 16, tensor parallel 2 | 24.8 ms | 29.5 ms | -15.8% |
 | TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 119 ms | 131 ms | -9.0% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | 53.4 ms | 58.6 ms | -8.9% |
 | TinyLlama 1.1B | training, 8,192 tokens, sharded 2 ways | 372 ms | 353 ms | +5.4% |
@@ -278,15 +280,15 @@ zero weights), the median of six; rates calibrated on the same pair:
 | Llama 3.1 8B | batch 2, 8,192 tokens, pipeline 2 x 2, stages split 2 ways | 251 ms | 219 ms | +14.9% |
 | TinyLlama 1.1B | training, 8,192 tokens, pipeline 2 x 4, stages sharded 2 ways | 151 ms | 159 ms | -5.2% |
 
-The last four rows ran on four other H100s.
+The last four rows ran on four other H100s. The GPT-2 row and the two
+batch-16 tensor-parallel rows ran on another pair, with `validate --time`.
 
 Where it is still short:
 
-- **GPT-2 in f32.** Its weights are stored transposed (`Conv1D`), and
-  PyTorch runs those f32 products with a slower kernel than the measured
-  one.
-- **Tensor-parallel decoding.** Per-row cache writes and the attention
-  helper's calls cost the host more than the kinds measured alone.
+- **Tensor-parallel per-row decoding** (`decode_rows`). In a profiled step,
+  the one-shot sums spent most of their time waiting for the other process:
+  each process issues its calls at its own pace, and every sum waits for the
+  slower one.
 
 ## JSON and Python
 
@@ -325,7 +327,8 @@ python -m linnet.resources.validate llama-3.1-8b-instruct --batch 4 --seq-len 20
 runs the configuration on a CUDA device and compares the prediction with
 PyTorch's allocator peak, and the expected peak with the device memory in
 use. The errors are reported as they are; nothing is tuned to make one
-benchmark match.
+benchmark match. `--time` also times six steps against the predicted step
+time, at rates calibrated on that machine.
 
 On an H100 with PyTorch 2.14 (generated source, `compile=True`, fast
 numerics), the graph and workspaces against the allocator peak:

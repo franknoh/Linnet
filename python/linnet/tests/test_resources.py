@@ -685,6 +685,31 @@ def test_each_call_runs_at_its_rate(tmp_path: Path) -> None:
     )
 
 
+CONTRACTION = """\
+module tests.contraction
+
+pub block Head<H: Dim, V: Dim> {
+    param w: Tensor[V, H; f32]
+
+    pub entry forward<B: Dim>(x: Tensor[B, H; f32]) -> Tensor[B, V; f32] {
+        let y[b, v] = sum[i] x[b, i] * w[v, i]
+        return y
+    }
+}
+"""
+
+
+def test_a_contraction_runs_as_a_product(tmp_path: Path) -> None:
+    from linnet.resources.performance import DeviceSpec
+
+    device = DeviceSpec("toy", 1 << 30, {"f32": 1e9}, 1e12, 1e12, 0.0)
+    model = memory(source(tmp_path, CONTRACTION), config(batch=8, bindings={"H": 32, "V": 64}))
+    assert [s.label for s in model.graph.steps if s.kind == "comprehension"] == ["contraction"]
+    # Its arithmetic at the device's product rate, not its bytes at its
+    # bandwidth: the generated code runs it as one `einsum`.
+    assert model.throughput(device).seconds == pytest.approx(2 * 8 * 64 * 32 / 1e9, rel=0.01)
+
+
 def test_a_slow_host_sets_the_step(tmp_path: Path) -> None:
     from dataclasses import replace
 

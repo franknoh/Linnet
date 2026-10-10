@@ -16,6 +16,10 @@ states. Reported:
 - the process prediction (`expected_peak`, with the CUDA context) against
   the device memory in use at the end (`torch.cuda.mem_get_info`).
 
+With `--time`, six more steps are timed and their median compared with the
+predicted step time, at rates calibrated on this machine
+(`linnet.resources.calibrate.profile`, measured once and kept).
+
 The errors are what this tool is for. They are reported, never folded back
 into the formulas: a constant tuned until one benchmark matches would only
 hide where the model is wrong.
@@ -26,9 +30,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from .. import ir
 from ..compiler import LinnetError
@@ -129,10 +133,24 @@ def _optimizer(name: str, parameters: list[torch.nn.Parameter]) -> torch.optim.O
     return torch.optim.AdamW(parameters, lr=1e-6, fused=True)
 
 
+@dataclass(frozen=True, slots=True)
+class Timing:
+    """A step's predicted and measured seconds."""
+
+    predicted: float
+    measured: float
+
+    @property
+    def relative(self) -> float:
+        return (self.predicted - self.measured) / self.measured
+
+
 def measure(
-    model: MemoryModel, weights: str | None = None
-) -> tuple[MemoryAnalysisResult, list[Comparison]]:
-    """Runs the configured entry on CUDA and compares it with the prediction."""
+    model: MemoryModel, weights: str | None = None, *, timed: bool = False
+) -> tuple[MemoryAnalysisResult, list[Comparison], Timing | None]:
+    """Runs the configured entry on CUDA and compares it with the
+    prediction; `timed` also times six more steps against the predicted
+    step time."""
     import torch
 
     from .. import torch as linnet_torch
@@ -260,6 +278,7 @@ def measure(
         if runtime_of is not None
         else sum(c.nbytes or 0 for c in prediction.components if c.category == Category.RUNTIME)
     )
+    timing = _timing(model, step, optimizer) if timed else None
     comparisons = [
         Comparison("graph-visible vs allocator peak", prediction.graph_peak, allocated),
         Comparison(
@@ -269,13 +288,55 @@ def measure(
         Comparison("runtime vs outside the allocator", runtime, outside),
         Comparison("whole process vs device in use", prediction.expected_peak, used),
     ]
-    return prediction, comparisons
+    return prediction, comparisons, timing
+
+
+def _timing(
+    model: MemoryModel, step: Callable[[], None], optimizer: torch.optim.Optimizer | None
+) -> Timing:
+    """The median of six timed steps against the predicted step time. The
+    first process measures this machine's rates when none are kept yet."""
+    import statistics
+    import time
+
+    import torch
+    import torch.distributed as dist
+
+    from .calibrate import profile
+
+    config = model.config
+    training = config.training
+    devices = config.tensor_parallel * config.pipeline_parallel
+    devices *= training.shards if training is not None else 1
+    # The others wait on the host, leaving the GPUs to the calibration.
+    host = cast("ProcessGroup", dist.new_group(backend="gloo")) if dist.is_initialized() else None
+    if host is not None and dist.get_rank() != 0:
+        dist.barrier(group=host)
+    spec = profile(devices)
+    if host is not None and dist.get_rank() == 0:
+        dist.barrier(group=host)
+    seconds: list[float] = []
+    for _ in range(6):
+        if dist.is_initialized():
+            dist.barrier()
+        torch.cuda.synchronize()
+        begin = time.perf_counter()
+        step()
+        if optimizer is not None:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+        seconds.append(time.perf_counter() - begin)
+    return Timing(model.throughput(spec).seconds, statistics.median(seconds))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m linnet.resources.validate")
     add_arguments(parser)
     parser.add_argument("--weights", help="a checkpoint to load (default: zero weights)")
+    parser.add_argument(
+        "--time", action="store_true", help="also compare the step time with the prediction"
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     import os
 
@@ -298,7 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             std_root=args.std,
             bindings=args.weights is not None,
         )
-        prediction, comparisons = measure(model, args.weights)
+        prediction, comparisons, timing = measure(model, args.weights, timed=args.time)
     except LinnetError as error:
         print(f"linnet: {error}", file=sys.stderr)
         return 1
@@ -315,12 +376,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             for c in comparisons
         ],
     }
+    if timing is not None:
+        report["step"] = {
+            "predicted": timing.predicted,
+            "measured": timing.measured,
+            "relative": timing.relative,
+        }
     lines: list[str] = []
     for c in comparisons:
         relative = "" if c.relative is None else f"  error {c.relative * 100:+.1f}%"
         lines.append(
             f"{c.name:<40} predicted {format_bytes(c.predicted):>12}  measured "
             f"{format_bytes(c.measured):>12}{relative}"
+        )
+    if timing is not None:
+        lines.append(
+            f"{'step time':<40} predicted {timing.predicted * 1e3:>9.2f} ms  measured "
+            f"{timing.measured * 1e3:>9.2f} ms  error {timing.relative * 100:+.1f}%"
         )
     reports: list[dict[str, object]] = [report]
     texts: list[list[str]] = [lines]
