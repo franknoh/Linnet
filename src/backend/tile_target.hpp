@@ -95,6 +95,8 @@ protected:
     // `a @ b`, two 2-D tiles, accumulated in `f32`.
     virtual std::string
     dot(const std::string& a, const std::string& b, bool full_precision) const = 0;
+    // The product of a tile's elements along `axis`.
+    virtual std::string product(const std::string& value, std::int64_t axis) const = 0;
     // ---- shared
 
     std::string define(const std::string& expression);

@@ -22,6 +22,7 @@ from linnet.compiler import find_compiler
 REPO = Path(__file__).resolve().parents[3]
 ATOMICS = REPO / "spec-tests/valid/031_kernel_atomics.linnet"
 SCANS = REPO / "spec-tests/valid/032_cumsum.linnet"
+PRODUCTS = REPO / "spec-tests/valid/033_kernel_prod.linnet"
 # Set by conftest.py without a GPU, before Triton loaded: Triton then runs
 # kernels in its interpreter.
 TRITON_INTERPRETS = os.environ.get("TRITON_INTERPRET") == "1"
@@ -219,3 +220,22 @@ def test_tile_scans() -> None:
         assert "pl.pallas_call" in text
         (got,) = run(x)
         np.testing.assert_allclose(np.asarray(got), want, rtol=1e-5, atol=1e-5)
+
+
+def test_tile_products() -> None:
+    # Each row's product within the tile: `tl.reduce` with a multiplication
+    # in Triton, `jnp.prod` in Pallas; rows and columns past the edges masked.
+    import numpy as np
+
+    x = (1 + 0.1 * np.random.default_rng(6).standard_normal((7, 40))).astype(np.float32)
+    want = np.prod(x, axis=1)
+    if TRITON_INTERPRETS and importlib.util.find_spec("triton") is not None:
+        text, run = _module(PRODUCTS, "equivalent", "R=7", "C=40")
+        assert "tl.reduce(" in text
+        (got,) = run(torch.tensor(x))
+        np.testing.assert_allclose(cast(torch.Tensor, got).numpy(), want, rtol=1e-5)
+    if importlib.util.find_spec("jax") is not None:
+        text, run = _module(PRODUCTS, "equivalent", "R=7", "C=40", target="jax")
+        assert "pl.pallas_call" in text
+        (got,) = run(x)
+        np.testing.assert_allclose(np.asarray(got), want, rtol=1e-5)
