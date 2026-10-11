@@ -372,11 +372,15 @@ batches that learn nothing.
 - Over a mesh, split the engine's model over the same devices
   (`model.shard(mesh)`). An engine on one of them holds a whole model
   beside its part of the policy, and every weight copy goes through the
-  host.
+  host. On 4 H100s with Llama 3.1 8B, that left GPU 0 short of a training
+  step's 35 GiB.
+- A training call that a device has too little memory for stops before it
+  runs, with an error naming the device. A device that ran out mid-call
+  would leave the others waiting in a collective for ever.
 - Leave XLA's default memory fraction when the engine and the policy share
   devices. Their collectives need memory outside XLA's pool: with
   `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`, the 4-GPU run stopped in its first
-  collective.
+  collective. A fraction over 0.9 on several GPUs warns.
 
 ## Compared with TRL
 

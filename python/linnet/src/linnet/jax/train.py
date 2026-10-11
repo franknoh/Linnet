@@ -28,7 +28,7 @@ import contextlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Concatenate, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Concatenate, Generic, Protocol, TypeVar, cast
 
 import jax
 import jax.numpy as jnp
@@ -60,6 +60,7 @@ _S = TypeVar("_S")  # an optimizer's state
 _A = TypeVar("_A")  # a loss's auxiliary values
 _X = TypeVar("_X")  # a function's arguments
 _R = TypeVar("_R")  # a function's result
+_T = TypeVar("_T")  # a compiled program's result
 
 
 class Optimizer(Protocol):
@@ -199,15 +200,18 @@ def train(
     else:
         # The parts stay where they are, step after step.
         whole = NamedSharding(mesh, PartitionSpec())
-        compiled = jax.jit(
-            update,
-            donate_argnums=(0, 1),
-            out_shardings=(
-                jax.tree.map(lambda x: x.sharding, trained),
-                jax.tree.map(lambda x: x.sharding, state),
-                whole,
-                whole,
+        compiled = _Fitted(
+            jax.jit(
+                update,
+                donate_argnums=(0, 1),
+                out_shardings=(
+                    jax.tree.map(lambda x: x.sharding, trained),
+                    jax.tree.map(lambda x: x.sharding, state),
+                    whole,
+                    whole,
+                ),
             ),
+            mesh,
         )
     history = History()
     step = start
@@ -356,18 +360,16 @@ class Learner:
             self.dtypes,
             self.gathered,
         )
-        compiled = jax.jit(
-            jax.value_and_grad(
-                lambda trained, frozen, *args: spread(trained, frozen, args), has_aux=True
-            )
+        compiled = _Fitted(
+            jax.jit(
+                jax.value_and_grad(
+                    lambda trained, frozen, *args: spread(trained, frozen, args), has_aux=True
+                )
+            ),
+            self.mesh,
         )
-        mesh = self.mesh
 
-        def call(*arguments: object) -> tuple[tuple[jax.Array, _A], _Tree]:
-            with _partitioner(mesh):
-                return compiled(*arguments)
-
-        return call
+        return compiled
 
     def forward(
         self,
@@ -397,11 +399,10 @@ class Learner:
                 _gathered_by_code(self._model, given, {}),
                 reduce=False,
             )
-            jitted = jax.jit(lambda values, *args: spread({}, values, args))
+            jitted = _Fitted(jax.jit(lambda values, *args: spread({}, values, args)), mesh)
 
             def call_given(*args: object) -> _R:
-                with _partitioner(mesh):
-                    return jitted(given, *args)
+                return jitted(given, *args)
 
             return call_given
         spread = _spread(
@@ -413,11 +414,10 @@ class Learner:
             self.gathered,
             reduce=False,
         )
-        own = jax.jit(lambda trained, frozen, *args: spread(trained, frozen, args))
+        own = _Fitted(jax.jit(lambda trained, frozen, *args: spread(trained, frozen, args)), mesh)
 
         def call(*args: object) -> _R:
-            with _partitioner(mesh):
-                return own(self.trained, self.frozen, *args)
+            return own(self.trained, self.frozen, *args)
 
         return call
 
@@ -609,6 +609,107 @@ def _partitioner(mesh: Mesh | None) -> contextlib.AbstractContextManager[None]:
 
     shardy = getattr(jax_config, "use_shardy_partitioner", None)
     return contextlib.nullcontext() if shardy is None else shardy(False)
+
+
+class _Memory(Protocol):
+    """What one call of a compiled program holds on each device besides
+    its arguments (`Compiled.memory_analysis()`)."""
+
+    temp_size_in_bytes: int
+    output_size_in_bytes: int
+    alias_size_in_bytes: int
+
+
+class _Compiled(Protocol):
+    def memory_analysis(self) -> object: ...
+
+
+class _Lowered(Protocol):
+    def compile(self) -> _Compiled: ...
+
+
+class _Device(Protocol):
+    def memory_stats(self) -> Mapping[str, int] | None: ...
+
+
+class _Fitted(Generic[_T]):
+    """A program compiled over `mesh` whose first call compares what one
+    call needs on a device with what each device has left in XLA's pool,
+    and stops with the device short of it: a device that runs out of
+    memory mid-call leaves the others waiting in a collective for ever,
+    and XLA reports nothing (an engine's whole model on one GPU beside its
+    part of the policy did, 2026-10-11)."""
+
+    def __init__(self, jitted: Callable[..., _T], mesh: Mesh) -> None:
+        self.jitted = jitted
+        self.mesh = mesh
+        self.checked = False
+
+    def __call__(self, *arguments: object) -> _T:
+        with _partitioner(self.mesh):
+            if not self.checked:
+                self.checked = True
+                devices = cast("list[_Device]", list(self.mesh.devices.flat))
+                _warn_pool(devices)
+                memory = _memory_of(self.jitted, arguments)
+                if memory is not None:
+                    check_memory(memory, devices)
+            return self.jitted(*arguments)
+
+
+def _warn_pool(devices: Sequence[_Device]) -> None:
+    """Warns when XLA's pool leaves NCCL too little of a GPU: collectives
+    allocate outside it, and a 4-GPU run with 95% in the pool stopped in its
+    first one (2026-10-04 and -11, H100)."""
+    import os
+    import warnings
+
+    fraction = float(os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.75"))
+    gpus = sum("cuda" in str(device).lower() or "gpu" in str(device).lower() for device in devices)
+    if gpus > 1 and fraction > 0.9:
+        warnings.warn(
+            f"XLA_PYTHON_CLIENT_MEM_FRACTION={fraction} leaves collectives little memory outside "
+            "XLA's pool; a run over several GPUs can stop in its first collective",
+            stacklevel=3,
+        )
+
+
+def _memory_of(jitted: Callable[..., object], arguments: Sequence[object]) -> _Memory | None:
+    """One call's memory, from the program compiled for these arguments
+    (which the call then reuses), where the backend reports it."""
+    lower = getattr(jitted, "lower", None)
+    if lower is None:
+        return None
+    try:
+        compiled = cast("Callable[..., _Lowered]", lower)(*arguments).compile()
+        return cast("_Memory | None", compiled.memory_analysis())
+    except (NotImplementedError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def check_memory(memory: _Memory, devices: Sequence[_Device]) -> None:
+    """Raises `LinnetError` naming the devices whose free memory in XLA's
+    pool is less than one call's `memory` needs on each device."""
+    from ..compiler import LinnetError
+
+    need = memory.temp_size_in_bytes + memory.output_size_in_bytes - memory.alias_size_in_bytes
+    short: list[str] = []
+    for device in devices:
+        stats = device.memory_stats()
+        if not stats or "bytes_limit" not in stats:
+            return  # a backend without an allocator to ask (the CPU)
+        free = stats["bytes_limit"] - stats.get("bytes_in_use", 0)
+        if need > free:
+            short.append(f"{device} ({free / 2**30:.1f} GiB free)")
+    if short:
+        raise LinnetError(
+            f"one training call needs {need / 2**30:.1f} GiB on every device, more than "
+            + ", ".join(short)
+            + " has left in XLA's pool; it would stop the other devices in their first "
+            "collective. Free memory there (an engine's model split over the mesh, "
+            "`model.shard(mesh)`, holds a part on each device), train with `remat=True`, or "
+            "raise XLA_PYTHON_CLIENT_MEM_FRACTION"
+        )
 
 
 def merge_lora(model: SourceFunction, parameters: Mapping[str, jax.Array]) -> dict[str, jax.Array]:
