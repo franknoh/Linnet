@@ -5,14 +5,8 @@ program as typed objects, plus a backend per framework behind an extra.
 
 ## Install
 
-```bash
-uv add "linnet-lang[torch]"     # linnet.torch
-uv add "linnet-lang[jax]"       # linnet.jax
-uv add "linnet-lang[flax]"      # linnet.jax.load_nnx
-uv add "linnet-lang[onnx]"      # linnet.onnx (add onnxruntime or onnxruntime-gpu to run models)
-uv add "linnet-lang[nest]"      # linnet.nest
-```
-
+`uv add "linnet-lang[torch]"`, with the extras for the frameworks you use:
+[Installation](https://linnet.franknoh.dev/guide/installation) lists them.
 The wheels carry the `linnet` compiler. The package runs `LINNET_BIN` if it
 is set, then the wheel's compiler, then the one on `PATH`. In a checkout,
 `uv sync --all-extras` in `python/linnet` installs every backend and test
@@ -28,6 +22,9 @@ dependency.
 | `linnet.torch`, `linnet.jax`, `linnet.onnx` | backends for [PyTorch](torch.md), [JAX and Flax](jax.md), [ONNX](onnx.md) |
 | `linnet.triton`, `linnet.hf`, `linnet.gguf` | [integrations](integrations.md): Triton Inference Server, Transformers (vLLM, SGLang, TGI), GGUF and Ollama |
 | `linnet.packing` | examples packed into fixed-size batches as numpy arrays, for either framework |
+| `linnet.quant` | [quantized checkpoints](quantization.md): int8, FP8 and 4-bit weights from a float or GPTQ/AWQ checkpoint |
+| `linnet.serve` | [`linnet serve`](integrations.md#continuous-batching): a model behind OpenAI's API, requests batched continuously |
+| `linnet.resources` | [memory and step-time estimates](memory.md) before a run |
 | `linnet.jax.train` | [training in JAX](training.md#jax) |
 | `linnet.train` | [supervised fine-tuning](training.md#supervised-fine-tuning) over packed sequences; `linnet.train.grpo`, [reinforcement learning](training.md#reinforcement-learning); `linnet.train.dpo`, [preferences](training.md#preferences) |
 
