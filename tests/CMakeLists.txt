@@ -42,6 +42,7 @@ linnet_add_test(spec_semantic_test spec/spec_semantic_test.cpp)
 target_compile_definitions(spec_semantic_test PRIVATE
     LINNET_SPEC_TESTS_DIR="${PROJECT_SOURCE_DIR}/spec-tests")
 
+# `check` over a directory, every package under it.
 add_test(NAME cli_check_examples COMMAND linnet check ${PROJECT_SOURCE_DIR}/examples)
 
 linnet_add_test(loader_test unit/loader_test.cpp)
@@ -94,9 +95,9 @@ linnet_add_test(lsp_test unit/lsp_test.cpp)
 
 add_test(NAME stdlib_checks COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib)
 add_test(NAME stdlib_is_formatted COMMAND linnet fmt --check ${PROJECT_SOURCE_DIR}/stdlib)
-add_test(NAME example_transformer_checks
+add_test(NAME fixture_transformer_checks
     COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/tests/fixtures/tiny-transformer)
-add_test(NAME example_models_check
+add_test(NAME models_check
     COMMAND linnet lint --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/examples/01-llama
             ${PROJECT_SOURCE_DIR}/tests/fixtures/gpt2 ${PROJECT_SOURCE_DIR}/examples/02-vit
             ${PROJECT_SOURCE_DIR}/examples/03-clip ${PROJECT_SOURCE_DIR}/tests/fixtures/functions)

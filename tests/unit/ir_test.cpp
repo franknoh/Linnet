@@ -1,8 +1,6 @@
 #include "linnet/ir/ir.hpp"
-#include "linnet/ir/lower.hpp"
-#include "linnet/sema/analysis.hpp"
-#include "linnet/syntax/parser.hpp"
 
+#include "lowered.hpp"
 #include "test.hpp"
 
 #include <string>
@@ -14,22 +12,13 @@ namespace {
 // Lowers one module and returns its printed IR; verifier problems are
 // appended so that a test sees them.
 std::string lower_text(const std::string& source) {
-    SourceManager sources;
-    DiagnosticSink sink;
-    const FileId file = sources.add_file("m.linnet", source).value();
-    const ast::Ast tree = parse(sources, file, sink);
-    const ast::Ast* const modules[] = {&tree};
-    const sema::AnalysisResult analysis = sema::analyze(sources, modules, sink);
-    CHECK(!sink.has_errors());
-    if (sink.has_errors()) {
-        return {};
-    }
-    const ir::Module module = ir::lower(sources, modules, analysis.model);
-    std::string text = ir::print(module);
-    for (const std::string& problem : ir::verify(module)) {
-        text += "VERIFY: " + problem + "\n";
-    }
-    return text;
+    return test::with_lowered(source, [](ir::Module& module) {
+        std::string text = ir::print(module);
+        for (const std::string& problem : ir::verify(module)) {
+            text += "VERIFY: " + problem + "\n";
+        }
+        return text;
+    });
 }
 
 } // namespace

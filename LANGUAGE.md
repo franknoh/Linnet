@@ -453,7 +453,7 @@ Import with `use std.<module>::{...}`. Blocks take their weights as
 | `std.nn.moe` | `linear_experts`, `linear_experts_shared`, `combine_experts` |
 | `std.nn.parallel` | `all_reduce`, `all_gather` across tensor-parallel shards; `shared` (its gradient summed across them) |
 | `std.linalg` | `dot`, `outer`, `matmul`, `batched_matmul`, `transpose` |
-| `std.random` | keys are `Tensor[2; i64]`: `split<N>`, `fold_in`, `uniform<N, T>`, `normal<N, T>`, `categorical(key, logits)` |
+| `std.random` | keys are `Tensor[2; i64]`: `split<N>`, `fold_in`, `uniform<N, T>`, `normal<N, T>`, `categorical(key, logits)`; the raw words `bits<N>` and `threefry2x32` |
 | `std.quant` | `Int8Linear`, `Int8GroupLinear`, `Fp8Linear`, `Fp8BlockLinear`, `Int4Linear`, `Int4GroupLinear`, `dequantize_*`, MXFP4 experts |
 
 The sources in `stdlib/` are short and readable; read one before guessing
