@@ -448,7 +448,9 @@ def _w8a16_kernel(
     live_m = rm < rows
     live_n = rn < width
     acc = tl.zeros((block_m, block_n), dtype=tl.float32)
-    for k0 in range(part * span, (part + 1) * span, block_k):
+    for start in range(part * span, (part + 1) * span, block_k):
+        # A stretch starts at a whole step: Triton reads it in wide loads.
+        k0 = tl.multiple_of(start, block_k)
         x = tl.load(
             x_ptr + rm[:, None] * depth + (k0 + rk)[None, :], mask=live_m[:, None], other=0.0
         )
@@ -825,7 +827,8 @@ def _int8_mm_kernel(
     live_m = rm < rows
     live_n = rn < width
     acc = tl.zeros((block_m, block_n), dtype=tl.int32)
-    for k0 in range(part * span, (part + 1) * span, block_k):
+    for start in range(part * span, (part + 1) * span, block_k):
+        k0 = tl.multiple_of(start, block_k)
         x = tl.load(x_ptr + rm[:, None] * depth + (k0 + rk)[None, :], mask=live_m[:, None], other=0)
         w = tl.load(
             weight_ptr + rn[None, :].to(tl.int64) * depth + (k0 + rk)[:, None],
