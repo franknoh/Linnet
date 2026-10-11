@@ -164,7 +164,7 @@ def test_torch_multiplies_dequantized(
 def test_jax_multiplies_dequantized(
     model: tuple[Path, Path, dict[str, NDArray[np.float32]]], kind: str
 ) -> None:
-    jax = pytest.importorskip("jax")
+    pytest.importorskip("jax")
     from linnet.jax import load as load_jax
     from linnet.jax import load_source
 
@@ -176,10 +176,9 @@ def test_jax_multiplies_dequantized(
             weights=weights,
             std_root=STDLIB,
             entry=ENTRIES[kind],
+            numerics="exact",  # f32 products in f32 on a GPU too
         )
-        # f32 products in f32 on a GPU too (XLA's default there is coarser).
-        with jax.default_matmul_precision("highest"):
-            got = np.asarray(function(_input()))
+        got = np.asarray(function(_input()))
         np.testing.assert_allclose(got, _input() @ dequantized[kind].T, rtol=1e-5, atol=1e-4)
 
 
