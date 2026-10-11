@@ -152,4 +152,11 @@ protected:
     std::size_t next_ = 0;
 };
 
+// Options the generated Python cannot honour together, as the error to
+// report: adapters on prepared weights (a joined or prepared weight is no
+// longer the parameter an adapter names), adapters without a rank, and
+// sharded weights with `prepare` (it would gather each whole once and keep
+// it). Empty when they fit.
+std::optional<std::string> python_options_conflict(const GraphExportOptions& options);
+
 } // namespace linnet::backend

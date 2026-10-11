@@ -757,11 +757,15 @@ public:
     bool supports_remat() const override { return true; }
 
     void begin_remat() override {
-        body_ += indent_ + "# remat " + std::to_string(remats_) + " begin\n";
+        // Regions nest (a layer's block inside a recomputed layer): each end
+        // closes the innermost open one.
+        open_remats_.push_back(remats_++);
+        body_ += indent_ + "# remat " + std::to_string(open_remats_.back()) + " begin\n";
     }
 
     void end_remat() override {
-        body_ += indent_ + "# remat " + std::to_string(remats_++) + " end\n";
+        body_ += indent_ + "# remat " + std::to_string(open_remats_.back()) + " end\n";
+        open_remats_.pop_back();
     }
 
     std::string finish(const std::vector<TensorInfo>& results,
@@ -966,6 +970,7 @@ private:
     bool uses_gather_ = false;                // the module imports `linnet.jax.fsdp`
     std::vector<std::string> gathered_paths_; // parameters gathered (`GATHERED`)
     std::size_t remats_ = 0;                  // recomputed regions so far
+    std::vector<std::size_t> open_remats_;    // regions begun and not yet ended
 
     struct Loop {
         std::size_t id = 0;
@@ -1008,10 +1013,8 @@ private:
 
 std::expected<std::string, std::string> export_jax_source(ir::Module& module,
                                                           const JaxSourceOptions& options) {
-    if (!options.lora.empty() && (options.prepare || options.lora_rank <= 0)) {
-        return std::unexpected(options.prepare
-                                   ? "adapters need the weights unprepared (no --prepare)"
-                                   : "adapters need a positive rank");
+    if (const auto conflict = python_options_conflict(options)) {
+        return std::unexpected(*conflict);
     }
     JaxTarget target(options);
     return export_graph(module, options, target);

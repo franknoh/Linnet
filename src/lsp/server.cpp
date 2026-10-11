@@ -242,9 +242,7 @@ struct Server::State {
             FetchOptions fetch;
             fetch.offline = true;
             fetch.write_lock = false;
-            if (auto checkouts = fetch_dependencies(root, fetch)) {
-                loader.git_checkouts = std::move(*checkouts);
-            }
+            loader.git_checkouts = fetch_dependencies(root, fetch).checkouts;
         }
         document.program = load_program(*document.sources, files, loader, sink);
         document.file = document.program.modules.empty() ? invalid_file_id

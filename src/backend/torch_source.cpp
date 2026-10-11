@@ -71,17 +71,19 @@ std::vector<std::string> call_arguments(std::string_view arguments) {
     return parts;
 }
 
-// Each 8-bit layer's call `    vN = _K_linear(x, W, S, B, R)` as two: its
-// operands, `    vM = _K_operands(W, S, R)` (int8 groups take no `R`), which
+// Each 8-bit layer's call `vN = _K_linear(x, W, S, B, R)` as two: its
+// operands, `vM = _K_operands(W, S, R)` (int8 groups take no `R`), which
 // read only weights, so `prepare` computes them once; and
-// `    vN = _K_linear(x, vM, B)`. Calls on the same weights share operands.
+// `vN = _K_linear(x, vM, B)`. Every call is split, at any indent (a runtime
+// loop's body included); calls on the same weights at the top level share
+// their operands.
 std::string split_eight_bit_operands(const std::string& body) {
     std::size_t highest = 0;
     for (const std::string& name : value_names(body)) {
         highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
     }
     const std::string prefix = "    ";
-    std::map<std::string, std::string> shared; // operands -> their name
+    std::map<std::string, std::string> shared; // top-level operands -> their name
     std::string out;
     out.reserve(body.size());
     std::size_t start = 0;
@@ -96,8 +98,10 @@ std::string split_eight_bit_operands(const std::string& body) {
             equals == std::string::npos || open == std::string::npos
                 ? std::nullopt
                 : eight_bit_call(std::string_view(line).substr(equals + 3, open - equals - 3));
+        const std::size_t first = line.find_first_not_of(' ');
+        const std::string indent = line.substr(0, first == std::string::npos ? 0 : first);
         std::vector<std::string> parts;
-        if (kind && line.starts_with(prefix) && line[prefix.size()] != ' ' && line.ends_with(")")) {
+        if (kind && indent.size() >= prefix.size() && line.ends_with(")")) {
             parts = call_arguments(std::string_view(line).substr(open + 1, line.size() - open - 2));
         }
         if (!kind || parts.size() != 5) {
@@ -116,20 +120,26 @@ std::string split_eight_bit_operands(const std::string& body) {
             operands += parts[4];
         }
         operands += ")";
-        auto found = shared.find(operands);
-        if (found == shared.end()) {
-            const std::string name = "v" + std::to_string(++highest);
-            out += prefix;
+        // A loop body's operands stay in the body: a name it defines is not
+        // one the top level may read.
+        const bool top = indent == prefix;
+        auto found = top ? shared.find(operands) : shared.end();
+        std::string name = found == shared.end() ? "" : found->second;
+        if (name.empty()) {
+            name = "v" + std::to_string(++highest);
+            out += indent;
             out += name;
             out += " = ";
             out += operands;
             out += "\n";
-            found = shared.emplace(operands, name).first;
+            if (top) {
+                shared.emplace(operands, name);
+            }
         }
         out += line.substr(0, open + 1);
         out += parts[0];
         out += ", ";
-        out += found->second;
+        out += name;
         out += ", ";
         out += parts[3];
         out += ")\n";
@@ -2264,13 +2274,8 @@ private:
 
 std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                                             const TorchSourceOptions& options) {
-    if (!options.lora.empty() && (options.prepare || options.lora_rank <= 0)) {
-        return std::unexpected(options.prepare
-                                   ? "adapters need the weights unprepared (no --prepare)"
-                                   : "adapters need a positive rank");
-    }
-    if (!options.fully_shard.empty() && options.prepare) {
-        return std::unexpected("sharded weights are gathered as they are used (no --prepare)");
+    if (const auto conflict = python_options_conflict(options)) {
+        return std::unexpected(*conflict);
     }
     TorchTarget target(options);
     return export_graph(module, options, target);

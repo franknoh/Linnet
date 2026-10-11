@@ -22,7 +22,7 @@ and writes text, and runs no model.
 Exit status is 0 on success, 1 for errors in the input, 2 for a bad command
 line. `--std <dir>` or `LINNET_STD` sets the standard library directory.
 `plan`, `explain`, and the exporters optimize the program first;
-`--no-optimize` skips that.
+`plan --no-optimize` skips that.
 
 ## Files Linnet keeps
 

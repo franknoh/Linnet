@@ -272,8 +272,7 @@ int run_python_module(const char* module,
     for (const std::string_view arg : args) {
 #ifdef _WIN32
         // The spawned command line is the words joined with spaces.
-        const bool quote = arg.empty() || arg.find_first_of(" \t") != std::string_view::npos;
-        words.push_back(quote ? "\"" + std::string(arg) + "\"" : std::string(arg));
+        words.push_back(command_line_word(arg));
 #else
         words.emplace_back(arg);
 #endif
@@ -345,12 +344,11 @@ LoaderOptions loader_for(const std::vector<std::filesystem::path>& files,
     const char* offline = std::getenv("LINNET_OFFLINE"); // NOLINT(concurrency-mt-unsafe)
     fetch.offline = offline != nullptr && std::string_view(offline) == "1";
     fetch.note = note;
-    auto checkouts = fetch_dependencies(root, fetch);
-    if (checkouts) {
-        options.git_checkouts = std::move(*checkouts);
-    } else {
-        note(checkouts.error());
+    Fetched fetched = fetch_dependencies(root, fetch);
+    for (const std::string& failure : fetched.failures) {
+        note(failure);
     }
+    options.git_checkouts = std::move(fetched.checkouts);
     return options;
 }
 
@@ -383,12 +381,11 @@ int run_fetch(std::span<const std::string_view> args, bool update) {
     fetch.update = update;
     fetch.offline = offline;
     fetch.note = note;
-    const auto checkouts = fetch_dependencies(root, fetch);
-    if (!checkouts) {
-        note(checkouts.error());
-        return exit_failure;
+    const Fetched fetched = fetch_dependencies(root, fetch);
+    for (const std::string& failure : fetched.failures) {
+        note(failure);
     }
-    return exit_success;
+    return fetched.failures.empty() ? exit_success : exit_failure;
 }
 
 // Files and everything they import, parsed and checked: `analysis` is set

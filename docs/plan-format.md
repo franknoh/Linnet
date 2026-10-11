@@ -64,3 +64,6 @@ Kinds and attributes follow the Core IR operations in
   declaration order
 - `state.read`, `state.write`: the member
 - `while`: a condition region and a body region
+- `for`: operands `start`, `stop`, then the carried values; one body region
+  whose arguments are the index and the carried values, and whose last
+  yielded value, when the loop has a value, is stacked into its last result

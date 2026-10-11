@@ -64,6 +64,15 @@ from .weights import (
     write_safetensors,
 )
 
+# Where PyTorch switches 8-bit linear layers' kernels (`linnet.torch.quantized`),
+# measured on an H100 over Llama 3.1 8B's projections, and read by the
+# resource model too: up to `FEW_ROWS` a call's rows multiply the weight as it
+# is (rounding them to 8 bits pays only past it), and up to `TILED_ROWS`
+# Linnet's tensor-core kernel beats cuBLAS over the weight dequantized for
+# the call.
+FEW_ROWS = 32
+TILED_ROWS = 64
+
 
 def quantize_int4_groups(
     weight: np.ndarray, group: int = 128
@@ -334,9 +343,13 @@ def import_quantized(
 
 
 __all__ = [
+    "FEW_ROWS",
+    "TILED_ROWS",
     "dequantize_int4_groups",
+    "dequantize_int8_groups",
     "import_quantized",
     "pack_int4_groups",
     "quantize_checkpoint",
     "quantize_int4_groups",
+    "quantize_int8_groups",
 ]

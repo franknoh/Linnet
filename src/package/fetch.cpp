@@ -1,6 +1,7 @@
 #include "linnet/package/fetch.hpp"
 
 #include "linnet/package/toml.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -45,30 +46,6 @@ char** inherited_environment() {
 #endif
 }
 
-#ifdef _WIN32
-// One argument as the C runtime splits a command line back into words:
-// quoted when it has spaces or quotes, backslashes before a quote doubled.
-std::string quoted(const std::string& argument) {
-    if (!argument.empty() && argument.find_first_of(" \t\n\v\"") == std::string::npos) {
-        return argument;
-    }
-    std::string out = "\"";
-    std::size_t backslashes = 0;
-    for (const char c : argument) {
-        if (c == '\\') {
-            ++backslashes;
-            continue;
-        }
-        out.append(c == '"' ? (2 * backslashes) + 1 : backslashes, '\\');
-        out += c;
-        backslashes = 0;
-    }
-    out.append(2 * backslashes, '\\');
-    out += '"';
-    return out;
-}
-#endif
-
 // Runs `arguments` (the program first, found on PATH) with `extra` set in
 // its environment, as a program of its own: no shell reads the words, so a
 // URL or a name from a manifest is never a command. Returns the exit status,
@@ -94,7 +71,7 @@ int run(const std::vector<std::string>& arguments, const Environment& extra) {
     words.reserve(arguments.size());
     for (const std::string& argument : arguments) {
 #ifdef _WIN32
-        words.push_back(quoted(argument));
+        words.push_back(command_line_word(argument));
 #else
         words.push_back(argument);
 #endif
@@ -464,15 +441,15 @@ std::string lockfile_text(const Lockfile& lock) {
     return text;
 }
 
-std::expected<std::map<std::string, fs::path>, std::string>
-fetch_dependencies(const fs::path& root, const FetchOptions& options) {
+Fetched fetch_dependencies(const fs::path& root, const FetchOptions& options) {
     const fs::path lock_path = root / "linnet.lock";
+    Fetched fetched;
     auto locked = read_lockfile(lock_path);
     if (!locked) {
-        return std::unexpected(locked.error());
+        fetched.failures.push_back(locked.error());
+        return fetched;
     }
     Fetcher fetcher(options, *locked);
-    std::map<std::string, fs::path> checkouts;
     std::vector<fs::path> queue = {root};
     std::set<std::string> visited;
     while (!queue.empty()) {
@@ -485,7 +462,8 @@ fetch_dependencies(const fs::path& root, const FetchOptions& options) {
         }
         auto manifest = read_manifest(directory / "linnet.toml");
         if (!manifest) {
-            return std::unexpected(manifest.error());
+            fetched.failures.push_back(manifest.error());
+            continue;
         }
         for (const auto& [key, dependency] : manifest->dependencies) {
             if (!dependency.git) {
@@ -494,23 +472,26 @@ fetch_dependencies(const fs::path& root, const FetchOptions& options) {
             }
             auto commit = fetcher.resolve(*dependency.git);
             if (!commit) {
-                return std::unexpected("dependency `" + key + "`: " + commit.error());
+                fetched.failures.push_back("dependency `" + key + "`: " + commit.error());
+                continue;
             }
-            checkouts[dependency.git->key()] =
+            fetched.checkouts[dependency.git->key()] =
                 repository_directory(dependency.git->url) / "snapshots" / *commit;
             queue.push_back(package_directory(*dependency.git, *commit));
         }
     }
     const std::string text = lockfile_text(fetcher.resolved());
     const std::optional<std::string> before = read_text(lock_path);
-    if (options.write_lock && before != text && (before || !fetcher.resolved().empty())) {
+    // A failed dependency's pin stays in the lock until it resolves again.
+    if (options.write_lock && fetched.failures.empty() && before != text &&
+        (before || !fetcher.resolved().empty())) {
         std::ofstream stream(lock_path, std::ios::binary | std::ios::trunc);
         stream << text;
         if (!stream) {
-            return std::unexpected("cannot write " + lock_path.generic_string());
+            fetched.failures.push_back("cannot write " + lock_path.generic_string());
         }
     }
-    return checkouts;
+    return fetched;
 }
 
 bool has_git_dependencies(const fs::path& root) {

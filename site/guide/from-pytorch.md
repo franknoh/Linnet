@@ -97,7 +97,8 @@ For ONNX and JAX, use `linnet.onnx.import_onnx` and `linnet.jax.export_linnet`.
 | Performance | native kernels | the same kernels from generated source, replayable as CUDA graphs, or XLA (Llama 3.1 8B decodes one request at 167 tok/s on an H100, transformers compiled at 110); see [Benchmarks](/benchmarks) |
 
 The trade: no Python inside the model and no data-dependent shapes. Loops
-are `while` over scalars or compile-time `static for`.
+are `while` over scalars, counted `for` (a scan when it yields), or
+compile-time `static for`.
 
 ## Where things live
 

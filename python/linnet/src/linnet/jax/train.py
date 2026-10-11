@@ -307,7 +307,10 @@ class Learner:
                 optimizer.init,
                 out_shardings=jax.tree.map(lambda s: _split_as(mesh, s.shape), shapes),
             )(self.trained)
-        self._apply: Callable[[_Tree, object, _Tree], tuple[_Tree, object, jax.Array]] | None = None
+        # The compiled update, by the clip it was compiled with.
+        self._apply: dict[
+            float | None, Callable[[_Tree, object, _Tree], tuple[_Tree, object, jax.Array]]
+        ] = {}
 
     def values(
         self, trained: dict[str, jax.Array], frozen: dict[str, jax.Array] | None = None
@@ -439,7 +442,7 @@ class Learner:
     def step(self, grads: dict[str, jax.Array], clip: float | None) -> float:
         """Clips `grads` to that global norm at most and applies the
         optimizer to the trained parameters; returns the norm before."""
-        if self._apply is None:
+        if clip not in self._apply:
 
             def apply(
                 trained: _Tree, state: object, grads: _Tree
@@ -452,8 +455,8 @@ class Learner:
                 trained = jax.tree.map(lambda p, u: p + u.astype(p.dtype), trained, updates)
                 return trained, state, norm
 
-            self._apply = jax.jit(apply, donate_argnums=(0, 1))
-        self.trained, self.state, norm = self._apply(self.trained, self.state, grads)
+            self._apply[clip] = jax.jit(apply, donate_argnums=(0, 1))
+        self.trained, self.state, norm = self._apply[clip](self.trained, self.state, grads)
         return float(norm)
 
 
@@ -776,7 +779,12 @@ def _write(path: Path, arrays: Mapping[str, ArrayLike]) -> None:
     entries: list[tuple[str, str, tuple[int, ...], bytes]] = []
     for name, array in arrays.items():
         host = np.ascontiguousarray(np.asarray(jax.device_get(array)))
-        code = BY_NUMPY[host.dtype.name].safetensors
+        record = BY_NUMPY.get(host.dtype.name)
+        if record is None:
+            from ..compiler import LinnetError
+
+            raise LinnetError(f"cannot write `{name}`: SafeTensors has no {host.dtype.name}")
+        code = record.safetensors
         entries.append((name, code, tuple(host.shape), host.tobytes()))
     write_safetensors(path, entries)
 

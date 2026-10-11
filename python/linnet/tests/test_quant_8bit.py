@@ -283,6 +283,47 @@ def test_a_checkpoint_quantizes_to_int8_groups(tmp_path: Path) -> None:
     np.testing.assert_allclose(got, x @ dequantize_int8_groups(q, scale).T, rtol=1e-5, atol=1e-4)
 
 
+LOOPED = """\
+module tests.eight_loop
+
+use std.quant::{Int8Linear}
+
+pub block Model<In: Dim, T: Float = f32> {
+    sub proj: Int8Linear<In, In, T>
+
+    pub entry forward<B: Dim>(x: Tensor[B, In; T]) -> Tensor[B, In; T] {
+        var h = x
+        for t in 0..3 {
+            h = proj.forward(h)
+        }
+        return h
+    }
+}
+"""
+
+
+@pytest.mark.parametrize("compile", [False, True])
+def test_a_layer_in_a_loop(tmp_path: Path, compile: bool) -> None:
+    """An 8-bit layer inside a runtime `for` runs its operands' split there
+    too (the generated call once kept the unsplit form, which the runtime
+    helper cannot take)."""
+    source = tmp_path / "looped.linnet"
+    source.write_text(LOOPED, encoding="utf-8")
+    weights = tmp_path / "looped.safetensors"
+    generator = torch.Generator().manual_seed(5)
+    q, scale, dequantized = _quantize(
+        torch.randn(IN, IN, generator=generator) / 16, "rows", torch.float32
+    )
+    save_file({"proj.weight": q.contiguous(), "proj.scale": scale}, str(weights))
+    loaded = load(source, generics={"In": IN}, std_root=STDLIB, weights=weights, compile=compile)
+    x = _input()
+    want = x
+    for _ in range(3):
+        want = want @ dequantized.T
+    got = loaded.run_entry("forward", [torch.from_numpy(x)]).detach().numpy()
+    np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-4)
+
+
 def _cuda(capability: tuple[int, int]) -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability() >= capability
 

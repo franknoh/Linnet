@@ -41,7 +41,7 @@ pub op dequantize_int4<R: Dim, H: Dim, T: Float>(
 
 // A linear layer over per-row int8 weights. Its body dequantizes the weight
 // and multiplies in `T`. PyTorch on CUDA multiplies the int8 weight as it
-// is; under `numerics="fast"`, a call of more than one row also rounds each
+// is; under `numerics="fast"`, a call of more than 32 rows also rounds each
 // row of `x` to int8 with a scale of its own (the largest magnitude over
 // 127) and multiplies the two in int8.
 pub op linear_int8<*S: Shape, In: Dim, Out: Dim, T: Float>(
@@ -219,9 +219,11 @@ pub op dequantize_fp8<*S: Shape, N: Dim, T: Float>(
 }
 
 // A linear layer over per-row FP8 E4M3 weights. Its body decodes the weight
-// and multiplies in `T`; PyTorch on a GPU with FP8 products (compute
-// capability 9 or later), in bf16 under `numerics="fast"`, also rounds each
-// row of `x` to FP8 with a scale of its own, and multiplies the two in FP8.
+// and multiplies in `T`. PyTorch on a GPU that converts FP8 (compute
+// capability 8.9 or later) multiplies the FP8 weight as it is; under
+// `numerics="fast"`, with FP8 products (9.0), a call of more than 32 rows
+// also rounds each row of `x` to FP8 with a scale of its own and multiplies
+// the two in FP8.
 pub op linear_fp8<*S: Shape, In: Dim, Out: Dim, T: Float>(
     x: Tensor[*S, In; T],
     weight: Tensor[Out, In; u8],
@@ -258,7 +260,7 @@ pub op dequantize_fp8_blocks<RowBlocks: Dim, ColBlocks: Dim, Block: Dim, T: Floa
 // A linear layer over block-scaled FP8 E4M3 weights. Its body decodes the
 // weight and multiplies in `T`. PyTorch on a GPU with FP8 products
 // multiplies the FP8 weight as it is; under `numerics="fast"`, in bf16, a
-// call of more than one row also rounds each `Block` inputs of a row of `x`
+// call of more than 32 rows also rounds each `Block` inputs of a row of `x`
 // to FP8 with a scale of their own, and multiplies the two in FP8.
 pub op linear_fp8_blocks<Block: Dim, *S: Shape, RowBlocks: Dim, ColBlocks: Dim, T: Float>(
     x: Tensor[*S, ColBlocks * Block; T],

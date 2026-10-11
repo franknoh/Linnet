@@ -301,7 +301,12 @@ class LinnetModule(nn.Module):
         name: str,
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
+        compile: bool | str | None = None,
     ) -> Result:  # pyright: ignore[reportExplicitAny]
+        # The interpreter has nothing to compile: a caller that asks a
+        # compiled module for its plain source (`compile=True`, as a server
+        # does for prompts) gets the same entry.
+        del compile
         function = self.entries[name]
         params = function.params  # after `self`
         if len(params) != len(inputs):

@@ -968,9 +968,8 @@ def _slice_contiguous(op: ir.Op, env: SymEnv, shape: tuple[ex.Expr, ...]) -> boo
     position = 0
     for axis in axes:
         if "whole" in axis:
-            if narrowed:
-                pass
-            position += len(env.shape(ir.parse_shape([axis["whole"]])))
+            # A shape pack taken whole: every axis of it kept.
+            position += len(env.shape(ir.parse_shape(axis["whole"])))
             continue
         size = shape[position] if position < len(shape) else None
         position += 1

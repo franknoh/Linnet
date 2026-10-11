@@ -183,3 +183,26 @@ def test_fast_numerics_skips_f32_accumulation() -> None:
     assert "jnp.take(" in source and "mask=" not in source
     # Only the RoPE index arithmetic casts to f32; attention and the norms do not.
     assert ".astype(jnp.float32)" not in source.split("jax.nn.dot_product_attention(", 1)[1]
+
+
+def test_a_recomputed_block_inside_another_closes_in_order() -> None:
+    """`--remat layers.0 --remat layers.0.attention`: the outer region ends
+    where its block does, the layer's MLP after its attention included (the
+    inner region's end once closed it)."""
+    bindings = {"Vocab": 11, "H": 8, "Heads": 4, "KvHeads": 2, "Inner": 16, "Layers": 2}
+    bindings |= {"Batch": 1, "MaxSeq": 16, "P": 12}
+    arguments = [word for name, value in bindings.items() for word in ("--bind", f"{name}={value}")]
+    generated = run_compiler(
+        "jax",
+        "--entry",
+        "loss_packed",
+        *arguments,
+        "--remat",
+        "layers.0",
+        "--remat",
+        "layers.0.attention",
+        *std_arguments(STDLIB),
+        str(REPO / "examples/01-llama/src/lib.linnet"),
+    )
+    outer = generated.split("def _remat0():", 1)[1].split("jax.checkpoint(_remat0)", 1)[0]
+    assert "jax.nn.silu(" in outer
