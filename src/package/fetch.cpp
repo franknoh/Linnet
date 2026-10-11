@@ -1,6 +1,7 @@
 #include "linnet/package/fetch.hpp"
 
 #include "linnet/package/toml.hpp"
+#include "linnet/support/files.hpp"
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
@@ -123,14 +124,6 @@ std::string random_suffix() {
     return std::to_string(device()) + std::to_string(device());
 }
 
-std::optional<std::string> read_text(const fs::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        return std::nullopt;
-    }
-    return std::string{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-}
-
 std::string trimmed(std::string text) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
         text.pop_back();
@@ -148,7 +141,7 @@ std::optional<std::string> commit_of(const fs::path& db, const std::string& revi
                             "--output=" + output.string(),
                             "--end-of-options",
                             revision});
-    std::optional<std::string> text = read_text(output);
+    std::optional<std::string> text = read_file(output);
     std::error_code error;
     fs::remove(output, error);
     if (status != 0 || !text) {
@@ -197,7 +190,8 @@ public:
         }
         if (options_.offline) {
             return std::unexpected("`" + key + "` is not in " + repository.generic_string() +
-                                   "; fetch it without --offline");
+                                   "; run `linnet fetch` online (not with --offline or "
+                                   "LINNET_OFFLINE=1)");
         }
         auto cloned = clone(source.url, db);
         if (!cloned) {
@@ -206,7 +200,8 @@ public:
         if (commit) {
             if (!commit_of(db, *commit) && !refresh(source.url, db, *commit)) {
                 return std::unexpected("commit " + *commit + " of `" + source.url +
-                                       "` (in linnet.lock) is not in the repository");
+                                       "` (in linnet.lock) is not in the repository; "
+                                       "`linnet update` resolves it again");
             }
         } else {
             if (!*cloned && !refresh(source.url, db, {})) {
@@ -394,33 +389,31 @@ fs::path package_directory(const GitSource& source, std::string_view commit) {
 }
 
 std::expected<Lockfile, std::string> read_lockfile(const fs::path& path) {
-    const std::optional<std::string> text = read_text(path);
+    const std::optional<std::string> text = read_file(path);
     if (!text) {
         return Lockfile{};
     }
-    const auto document = toml::parse(*text);
-    const std::string where = path.generic_string() + ": ";
+    // `linnet fetch` writes the file; one it cannot read is best written anew.
+    const auto problem = [&](const std::string& what) {
+        return std::unexpected(path.generic_string() + ": " + what +
+                               " (delete it and run `linnet fetch` to write it again)");
+    };
+    auto document = toml::parse_version_one(*text);
     if (!document) {
-        return std::unexpected(where + "line " + std::to_string(document.error().line) + ": " +
-                               document.error().message);
+        return problem(document.error());
     }
-    const toml::Value root{*document, 0};
-    const toml::Value* version = root.find("version");
-    if (version == nullptr || version->as_integer() == nullptr || *version->as_integer() != 1) {
-        return std::unexpected(where + "`version = 1` is the one lock format");
-    }
+    const toml::Value root{std::move(*document), 0};
     Lockfile lock;
     if (const toml::Value* entries = root.find("git")) {
         if (entries->as_array() == nullptr) {
-            return std::unexpected(where + "`git` must be [[git]] entries");
+            return problem("`git` must be [[git]] entries");
         }
         for (const toml::Value& entry : *entries->as_array()) {
             const toml::Value* source = entry.find("source");
             const toml::Value* commit = entry.find("commit");
             if (source == nullptr || source->as_string() == nullptr || commit == nullptr ||
                 commit->as_string() == nullptr || commit->as_string()->size() != 40) {
-                return std::unexpected(where + "each [[git]] entry needs a `source` and a "
-                                               "40-character `commit`");
+                return problem("each [[git]] entry needs a `source` and a 40-character `commit`");
             }
             lock[*source->as_string()] = *commit->as_string();
         }
@@ -441,6 +434,28 @@ std::string lockfile_text(const Lockfile& lock) {
     return text;
 }
 
+namespace {
+
+// Every package reachable from `root`, each once: `visit` takes its
+// manifest (or why it could not be read) and returns the directories of the
+// packages to go on to.
+template <typename Visit>
+void walk_packages(const fs::path& root, Visit visit) {
+    std::vector<fs::path> queue = {root};
+    std::set<std::string> visited;
+    while (!queue.empty()) {
+        const fs::path directory = queue.back();
+        queue.pop_back();
+        if (visited.insert(path_key(directory)).second) {
+            for (fs::path& next : visit(read_manifest(directory / "linnet.toml"))) {
+                queue.push_back(std::move(next));
+            }
+        }
+    }
+}
+
+} // namespace
+
 Fetched fetch_dependencies(const fs::path& root, const FetchOptions& options) {
     const fs::path lock_path = root / "linnet.lock";
     Fetched fetched;
@@ -450,24 +465,15 @@ Fetched fetch_dependencies(const fs::path& root, const FetchOptions& options) {
         return fetched;
     }
     Fetcher fetcher(options, *locked);
-    std::vector<fs::path> queue = {root};
-    std::set<std::string> visited;
-    while (!queue.empty()) {
-        const fs::path directory = queue.back();
-        queue.pop_back();
-        std::error_code error;
-        const fs::path canonical = fs::weakly_canonical(directory, error);
-        if (!visited.insert((error ? directory : canonical).generic_string()).second) {
-            continue;
-        }
-        auto manifest = read_manifest(directory / "linnet.toml");
+    walk_packages(root, [&](const std::expected<PackageManifest, std::string>& manifest) {
+        std::vector<fs::path> next;
         if (!manifest) {
             fetched.failures.push_back(manifest.error());
-            continue;
+            return next;
         }
         for (const auto& [key, dependency] : manifest->dependencies) {
             if (!dependency.git) {
-                queue.push_back(dependency.path);
+                next.push_back(dependency.path);
                 continue;
             }
             auto commit = fetcher.resolve(*dependency.git);
@@ -477,11 +483,12 @@ Fetched fetch_dependencies(const fs::path& root, const FetchOptions& options) {
             }
             fetched.checkouts[dependency.git->key()] =
                 repository_directory(dependency.git->url) / "snapshots" / *commit;
-            queue.push_back(package_directory(*dependency.git, *commit));
+            next.push_back(package_directory(*dependency.git, *commit));
         }
-    }
+        return next;
+    });
     const std::string text = lockfile_text(fetcher.resolved());
-    const std::optional<std::string> before = read_text(lock_path);
+    const std::optional<std::string> before = read_file(lock_path);
     // A failed dependency's pin stays in the lock until it resolves again.
     if (options.write_lock && fetched.failures.empty() && before != text &&
         (before || !fetcher.resolved().empty())) {
@@ -495,28 +502,17 @@ Fetched fetch_dependencies(const fs::path& root, const FetchOptions& options) {
 }
 
 bool has_git_dependencies(const fs::path& root) {
-    std::vector<fs::path> queue = {root};
-    std::set<std::string> visited;
-    while (!queue.empty()) {
-        const fs::path directory = queue.back();
-        queue.pop_back();
-        std::error_code error;
-        const fs::path canonical = fs::weakly_canonical(directory, error);
-        if (!visited.insert((error ? directory : canonical).generic_string()).second) {
-            continue;
+    bool found = false;
+    walk_packages(root, [&](const std::expected<PackageManifest, std::string>& manifest) {
+        std::vector<fs::path> next;
+        for (const auto& [key, dependency] :
+             manifest ? manifest->dependencies : std::map<std::string, Dependency>{}) {
+            found = found || dependency.git.has_value();
+            next.push_back(dependency.path);
         }
-        const auto manifest = read_manifest(directory / "linnet.toml");
-        if (!manifest) {
-            continue;
-        }
-        for (const auto& [key, dependency] : manifest->dependencies) {
-            if (dependency.git) {
-                return true;
-            }
-            queue.push_back(dependency.path);
-        }
-    }
-    return false;
+        return found ? std::vector<fs::path>{} : next;
+    });
+    return found;
 }
 
 } // namespace linnet

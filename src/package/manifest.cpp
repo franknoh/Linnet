@@ -1,12 +1,11 @@
 #include "linnet/package/manifest.hpp"
 
 #include "linnet/package/toml.hpp"
+#include "linnet/support/files.hpp"
 #include "linnet/syntax/lexer.hpp"
 
 #include <algorithm>
 #include <cctype>
-#include <fstream>
-#include <iterator>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -184,24 +183,26 @@ std::string GitSource::key() const {
     return reference.empty() ? url : url + "#" + reference;
 }
 
-std::string git_host(std::string_view url) {
-    std::string_view rest = url;
+GitAddress git_address(std::string_view url) {
+    GitAddress address{url, false};
+    std::string_view& rest = address.rest;
     if (const std::size_t scheme = rest.find("://"); scheme != std::string_view::npos) {
-        if (rest.substr(0, scheme) == "file") {
-            return {};
-        }
+        address.is_file = rest.substr(0, scheme) == "file";
         rest.remove_prefix(scheme + 3);
-        if (const std::size_t at = rest.find('@');
-            at != std::string_view::npos && at < rest.find('/')) {
-            rest.remove_prefix(at + 1);
-        }
-        rest = rest.substr(0, rest.find_first_of("/:"));
-    } else {
-        // `user@host:path`
-        rest.remove_prefix(rest.find('@') + 1);
-        rest = rest.substr(0, rest.find(':'));
     }
-    std::string host(rest);
+    if (const std::size_t at = rest.find('@');
+        at != std::string_view::npos && at < rest.find('/')) {
+        rest.remove_prefix(at + 1);
+    }
+    return address;
+}
+
+std::string git_host(std::string_view url) {
+    const GitAddress address = git_address(url);
+    if (address.is_file) {
+        return {};
+    }
+    std::string host(address.rest.substr(0, address.rest.find_first_of("/:")));
     std::transform(host.begin(), host.end(), host.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -217,8 +218,7 @@ std::expected<PackageManifest, std::string> parse_manifest(std::string_view text
                                                            const std::filesystem::path& directory) {
     const auto document = toml::parse(text);
     if (!document) {
-        return std::unexpected("line " + std::to_string(document.error().line) + ": " +
-                               document.error().message);
+        return std::unexpected(toml::describe(document.error()));
     }
     const toml::Value root{*document, 0};
     const toml::Value* package = root.find("package");
@@ -271,13 +271,11 @@ std::expected<PackageManifest, std::string> parse_manifest(std::string_view text
 }
 
 std::expected<PackageManifest, std::string> read_manifest(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        return std::unexpected(path.generic_string() + ": cannot open file");
+    const std::optional<std::string> text = read_file(path);
+    if (!text) {
+        return std::unexpected(path.generic_string() + ": cannot read file");
     }
-    const std::string text{std::istreambuf_iterator<char>(stream),
-                           std::istreambuf_iterator<char>()};
-    auto manifest = parse_manifest(text, path.parent_path());
+    auto manifest = parse_manifest(*text, path.parent_path());
     if (!manifest) {
         return std::unexpected(path.generic_string() + ": " + manifest.error());
     }

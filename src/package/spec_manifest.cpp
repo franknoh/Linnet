@@ -1,31 +1,25 @@
 #include "linnet/package/spec_manifest.hpp"
 
 #include "linnet/package/toml.hpp"
+#include "linnet/support/files.hpp"
 
-#include <fstream>
-#include <iterator>
+#include <optional>
+#include <utility>
 
 namespace linnet {
 
 std::expected<std::vector<SpecCase>, std::string>
 read_spec_manifest(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        return std::unexpected(path.generic_string() + ": cannot open file");
-    }
-    const std::string text{std::istreambuf_iterator<char>(stream),
-                           std::istreambuf_iterator<char>()};
-    const auto document = toml::parse(text);
     const std::string where = path.generic_string() + ":";
+    const std::optional<std::string> text = read_file(path);
+    if (!text) {
+        return std::unexpected(where + " cannot read file");
+    }
+    auto document = toml::parse_version_one(*text);
     if (!document) {
-        return std::unexpected(where + std::to_string(document.error().line) + ": " +
-                               document.error().message);
+        return std::unexpected(where + " " + document.error());
     }
-    const toml::Value root{*document, 0};
-    const toml::Value* version = root.find("version");
-    if (version == nullptr || version->as_integer() == nullptr || *version->as_integer() != 1) {
-        return std::unexpected(where + " `version = 1` is required");
-    }
+    const toml::Value root{std::move(*document), 0};
     const toml::Value* cases = root.find("case");
     if (cases == nullptr || cases->as_array() == nullptr) {
         return std::unexpected(where + " no [[case]] entries");

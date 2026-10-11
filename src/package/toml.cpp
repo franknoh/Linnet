@@ -389,4 +389,22 @@ std::expected<Table, ParseError> parse(std::string_view text) {
     return Parser(text).run();
 }
 
+std::string describe(const ParseError& error) {
+    return "line " + std::to_string(error.line) + ": " + error.message;
+}
+
+std::expected<Table, std::string> parse_version_one(std::string_view text) {
+    auto document = parse(text);
+    if (!document) {
+        return std::unexpected(describe(document.error()));
+    }
+    const auto version = document->find("version");
+    const std::int64_t* number =
+        version == document->end() ? nullptr : version->second.as_integer();
+    if (number == nullptr || *number != 1) {
+        return std::unexpected("`version = 1` is the one format");
+    }
+    return std::move(*document);
+}
+
 } // namespace linnet::toml

@@ -9,6 +9,12 @@ namespace linnet {
 // The shortest decimal that reads back as the same double, with a `.0` when
 // it would otherwise read as an integer.
 std::string shortest_float(double value);
+// The same with a decimal point in the mantissa whatever the exponent
+// (`1.0e-06`), as MLIR and the ONNX text format want a float.
+std::string decimal_float(double value);
+
+// Every line of `text` with `prefix` before it, blank lines left blank.
+std::string indent_lines(std::string_view text, std::string_view prefix);
 
 // One argument of a Windows command line, as the C runtime splits the line
 // back into words: quoted when it is empty or has a space, a tab or a quote,

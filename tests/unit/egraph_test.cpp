@@ -20,9 +20,7 @@ std::string saturated(const std::string& source, opt::Legality allowed) {
     const sema::AnalysisResult analysis = sema::analyze(sources, modules, sink);
     CHECK(!sink.has_errors());
     ir::Module module = ir::lower(sources, modules, analysis.model);
-    opt::PipelineOptions options;
-    options.allowed = allowed;
-    opt::run_pipeline(module, opt::optimizing_passes(allowed), options);
+    opt::run_pipeline(module, opt::optimizing_passes(allowed));
     return ir::print(module);
 }
 

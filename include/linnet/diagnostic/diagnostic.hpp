@@ -10,7 +10,7 @@
 
 namespace linnet {
 
-enum class Severity : std::uint8_t { Error, Warning, Note };
+enum class Severity : std::uint8_t { Error, Warning };
 
 std::string_view severity_name(Severity severity);
 

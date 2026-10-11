@@ -29,14 +29,7 @@ constexpr const char* loss_import = "import linnet.jax.loss as _loss\n\n";
 constexpr const char* gather_import = "from linnet.jax.fsdp import gather as _gather\n\n";
 
 std::string outline_remat(const std::string& body, const std::string& tail) {
-    std::vector<std::string> lines;
-    std::size_t start = 0;
-    while (start < body.size()) {
-        std::size_t end = body.find('\n', start);
-        end = end == std::string::npos ? body.size() : end;
-        lines.emplace_back(body.substr(start, end - start));
-        start = end + 1;
-    }
+    const std::vector<std::string> lines = split_lines(body);
     const auto marker = [](const std::string& line, std::string_view what) {
         const std::size_t first = line.find_first_not_of(' ');
         return first != std::string::npos && line.compare(first, 8, "# remat ") == 0 &&
@@ -89,10 +82,7 @@ std::string outline_remat(const std::string& body, const std::string& tail) {
         }
         if (!outputs.empty()) {
             std::string returned = "(";
-            for (std::size_t k = 0; k < outputs.size(); ++k) {
-                returned.append(k == 0 ? "" : ", ").append(outputs[k]);
-            }
-            returned.append(outputs.size() == 1 ? ",)" : ")");
+            returned.append(join(outputs, ", ")).append(outputs.size() == 1 ? ",)" : ")");
             out.append(indent).append("def _remat").append(id).append("():\n");
             for (std::size_t k = i + 1; k < close; ++k) {
                 out.append(lines[k].empty() ? "" : "    ").append(lines[k]).append("\n");
@@ -128,13 +118,7 @@ public:
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
         const std::string name = define(value.name + ".astype(" + dtype_name(dtype) + ")");
-        const auto found = values_.find(value.name);
-        if (found != values_.end()) {
-            values_[name] = found->second;
-            literals_[name] = sema::is_float(dtype)
-                                  ? python_float(found->second)
-                                  : std::to_string(static_cast<long long>(found->second));
-        }
+        fold_convert(name, value, dtype);
         return name;
     }
 
@@ -191,28 +175,14 @@ public:
             uses_kernels_ = true;
             helpers_ += kernel_helpers();
         }
-        std::vector<std::string> operands;
-        operands.reserve(launch.arguments.size());
-        for (const TensorInfo& argument : launch.arguments) {
-            operands.push_back(argument.name);
-        }
         // An op launched again at the same shapes reuses its `_opN`.
-        std::string key = launch.op;
-        for (const TensorInfo& argument : launch.arguments) {
-            key += ";" + python_tuple(argument.shape) + dtype_name(argument.dtype);
-        }
-        const auto [launched, is_first] = launched_.try_emplace(key, launches_);
-        if (!is_first) {
-            return results_of(launch,
-                              define("_op" + std::to_string(launched->second) + "(" +
-                                     join(operands, ", ") + ")"));
+        const auto [op, new_op] = op_of(launch);
+        if (!new_op) {
+            return call_op(launch, op);
         }
         // The kernel, once a program.
-        const std::string program_key =
-            join(launch.program.parameters, ",") + "\n" + launch.program.body;
-        auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
-        if (is_new) {
-            kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+        const auto [kernel, new_kernel] = kernel_of(launch);
+        if (new_kernel) {
             if (launch.program.body.find("jnp.prod(") != std::string::npos && !products_) {
                 products_ = true;
                 helpers_ += product_rule();
@@ -233,10 +203,10 @@ public:
                               launch.program.parameters.begin() +
                                   static_cast<std::ptrdiff_t>(launch.arguments.size()),
                               launch.program.parameters.end());
-            definitions_ += "def " + kernel->second + "(" + join(parameters, ", ") + "):  # " +
+            definitions_ += "def " + kernel + "(" + join(parameters, ", ") + "):  # " +
                             launch.name + "\n" + launch.program.body + "\n\n";
         }
-        const std::string id = std::to_string(launches_++);
+        const std::string id = std::to_string(op);
         std::vector<std::string> inputs;
         std::vector<std::string> passed;
         inputs.reserve(launch.arguments.size());
@@ -257,7 +227,7 @@ public:
         }
         std::string text = "def _launch" + id + "(" + parameters + "):\n";
         text += "    return pl.pallas_call(\n";
-        text += "        " + kernel->second + ",\n";
+        text += "        " + kernel + ",\n";
         text += "        out_shape=" +
                 (shapes.size() == 1 ? shapes.front() : "(" + join(shapes, ", ") + ")") + ",\n";
         text += "        grid=" + python_tuple(launch.grid) + ",\n";
@@ -266,25 +236,12 @@ public:
         std::vector<std::string> aliases;
         for (std::size_t i = 0; i < launch.results.size(); ++i) {
             const TensorInfo& result = launch.results[i];
-            const auto atomic =
-                launch.program.atomics.find(launch.program.parameters[launch.arguments.size() + i]);
-            if (atomic == launch.program.atomics.end()) {
-                continue;
+            if (const auto atomic = atomic_result(launch, i)) {
+                aliases.push_back(std::to_string(passed.size()) + ": " + std::to_string(i));
+                passed.push_back("jnp.full(" + python_tuple(result.shape) + ", " +
+                                 reduction_identity(*atomic, result.dtype) + ", " +
+                                 dtype_name(result.dtype) + ")");
             }
-            aliases.push_back(std::to_string(passed.size()) + ": " + std::to_string(i));
-            const std::string dtype = dtype_name(result.dtype);
-            const bool lowest = atomic->second == Reduction::Max;
-            std::string start = lowest ? "-jnp.inf" : "jnp.inf";
-            if (atomic->second == Reduction::Sum) {
-                start = "0";
-            } else if (!sema::is_float(result.dtype)) {
-                start = "jnp.iinfo(" + dtype + ").";
-                start += lowest ? "min" : "max";
-            }
-            passed.push_back(join(std::vector<std::string>{"jnp.full(" + python_tuple(result.shape),
-                                                           start,
-                                                           dtype + ")"},
-                                  ", "));
         }
         if (!aliases.empty()) {
             text += "        input_output_aliases={" + join(aliases, ", ") + "},\n";
@@ -331,20 +288,7 @@ public:
             text += "    return _body" + id + "(" + parameters + ")\n\n\n";
         }
         definitions_ += text;
-        return results_of(launch, define("_op" + id + "(" + join(operands, ", ") + ")"));
-    }
-
-    // The names of a launch's results: `value`, or its elements.
-    std::vector<std::string> results_of(const KernelLaunch& launch, const std::string& value) {
-        if (launch.results.size() == 1) {
-            return {value};
-        }
-        std::vector<std::string> names;
-        names.reserve(launch.results.size());
-        for (std::size_t i = 0; i < launch.results.size(); ++i) {
-            names.push_back(define(value + "[" + std::to_string(i) + "]"));
-        }
-        return names;
+        return call_op(launch, op);
     }
 
     // The `jax.custom_vjp` function for an op's `grad` (see
@@ -876,25 +820,13 @@ private:
         if (!full_precision_) {
             return body;
         }
-        std::string out = outer + "    with jax.default_matmul_precision(\"highest\"):\n";
-        std::size_t start = 0;
-        while (start < body.size()) {
-            std::size_t end = body.find('\n', start);
-            end = end == std::string::npos ? body.size() : end + 1;
-            const std::string_view line{body.data() + start, end - start};
-            out += (line == "\n" ? "" : "    ") + std::string(line);
-            start = end;
-        }
-        return out;
+        return outer + "    with jax.default_matmul_precision(\"highest\"):\n" +
+               indent_lines(body, "    ");
     }
 
-    bool full_precision_ = false;                 // f32 products at full precision (`precise`)
-    bool uses_kernels_ = false;                   // Pallas's import and `_kernel_call` are used
-    bool products_ = false;                       // a kernel takes a tile's `prod`
-    std::string helpers_;                         // module-level helpers before `definitions_`
-    std::map<std::string, std::string> kernels_;  // a kernel's program -> its function
-    std::map<std::string, std::size_t> launched_; // an op at its shapes -> its `_opN`
-    std::size_t launches_ = 0;
+    bool full_precision_ = false; // f32 products at full precision (`precise`)
+    bool uses_kernels_ = false;   // Pallas's import and `_kernel_call` are used
+    bool products_ = false;       // a kernel takes a tile's `prod`
 
     // Pallas lowers a tile's `prod` to Triton through the reduction it
     // lowers `sum`, `max` and `min` through, which it registers for those

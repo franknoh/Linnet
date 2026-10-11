@@ -19,7 +19,7 @@ namespace {
 
 class PallasTarget final : public TileTarget {
 public:
-    explicit PallasTarget(bool full_precision) : TileTarget("jnp", full_precision) {}
+    explicit PallasTarget(bool full_precision) : TileTarget("jnp", "bool_", full_precision) {}
 
     // ---------------------------------------------------------------- loops
 
@@ -120,7 +120,7 @@ public:
         const std::string stored =
             value.shape == shape
                 ? value.name
-                : define("jnp.broadcast_to(" + value.name + ", " + shape_list(shape) + ")");
+                : define("jnp.broadcast_to(" + value.name + ", " + python_tuple(shape) + ")");
         if (!atomic) {
             body_ += indent_ + "plgpu.store(" + view(memory, indices, shape.size()) + ", " +
                      stored + (mask ? ", mask=" + mask->name : "") + ")\n";
@@ -158,37 +158,6 @@ private:
         std::vector<std::string> initial; // their values before the loop
     };
 
-    std::string dtype_name(ScalarKind dtype) const override {
-        switch (dtype) {
-        case ScalarKind::Bool:
-            return "jnp.bool_";
-        case ScalarKind::I8:
-            return "jnp.int8";
-        case ScalarKind::I16:
-            return "jnp.int16";
-        case ScalarKind::I32:
-            return "jnp.int32";
-        case ScalarKind::I64:
-            return "jnp.int64";
-        case ScalarKind::U8:
-            return "jnp.uint8";
-        case ScalarKind::U16:
-            return "jnp.uint16";
-        case ScalarKind::U32:
-            return "jnp.uint32";
-        case ScalarKind::U64:
-            return "jnp.uint64";
-        case ScalarKind::F16:
-            return "jnp.float16";
-        case ScalarKind::BF16:
-            return "jnp.bfloat16";
-        case ScalarKind::F32:
-            return "jnp.float32";
-        case ScalarKind::F64:
-            return "jnp.float64";
-        }
-        return "jnp.float32";
-    }
     std::string cast(const std::string& value, ScalarKind dtype) const override {
         return "jax.lax.convert_element_type(" + value + ", " + dtype_name(dtype) + ")";
     }
@@ -196,7 +165,7 @@ private:
         return "jnp.arange(" + std::to_string(length) + ", dtype=jnp.int32)";
     }
     std::string permute(const std::string& value, const Dims& permutation) const override {
-        return "jnp.transpose(" + value + ", " + shape_list(permutation) + ")";
+        return "jnp.transpose(" + value + ", " + python_tuple(permutation) + ")";
     }
     // `jax.lax.div` and `rem` round toward zero, as Linnet does; they take
     // operands of one dtype.

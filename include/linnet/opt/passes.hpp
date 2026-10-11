@@ -17,28 +17,22 @@ enum class Legality : std::uint8_t {
     Approximate,           // changes results within a tolerance
 };
 
+// A pass changes no result: a rewrite that may (`Legality` above Exact) is
+// one a pass applies only when its options allow it.
 struct Pass {
     std::string name;
-    Legality legality = Legality::Exact;
     // Returns true when the module was changed.
     std::function<bool(ir::Module&)> run;
 };
 
-struct PipelineOptions {
-    Legality allowed = Legality::Exact; // passes above this strength are skipped
-    bool verify = true;                 // run the IR verifier after each pass
-    int max_iterations = 8;             // repeat until nothing changes
-};
-
-// Runs the passes repeatedly, in order, until a full round changes nothing.
-// A verifier failure throws std::logic_error naming the pass: a miscompiled
-// module must never be used.
-void run_pipeline(ir::Module& module,
-                  const std::vector<Pass>& passes,
-                  const PipelineOptions& options = {});
+// Runs the passes repeatedly, in order, until a full round changes nothing
+// (eight rounds at most), verifying the IR after each pass that changed
+// it. A verifier failure throws std::logic_error naming the pass: a
+// miscompiled module must never be used.
+void run_pipeline(ir::Module& module, const std::vector<Pass>& passes);
 
 // The canonical pipeline: canonicalization, common-subexpression
-// elimination, and dead-code elimination. All are Exact.
+// elimination, and dead-code elimination.
 std::vector<Pass> canonical_passes();
 
 // Individual passes.

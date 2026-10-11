@@ -12,8 +12,6 @@ std::string_view severity_name(Severity severity) {
         return "error";
     case Severity::Warning:
         return "warning";
-    case Severity::Note:
-        return "note";
     }
     return "error";
 }

@@ -113,6 +113,7 @@ set_tests_properties(cli_plan_transformer PROPERTIES PASS_REGULAR_EXPRESSION "\"
 linnet_add_test(opt_test unit/opt_test.cpp)
 linnet_add_test(egraph_test unit/egraph_test.cpp)
 linnet_add_test(emit_test unit/emit_test.cpp)
+linnet_add_test(python_text_test unit/python_text_test.cpp)
 add_test(NAME cli_inspect_emit
     COMMAND linnet inspect --emit --std ${PROJECT_SOURCE_DIR}/stdlib ${PROJECT_SOURCE_DIR}/stdlib/nn/softmax.linnet)
 set_tests_properties(cli_inspect_emit PROPERTIES PASS_REGULAR_EXPRESSION "let total\\[\\*s\\] = sum\\[n\\] shifted\\[\\*s, n\\]")

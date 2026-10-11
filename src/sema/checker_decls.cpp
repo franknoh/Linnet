@@ -728,7 +728,6 @@ void Checker::resolve_const(EntityId entity) {
     const Entity& target = entities_[entity];
     const auto& decl = std::get<ast::ConstDecl>(modules_[target.module]->item(target.item).data);
     Env env = make_env(entity);
-    env.owner = std::string(target.name);
     const EnvGuard guard(*this, env);
     TypeId type = types_.error();
     if (decl.type != ast::no_id) {
@@ -762,9 +761,6 @@ void Checker::check_function_body(EntityId entity) {
     Env env = make_env(entity);
     env.function = entity;
     env.result = info.result;
-    env.owner = (target.parent == no_entity ? std::string()
-                                            : std::string(entities_[target.parent].name) + ".") +
-                std::string(target.name);
     env.scopes.push_back(info.scope);
     env.scopes.emplace_back();
     for (const ConstraintInfo& constraint : info.constraints) {
@@ -855,7 +851,6 @@ void Checker::check_gradient(EntityId entity) {
     Env env = make_env(entity);
     env.function = entity;
     env.result = info.gradient_result;
-    env.owner = std::string(target.name);
     env.scopes.push_back(info.scope);
     env.scopes.emplace_back();
     for (const ConstraintInfo& constraint : info.constraints) {

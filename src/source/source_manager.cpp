@@ -1,11 +1,11 @@
 #include "linnet/source/source_manager.hpp"
 
 #include "linnet/source/utf8.hpp"
+#include "linnet/support/files.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <fstream>
-#include <iterator>
+#include <optional>
 #include <utility>
 
 namespace linnet {
@@ -37,15 +37,11 @@ std::expected<FileId, std::string> SourceManager::load_file(const std::filesyste
         return std::unexpected(display + ": not a readable file");
     }
 
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        return std::unexpected(display + ": cannot open file");
+    std::optional<std::string> contents = read_file(path);
+    if (!contents) {
+        return std::unexpected(display + ": cannot read file");
     }
-    std::string contents{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-    if (stream.bad()) {
-        return std::unexpected(display + ": read error");
-    }
-    return add_file(display, std::move(contents));
+    return add_file(display, std::move(*contents));
 }
 
 const SourceManager::File& SourceManager::file(FileId id) const {

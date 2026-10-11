@@ -16,8 +16,7 @@ using namespace sema;
 
 class Emitter {
 public:
-    Emitter(const ir::Module& module, const EmitOptions& options)
-        : module_(module), model_(module.model()), options_(options) {
+    explicit Emitter(const ir::Module& module) : module_(module), model_(module.model()) {
         // Arms of a match on a constant variant that cannot be taken are
         // not emitted, so their uses do not count.
         std::set<ir::BlockId> dead;
@@ -98,7 +97,7 @@ public:
         std::string body;
         for (EntityId id = 0; id < model_.entities.size(); ++id) {
             const Entity& entity = model_.entities[id];
-            if (entity.module != options_.module || entity.parent != no_entity) {
+            if (entity.module != emitted || entity.parent != no_entity) {
                 continue;
             }
             std::expected<std::string, std::string> text;
@@ -135,11 +134,7 @@ private:
     // ------------------------------------------------------------------ names
 
     std::string module_path() const {
-        if (!options_.module_path.empty()) {
-            return options_.module_path;
-        }
-        return options_.module < model_.module_paths.size() ? model_.module_paths[options_.module]
-                                                            : "generated";
+        return emitted < model_.module_paths.size() ? model_.module_paths[emitted] : "generated";
     }
 
     // Modules of the same package are imported as `crate.rest`: a package's
@@ -157,7 +152,7 @@ private:
     // Records a `use` for a declaration of another module.
     void import_entity(EntityId id) {
         const Entity& entity = model_.entities[id];
-        if (entity.module != options_.module && entity.module < model_.module_paths.size()) {
+        if (entity.module != emitted && entity.module < model_.module_paths.size()) {
             imports_[model_.module_paths[entity.module]].insert(std::string(entity.name));
         }
     }
@@ -1139,7 +1134,7 @@ private:
 
     const ir::Module& module_;
     const Model& model_;
-    const EmitOptions& options_;
+    static constexpr std::uint32_t emitted = 0; // the source module emitted
     std::map<std::string, const ir::Function*> functions_by_name_;
     std::map<EntityId, const ir::Function*> functions_by_entity_;
     std::map<EntityId, const ir::Constant*> constants_by_entity_;
@@ -1158,9 +1153,8 @@ private:
 
 } // namespace
 
-std::expected<std::string, std::string> emit_source(const ir::Module& module,
-                                                    const EmitOptions& options) {
-    return Emitter(module, options).run();
+std::expected<std::string, std::string> emit_source(const ir::Module& module) {
+    return Emitter(module).run();
 }
 
 } // namespace linnet::emit

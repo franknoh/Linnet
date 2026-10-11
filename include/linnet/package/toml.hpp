@@ -42,4 +42,11 @@ struct ParseError {
 
 std::expected<Table, ParseError> parse(std::string_view text);
 
+// `line N: message`.
+std::string describe(const ParseError& error);
+
+// A document of a format with `version = 1` at its top (`linnet.lock`, the
+// spec-test manifest): its root, or what is wrong.
+std::expected<Table, std::string> parse_version_one(std::string_view text);
+
 } // namespace linnet::toml

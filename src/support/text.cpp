@@ -22,6 +22,31 @@ std::string shortest_float(double value) {
     return text;
 }
 
+std::string decimal_float(double value) {
+    std::string text = shortest_float(value);
+    const std::size_t exponent = text.find_first_of("eE");
+    if (text.find('.') == std::string::npos && exponent != std::string::npos) {
+        text.insert(exponent, ".0");
+    }
+    return text;
+}
+
+std::string indent_lines(std::string_view text, std::string_view prefix) {
+    std::string out;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        end = end == std::string_view::npos ? text.size() : end + 1;
+        const std::string_view line = text.substr(start, end - start);
+        if (line != "\n") {
+            out += prefix;
+        }
+        out += line;
+        start = end;
+    }
+    return out;
+}
+
 std::string command_line_word(std::string_view argument) {
     if (!argument.empty() && argument.find_first_of(" \t\n\v\"") == std::string_view::npos) {
         return std::string(argument);

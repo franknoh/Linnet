@@ -159,7 +159,7 @@ public:
         }
         return target_.finish(outputs,
                               final_states,
-                              model_.module_paths.at(options_.root_module),
+                              model_.module_paths.at(root_module),
                               root ? std::string(model_.entities[*root].name) : std::string(),
                               std::string(model_.entities[entry.entity].name));
     }
@@ -191,8 +191,7 @@ private:
                 for (EntityId id = 0; id < model_.entities.size(); ++id) {
                     const Entity& entity = model_.entities[id];
                     if (entity.kind == EntityKind::Block && entity.parent == no_entity &&
-                        entity.module == options_.root_module &&
-                        has_entry_named(id, options_.entry)) {
+                        entity.module == root_module && has_entry_named(id, options_.entry)) {
                         fail("both the module and block `" + std::string(entity.name) +
                              "` have an entry `" + options_.entry + "`: pass --root " +
                              std::string(entity.name) + " for the block's, or rename one");
@@ -204,7 +203,7 @@ private:
                 return std::nullopt;
             }
         }
-        const auto root = find_root_block(module_, options_.root_module, options_.root);
+        const auto root = find_root_block(module_, options_.root);
         if (!root) {
             fail(root.error());
         }
@@ -212,7 +211,7 @@ private:
     }
 
     bool has_entry_named(EntityId owner, std::string_view name) const {
-        return declares_entry(module_, options_.root_module, owner, name);
+        return declares_entry(module_, owner, name);
     }
 
     bool is_module_entry(std::string_view name) const { return has_entry_named(no_entity, name); }
@@ -220,8 +219,7 @@ private:
     bool any_block_entry() const {
         for (const ir::Function& function : module_.functions()) {
             const Entity& entity = model_.entities[function.entity];
-            if (function.is_entry && entity.parent != no_entity &&
-                entity.module == options_.root_module) {
+            if (function.is_entry && entity.parent != no_entity && entity.module == root_module) {
                 return true;
             }
         }
@@ -234,8 +232,7 @@ private:
         const ir::Function* found = nullptr;
         for (const ir::Function& function : module_.functions()) {
             const Entity& entity = model_.entities[function.entity];
-            if (!function.is_entry || entity.parent != owner ||
-                entity.module != options_.root_module) {
+            if (!function.is_entry || entity.parent != owner || entity.module != root_module) {
                 continue;
             }
             if (!options_.entry.empty() ? entity.name == options_.entry : found == nullptr) {
@@ -2542,16 +2539,7 @@ bool glob_match(std::string_view pattern, std::string_view text) {
 }
 
 std::string release_dead_values(const std::string& body, const std::string& live_tail) {
-    std::vector<std::string> lines;
-    std::string current;
-    for (const char c : body) {
-        if (c == '\n') {
-            lines.push_back(current);
-            current.clear();
-        } else {
-            current += c;
-        }
-    }
+    const std::vector<std::string> lines = split_lines(body);
     const auto indent = [](const std::string& line) {
         const std::size_t first = line.find_first_not_of(' ');
         return first == std::string::npos ? line.size() : first;
@@ -2567,20 +2555,16 @@ std::string release_dead_values(const std::string& body, const std::string& live
     }
     std::set<std::string> assigned; // by a top-level `vN = ...`
     std::set<std::string> released; // already by a `del` in the body
-    for (const auto& [first, last] : groups) {
-        const std::string& line = lines[first];
-        const std::size_t start = indent(line);
-        const std::size_t equals = line.find(" = ", start);
-        if (start == 4 && line[start] == 'v' && equals != std::string::npos &&
-            line.find_first_not_of("0123456789", start + 1) == equals) {
-            assigned.insert(line.substr(start, equals - start));
+    for (const auto& group : groups) {
+        const std::string& line = lines[group.first];
+        if (const auto assignment = top_level_assignment(line)) {
+            assigned.insert(assignment->first);
         }
-        if (line.compare(start, 4, "del ") == 0) {
+        if (line.compare(indent(line), 4, "del ") == 0) {
             for (const std::string& name : mentioned_values(line)) {
                 released.insert(name);
             }
         }
-        (void)last;
     }
     std::set<std::string> live = mentioned_values(live_tail);
     std::vector<std::vector<std::string>> after(groups.size());
@@ -2612,56 +2596,87 @@ std::string release_dead_values(const std::string& body, const std::string& live
     return out;
 }
 
-namespace {
-
-std::vector<std::string> split_lines(const std::string& text) {
+std::vector<std::string> split_lines(std::string_view text) {
     std::vector<std::string> lines;
-    std::string current;
-    for (const char c : text) {
-        if (c == '\n') {
-            lines.push_back(current);
-            current.clear();
-        } else {
-            current += c;
-        }
-    }
-    if (!current.empty()) {
-        lines.push_back(current);
+    std::size_t start = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        end = end == std::string_view::npos ? text.size() : end;
+        lines.emplace_back(text.substr(start, end - start));
+        start = end + 1;
     }
     return lines;
 }
 
-// `name = expr` of a top-level generated assignment, if `line` is one.
-std::optional<std::pair<std::string, std::string>> top_level_assignment(const std::string& line) {
-    if (line.size() < 6 || line.compare(0, 4, "    ") != 0 || line[4] != 'v') {
+std::optional<Assignment> assignment_of(std::string_view line) {
+    const std::size_t start = line.find_first_not_of(' ');
+    const std::size_t equals = start == std::string_view::npos ? start : line.find(" = ", start);
+    if (equals == std::string_view::npos || !numbered(line.substr(start, equals - start), 'v')) {
         return std::nullopt;
     }
-    const std::size_t equals = line.find(" = ", 4);
-    if (equals == std::string::npos) {
-        return std::nullopt;
-    }
-    const std::string name = line.substr(4, equals - 4);
-    if (!numbered(name, 'v')) {
-        return std::nullopt;
-    }
-    return std::pair{name, line.substr(equals + 3)};
+    return Assignment{std::string(line.substr(0, start)),
+                      std::string(line.substr(start, equals - start)),
+                      std::string(line.substr(equals + 3))};
 }
 
-// A parameter or value seen through views and casts only: `p3.permute(1, 0)`,
-// `v9.float()`, `p1.reshape(4, 5).to(torch.bfloat16)`, `p2[0]`.
+std::optional<std::pair<std::string, std::string>> top_level_assignment(const std::string& line) {
+    auto assignment = assignment_of(line);
+    if (!assignment || assignment->indent != "    ") {
+        return std::nullopt;
+    }
+    return std::pair{std::move(assignment->name), std::move(assignment->expression)};
+}
+
+std::optional<Call> call_of(std::string_view expression) {
+    const std::size_t open = expression.find('(');
+    if (open == std::string_view::npos || open == 0 || !expression.ends_with(")")) {
+        return std::nullopt;
+    }
+    Call call{std::string(expression.substr(0, open)), {}};
+    int depth = 0;
+    char quote = 0;
+    std::size_t start = open + 1;
+    for (std::size_t i = open; i < expression.size(); ++i) {
+        const char c = expression[i];
+        if (quote != 0) {
+            quote = c == quote ? '\0' : quote;
+        } else if (c == '"' || c == '\'') {
+            quote = c;
+        } else if (c == '(' || c == '[' || c == '{') {
+            ++depth;
+        } else if (c == ')' || c == ']' || c == '}') {
+            // The call's own parenthesis closes at the end, not before.
+            if (--depth == 0 && i + 1 != expression.size()) {
+                return std::nullopt;
+            }
+        } else if (c == ',' && depth == 1) {
+            call.arguments.emplace_back(expression.substr(start, i - start));
+            start = i + 1;
+            while (start < expression.size() && expression[start] == ' ') {
+                ++start;
+            }
+        }
+    }
+    const std::string_view last = expression.substr(start, expression.size() - 1 - start);
+    if (!last.empty() || !call.arguments.empty()) {
+        call.arguments.emplace_back(last);
+    }
+    return call;
+}
+
+namespace {
+
 // Whether the words of `arguments` are only shapes, axes, and dtypes.
 bool literal_arguments(const std::string& arguments) {
-    static const std::set<std::string> argument_words{"torch",
-                                                      "jnp",
-                                                      "float32",
-                                                      "float16",
-                                                      "bfloat16",
-                                                      "float64",
-                                                      "int32",
-                                                      "int64",
-                                                      "bool",
-                                                      "None",
-                                                      "dtype"};
+    static const std::set<std::string, std::less<>> argument_words = [] {
+        std::set<std::string, std::less<>> words{"torch", "jnp", "bool_", "None", "dtype"};
+        for (auto kind = static_cast<int>(sema::ScalarKind::Bool);
+             kind <= static_cast<int>(sema::ScalarKind::F64);
+             ++kind) {
+            words.emplace(dtype_names(static_cast<sema::ScalarKind>(kind)).numpy);
+        }
+        return words;
+    }();
     for (const auto& [at, word] : words_of(arguments)) {
         if (!argument_words.contains(word)) {
             return false;
@@ -3040,29 +3055,15 @@ std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Di
 }
 
 std::string prune_python_assignments(const std::string& body, const std::string& live_tail) {
-    std::vector<std::string> lines;
-    std::string current;
-    for (const char c : body) {
-        if (c == '\n') {
-            lines.push_back(current);
-            current.clear();
-        } else {
-            current += c;
-        }
-    }
+    const std::vector<std::string> lines = split_lines(body);
     std::set<std::string> live = mentioned_values(live_tail);
     std::vector<bool> keep(lines.size(), true);
     for (std::size_t i = lines.size(); i-- > 0;) {
         const std::string& line = lines[i];
-        const std::size_t start = line.find_first_not_of(' ');
-        if (start != std::string::npos && line[start] == 'v') {
-            const std::size_t end = line.find(" = ", start);
-            if (end != std::string::npos &&
-                line.find_first_not_of("0123456789", start + 1) == end &&
-                !live.contains(line.substr(start, end - start))) {
-                keep[i] = false;
-                continue;
-            }
+        if (const auto assignment = assignment_of(line);
+            assignment && !live.contains(assignment->name)) {
+            keep[i] = false;
+            continue;
         }
         for (const std::string& name : mentioned_values(line)) {
             live.insert(name);
@@ -3169,10 +3170,7 @@ operand_pointers(const std::vector<std::optional<TensorInfo>>& operands) {
     return at;
 }
 
-bool declares_entry(const ir::Module& module,
-                    std::uint32_t root_module,
-                    sema::EntityId owner,
-                    std::string_view name) {
+bool declares_entry(const ir::Module& module, sema::EntityId owner, std::string_view name) {
     const sema::Model& model = module.model();
     return std::ranges::any_of(module.functions(), [&](const ir::Function& function) {
         const sema::Entity& entity = model.entities[function.entity];
@@ -3181,10 +3179,8 @@ bool declares_entry(const ir::Module& module,
     });
 }
 
-std::expected<sema::EntityId, std::string> find_root_block(const ir::Module& module,
-                                                           std::uint32_t root_module,
-                                                           std::string_view root,
-                                                           std::string_view no_entry_hint) {
+std::expected<sema::EntityId, std::string>
+find_root_block(const ir::Module& module, std::string_view root, std::string_view no_entry_hint) {
     const sema::Model& model = module.model();
     std::vector<sema::EntityId> candidates;
     for (sema::EntityId id = 0; id < model.entities.size(); ++id) {
@@ -3199,7 +3195,7 @@ std::expected<sema::EntityId, std::string> find_root_block(const ir::Module& mod
             }
             continue;
         }
-        if (declares_entry(module, root_module, id)) {
+        if (declares_entry(module, id)) {
             candidates.push_back(id);
         }
     }
@@ -3224,6 +3220,22 @@ std::string python_float(double value) {
         return value > 0 ? "float(\"inf\")" : "-float(\"inf\")";
     }
     return shortest_float(value);
+}
+
+std::optional<std::string> python_literal(const Literal& literal, sema::ScalarKind dtype) {
+    switch (literal.kind) {
+    case Literal::Kind::Integer:
+        return sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
+                                     : std::to_string(literal.integer);
+    case Literal::Kind::Real:
+        return python_float(literal.real);
+    case Literal::Kind::Boolean:
+        return literal.integer != 0 ? "True" : "False";
+    case Literal::Kind::Lowest:
+    case Literal::Kind::Highest:
+        break;
+    }
+    return std::nullopt;
 }
 
 } // namespace linnet::backend

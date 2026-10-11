@@ -1,6 +1,7 @@
 #include "linnet/backend/python_target.hpp"
 
 #include "linnet/sema/types.hpp"
+#include "linnet/support/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -332,29 +333,46 @@ void PythonTarget::fold(const std::string& name,
     literals_[name] = python_float(result);
 }
 
-std::string PythonTarget::literal_text(const Literal& literal, ScalarKind dtype) const {
-    switch (literal.kind) {
-    case Literal::Kind::Integer:
-        return sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
-                                     : std::to_string(literal.integer);
-    case Literal::Kind::Real:
-        return python_float(literal.real);
-    case Literal::Kind::Boolean:
-        return literal.integer != 0 ? "True" : "False";
-    case Literal::Kind::Lowest:
-        if (sema::is_float(dtype)) {
-            return "-" + infinity();
-        }
-        return dtype == ScalarKind::Bool ? "False"
-                                         : library_ + ".iinfo(" + dtype_name(dtype) + ").min";
-    case Literal::Kind::Highest:
-        if (sema::is_float(dtype)) {
-            return infinity();
-        }
-        return dtype == ScalarKind::Bool ? "True"
-                                         : library_ + ".iinfo(" + dtype_name(dtype) + ").max";
+void PythonTarget::fold_convert(const std::string& name,
+                                const TensorInfo& value,
+                                ScalarKind dtype) {
+    const auto found = values_.find(value.name);
+    if (found == values_.end() || dtype == ScalarKind::Bool || !value.shape.empty()) {
+        return;
     }
-    return "0";
+    double result = found->second;
+    if (sema::is_float(dtype)) {
+        result =
+            dtype == ScalarKind::F32 ? static_cast<double>(static_cast<float>(result)) : result;
+        values_[name] = result;
+        literals_[name] = python_float(result);
+        return;
+    }
+    result = std::trunc(result);
+    const sema::IntegerLimits limits = sema::integer_limits(dtype);
+    if (!(result >= static_cast<double>(limits.lowest) &&
+          result <= static_cast<double>(limits.highest))) {
+        return; // out of range (or not a number): the library decides
+    }
+    values_[name] = result;
+    literals_[name] = std::to_string(static_cast<long long>(result));
+}
+
+std::string PythonTarget::literal_text(const Literal& literal, ScalarKind dtype) const {
+    if (auto text = python_literal(literal, dtype)) {
+        return std::move(*text);
+    }
+    return extreme(literal.kind == Literal::Kind::Highest, dtype);
+}
+
+std::string PythonTarget::extreme(bool highest, ScalarKind dtype) const {
+    if (sema::is_float(dtype)) {
+        return (highest ? "" : "-") + infinity();
+    }
+    if (dtype == ScalarKind::Bool) {
+        return highest ? "True" : "False";
+    }
+    return library_ + ".iinfo(" + dtype_name(dtype) + ")." + (highest ? "max" : "min");
 }
 
 std::optional<std::string> PythonTarget::lora_target(const std::string& name) const {
@@ -398,11 +416,55 @@ PythonTarget::adapters(const std::string& path, const Dims& weight, ScalarKind d
 }
 
 std::string PythonTarget::string_list(const std::vector<std::string>& items) {
-    std::string out = "[";
-    for (std::size_t i = 0; i < items.size(); ++i) {
-        out += (i == 0 ? "\"" : ", \"") + items[i] + "\"";
+    return "[" + join(items, ", ", [](const std::string& item) { return "\"" + item + "\""; }) +
+           "]";
+}
+
+std::pair<std::size_t, bool> PythonTarget::op_of(const KernelLaunch& launch) {
+    std::string key = launch.op;
+    for (const TensorInfo& argument : launch.arguments) {
+        key += ";" + python_tuple(argument.shape) + dtype_name(argument.dtype);
     }
-    return out + "]";
+    const auto [launched, is_new] = launched_.try_emplace(key, launches_);
+    launches_ += is_new ? 1 : 0;
+    return {launched->second, is_new};
+}
+
+std::pair<std::string, bool> PythonTarget::kernel_of(const KernelLaunch& launch) {
+    const std::string program = join(launch.program.parameters, ",") + "\n" + launch.program.body;
+    auto [kernel, is_new] = kernels_.try_emplace(program, "");
+    if (is_new) {
+        kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+    }
+    return {kernel->second, is_new};
+}
+
+std::vector<std::string> PythonTarget::call_op(const KernelLaunch& launch, std::size_t op) {
+    const std::string value =
+        define("_op" + std::to_string(op) + "(" +
+               join(launch.arguments,
+                    ", ",
+                    [](const TensorInfo& argument) -> const auto& { return argument.name; }) +
+               ")");
+    if (launch.results.size() == 1) {
+        return {value};
+    }
+    std::vector<std::string> names;
+    names.reserve(launch.results.size());
+    for (std::size_t i = 0; i < launch.results.size(); ++i) {
+        names.push_back(define(value + "[" + std::to_string(i) + "]"));
+    }
+    return names;
+}
+
+std::optional<Reduction> PythonTarget::atomic_result(const KernelLaunch& launch, std::size_t i) {
+    const auto atomic =
+        launch.program.atomics.find(launch.program.parameters[launch.arguments.size() + i]);
+    return atomic == launch.program.atomics.end() ? std::nullopt : std::optional(atomic->second);
+}
+
+std::string PythonTarget::reduction_identity(Reduction reduction, sema::ScalarKind dtype) const {
+    return reduction == Reduction::Sum ? "0" : extreme(reduction == Reduction::Min, dtype);
 }
 
 std::optional<std::string> python_options_conflict(const GraphExportOptions& options) {

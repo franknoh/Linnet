@@ -4,7 +4,6 @@
 #include "linnet/support/text.hpp"
 
 #include <cctype>
-#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,18 +42,6 @@ std::string index_list(const Dims& values) {
     std::string text = "[";
     text += join(values, ", ", [&](const auto& item) { return std::to_string(item); });
     return text + "]";
-}
-
-// MLIR wants a decimal point in the mantissa: `1.0e30`, not `1e30`.
-std::string float_text(double value) {
-    char buffer[64];
-    std::snprintf(buffer, sizeof buffer, "%.17g", value);
-    std::string text = buffer;
-    const std::size_t exponent = text.find_first_of("eE");
-    if (text.find('.') == std::string::npos) {
-        text.insert(exponent == std::string::npos ? text.size() : exponent, ".0");
-    }
-    return text;
 }
 
 // Bit patterns of -inf and +inf, and integer extremes, as MLIR literals.
@@ -176,7 +163,7 @@ public:
             text = std::to_string(literal.integer);
             break;
         case Literal::Kind::Real:
-            text = float_text(literal.real);
+            text = decimal_float(literal.real);
             break;
         case Literal::Kind::Boolean:
             text = literal.integer != 0 ? "true" : "false";

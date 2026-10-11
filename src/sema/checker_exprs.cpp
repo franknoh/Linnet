@@ -1407,7 +1407,7 @@ TypeId Checker::check_index(const ast::Expr& node, const ast::IndexExpr& index) 
 void Checker::record_binding(const ast::Name& name, TypeId type) {
     if (!name.text.empty()) {
         result_.bindings.push_back(
-            {name.span, env_->owner, std::string(name.text), str(type), !binding_is_annotated_});
+            {name.span, std::string(name.text), str(type), !binding_is_annotated_});
     }
 }
 

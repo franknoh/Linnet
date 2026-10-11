@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdio>
 #include <limits>
 #include <map>
 #include <optional>
@@ -37,13 +36,7 @@ std::string float_text(double value) {
     if (value == -std::numeric_limits<double>::infinity()) {
         return "-Infinity";
     }
-    char buffer[64];
-    std::snprintf(buffer, sizeof buffer, "%.17g", value);
-    std::string text = buffer;
-    if (text.find_first_of(".eE") == std::string::npos) {
-        text += ".0";
-    }
-    return text;
+    return decimal_float(value);
 }
 
 std::string int_list(const Dims& values) {
