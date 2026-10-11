@@ -20,8 +20,9 @@ out, an inference entry's products that read the same input run as one
 
 The generated code runs eagerly: the host issues one call after another,
 `dispatch` seconds each, and the device runs each kernel once it is issued
-and the previous one is done. A step with small kernels waits on the host;
-a step with large ones keeps the host ahead. Training adds the backward pass
+and the previous one is done, `gap` seconds after it when it was waiting
+in the queue. A step with small kernels waits on the host; a step with
+large ones keeps the host ahead. Training adds the backward pass
 (products twice, attention at its backward rate, other kernels reading the
 gradient and writing one) and one optimizer pass a step. A pipeline adds its
 bubble, `(stages - 1) / (micro-batches + stages - 1)` of the step.
@@ -66,6 +67,7 @@ class _Profile(TypedDict):
     dispatch: NotRequired[float]
     kernel: NotRequired[float]
     strided_kernel: NotRequired[float]
+    gap: NotRequired[float]
     reduce: NotRequired[float | None]
     source: NotRequired[str]
 
@@ -91,7 +93,8 @@ class DeviceSpec:
       mix; `host`: the same by kind of call (`view`, `elementwise`,
       `product`, ...) and per autograd node (`backward`,
       `product_backward`); `kernel`: a small kernel's device seconds,
-      issued eagerly, and `strided_kernel` one reading a strided view.
+      issued eagerly, and `strided_kernel` one reading a strided view, both
+      with the `gap` between kernels the device runs back to back.
     - `link`: an all-reduce's bus bandwidth; `latency`: a small one's
       seconds; `reduce`: one token's as the generated code calls it with the
       next call reading it, host included.
@@ -116,6 +119,7 @@ class DeviceSpec:
     dispatch: float = 0.0
     kernel: float = 0.0
     strided_kernel: float = 0.0
+    gap: float = 0.0
     reduce: float = 0.0
     source: str = "data sheet"
 
@@ -198,6 +202,7 @@ class DeviceSpec:
             dispatch=float(data.get("dispatch", 0.0)),
             kernel=float(data.get("kernel", 0.0)),
             strided_kernel=float(data.get("strided_kernel", 0.0)),
+            gap=float(data.get("gap", 0.0)),
             reduce=float(data.get("reduce") or 0.0) or _H100.reduce,
             source=str(data.get("source", "measured")),
         )
@@ -284,6 +289,7 @@ _H100 = DeviceSpec(
     dispatch=5.95e-6,
     kernel=2.07e-6,
     strided_kernel=3.25e-6,
+    gap=1.09e-6,
     reduce=20.6e-6,
     source="measured: H100 SXM, PyTorch 2.14.1+cu130",
 )
@@ -325,6 +331,7 @@ def _from_sheet(
         dispatch=_H100.dispatch,
         kernel=_H100.kernel,
         strided_kernel=_H100.strided_kernel,
+        gap=_H100.gap,
         reduce=_H100.reduce,
         source="data sheet, at the H100's measured share of its own",
     )
@@ -399,6 +406,15 @@ class Throughput:
 
 
 _PRODUCTS = ("torch.nn.functional.linear", "torch.matmul")
+# `std.quant`'s 8-bit linear layers (`linnet.torch.quantized`): products at
+# the input dtype's rate, the weight read at a byte an element.
+_EIGHT_BIT = (
+    "linnet.fp8_linear",
+    "torch._scaled_mm",
+    "linnet.fp8_block_linear",
+    "linnet.int8_linear",
+    "linnet.int8_group_linear",
+)
 _WRITES = ("torch.Tensor.index_copy", "torch.Tensor.index_put", "torch.Tensor.index_put(tokens)")
 _COLLECTIVES = ("torch.distributed.all_reduce", "torch.distributed.all_gather")
 _LOSSES = ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs")
@@ -418,19 +434,22 @@ _LOSS_BLOCK_BYTES = 1 << 30  # f32 logits per block, as `linnet.torch.loss`
 @dataclass(slots=True)
 class _Op:
     """Device work and the host time it takes to issue: `seconds` on the
-    device, which of compute, memory or communication sets it, and `host`
-    seconds of eager calls."""
+    device in `kernels` kernels, which of compute, memory or communication
+    sets it, and `host` seconds of eager calls."""
 
     host: float
     seconds: float
     by: Literal["compute", "memory", "communication"]
+    kernels: float = 1.0
 
 
 @dataclass(slots=True)
 class _Clock:
-    """The host issuing calls and the device running them, in order."""
+    """The host issuing calls and the device running them, in order: each
+    kernel `gap` seconds after the one before when it was queued."""
 
     eager: bool
+    gap: float = 0.0
     host: float = 0.0
     device: float = 0.0
     spent: dict[str, float] = field(
@@ -440,7 +459,10 @@ class _Clock:
     def run(self, op: _Op) -> None:
         if self.eager:
             self.host += op.host
-        self.device = max(self.device, self.host) + op.seconds
+        # The op's first kernel waited in the queue, or the device waited
+        # for the host; its others follow one another.
+        queued = op.kernels if self.device > self.host else max(op.kernels - 1, 0.0)
+        self.device = max(self.device, self.host) + op.seconds + queued * self.gap
         self.spent[op.by] += op.seconds
 
 
@@ -497,13 +519,15 @@ def _fused(graph: TensorGraph) -> dict[int, list[int]]:
     """Products the generated inference code runs as one: those reading the
     same input, each by a weight of its own, whose weights `prepare` joins
     (the query, key and value projections, say). Keyed by the first."""
-    groups: dict[int, list[int]] = {}
+    groups: dict[tuple[int, str], list[int]] = {}
     for step in graph.steps:
-        if step.implementation != "torch.nn.functional.linear" or len(step.inputs) != 2:
+        implementation = step.implementation or ""
+        linear = implementation == "torch.nn.functional.linear" and len(step.inputs) == 2
+        if not linear and implementation.split("(")[0] not in _EIGHT_BIT:
             continue
         weight = graph.objects[step.inputs[1]]
         if weight.category == Category.PARAMETER and weight.persistent:
-            groups.setdefault(step.inputs[0], []).append(step.index)
+            groups.setdefault((step.inputs[0], implementation), []).append(step.index)
     return {members[0]: members for members in groups.values() if len(members) > 1}
 
 
@@ -534,9 +558,10 @@ def _costs(
     )
 
     def memory(nbytes: float, kernels: int = 1, rate: float = stream) -> float:
-        # The unvectorized kernel's floor is its own.
+        # The unvectorized kernel's floor is its own. The clock adds the gap
+        # the floors were measured with.
         floor = device.strided_kernel if rate == spread and device.strided_kernel else device.kernel
-        return max(nbytes / rate, kernels * floor)
+        return max(nbytes / rate, kernels * (floor - device.gap))
 
     def bounded(
         flops: float,
@@ -548,10 +573,10 @@ def _costs(
     ) -> _Op:
         compute = flops / rate
         moved = nbytes / (read_rate or device.bandwidth)
-        floor = kernels * device.kernel
+        floor = kernels * (device.kernel - device.gap)
         if compute >= moved:
-            return _Op(issued, max(compute, floor), "compute")
-        return _Op(issued, max(moved, floor), "memory")
+            return _Op(issued, max(compute, floor), "compute", kernels)
+        return _Op(issued, max(moved, floor), "memory", kernels)
 
     for step in graph.steps:
         if step.index in hoisted or step.index in joined:
@@ -564,7 +589,8 @@ def _costs(
         written = sum(_bytes(graph, o, env) for o in owned)
         flops = float(ex.evaluate(step.flops, env))
         operands = len(step.inputs)
-        if implementation in _PRODUCTS and operands >= 2:
+        eight_bit = implementation in _EIGHT_BIT
+        if (implementation in _PRODUCTS or eight_bit) and operands >= 2:
             members = fused.get(step.index, [step.index])
             if len(members) > 1:
                 steps = [graph.steps[i] for i in members]
@@ -583,8 +609,11 @@ def _costs(
                 width = weight[-1] if weight else 1
             rows = math.prod(source[:-1]) if source else 1
             dtype = graph.objects[step.inputs[0]].dtype
-            # A joined product is one call, then a slice for each part.
+            # A joined product is one call, then a slice for each part; an
+            # 8-bit layer of many rows rounds them first.
             issued = host("batched" if batched else "product")
+            if eight_bit and rows > 1:
+                issued += host("elementwise")
             if len(members) > 1:
                 issued += host(*["view"] * len(members))
             # A few rows (a decoding step's) read the weight at its own rate.
@@ -597,7 +626,7 @@ def _costs(
                 read_rate=skinny,
             )
             forward.append(op)
-            backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by))
+            backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by, 2))
         elif implementation == "torch.nn.functional.scaled_dot_product_attention":
             inputs = step.inputs
             query = _dims(graph, inputs[0], env)
@@ -619,8 +648,9 @@ def _costs(
                     "reduction",
                 )
                 seconds = cache / (device.decode or device.bandwidth)
-                forward.append(_Op(calls, max(seconds, 8 * device.kernel), "memory"))
-                backward.append(_Op(8 * node, 2 * seconds, "memory"))
+                floor = 8 * (device.kernel - device.gap)
+                forward.append(_Op(calls, max(seconds, floor), "memory", 8))
+                backward.append(_Op(8 * node, 2 * seconds, "memory", 8))
                 continue
             kind = "masked" if masked and not causal else "causal"
             work = flops / 2 if causal else flops
@@ -630,17 +660,18 @@ def _costs(
             backward_rate = device.attention_rate(f"{kind}_backward", query[-1], dtype)
             moved = (read + written) / device.bandwidth
             compute = work / rate
+            floor = device.kernel - device.gap
             forward.append(
                 _Op(
                     host("attention"),
-                    max(compute, moved, device.kernel),
+                    max(compute, moved, floor),
                     "compute" if compute >= moved else "memory",
                 )
             )
             backward.append(
                 _Op(
                     node + host("attention"),
-                    max(work / backward_rate, 2 * moved, device.kernel),
+                    max(work / backward_rate, 2 * moved, floor),
                     "compute",
                 )
             )
@@ -686,13 +717,19 @@ def _costs(
                 blocks * calls,
                 3 * flops / rate + (logits * _LOSS_GRAD_BYTES + summed) / stream,
                 "compute",
+                blocks * 14,
             )
             if gradients:
                 forward.append(with_grads)
                 backward.append(_Op(node + 2 * host("elementwise"), memory(2 * read), "memory"))
             else:
                 forward.append(
-                    _Op(blocks * calls, flops / rate + logits * _LOSS_BYTES / stream, "compute")
+                    _Op(
+                        blocks * calls,
+                        flops / rate + logits * _LOSS_BYTES / stream,
+                        "compute",
+                        blocks * 6,
+                    )
                 )
                 if training:
                     # Log-probabilities keep their log-sum-exp and recompute
@@ -715,13 +752,15 @@ def _costs(
                 "torch.Tensor.index_copy": ("write", "view", "cast"),
                 "torch.Tensor.index_put": ("write", "view") + ("view",) * (operands > 3),
             }.get(full, ("write", "cast", "cast", "view", "view"))
-            forward.append(_Op(host(*calls), memory(2 * update), "memory"))
+            # Its index arguments' casts are kernels of their own.
+            kernels = sum(call != "view" for call in calls)
+            forward.append(_Op(host(*calls), memory(2 * update, kernels), "memory", kernels))
         elif implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):
             # The fast normalizations are two calls: the normalization, then
             # times the (broadcast) weight.
             seconds = memory(2 * written) + memory(2 * written, rate=spread)
-            forward.append(_Op(host("normalization", "elementwise"), seconds, "memory"))
-            backward.append(_Op(2 * node, 2 * seconds, "memory"))
+            forward.append(_Op(host("normalization", "elementwise"), seconds, "memory", 2))
+            backward.append(_Op(2 * node, 2 * seconds, "memory", 2))
         elif step.label == "contraction" and owned:
             # `sum[k] a[i, k] * b[k, j]` is one product (`einsum`): at the
             # rate of a weight as tall as the result's last axis and as wide
@@ -732,7 +771,7 @@ def _costs(
             dtype = graph.objects[step.inputs[0]].dtype
             op = bounded(flops, device.product(dtype, last, width), read + written, host("batched"))
             forward.append(op)
-            backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by))
+            backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by, 2))
         elif owned:
             # An operand broadcast, or a strided view (a permute, a slice of
             # a joined product), takes PyTorch's unvectorized kernel.
@@ -743,8 +782,8 @@ def _costs(
             forward.append(_Op(host(kind), seconds, "memory"))
             backward.append(_Op(node, 2 * seconds, "memory"))
         else:
-            forward.append(_Op(host("view"), 0.0, "memory"))  # a view
-            backward.append(_Op(node, 0.0, "memory"))
+            forward.append(_Op(host("view"), 0.0, "memory", 0))  # a view
+            backward.append(_Op(node, 0.0, "memory", 0))
     return forward, backward
 
 
@@ -779,7 +818,7 @@ def _part(
     (`linnet.torch.fsdp`); a pipeline's stage (`staged`) gathers its
     weights once a step and sums each micro-batch's gradients."""
     forward, backward = _costs(graph, env, device, processes, training, fuse=not staged)
-    clock = _Clock(not compiled)
+    clock = _Clock(not compiled, device.gap)
     once = 0.0
     summing: _Op | None = None
     if shards > 1 and training:
@@ -808,7 +847,14 @@ def _part(
     if training:
         if recomputed:
             for op in forward:
-                clock.run(_Op(op.host * recomputed, op.seconds * recomputed, op.by))
+                clock.run(
+                    _Op(
+                        op.host * recomputed,
+                        op.seconds * recomputed,
+                        op.by,
+                        op.kernels * recomputed,
+                    )
+                )
         for op in reversed(backward):
             clock.run(op)
         if summing is not None:

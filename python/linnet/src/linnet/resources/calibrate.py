@@ -22,8 +22,9 @@ Each rate is the best of several timed runs after a warm-up:
 - one query per row under a mask, as the generated code runs it, as the
   cache's bytes read per second;
 - the host time of one eager call: over a decoder layer's mix of calls on
-  tiny tensors, and for each kind of call and autograd node alone; and the
-  device time of a small kernel issued eagerly;
+  tiny tensors, and for each kind of call and autograd node alone; the
+  device time of a small kernel issued eagerly, and the gap between two
+  kernels the device runs back to back;
 - under `torchrun`, NCCL's all-reduce: a small message's time and a large
   one's bus bandwidth; and a small one as the generated code calls it,
   host included.
@@ -35,13 +36,14 @@ compared with measured models in the docs.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
     import torch
@@ -372,11 +374,14 @@ def _decode(device: torch.device) -> float:
     return 2 * key.numel() * key.element_size() / seconds
 
 
-def _kernel(device: torch.device) -> tuple[float, float]:
+def _kernel(device: torch.device) -> tuple[float, float, float]:
     """Device seconds of a small kernel (one decoding step's rows) issued
     eagerly, timed behind long products so that the host is ahead and the
     kernels run back to back: a contiguous one, and one reading a permuted
-    view with a broadcast operand (PyTorch's unvectorized kernel)."""
+    view with a broadcast operand (PyTorch's unvectorized kernel). Also the
+    gap between two kernels run back to back: the median time from one
+    kernel's end to the next one's start, as the profiler records a queue
+    of them (0 where the profiler cannot record the device)."""
     import torch
 
     big = torch.randn(8192, 8192, device=device, dtype=torch.bfloat16)
@@ -385,7 +390,7 @@ def _kernel(device: torch.device) -> tuple[float, float]:
     heads = torch.randn(16, 1, 32, 128, device=device, dtype=torch.bfloat16).permute(0, 2, 1, 3)
     row = torch.randn(1, 128, device=device, dtype=torch.bfloat16)
 
-    def queued(call: Callable[[], object]) -> float:
+    def queued(call: Callable[[], object], count: int = 2000) -> float:
         best = float("inf")
         for _ in range(5):
             torch.cuda.synchronize()
@@ -394,14 +399,55 @@ def _kernel(device: torch.device) -> tuple[float, float]:
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
             start.record()
-            for _ in range(2000):
+            for _ in range(count):
                 call()
             end.record()
             torch.cuda.synchronize()
-            best = min(best, start.elapsed_time(end) / 1000 / 2000)
+            best = min(best, start.elapsed_time(end) / 1000 / count)
         return best
 
-    return queued(lambda: x.add_(1.0)), queued(lambda: heads * row)
+    small = queued(lambda: x.add_(1.0))
+    strided = queued(lambda: heads * row)
+    return small, strided, _gap(device, lambda: queued(lambda: x.mul_(1.0), count=200))
+
+
+class _Span(Protocol):
+    start: float  # microseconds
+    end: float
+
+
+class _Recorded(Protocol):
+    """A kernel as the profiler records it."""
+
+    name: str
+    device_type: object
+    time_range: _Span
+
+
+def _gap(device: torch.device, run: Callable[[], object]) -> float:
+    """Seconds from one kernel's end to the next one's start while `run`
+    queues small kernels on `device`, by the profiler's records."""
+    import statistics
+
+    import torch
+    from torch.profiler import ProfilerActivity, profile
+
+    try:
+        with profile(activities=[ProfilerActivity.CUDA]) as recorded:
+            run()
+            torch.cuda.synchronize(device)
+    except RuntimeError:
+        return 0.0
+    events = cast("list[_Recorded]", recorded.events())
+    spans = sorted(
+        (event.time_range.start, event.time_range.end)
+        for event in events
+        if str(event.device_type).endswith("CUDA")
+    )
+    # The queued kernels are the last ones (the long products ran first);
+    # microseconds from inside their run.
+    gaps = [after[0] - before[1] for before, after in itertools.pairwise(spans[-150:])]
+    return statistics.median(gaps) / 1e6 if len(gaps) > 10 else 0.0
 
 
 def _collectives(device: torch.device) -> tuple[float, float, float]:
@@ -473,7 +519,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
     host = _host_by_kind(device)
     dispatch = _host(device)
     scale = _generated(device, host, dispatch)
-    small, strided = _kernel(device)
+    small, strided, gap = _kernel(device)
     peaks, sizes, skinny = _products(device)
     same, broadcast = _elementwise(device)
     found: dict[str, object] = {
@@ -498,6 +544,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
         },
         "kernel": small,
         "strided_kernel": strided,
+        "gap": gap,
         "link": 0.0,
         "latency": 0.0,
         "reduce": 0.0,

@@ -230,7 +230,9 @@ The generated code runs eagerly, so the host issues every call. Each kind
 of call (a view, an elementwise kernel, a product, autograd's node) has its
 own measured cost, scaled to what a small decoder's generated step takes on
 the host. The device starts each kernel once it is issued and the previous
-one is done: a step of small kernels waits on the host. The calls are the
+one is done, about a microsecond after it when the kernel waited in the
+queue (`gap`, measured): a step of small kernels waits on the host, and a
+step of many kernels the device runs back to back pays the gaps. The calls are the
 generated code's: rotary tables made once per shape, inference projections
 of one input joined into one product (not in split models or pipeline
 stages), a causal mask run as `is_causal`, a cache write's index arguments.
@@ -258,9 +260,9 @@ zero weights), the median of six; rates calibrated on the same pair:
 
 | Model | Configuration | Predicted | Measured | Error |
 | --- | --- | ---: | ---: | ---: |
-| Llama 3.1 8B | decode, batch 1, cache 8,192 | 11.7 ms | 11.2 ms | +4.6% |
-| Llama 3.1 8B | decode, batch 16, cache 8,192 | 16.4 ms | 18.1 ms | -9.5% |
-| Llama 3.1 8B | decode, batch 32, cache 4,096 | 16.4 ms | 18.1 ms | -9.7% |
+| Llama 3.1 8B | decode, batch 1, cache 8,192 | 12.1 ms | 11.2 ms | +7.7% |
+| Llama 3.1 8B | decode, batch 16, cache 8,192 | 16.7 ms | 18.0 ms | -7.0% |
+| Llama 3.1 8B | decode, batch 32, cache 4,096 | 16.7 ms | 17.9 ms | -6.4% |
 | Llama 3.1 8B | batch 1, 8,192 tokens | 257 ms | 249 ms | +3.1% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens | 88.4 ms | 92.8 ms | -4.8% |
 | TinyLlama 1.1B | decode, batch 1, cache 2,048 | 7.80 ms | 7.47 ms | +4.5% |
@@ -283,9 +285,13 @@ zero weights), the median of six; rates calibrated on the same pair:
 The last four rows ran on four other H100s. The GPT-2 row and the three
 tensor-parallel decoding rows ran on another pair, with `validate --time`,
 which times the steps with Python's garbage collector held: the analysis
-leaves a heap whose collection would otherwise land in a step.
+leaves a heap whose collection would otherwise land in a step. The first
+three rows ran on a third H100, which measured a gap of 1.06 us between
+kernels.
 
-Where it is still short: decoding 16 rows on one GPU, by about 10%.
+Decoding 16 or 32 rows on one GPU still comes out 6-7% short. The step
+launches about a fifth more kernels than the model counts (cuBLAS's own
+among them), each with its gap.
 
 ## JSON and Python
 
