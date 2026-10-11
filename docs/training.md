@@ -79,9 +79,10 @@ train(model, pack(examples_of_this_process, tokens=4096), optimizer=optimizer, s
 - `save_weights` gathers the parts. Every process calls it, and the first
   writes the file.
 
-On four H100s, Llama 3.1 8B fine-tunes in full this way. The run used f32
+On four H100s, Llama 3.1 8B fine-tunes in full this way. One run used f32
 parts, AdamW, and 4096 packed tokens per process per step; held-out Alpaca
-loss went from 1.91 to 1.35 in 30 steps.
+loss went from 1.91 to 1.35 in 30 steps. A later run of the same setup, beside
+JAX and TRL, is in [Compared with TRL](#compared-with-trl).
 
 | `compile` | Step | Tokens/s, four GPUs | Peak per GPU |
 | --- | --- | --- | --- |
