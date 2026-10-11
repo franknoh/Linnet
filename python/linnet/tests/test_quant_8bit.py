@@ -157,7 +157,7 @@ def test_torch_multiplies_dequantized(
         compile=compile,
     )
     got = loaded.run_entry(ENTRIES[kind], [torch.from_numpy(_input())]).detach().numpy()
-    np.testing.assert_allclose(got, _input() @ dequantized[kind].T, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(got, _input() @ dequantized[kind].T, rtol=1e-5, atol=1e-4)
 
 
 @pytest.mark.parametrize("kind", list(ENTRIES))

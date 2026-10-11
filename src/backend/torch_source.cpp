@@ -100,19 +100,39 @@ std::string split_eight_bit_operands(const std::string& body) {
         if (kind && line.starts_with(prefix) && line[prefix.size()] != ' ' && line.ends_with(")")) {
             parts = call_arguments(std::string_view(line).substr(open + 1, line.size() - open - 2));
         }
-        if (parts.size() != 5) {
-            out += line + "\n";
+        if (!kind || parts.size() != 5) {
+            out += line;
+            out += "\n";
             continue;
         }
-        std::string operands = "_" + *kind + "_operands(" + parts[1] + ", " + parts[2];
-        operands += *kind == "int8_group" ? ")" : ", " + parts[4] + ")";
+        std::string operands = "_";
+        operands += *kind;
+        operands += "_operands(";
+        operands += parts[1];
+        operands += ", ";
+        operands += parts[2];
+        if (*kind != "int8_group") {
+            operands += ", ";
+            operands += parts[4];
+        }
+        operands += ")";
         auto found = shared.find(operands);
         if (found == shared.end()) {
             const std::string name = "v" + std::to_string(++highest);
-            out += prefix + name + " = " + operands + "\n";
+            out += prefix;
+            out += name;
+            out += " = ";
+            out += operands;
+            out += "\n";
             found = shared.emplace(operands, name).first;
         }
-        out += line.substr(0, open + 1) + parts[0] + ", " + found->second + ", " + parts[3] + ")\n";
+        out += line.substr(0, open + 1);
+        out += parts[0];
+        out += ", ";
+        out += found->second;
+        out += ", ";
+        out += parts[3];
+        out += ")\n";
     }
     return out;
 }
@@ -814,10 +834,15 @@ public:
             out += experts_helper();
         }
         for (const std::string& kind : eight_bit_) {
-            out +=
-                "from linnet.torch.quantized import " + kind + "_linear as _" + kind + "_linear\n";
-            out += "from linnet.torch.quantized import " + kind + "_operands as _" + kind +
-                   "_operands\n";
+            for (const char* part : {"_linear", "_operands"}) {
+                out += "from linnet.torch.quantized import ";
+                out += kind;
+                out += part;
+                out += " as _";
+                out += kind;
+                out += part;
+                out += "\n";
+            }
         }
         if (!eight_bit_.empty()) {
             out += "\n";
