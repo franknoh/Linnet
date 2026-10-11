@@ -180,7 +180,7 @@ into the generated source, with a `.to()` where a value crosses devices:
 ### Tensor parallelism
 
 ```python
-# torchrun --numa-binding node --nproc-per-node 2 serve.py
+# torchrun --nproc-per-node 2 serve.py
 import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 
@@ -194,10 +194,12 @@ Tensor parallelism splits every large weight across the GPUs, so all work
 on each layer at once. `device_map` instead gives each GPU whole blocks,
 which take turns.
 
-On a machine with more than one CPU socket, `--numa-binding node` (it needs
-`numactl`) keeps each process on the CPUs near its GPU. A step waits for
-its slowest process, and on two H100s a process left on the other socket
-issued its calls up to 9% slower, by a different amount each run.
+Each process of a split or sharded model (`tensor_parallel=`,
+`fully_shard`, `pipeline`) keeps to the CPUs nearest its GPU, as
+`torchrun --numa-binding node` would bind it: a step waits for its slowest
+process, and on two H100s a process left on the other socket issued its
+calls up to 9% slower, by a different amount each run. A process bound
+already, by torchrun or `taskset`, stays as it is.
 
 A model with a `Shards` generic (1 by default), such as the zoo's
 Llama-shaped decoders, declares its own split. A shard holds

@@ -184,6 +184,10 @@ def load(
         if not compile:
             raise PlanError("a sharded model runs as generated code: pass compile=")
         generics = {**generics, "Shards": mesh.size()}
+    if tensor_parallel is not None:
+        from .parallel import bind_cpus
+
+        bind_cpus(torch.device(device))
     module: LinnetModule
     if compile:
         module = CompiledLinnetModule(

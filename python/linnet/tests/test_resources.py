@@ -801,6 +801,13 @@ def test_a_calibrated_profile_loads(tmp_path: Path) -> None:
             "bf16": [[128, 128, 10.0], [128, 512, 20.0], [512, 128, 30.0], [512, 512, 50.0]]
         },
         "host": {"view": 2e-7},
+        "skinny": 4.0,
+        "skinny_products": [
+            [128, 128, 1.0, 1],
+            [128, 512, 2.0, 2],
+            [512, 128, 3.0, 1],
+            [512, 512, 5.0, 3],
+        ],
         "bandwidth": 5.0,
         "attention": {"causal/64": 30.0, "causal/128": 60.0, "causal/64/f32": 3.0},
         "dispatch": 1e-6,
@@ -819,6 +826,12 @@ def test_a_calibrated_profile_loads(tmp_path: Path) -> None:
     assert loaded.product("bf16", 64, 512) == pytest.approx(10.0)
     assert loaded.product("bf16", 1 << 20, 1 << 20) == 50.0
     assert loaded.product("f32", 256, 256) == 10.0
+    # A few rows' read rate by the weight's shape, the nearest edge outside
+    # the grid (no scaling below it); the kernels of the nearest shape.
+    assert loaded.skinny_rate(256, 256) == pytest.approx(2.75)
+    assert loaded.skinny_rate(64, 64) == 1.0
+    assert loaded.skinny_kernels(500, 400) == 3
+    assert loaded.skinny_kernels(130, 600) == 2
     # A kind measured costs its own; any other the mix's average.
     assert loaded.host_of("view", "product") == pytest.approx(2e-7 + 1e-6)
     assert loaded.attention_rate("causal", 80) == 30.0

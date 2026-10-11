@@ -10,8 +10,12 @@ the inputs) are taken as replicated, and results come back whole.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, TypedDict, TypeVar, Unpack, overload
+from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict, TypeVar, Unpack, cast, overload
 
 import torch
 
@@ -81,6 +85,44 @@ class SplitFunctional:
         return torch.nn.functional.scaled_dot_product_attention(
             query, key, value, attn_mask=attn_mask, **options
         )
+
+
+def _cpu_list(text: str) -> set[int]:
+    """`0-55,112-167` as the CPUs it names."""
+    cpus: set[int] = set()
+    for part in text.split(","):
+        first, _, last = part.partition("-")
+        cpus.update(range(int(first), int(last or first) + 1))
+    return cpus
+
+
+def bind_cpus(device: torch.device) -> None:
+    """Keeps this process, every thread of it, on the CPUs nearest `device`,
+    as `torchrun --numa-binding node` does: one process of several left on
+    another socket's CPUs issues its calls slower, and a split model's every
+    step waits for its slowest process. Nothing changes off Linux, off CUDA,
+    where the process is near its GPU already, or where it may run on none
+    of those CPUs."""
+    if not sys.platform.startswith("linux") or device.type != "cuda":
+        return
+    # Its PCI address, which the stubs leave out.
+    properties = cast("object", torch.cuda.get_device_properties(device))  # pyright: ignore[reportUnknownMemberType]
+    address = [getattr(properties, f"pci_{part}_id", None) for part in ("domain", "bus", "device")]
+    if not all(isinstance(part, int) for part in address):
+        return
+    domain, bus, slot = (int(str(part)) for part in address)
+    path = Path(f"/sys/bus/pci/devices/{domain:04x}:{bus:02x}:{slot:02x}.0/local_cpulist")
+    try:
+        near = _cpu_list(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return
+    allowed = os.sched_getaffinity(0)
+    chosen = allowed & near
+    if not chosen or allowed <= near:
+        return
+    for task in Path("/proc/self/task").iterdir():
+        with contextlib.suppress(OSError):  # a thread that ended meanwhile
+            os.sched_setaffinity(int(task.name), chosen)
 
 
 @overload

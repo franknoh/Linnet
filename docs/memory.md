@@ -215,8 +215,10 @@ the analysis refuses, says why. `--batch` or `--seq-len` fixes the size.
 Each operation of the step is costed at rates measured on the device:
 
 - matrix products at the rate measured for their weight's shape and dtype,
-  or reading their operands (a few rows read the weight at their own rate),
-  index-notation contractions (`sum[k] a[i, k] * b[k, j]`) among them;
+  or reading their operands: a few rows (a decoding step's) read the weight
+  at the rate measured for its shape, in the kernels cuBLAS launches for
+  it (a split-K product adds its reduction). Index-notation contractions
+  (`sum[k] a[i, k] * b[k, j]`) count among them;
 - fused attention at its kernel's rate: causal, under a mask, by head width
   and dtype; one query under a mask as the generated code runs it;
 - other kernels at the bandwidth an elementwise kernel reaches, about half
@@ -260,9 +262,9 @@ zero weights), the median of six; rates calibrated on the same pair:
 
 | Model | Configuration | Predicted | Measured | Error |
 | --- | --- | ---: | ---: | ---: |
-| Llama 3.1 8B | decode, batch 1, cache 8,192 | 14.4 ms | 14.2 ms | +1.1% |
-| Llama 3.1 8B | decode, batch 16, cache 8,192 | 17.4 ms | 18.4 ms | -5.4% |
-| Llama 3.1 8B | decode, batch 32, cache 4,096 | 17.4 ms | 18.2 ms | -4.3% |
+| Llama 3.1 8B | decode, batch 1, cache 8,192 | 14.3 ms | 14.1 ms | +1.8% |
+| Llama 3.1 8B | decode, batch 16, cache 8,192 | 17.7 ms | 18.2 ms | -2.8% |
+| Llama 3.1 8B | decode, batch 32, cache 4,096 | 17.7 ms | 18.4 ms | -3.5% |
 | Llama 3.1 8B | batch 1, 8,192 tokens | 257 ms | 249 ms | +3.1% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens | 88.4 ms | 92.8 ms | -4.8% |
 | TinyLlama 1.1B | decode, batch 1, cache 2,048 | 7.80 ms | 7.47 ms | +4.5% |
@@ -271,10 +273,10 @@ zero weights), the median of six; rates calibrated on the same pair:
 | BERT base (f32) | batch 8, 512 tokens | 22.8 ms | 24.6 ms | -7.4% |
 | TinyLlama 1.1B | training, 8,192 tokens, AdamW | 346 ms | 334 ms | +3.5% |
 | Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 199 ms | 210 ms | -5.1% |
-| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 144 ms | 140 ms | +2.4% |
-| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 17.1 ms | 17.8 ms | -3.5% |
-| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 17.2 ms | 18.6 ms | -7.2% |
-| Llama 3.1 8B | `decode_rows`, batch 16, tensor parallel 2 | 16.5 ms | 19.2 ms | -13.8% |
+| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 146 ms | 141 ms | +3.2% |
+| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 18.6 ms | 18.1 ms | +2.8% |
+| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 18.7 ms | 17.7 ms | +5.6% |
+| Llama 3.1 8B | `decode_rows`, batch 16, tensor parallel 2 | 17.9 ms | 19.2 ms | -6.7% |
 | TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 119 ms | 131 ms | -9.0% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | 53.4 ms | 58.6 ms | -8.9% |
 | TinyLlama 1.1B | training, 8,192 tokens, sharded 2 ways | 372 ms | 353 ms | +5.4% |
@@ -287,16 +289,15 @@ pair, with `validate --time`, which times the steps with Python's garbage
 collector held: the analysis leaves a heap whose collection would otherwise
 land in a step, and it measures the machine's rates after the steps, since
 a calibration just before them leaves the process slower to issue calls.
-The first three rows and the four tensor-parallel rows ran on a third pair,
-the tensor-parallel ones under `torchrun --numa-binding node`; between runs
-those moved by up to 4%.
+The first three rows and the four tensor-parallel rows ran on a third pair;
+between runs those moved by up to 5%.
 
-Decoding 16 or 32 rows on one GPU still comes out 4-5% short: the step
-launches about a tenth more kernels than the model counts (cuBLAS's
-split-K reductions and memsets), and its GPU waits a little longer than the
-model's queue predicts. `decode_rows` under tensor parallelism comes out
-14% short: in the step, its calls take the host longer than the same calls
-measure alone.
+Decoding 16 or 32 rows on one GPU comes out 3-4% short: the GPU sits idle
+between kernels a little longer than the model's queue predicts.
+`decode_rows` comes out 6-7% short, on one GPU or two: in the step, its
+cache writes (ATen calls through `torch.ops`) and its attention's batched
+products take the host about 2 ms longer than the same calls measured
+alone.
 
 ## JSON and Python
 
@@ -373,7 +374,7 @@ when fitting.
 Under `torchrun`, each process measures its own device:
 
 ```bash
-torchrun --numa-binding node --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
+torchrun --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
     --entry decode_rows --batch 16 --cache-len 8192 --tensor-parallel 2
 ```
 
