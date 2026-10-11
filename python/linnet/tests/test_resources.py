@@ -710,6 +710,20 @@ def test_a_contraction_runs_as_a_product(tmp_path: Path) -> None:
     assert model.throughput(device).seconds == pytest.approx(2 * 8 * 64 * 32 / 1e9, rel=0.01)
 
 
+def test_queued_kernels_wait_the_gap(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from linnet.resources.performance import DeviceSpec
+
+    device = DeviceSpec("toy", 1 << 30, {"f32": 1e9}, 1e9, 1e9, 0.0)
+    model = memory(source(tmp_path, MLP), config(batch=8, bindings={"H": 32, "Layers": 3}))
+    plain = model.throughput(device).seconds
+    # With no host time every kernel but the first waits in the queue; views
+    # launch none.
+    gapped = model.throughput(replace(device, gap=1e-3)).seconds
+    assert plain + 1e-3 <= gapped < plain + 1e-3 * 3 * len(model.graph.steps)
+
+
 def test_a_slow_host_sets_the_step(tmp_path: Path) -> None:
     from dataclasses import replace
 

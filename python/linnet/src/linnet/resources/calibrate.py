@@ -22,8 +22,9 @@ Each rate is the best of several timed runs after a warm-up:
 - one query per row under a mask, as the generated code runs it, as the
   cache's bytes read per second;
 - the host time of one eager call: over a decoder layer's mix of calls on
-  tiny tensors, and for each kind of call and autograd node alone; and the
-  device time of a small kernel issued eagerly;
+  tiny tensors, and for each kind of call and autograd node alone; the
+  device time of a small kernel issued eagerly, and the gap between two
+  kernels the device runs back to back;
 - under `torchrun`, NCCL's all-reduce: a small message's time and a large
   one's bus bandwidth; and a small one as the generated code calls it,
   host included.
@@ -372,11 +373,13 @@ def _decode(device: torch.device) -> float:
     return 2 * key.numel() * key.element_size() / seconds
 
 
-def _kernel(device: torch.device) -> tuple[float, float]:
+def _kernel(device: torch.device) -> tuple[float, float, float]:
     """Device seconds of a small kernel (one decoding step's rows) issued
     eagerly, timed behind long products so that the host is ahead and the
     kernels run back to back: a contiguous one, and one reading a permuted
-    view with a broadcast operand (PyTorch's unvectorized kernel)."""
+    view with a broadcast operand (PyTorch's unvectorized kernel). Also the
+    gap between two kernels run back to back: kernels of about 10 us in a
+    row against their work done in one kernel."""
     import torch
 
     big = torch.randn(8192, 8192, device=device, dtype=torch.bfloat16)
@@ -385,7 +388,7 @@ def _kernel(device: torch.device) -> tuple[float, float]:
     heads = torch.randn(16, 1, 32, 128, device=device, dtype=torch.bfloat16).permute(0, 2, 1, 3)
     row = torch.randn(1, 128, device=device, dtype=torch.bfloat16)
 
-    def queued(call: Callable[[], object]) -> float:
+    def queued(call: Callable[[], object], count: int = 2000) -> float:
         best = float("inf")
         for _ in range(5):
             torch.cuda.synchronize()
@@ -394,14 +397,20 @@ def _kernel(device: torch.device) -> tuple[float, float]:
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
             start.record()
-            for _ in range(2000):
+            for _ in range(count):
                 call()
             end.record()
             torch.cuda.synchronize()
-            best = min(best, start.elapsed_time(end) / 1000 / 2000)
+            best = min(best, start.elapsed_time(end) / 1000 / count)
         return best
 
-    return queued(lambda: x.add_(1.0)), queued(lambda: heads * row)
+    small = queued(lambda: x.add_(1.0))
+    strided = queued(lambda: heads * row)
+    medium = torch.zeros(8 << 20, device=device, dtype=torch.bfloat16)
+    whole = torch.zeros(32 * medium.numel(), device=device, dtype=torch.bfloat16)
+    each = queued(lambda: medium.add_(1.0), count=200)
+    once = _time(lambda: whole.add_(1.0), repeats=3) / 32
+    return small, strided, max(each - once, 0.0)
 
 
 def _collectives(device: torch.device) -> tuple[float, float, float]:
@@ -473,7 +482,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
     host = _host_by_kind(device)
     dispatch = _host(device)
     scale = _generated(device, host, dispatch)
-    small, strided = _kernel(device)
+    small, strided, gap = _kernel(device)
     peaks, sizes, skinny = _products(device)
     same, broadcast = _elementwise(device)
     found: dict[str, object] = {
@@ -498,6 +507,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
         },
         "kernel": small,
         "strided_kernel": strided,
+        "gap": gap,
         "link": 0.0,
         "latency": 0.0,
         "reduce": 0.0,
