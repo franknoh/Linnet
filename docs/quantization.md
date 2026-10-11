@@ -65,7 +65,8 @@ ONNX Runtime's `MatMulNBits`. Under `numerics="fast"`:
 
 On Llama 3.1 8B Instruct, imported GPTQ and AWQ checkpoints reach a
 perplexity of 9.98 (bf16: 9.55; rounded to nearest: 10.28) and decode at
-192 and 214 tokens per second (bf16: 134).
+192 and 214 tokens per second, against 134 for bf16 in the same run (an
+earlier one than the 8-bit table below).
 
 ### Quantizing a checkpoint
 
