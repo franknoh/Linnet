@@ -22,7 +22,11 @@ std::string PythonTarget::input(const std::string& name, const Dims& shape, Scal
     for (const char c : name) {
         clean += std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' ? c : '_';
     }
-    const std::string argument = "in_" + clean;
+    // Two names can clean to one (`pair.a`, `pair_a`): number the later.
+    std::string argument = "in_" + clean;
+    for (int copy = 2; std::ranges::find(arguments_, argument) != arguments_.end(); ++copy) {
+        argument = "in_" + clean + "_" + std::to_string(copy);
+    }
     arguments_.push_back(argument);
     return argument;
 }
@@ -399,6 +403,19 @@ std::string PythonTarget::string_list(const std::vector<std::string>& items) {
         out += (i == 0 ? "\"" : ", \"") + items[i] + "\"";
     }
     return out + "]";
+}
+
+std::optional<std::string> python_options_conflict(const GraphExportOptions& options) {
+    if (!options.lora.empty() && options.prepare) {
+        return "adapters need the weights unprepared (no --prepare)";
+    }
+    if (!options.lora.empty() && options.lora_rank <= 0) {
+        return "adapters need a positive rank";
+    }
+    if (!options.fully_shard.empty() && options.prepare) {
+        return "sharded weights are gathered as they are used (no --prepare)";
+    }
+    return std::nullopt;
 }
 
 } // namespace linnet::backend

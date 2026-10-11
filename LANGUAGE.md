@@ -140,9 +140,8 @@ Most mistakes come from these.
   `cast`, ...) cannot be redeclared, and keywords and reserved words cannot
   be names. Watch for `type`, `state`, `param`, `sub`, `buffer`, `rng`,
   `device`, `kernel`, `ref`, `mut`, `macro` and `trait`.
-- **Not in the language:** recursion, struct construction, `for` (use
-  `static for` or `while`), host-language escapes (`extern` is reserved),
-  and tensor data in source.
+- **Not in the language:** recursion, host-language escapes (`extern` is
+  reserved), and tensor data in source.
 
 ## Modules and packages
 
@@ -181,6 +180,7 @@ shared = { path = "../shared" }
 | tensor | `Tensor[B, S, H; bf16]`: dimensions, `;`, element type. A rank-0 value is a scalar (`f32`) |
 | optional | `Tensor[H; f32]?`, with values `none` and `some(x)` |
 | tuple | `(Tensor[B, H; T], i32)`, destructured by `let (a, b) = f(x)` |
+| struct | `struct KVPair<K: DType, V: DType> { key: K  value: V }`, built `KVPair(key = k, value = v)`, read `kv.key` |
 | block array | `[Layer<H, T>; Layers]`, only as a `sub` |
 | alias | `type Hidden<B: Dim, H: Dim> = Tensor[B, H; bf16]` |
 | enum | `enum Pooling { Mean, ClassToken }`, variants `Pooling.Mean` |
@@ -233,6 +233,11 @@ pub op linear<...>(...) -> R { ... }        // named operation; the body defines
                                             // and a backend may substitute a kernel
 pub entry forward<...>(...) -> R { ... }    // what a backend exposes
 ```
+
+An op may follow its body with `grad(y, dy) { ... }`, its backward pass:
+`y` is the result, `dy` the gradient arriving at it, and the clause returns
+each floating tensor parameter's gradient. The body still defines the value.
+`linnet torch|jax|onnx|stablehlo --grad` exports an entry's gradient.
 
 Parameters may have defaults (`eps: f32 = 1e-5`, `bias: Tensor[N; T]? =
 none`). Calls take positional arguments, then named ones (`axis = -1`). A
@@ -372,18 +377,28 @@ These need no import:
 | `concat(a, b, axis = -1)` | join along an axis |
 | `iota<T = i64>(N)` | `0, 1, ..., N - 1` |
 | `fill<T>([B, S], value)` | a constant tensor |
+| `cumsum(x, axis = k)` | running sum along an axis |
 
 ## Control flow
 
 ```text
 static for layer in layers { x = layer.forward(x) }   // unrolled over a sub array
 static for i in 0..Steps { ... }                      // unrolled; i is an i64 scalar
+for t in 0..Steps { h = cell(h, xs[t]) }              // a runtime loop, counted
+let hs = for t in 0..Steps { h = cell(h, xs[t]); yield h }   // a scan: [Steps, ...]
 while running && count < MaxNew { ... }               // runtime loop over a scalar bool
 ```
 
-`static for` bounds are compile-time. Its loop variable is a runtime `i64`
-value: it cannot index a block array or appear in a shape. A `while` body
-carries its `var`s with fixed types and may assign `state`.
+`static for` and `for` bounds are compile-time. A loop variable is a runtime
+`i64` value: it cannot index a block array or appear in a shape. `for` and
+`while` bodies carry their `var`s with fixed types and may assign `state`.
+A `for` that is the value of a `let` is a scan: its body ends with
+`yield value`, and the values stack along a new leading axis.
+
+A `kernel` is a tile program (Triton in PyTorch, Pallas in JAX) an op may
+launch in place of its body: `program_id`, `load` and `store` over tiles of
+compile-time shapes, a `grid(...)` of programs. See
+[kernels](https://linnet.franknoh.dev/docs/kernels).
 
 Decoding one token at a time keeps the cache in `state`:
 
@@ -426,17 +441,17 @@ Import with `use std.<module>::{...}`. Blocks take their weights as
 | `std.nn.norm` | `rms_norm(x, weight, eps = 1e-5)`, `layer_norm(x, weight, bias?, eps)`, `batch_norm`, `group_norm`, `RmsNorm<H, T>` |
 | `std.nn.activations` | `relu`, `sigmoid`, `silu`, `gelu` (tanh), `gelu_erf` |
 | `std.nn.softmax` | `softmax(x)` over the last axis |
-| `std.nn.attention` | `attention(q, k, v, scale, mask?)` over `[B, H, Q, D]`, `grouped_attention` (fewer key/value heads), `causal_mask<Q, K>()`, per-row masks `attention_rows`, `grouped_attention_rows`, and `sink_attention` |
+| `std.nn.attention` | `attention(q, k, v, scale, mask?)` over `[B, H, Q, D]`, `grouped_attention` (fewer key/value heads), `causal_mask<Q, K>()`, per-row masks `attention_rows`, `grouped_attention_rows`, `sink_attention`, and over a page pool `paged_attention`, `paged_prefill_attention` |
 | `std.nn.rope` | `rope(x, cos_table, sin_table)`, `rope_rows`, `rotate_half` |
 | `std.nn.mlp` | `swiglu(x, gate, up, down)`, `SwiGlu<H, Inner, T>` (`gate`, `up`, `down`) |
-| `std.nn.cache` | `write_at(cache, value, at)` and the batched `write_span`, `write_rows`, `write_slot`, `write_slots`, `write_tokens` |
+| `std.nn.cache` | `write_at(cache, value, at)` and the batched `write_span`, `write_rows`, `write_slot`, `write_slots`, `write_tokens`; `page_slots` |
 | `std.nn.conv` | `conv1d`, `conv2d`, `conv2d_rect`, `Conv1d`, `Conv2d`, `Conv2dRect`, `zero_pad*` |
 | `std.nn.pool` | `max_pool2d`, `global_average_pool2d` |
 | `std.nn.resize` | `upsample_nearest2d` |
-| `std.nn.loss` | `log_softmax`, `cross_entropy(logits, targets, weights)`, `linear_cross_entropy(hidden, weight, targets, weights)` (no `[N, V]` logits), `token_log_probs`, `linear_token_log_probs`, `entropy` |
+| `std.nn.loss` | `log_softmax`, `cross_entropy(logits, targets, weights)`, `linear_cross_entropy(hidden, weight, targets, weights)` (no `[N, V]` logits), `token_log_probs`, `linear_token_log_probs`, `entropy`, and over a split vocabulary `split_cross_entropy`, `split_token_log_probs` |
 | `std.nn.decoding` | `argmax(x)` over the last axis |
 | `std.nn.moe` | `linear_experts`, `linear_experts_shared`, `combine_experts` |
-| `std.nn.parallel` | `all_reduce`, `all_gather` across tensor-parallel shards |
+| `std.nn.parallel` | `all_reduce`, `all_gather` across tensor-parallel shards; `shared` (its gradient summed across them) |
 | `std.linalg` | `dot`, `outer`, `matmul`, `batched_matmul`, `transpose` |
 | `std.random` | keys are `Tensor[2; i64]`: `split<N>`, `fold_in`, `uniform<N, T>`, `normal<N, T>`, `categorical(key, logits)` |
 | `std.quant` | `Int8Linear`, `Int8GroupLinear`, `Fp8Linear`, `Fp8BlockLinear`, `Int4Linear`, `Int4GroupLinear`, `dequantize_*`, MXFP4 experts |

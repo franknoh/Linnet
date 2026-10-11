@@ -140,6 +140,28 @@ def config(**kwargs: object) -> ExecutionConfig:
     return ExecutionConfig(backend="generic", **kwargs)  # type: ignore[arg-type]
 
 
+HALVES = """\
+module halves
+
+op evens<*S: Shape>(x: Tensor[*S, 8; f32]) -> Tensor[*S, 4; f32] {
+    return x[..., 0::2]
+}
+
+pub block Model {
+    pub entry forward<B: Dim>(x: Tensor[B, 8; f32]) -> Tensor[B, 4; f32] {
+        return evens(x)
+    }
+}
+"""
+
+
+def test_a_slice_keeping_a_pack_whole_is_traced(tmp_path: Path) -> None:
+    """`x[..., k]` keeps the pack's axes whole: the trace reads them as the
+    shape they are (it once read them wrapped in another list and failed)."""
+    result = memory(source(tmp_path, HALVES), config(batch=3)).analyze()
+    assert result.expected_peak > 0
+
+
 # ---- expressions and storage
 
 

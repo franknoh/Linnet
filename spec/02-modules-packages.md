@@ -17,7 +17,7 @@ A package compiler SHOULD verify that module paths correspond to source paths; s
 Imports use logical module paths, never filesystem paths:
 
 ```text
-use std.nn::{linear, rms_norm}
+use std.nn.linear::{linear}
 use std.nn.attention::{attention}
 use crate.layers.decoder::{DecoderLayer}
 use my_dependency.ops::{custom_op}

@@ -53,8 +53,6 @@ KV-cache decoding. `LINNET_HF_TESTS=1` runs
 
 ## Not yet
 
-- A `scan` that collects per-iteration outputs; data-dependent shapes.
+- Data-dependent shapes; runtime loop bounds.
 - Importers: `erf`-based GELU, softmax over an axis other than the last,
   general gather and scatter, custom calls.
-- Activation quantization. [Weights](/docs/quantization) can be int8, int4,
-  group-wise 4-bit (GPTQ, AWQ), or MXFP4.

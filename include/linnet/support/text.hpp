@@ -10,6 +10,11 @@ namespace linnet {
 // it would otherwise read as an integer.
 std::string shortest_float(double value);
 
+// One argument of a Windows command line, as the C runtime splits the line
+// back into words: quoted when it is empty or has a space, a tab or a quote,
+// with each backslash before a quote doubled.
+std::string command_line_word(std::string_view argument);
+
 // `items` between `separator`s, each as `spell` writes it.
 template <std::ranges::input_range Range, typename Spell>
 std::string join(const Range& items, std::string_view separator, Spell spell) {

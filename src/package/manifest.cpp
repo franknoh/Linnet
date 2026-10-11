@@ -1,6 +1,7 @@
 #include "linnet/package/manifest.hpp"
 
 #include "linnet/package/toml.hpp"
+#include "linnet/syntax/lexer.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +14,9 @@
 namespace linnet {
 
 bool is_valid_package_name(std::string_view name) {
-    if (name.empty() || name == "std" || name == "crate") {
+    // A keyword or a reserved word could never be imported (`use block::...`).
+    if (name.empty() || name == "std" || name == "crate" ||
+        classify_word(name) != TokenKind::Identifier) {
         return false;
     }
     const char first = name.front();

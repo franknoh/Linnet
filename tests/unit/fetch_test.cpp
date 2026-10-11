@@ -1,4 +1,5 @@
 #include "linnet/package/fetch.hpp"
+#include "linnet/support/text.hpp"
 
 #include "test.hpp"
 
@@ -44,4 +45,13 @@ TEST("fetch: a lock file reads back as written") {
     CHECK(!read_lockfile(path).has_value());
     std::filesystem::remove(path);
     CHECK(read_lockfile(path).has_value()); // no lock yet: an empty one
+}
+
+TEST("fetch: a Windows command line splits back into the same words") {
+    CHECK_EQ(command_line_word("plain"), std::string("plain"));
+    CHECK_EQ(command_line_word(""), std::string("\"\""));
+    CHECK_EQ(command_line_word("a b"), std::string("\"a b\""));
+    CHECK_EQ(command_line_word(R"(say "hi")"), std::string(R"("say \"hi\"")"));
+    // Backslashes double only before a quote, the closing one included.
+    CHECK_EQ(command_line_word(R"(C:\dir with space\)"), std::string(R"("C:\dir with space\\")"));
 }

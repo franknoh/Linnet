@@ -42,6 +42,8 @@ TEST("manifest: rejected forms name the problem") {
     CHECK(!is_valid_package_name("my-dep"));
     CHECK(!is_valid_package_name("crate"));
     CHECK(!is_valid_package_name("1abc"));
+    CHECK(!is_valid_package_name("block")); // a keyword `use` could not import
+    CHECK(!is_valid_package_name("state"));
 }
 
 TEST("manifest: git dependencies from GitHub, the Hub, or a URL") {

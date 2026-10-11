@@ -181,15 +181,22 @@ def train(
     while steps is None or start + len(history.steps) < steps:
         group = [batch for _, batch in zip(range(accumulate), iterator, strict=False)]
         local = float(sum(batch.count for batch in group))
+        tokens = sum(batch.tokens.numel() for batch in group)
         if distributed:
             # Every process steps together: any out of batches stops all.
             ready = torch.tensor([float(bool(group))], dtype=torch.float64, device=device)
             summed = torch.tensor([local], dtype=torch.float64, device=device)
+            most = torch.tensor([float(len(group))], dtype=torch.float64, device=device)
             dist.all_reduce(ready, op=dist.ReduceOp.MIN)
             dist.all_reduce(summed, group=layout.copies)
+            dist.all_reduce(most, op=dist.ReduceOp.MAX)
             if not ready.item():
                 break
             local = float(summed.item())
+            # A process short of batches at the end runs empty ones, so that
+            # a sharded model's gathers meet on every process.
+            size = int(group[0].tokens.shape[-1])
+            group += [Batch.of(packing.empty(size))] * (int(most.item()) - len(group))
         elif not group:
             break
         count = max(1.0, local)
@@ -212,7 +219,7 @@ def train(
         record = Step(
             step=start + len(history.steps) + 1,
             loss=float(total.item()),
-            tokens=sum(batch.tokens.numel() for batch in group),
+            tokens=tokens,
             seconds=time.perf_counter() - begin,
             learning_rate=float(optimizer.param_groups[0]["lr"]),
             grad_norm=norm,

@@ -8,6 +8,7 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <functional>
@@ -3214,6 +3215,14 @@ std::expected<sema::EntityId, std::string> find_root_block(const ir::Module& mod
 }
 
 std::string python_float(double value) {
+    // A folded constant can overflow or be undefined; Python and Triton have
+    // no `inf` or `nan` literal.
+    if (std::isnan(value)) {
+        return "float(\"nan\")";
+    }
+    if (std::isinf(value)) {
+        return value > 0 ? "float(\"inf\")" : "-float(\"inf\")";
+    }
     return shortest_float(value);
 }
 

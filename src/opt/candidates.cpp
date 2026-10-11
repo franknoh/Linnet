@@ -61,24 +61,24 @@ std::vector<NativeCandidate> torch_candidates() {
          equivalent,
          {"CUDA, bf16 or f16, In a multiple of 128 and the group of 16; otherwise the weight is "
           "dequantized and multiplied"}},
-        // A call of more than one row also rounds its input to 8 bits and
+        // A call of more than 32 rows also rounds its input to 8 bits and
         // multiplies in 8 bits: FP8 a row at a time (`torch._scaled_mm`), or
         // 128 inputs at a time against block weights, and int8 a row at a
         // time in Linnet's kernel. The body multiplies the input unrounded.
         {"std.quant::linear_fp8",
          "torch._scaled_mm",
          fast,
-         {"CUDA (compute capability 9 or later) for more than one row; otherwise as "
+         {"CUDA (compute capability 9 or later) for more than 32 rows; otherwise as "
           "linnet.fp8_linear"}},
         {"std.quant::linear_fp8_blocks",
          "torch._scaled_mm(blocks)",
          fast,
-         {"CUDA (compute capability 9 or later), blocks of 128, for more than one row; otherwise "
+         {"CUDA (compute capability 9 or later), blocks of 128, for more than 32 rows; otherwise "
           "as linnet.fp8_block_linear"}},
         {"std.quant::linear_int8",
          "linnet.int8_linear(w8a8)",
          fast,
-         {"CUDA, for more than one row; otherwise as linnet.int8_linear"}},
+         {"CUDA, for more than 32 rows; otherwise as linnet.int8_linear"}},
         // A grouped matrix product over rows sorted by expert, reading each
         // chosen expert's weight where it lies; it accumulates in f32 and
         // rounds once to bf16, as the body's cast does.

@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace linnet {
 
@@ -39,13 +40,19 @@ struct FetchOptions {
     std::function<void(std::string_view)> note;
 };
 
+// What `fetch_dependencies` found: each source's checkout directory, by
+// `GitSource::key`, and what went wrong, a line each. A dependency that
+// failed leaves the others' checkouts usable.
+struct Fetched {
+    std::map<std::string, std::filesystem::path> checkouts;
+    std::vector<std::string> failures;
+};
+
 // Every git dependency reachable from the package at `root` (through path
 // and git dependencies alike), checked out under `linnet_home()` and
-// recorded in `<root>/linnet.lock`. Returns each source's checkout
-// directory, by `GitSource::key`. A dependency not on GitHub or the Hugging
-// Face Hub is fetched with a warning. Nothing fetched is ever run.
-std::expected<std::map<std::string, std::filesystem::path>, std::string>
-fetch_dependencies(const std::filesystem::path& root, const FetchOptions& options);
+// recorded in `<root>/linnet.lock`. A dependency not on GitHub or the
+// Hugging Face Hub is fetched with a warning. Nothing fetched is ever run.
+Fetched fetch_dependencies(const std::filesystem::path& root, const FetchOptions& options);
 
 // Whether the package at `root` reaches any git dependency.
 bool has_git_dependencies(const std::filesystem::path& root);

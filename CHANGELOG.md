@@ -13,8 +13,12 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   implicit summation, broadcasting only where it is provable, no implicit
   dtype promotion.
 - Blocks with `param`, `buffer`, `state` and `sub` members, optional
-  parameters and children, block arrays with `static for`, and runtime
-  `while` loops.
+  parameters and children, block arrays with `static for`, runtime `while`
+  and counted `for` loops, scans (`yield`), and struct values.
+- Custom backward passes (`grad` after an op's body), and compiler autodiff
+  (`--grad` on every export).
+- Tile kernels (`kernel`): Triton in generated PyTorch, Pallas in generated
+  JAX, launched in place of an op's body; `cumsum` everywhere.
 - A standard library written in Linnet: linear layers, embeddings,
   normalizations, attention (grouped, masked, with sinks, over pages),
   rotary positions, KV caches, convolutions, pooling, losses, mixture of
@@ -22,6 +26,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   quantized weights (int8 and FP8 scaled per row, group or block; int4;
   MXFP4).
 - The specification in `spec/`, with an executable suite in `spec-tests/`.
+- Packages with path and git dependencies (GitHub and the Hugging Face Hub),
+  pinned in `linnet.lock` by `linnet fetch` and `linnet update`.
 
 ### Compiler and tools
 

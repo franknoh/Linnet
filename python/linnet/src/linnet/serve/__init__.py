@@ -1155,14 +1155,21 @@ def _root_dim(model: LinnetModule, name: str) -> int | None:
     return None
 
 
-def _cache_generics(model: _Generics) -> tuple[int, int]:
+def _cache_generics(
+    model: _Generics, default: Callable[[str], int | None] | None = None
+) -> tuple[int, int]:
+    """The model's `Batch` and `MaxSeq`: as it was loaded with them, or as
+    `default` reads a generic left to its default."""
     generics = dict(model.generics)
-    try:
-        return int(generics["Batch"]), int(generics["MaxSeq"])
-    except KeyError as missing:
-        raise ValueError(
-            f"the model's generics do not bind {missing}; serving needs both"
-        ) from None
+    found: list[int] = []
+    for name in ("Batch", "MaxSeq"):
+        value = generics.get(name)
+        if value is None and default is not None:
+            value = default(name)
+        if value is None:
+            raise ValueError(f"the model's generics do not bind '{name}'; serving needs both")
+        found.append(int(value))
+    return found[0], found[1]
 
 
 class _TorchBackend:
@@ -1178,7 +1185,7 @@ class _TorchBackend:
 
         self.torch = torch
         self.model = model
-        batch, length = _cache_generics(model)
+        batch, length = _cache_generics(model, lambda name: _root_dim(model, name))
         if paged is None:
             paged = batch == 1 and all(
                 e in model.entries for e in ("prefill_paged", "decode_paged")

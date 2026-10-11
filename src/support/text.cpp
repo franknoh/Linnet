@@ -22,4 +22,24 @@ std::string shortest_float(double value) {
     return text;
 }
 
+std::string command_line_word(std::string_view argument) {
+    if (!argument.empty() && argument.find_first_of(" \t\n\v\"") == std::string_view::npos) {
+        return std::string(argument);
+    }
+    std::string out = "\"";
+    std::size_t backslashes = 0;
+    for (const char c : argument) {
+        if (c == '\\') {
+            ++backslashes;
+            continue;
+        }
+        out.append(c == '"' ? (2 * backslashes) + 1 : backslashes, '\\');
+        out += c;
+        backslashes = 0;
+    }
+    out.append(2 * backslashes, '\\');
+    out += '"';
+    return out;
+}
+
 } // namespace linnet

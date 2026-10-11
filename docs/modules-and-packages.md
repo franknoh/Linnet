@@ -8,7 +8,7 @@ are logical paths inside their root.
 ```linnet
 module models.llama.attention
 
-use std.nn::{linear, rms_norm as norm}     // items, optionally renamed
+use std.nn.norm::{rms_norm as norm}       // items, optionally renamed
 use crate.layers.decoder::{DecoderLayer}   // from this package
 use shared_layers.ops                      // a dependency's module, used as `ops.x`
 ```

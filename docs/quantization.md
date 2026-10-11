@@ -9,7 +9,7 @@ arithmetic dtype `T` is separate from the storage.
 use std.quant::{Int4Linear, Int8Linear}
 
 pub block Mlp<H: Dim, Inner: Dim, T: Float = bf16>
-where Inner % 2 == 0 {
+where H % 2 == 0 {
     sub up: Int4Linear<H, Inner, T>      // weight: Tensor[Inner, H / 2; i8], scale: Tensor[Inner; f32]
     sub down: Int8Linear<Inner, H, T>    // weight: Tensor[H, Inner; i8], scale: Tensor[H, 1; T]
     ...
@@ -30,7 +30,7 @@ nibble.
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `dequantize_int8_groups<Out, Groups, Group, T>(q, scale)` | symmetric int8, a scale per `Group` inputs |
 | `linear_int8(x, weight, scale, bias)`, `linear_int8_groups<Group>(...)` | linear layers over int8 weights |
-| `unpack_int4<R, H>(packed)`, `unpack_uint4<R, H>(packed)` | signed or unsigned nibbles |
+| `unpack_int4<R, H>(packed)` | signed nibbles, `-8..7` |
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |

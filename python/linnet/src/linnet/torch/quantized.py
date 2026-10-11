@@ -31,6 +31,8 @@ from typing import Protocol
 import torch
 import torch.nn.functional as functional
 
+from ..quant import FEW_ROWS, TILED_ROWS
+
 try:
     from . import kernels
 except ImportError:  # no Triton: the dequantized weights everywhere
@@ -85,13 +87,6 @@ def _int8_kernels(weight: torch.Tensor) -> int:
     return int(_capability(weight) >= (8, 0) and in_features % 128 == 0 and out_features % 16 == 0)
 
 
-# Measured on an H100 over Llama 3.1 8B's projections: rounding the input
-# pays from 33 rows; Linnet's tiles beat cuBLAS over a dequantized weight up
-# to 64.
-_FEW = 32
-_TILED = 64
-
-
 def _weight_only(
     flat: torch.Tensor,
     weight: torch.Tensor,
@@ -104,7 +99,7 @@ def _weight_only(
     rows = flat.shape[0]
     if rows == 1:
         return kernels.gemv8(flat, weight, scale, fp8, group, row_block)
-    if rows <= _TILED:
+    if rows <= TILED_ROWS:
         return kernels.w8a16(flat, weight, scale, fp8, group, row_block)
     dequantized = kernels.dequantize8(weight, scale, fp8, group, row_block, flat.dtype)
     return functional.linear(flat, dequantized)
@@ -129,7 +124,7 @@ def fp8_linear(x: torch.Tensor, operands: Fp8Operands, bias: torch.Tensor | None
     weight, transposed, scale, rounded, fast = operands
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
-        if rounded and fast == 2 and flat.shape[0] > _FEW:
+        if rounded and fast == 2 and flat.shape[0] > FEW_ROWS:
             q, rows = kernels.fp8_rows(flat)
             y = _scaled_mm(q, transposed, scale_a=rows, scale_b=scale, out_dtype=flat.dtype)
         else:
@@ -159,7 +154,7 @@ def fp8_block_linear(
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
         rows = flat.shape[0]
-        if rounded and fast == 2 and rows > _FEW:
+        if rounded and fast == 2 and rows > FEW_ROWS:
             # cuBLAS takes the block-scaled product of rows in fours.
             padded = -(-rows // 4) * 4
             q, scales = kernels.fp8_groups(flat, block, padded)
@@ -187,7 +182,7 @@ def int8_linear(x: torch.Tensor, operands: Int8Operands, bias: torch.Tensor | No
     weight, scale, rounded, fast = operands
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
-        if rounded and flat.shape[0] > _FEW:
+        if rounded and flat.shape[0] > FEW_ROWS:
             q, rows = kernels.int8_rows(flat)
             y = kernels.int8_mm(q, weight, rows, scale, flat.dtype)
         else:

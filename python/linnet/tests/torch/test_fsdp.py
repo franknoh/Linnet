@@ -45,8 +45,8 @@ GENERICS: dict[str, int | str] = {
 UNITS = ["embedding", "layers.0", "layers.1", "norm", "lm_head"]
 
 
-def _generate(*flags: str) -> subprocess.CompletedProcess[str]:
-    command = [find_compiler(), "torch", "--std", str(STDLIB), "--entry", "loss_packed"]
+def _generate(*flags: str, target: str = "torch") -> subprocess.CompletedProcess[str]:
+    command = [find_compiler(), target, "--std", str(STDLIB), "--entry", "loss_packed"]
     for name, value in {**GENERICS, "P": 12}.items():
         command += ["--bind", f"{name}={value}"]
     return subprocess.run(
@@ -69,8 +69,10 @@ def test_generated_code_gathers_each_parameter_where_it_is_used() -> None:
     assert "F.embedding(" in lines[first + 1] and name in lines[first + 1]
     assert any(line.startswith("del") and name in line for line in lines[first + 2 : first + 4])
 
-    refused = _generate("--fully-shard", "layers.0", "--prepare")
-    assert refused.returncode != 0 and "no --prepare" in refused.stderr
+    # `prepare` would gather each weight whole once and keep it.
+    for target in ("torch", "jax"):
+        refused = _generate("--fully-shard", "layers.0", "--prepare", target=target)
+        assert refused.returncode != 0 and "no --prepare" in refused.stderr
     refused = _generate("--fully-shard", "layers.0", "--offload", "layers.1")
     assert refused.returncode != 0 and "offload" in refused.stderr
 

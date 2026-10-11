@@ -83,6 +83,10 @@ def test_generated_entries_match_the_interpreter() -> None:
         compiled.run_entry("decode", [tokens[:, :1], first]),
         reference.run_entry("decode", [tokens[:, :1], first]),
     )
+    # A server asks for the plain source of a prompt (`compile=True`); the
+    # interpreter takes the same call.
+    reference.reset_state()
+    reference.run_entry("decode", [tokens[:, :1], first], compile=True)
 
 
 def test_generated_source_is_the_default_on_cuda() -> None:

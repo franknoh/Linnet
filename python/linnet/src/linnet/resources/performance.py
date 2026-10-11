@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
+from ..quant import FEW_ROWS, TILED_ROWS
 from . import expr as ex
 from .graph import Category, TensorGraph
 
@@ -415,6 +416,8 @@ _EIGHT_BIT = (
     "linnet.int8_linear",
     "linnet.int8_group_linear",
 )
+# The ones that round a call's input to 8 bits too (`numerics="fast"`).
+_ROUNDED = ("torch._scaled_mm", "torch._scaled_mm(blocks)", "linnet.int8_linear(w8a8)")
 _WRITES = ("torch.Tensor.index_copy", "torch.Tensor.index_put", "torch.Tensor.index_put(tokens)")
 _COLLECTIVES = ("torch.distributed.all_reduce", "torch.distributed.all_gather")
 _LOSSES = ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs")
@@ -609,11 +612,19 @@ def _costs(
                 width = weight[-1] if weight else 1
             rows = math.prod(source[:-1]) if source else 1
             dtype = graph.objects[step.inputs[0]].dtype
-            # A joined product is one call, then a slice for each part; an
-            # 8-bit layer of many rows rounds them first.
+            # A joined product is one call, then a slice for each part. An
+            # 8-bit layer past `FEW_ROWS` rounds its input to 8 bits first
+            # where its numerics allow, and otherwise past `TILED_ROWS`
+            # multiplies its weight dequantized for the call
+            # (`linnet.torch.quantized`).
             issued = host("batched" if batched else "product")
-            if eight_bit and rows > 1:
+            rounded = full in _ROUNDED and rows > FEW_ROWS
+            if rounded:
                 issued += host("elementwise")
+            if eight_bit and not rounded and rows > TILED_ROWS:
+                stored = sum(_bytes(graph, graph.steps[i].inputs[1], env) for i in members)
+                forward.append(_Op(host("elementwise"), memory(3 * stored), "memory"))
+                read += stored  # the dequantized weight, at twice its bytes
             if len(members) > 1:
                 issued += host(*["view"] * len(members))
             # A few rows (a decoding step's) read the weight at its own rate.
