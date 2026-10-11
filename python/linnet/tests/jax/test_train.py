@@ -218,7 +218,8 @@ import numpy as np
 import optax
 from jax.sharding import Mesh
 
-sys.path.insert(0, sys.argv[2])
+# The test's directory, and the package root `tests.helpers` is under.
+sys.path[:0] = [sys.argv[2], str(Path(sys.argv[2]).parents[1])]
 from test_train import TINY_LLAMA, LLAMA, STDLIB, _four_batches, _model  # noqa: E402
 
 from linnet.jax import load_source  # noqa: E402
