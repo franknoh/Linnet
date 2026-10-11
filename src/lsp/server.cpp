@@ -8,6 +8,7 @@
 #include "linnet/sema/model.hpp"
 #include "linnet/sema/types.hpp"
 #include "linnet/source/source_manager.hpp"
+#include "linnet/support/files.hpp"
 #include "linnet/syntax/lexer.hpp"
 #include "linnet/syntax/parser.hpp"
 #include "linnet/syntax/token.hpp"
@@ -222,12 +223,6 @@ struct Server::State {
     std::map<std::string, Document> documents; // by canonical path
     bool has_shut_down = false;
 
-    static std::string key_of(const std::filesystem::path& path) {
-        std::error_code error;
-        const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, error);
-        return (error ? path : canonical).generic_string();
-    }
-
     void analyze(const std::string& key, Document& document) {
         document.sources = std::make_unique<SourceManager>();
         DiagnosticSink sink;
@@ -309,10 +304,7 @@ struct Server::State {
             }
             items.push_back(Json::object({
                 {"range", range(*document.sources, diagnostic.primary.span)},
-                {"severity",
-                 diagnostic.severity == Severity::Error     ? 1
-                 : diagnostic.severity == Severity::Warning ? 2
-                                                            : 3},
+                {"severity", diagnostic.severity == Severity::Error ? 1 : 2},
                 {"code", diagnostic.code},
                 {"source", "linnet"},
                 {"message", message},
@@ -689,7 +681,7 @@ bool Server::handle(const Json& message, const std::function<void(const Json&)>&
         }
     };
     const auto document_of = [&](const Json& text_document) -> std::pair<std::string, Document*> {
-        const std::string key = State::key_of(path_from_uri(text_document["uri"].as_string()));
+        const std::string key = path_key(path_from_uri(text_document["uri"].as_string()));
         const auto found = state.documents.find(key);
         return {key, found == state.documents.end() ? nullptr : &found->second};
     };
@@ -737,7 +729,7 @@ bool Server::handle(const Json& message, const std::function<void(const Json&)>&
 
     if (method == "textDocument/didOpen") {
         const Json& text_document = params["textDocument"];
-        const std::string key = State::key_of(path_from_uri(text_document["uri"].as_string()));
+        const std::string key = path_key(path_from_uri(text_document["uri"].as_string()));
         Document& document = state.documents[key];
         document.text = text_document["text"].as_string();
         document.version = text_document["version"].as_int();

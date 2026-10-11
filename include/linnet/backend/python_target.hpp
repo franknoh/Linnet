@@ -100,7 +100,13 @@ protected:
               Elementwise kind,
               const std::vector<TensorInfo>& operands,
               sema::ScalarKind dtype);
+    // `name`, `value` converted to `dtype`, folded as well when `value` was:
+    // rounded to f32's precision, or truncated toward zero to an integer
+    // the dtype holds.
+    void fold_convert(const std::string& name, const TensorInfo& value, sema::ScalarKind dtype);
     std::string literal_text(const Literal& literal, sema::ScalarKind dtype) const;
+    // The highest value of `dtype`, or the lowest.
+    std::string extreme(bool highest, sema::ScalarKind dtype) const;
     // The parameter path of `name` when it is a weight an adapter pattern matches.
     std::optional<std::string> lora_target(const std::string& name) const;
     // The adapter parameters of the weight at `path` ([out, in]): `lora_a`
@@ -109,6 +115,21 @@ protected:
     std::pair<std::string, std::string>
     adapters(const std::string& path, const Dims& weight, sema::ScalarKind dtype);
     static std::string string_list(const std::vector<std::string>& items);
+
+    // ---- kernels, for a target's `launch_kernel`
+
+    // The op's `_opN` at the launch's argument shapes and dtypes: N, and
+    // whether it is new (the target then defines `_opN`).
+    std::pair<std::size_t, bool> op_of(const KernelLaunch& launch);
+    // The function of the launch's program, `_kernelK`, and whether it is
+    // new (the target then defines it).
+    std::pair<std::string, bool> kernel_of(const KernelLaunch& launch);
+    // `_opN(...)` on the launch's arguments: its results' names.
+    std::vector<std::string> call_op(const KernelLaunch& launch, std::size_t op);
+    // The reduction result `i` is written with atomically, if it is.
+    static std::optional<Reduction> atomic_result(const KernelLaunch& launch, std::size_t i);
+    // Where an atomic `reduction` over `dtype` starts: its identity.
+    std::string reduction_identity(Reduction reduction, sema::ScalarKind dtype) const;
 
     // An op's backward pass, emitted at `indent` in a scope of its own: the
     // arguments named `a0`, `a1`, ..., the result `out`, its gradient
@@ -146,8 +167,13 @@ protected:
     std::vector<std::map<std::string, std::string>> cse_{1}; // expression -> name, per scope
     std::string body_;
     std::string indent_ = "    ";
-    // Module-level definitions before `main`: ops' gradients.
+    // Module-level definitions before `main`: ops' gradients and kernels,
+    // after the `helpers_` they use.
+    std::string helpers_;
     std::string definitions_;
+    std::map<std::string, std::string> kernels_;  // a kernel's program -> its function
+    std::map<std::string, std::size_t> launched_; // an op at its shapes -> its `_opN`
+    std::size_t launches_ = 0;
     std::size_t custom_gradients_ = 0;
     std::size_t next_ = 0;
 };

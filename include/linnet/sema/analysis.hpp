@@ -16,8 +16,7 @@ namespace linnet::sema {
 
 // The checked type of one local binding, rendered for tools and tests.
 struct BindingInfo {
-    SourceSpan span;   // the bound name
-    std::string owner; // enclosing function, qualified by its block if any
+    SourceSpan span; // the bound name
     std::string name;
     std::string type;
     bool is_inferred = true; // false when the source spells the type

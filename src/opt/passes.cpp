@@ -389,22 +389,20 @@ bool canonicalize(Module& module) {
 
 std::vector<Pass> canonical_passes() {
     return {
-        {"canonicalize", Legality::Exact, canonicalize},
-        {"cse", Legality::Exact, eliminate_common_subexpressions},
-        {"dce", Legality::Exact, eliminate_dead_code},
+        {"canonicalize", canonicalize},
+        {"cse", eliminate_common_subexpressions},
+        {"dce", eliminate_dead_code},
     };
 }
 
-void run_pipeline(Module& module, const std::vector<Pass>& passes, const PipelineOptions& options) {
-    for (int iteration = 0; iteration < options.max_iterations; ++iteration) {
+void run_pipeline(Module& module, const std::vector<Pass>& passes) {
+    constexpr int rounds = 8;
+    for (int iteration = 0; iteration < rounds; ++iteration) {
         bool has_changed = false;
         for (const Pass& pass : passes) {
-            if (pass.legality > options.allowed) {
-                continue;
-            }
             const bool changed = pass.run(module);
             has_changed = has_changed || changed;
-            if (options.verify && changed) {
+            if (changed) {
                 const std::vector<std::string> problems = verify(module);
                 if (!problems.empty()) {
                     throw std::logic_error("pass `" + pass.name +

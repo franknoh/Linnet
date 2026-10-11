@@ -26,7 +26,7 @@ std::string emitted(const std::string& source, bool optimize = false) {
     if (optimize) {
         opt::run_pipeline(module, opt::canonical_passes());
     }
-    const auto text = emit::emit_source(module, emit::EmitOptions{});
+    const auto text = emit::emit_source(module);
     CHECK(text.has_value());
     return text.value_or("");
 }

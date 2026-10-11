@@ -31,8 +31,8 @@ struct EightBit {
     bool rounded = false;
 };
 
-std::optional<EightBit> eight_bit(const std::string& implementation) {
-    static const std::map<std::string, EightBit, std::less<>> kinds{
+const std::map<std::string, EightBit, std::less<>>& eight_bit_layers() {
+    static const std::map<std::string, EightBit, std::less<>> layers{
         {"linnet.fp8_linear", {"fp8", false}},
         {"torch._scaled_mm", {"fp8", true}},
         {"linnet.fp8_block_linear", {"fp8_block", false}},
@@ -41,34 +41,25 @@ std::optional<EightBit> eight_bit(const std::string& implementation) {
         {"linnet.int8_linear(w8a8)", {"int8", true}},
         {"linnet.int8_group_linear", {"int8_group", false}},
     };
-    const auto found = kinds.find(implementation);
-    return found == kinds.end() ? std::nullopt : std::optional(found->second);
+    return layers;
+}
+
+std::optional<EightBit> eight_bit(const std::string& implementation) {
+    const auto found = eight_bit_layers().find(implementation);
+    return found == eight_bit_layers().end() ? std::nullopt : std::optional(found->second);
 }
 
 // The kind an 8-bit layer's helper names (`_fp8_block_linear` -> `fp8_block`),
 // if `call` is one.
 std::optional<std::string> eight_bit_call(std::string_view call) {
-    static const std::set<std::string, std::less<>> kinds{"fp8", "fp8_block", "int8", "int8_group"};
     constexpr std::string_view suffix = "_linear";
     if (!call.starts_with('_') || !call.ends_with(suffix)) {
         return std::nullopt;
     }
     const std::string_view kind = call.substr(1, call.size() - 1 - suffix.size());
-    return kinds.contains(kind) ? std::optional(std::string(kind)) : std::nullopt;
-}
-
-// A generated call's arguments, `a, b, c`, split at their commas (the
-// arguments are names and literals).
-std::vector<std::string> call_arguments(std::string_view arguments) {
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    for (std::size_t comma = arguments.find(", "); comma != std::string_view::npos;
-         comma = arguments.find(", ", start)) {
-        parts.emplace_back(arguments.substr(start, comma - start));
-        start = comma + 2;
-    }
-    parts.emplace_back(arguments.substr(start));
-    return parts;
+    const bool known = std::ranges::any_of(
+        eight_bit_layers(), [&](const auto& layer) { return layer.second.name == kind; });
+    return known ? std::optional(std::string(kind)) : std::nullopt;
 }
 
 // Each 8-bit layer's call `vN = _K_linear(x, W, S, B, R)` as two: its
@@ -76,39 +67,23 @@ std::vector<std::string> call_arguments(std::string_view arguments) {
 // read only weights, so `prepare` computes them once; and
 // `vN = _K_linear(x, vM, B)`. Every call is split, at any indent (a runtime
 // loop's body included); calls on the same weights at the top level share
-// their operands.
-std::string split_eight_bit_operands(const std::string& body) {
-    std::size_t highest = 0;
-    for (const std::string& name : value_names(body)) {
-        highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
-    }
-    const std::string prefix = "    ";
+// their operands. New names count on from `next`.
+std::string split_eight_bit_operands(const std::string& body, std::size_t& next) {
     std::map<std::string, std::string> shared; // top-level operands -> their name
     std::string out;
     out.reserve(body.size());
-    std::size_t start = 0;
-    while (start < body.size()) {
-        std::size_t end = body.find('\n', start);
-        end = end == std::string::npos ? body.size() : end;
-        const std::string line = body.substr(start, end - start);
-        start = end + 1;
-        const std::size_t equals = line.find(" = ");
-        const std::size_t open = line.find('(', equals == std::string::npos ? 0 : equals);
-        const std::optional<std::string> kind =
-            equals == std::string::npos || open == std::string::npos
-                ? std::nullopt
-                : eight_bit_call(std::string_view(line).substr(equals + 3, open - equals - 3));
-        const std::size_t first = line.find_first_not_of(' ');
-        const std::string indent = line.substr(0, first == std::string::npos ? 0 : first);
-        std::vector<std::string> parts;
-        if (kind && indent.size() >= prefix.size() && line.ends_with(")")) {
-            parts = call_arguments(std::string_view(line).substr(open + 1, line.size() - open - 2));
-        }
-        if (!kind || parts.size() != 5) {
+    for (const std::string& line : split_lines(body)) {
+        const std::optional<Assignment> assignment = assignment_of(line);
+        const std::optional<Call> call =
+            assignment ? call_of(assignment->expression) : std::nullopt;
+        const std::optional<std::string> kind = call ? eight_bit_call(call->callee) : std::nullopt;
+        if (!kind || call->arguments.size() != 5) {
             out += line;
             out += "\n";
             continue;
         }
+        const std::string& indent = assignment->indent;
+        const std::vector<std::string>& parts = call->arguments;
         std::string operands = "_";
         operands += *kind;
         operands += "_operands(";
@@ -122,11 +97,11 @@ std::string split_eight_bit_operands(const std::string& body) {
         operands += ")";
         // A loop body's operands stay in the body: a name it defines is not
         // one the top level may read.
-        const bool top = indent == prefix;
+        const bool top = indent == "    ";
         auto found = top ? shared.find(operands) : shared.end();
         std::string name = found == shared.end() ? "" : found->second;
         if (name.empty()) {
-            name = "v" + std::to_string(++highest);
+            name = "v" + std::to_string(next++);
             out += indent;
             out += name;
             out += " = ";
@@ -136,7 +111,11 @@ std::string split_eight_bit_operands(const std::string& body) {
                 shared.emplace(operands, name);
             }
         }
-        out += line.substr(0, open + 1);
+        out += indent;
+        out += assignment->name;
+        out += " = ";
+        out += call->callee;
+        out += "(";
         out += parts[0];
         out += ", ";
         out += name;
@@ -170,23 +149,8 @@ public:
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
         const std::string name = define(value.name + ".to(" + dtype_name(dtype) + ")");
-        const auto found = values_.find(value.name);
-        if (found != values_.end() && sema::is_float(dtype)) {
-            fold(name,
-                 Elementwise::Add,
-                 {{value.name, {}, dtype}, {zero_name(dtype), {}, dtype}},
-                 dtype);
-        }
+        fold_convert(name, value, dtype);
         return name;
-    }
-
-    // A zero literal to fold conversions through (`x + 0` in the target dtype).
-    std::string zero_name(ScalarKind dtype) {
-        auto& cached = zeros_[dtype];
-        if (cached.empty()) {
-            cached = constant(Literal::of_real(0.0), dtype);
-        }
-        return cached;
     }
 
     std::string
@@ -469,12 +433,7 @@ public:
                     values.end()) {
                     return std::to_string(values.front());
                 }
-                std::string text = "(";
-                for (std::size_t i = 0; i < values.size(); ++i) {
-                    text += i == 0 ? "" : ", ";
-                    text += std::to_string(values[i]);
-                }
-                return text + (values.size() == 1 ? ",)" : ")");
+                return python_tuple(values);
             };
             const char* function = window->strides.size() == 1 ? "F.conv1d(" : "F.conv2d(";
             return define(function + name(0) + ", " + name(1) + ", " + name(2) + ", stride=" +
@@ -917,7 +876,7 @@ public:
             hoisted.body = prune_python_assignments(fuse_linears(hoisted.body, fused), tail);
         }
         if (!eight_bit_.empty()) {
-            hoisted.body = split_eight_bit_operands(hoisted.body);
+            hoisted.body = split_eight_bit_operands(hoisted.body, next_);
         }
         if (!fused.empty()) {
             out += adjacent_helper();
@@ -1014,16 +973,7 @@ public:
     static std::string write_states_in_place(const std::string& body,
                                              const std::string& tail,
                                              std::vector<std::string>& written) {
-        std::vector<std::string> lines;
-        std::string current;
-        for (const char c : body) {
-            if (c == '\n') {
-                lines.push_back(current);
-                current.clear();
-            } else {
-                current += c;
-            }
-        }
+        std::vector<std::string> lines = split_lines(body);
         lines.push_back(tail);
         const auto mentions = [](const std::string& line, const std::string& name) {
             return std::ranges::any_of(words_of(line),
@@ -1032,45 +982,38 @@ public:
         std::string out;
         for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
             std::string line = lines[i];
-            const std::size_t equals = line.find(" = s");
-            if (line.starts_with("    v") && equals != std::string::npos) {
-                const std::size_t start = equals + 3;
-                const std::size_t dot = line.find('.', start);
-                const std::string state = line.substr(start, dot - start);
-                const bool digits = state.size() > 1 &&
-                                    state.find_first_not_of("0123456789", 1) == std::string::npos;
-                // The write must be the state's only use: a read after it
-                // would see the new value, and one before it may be a view.
-                bool read_later = false;
-                for (std::size_t j = 0; j < lines.size() && !read_later; ++j) {
-                    read_later = j != i && mentions(lines[j], state);
-                }
-                for (const char* write : {".index_copy(", ".index_put("}) {
-                    const std::string call(write);
-                    if (digits && !read_later && line.compare(dot, call.size(), call) == 0) {
-                        line.insert(dot + call.size() - 1, "_");
-                        written.push_back(state);
+            const auto assignment = top_level_assignment(line);
+            // `vN = sK.index_copy(...)`, `vN = sK.index_put(...)`, or the
+            // latter as an ATen call, `vN = torch.ops.aten.index_put(sK, ...)`
+            // (it takes `None` for a full slice): the state, and where in
+            // the expression the call's `(` is.
+            std::string state;
+            std::size_t open = 0;
+            if (assignment) {
+                const std::string& expression = assignment->second;
+                constexpr std::string_view aten = "torch.ops.aten.index_put(";
+                const std::size_t dot = expression.find('.');
+                if (expression.starts_with(aten)) {
+                    state = expression.substr(aten.size(), expression.find(',') - aten.size());
+                    open = aten.size() - 1;
+                } else if (dot != std::string::npos) {
+                    for (const std::string_view write : {".index_copy(", ".index_put("}) {
+                        if (expression.compare(dot, write.size(), write) == 0) {
+                            state = expression.substr(0, dot);
+                            open = dot + write.size() - 1;
+                        }
                     }
                 }
             }
-            // `vN = torch.ops.aten.index_put(sK, [...], ...)`: the same, spelled
-            // as an ATen call (it takes `None` for a full slice).
-            const std::string aten = " = torch.ops.aten.index_put(s";
-            const std::size_t call = line.find(aten);
-            if (line.starts_with("    v") && call != std::string::npos) {
-                const std::size_t start = call + aten.size() - 1;
-                const std::size_t comma = line.find(',', start);
-                const std::string state = line.substr(start, comma - start);
-                const bool digits = state.size() > 1 &&
-                                    state.find_first_not_of("0123456789", 1) == std::string::npos;
-                bool read_later = false;
-                for (std::size_t j = 0; j < lines.size() && !read_later; ++j) {
-                    read_later = j != i && mentions(lines[j], state);
-                }
-                if (digits && !read_later) {
-                    line.insert(start - 1, "_");
-                    written.push_back(state);
-                }
+            // The write must be the state's only use: a read after it
+            // would see the new value, and one before it may be a view.
+            bool read_elsewhere = !numbered(state, 's');
+            for (std::size_t j = 0; j < lines.size() && !read_elsewhere; ++j) {
+                read_elsewhere = j != i && mentions(lines[j], state);
+            }
+            if (!read_elsewhere) {
+                line.insert(line.size() - assignment->second.size() + open, "_");
+                written.push_back(state);
             }
             out += line + "\n";
         }
@@ -1091,26 +1034,11 @@ public:
         Hoisted out;
         std::set<std::string> constant_names;
         std::vector<std::string> hoisted_names;
-        std::string line;
-        std::vector<std::string> lines;
-        for (const char c : body) {
-            if (c == '\n') {
-                lines.push_back(line);
-                line.clear();
-            } else {
-                line += c;
-            }
-        }
-        for (const std::string& text : lines) {
-            const std::size_t start = text.find_first_not_of(' ');
-            const bool top_level = start == 4 && text[start] == 'v';
-            const std::size_t end = top_level ? text.find(" = ", start) : std::string::npos;
-            const bool assignment =
-                end != std::string::npos && text.find_first_not_of("0123456789", start + 1) == end;
-            if (assignment && depends_only_on(text.substr(end + 3), constant_names)) {
-                const std::string name = text.substr(start, end - start);
-                constant_names.insert(name);
-                hoisted_names.push_back(name);
+        for (const std::string& text : split_lines(body)) {
+            const auto assignment = top_level_assignment(text);
+            if (assignment && depends_only_on(assignment->second, constant_names)) {
+                constant_names.insert(assignment->first);
+                hoisted_names.push_back(assignment->first);
                 // A mask that is the same every call has its blocks listed
                 // once, eagerly, and can say there is nothing to skip.
                 if (text.find(" = _flex_blocks(") != std::string::npos && text.ends_with(")")) {
@@ -1139,33 +1067,14 @@ public:
     bool depends_only_on(const std::string& expression,
                          const std::set<std::string>& constant_names) const {
         const std::set<std::string> arguments(arguments_.begin(), arguments_.end());
-        std::size_t i = 0;
-        while (i < expression.size()) {
-            const unsigned char c = static_cast<unsigned char>(expression[i]);
-            if (std::isalpha(c) || c == '_') {
-                std::size_t j = i + 1;
-                while (j < expression.size() &&
-                       (std::isalnum(static_cast<unsigned char>(expression[j])) ||
-                        expression[j] == '_')) {
-                    ++j;
-                }
-                const std::string word = expression.substr(i, j - i);
-                const bool value = word.size() > 1 && word[0] == 'v' &&
-                                   word.find_first_not_of("0123456789", 1) == std::string::npos;
-                // `wN` from a `while`, `fN_k` from a counted `for`.
-                const bool loop_variable = word.size() > 1 && (word[0] == 'w' || word[0] == 'f') &&
-                                           std::isdigit(static_cast<unsigned char>(word[1]));
-                if (arguments.contains(word) || loop_variable ||
-                    (value && !constant_names.contains(word))) {
-                    return false;
-                }
-                // Skip attribute chains such as `torch.float32` whole.
-                i = j;
-                continue;
-            }
-            ++i;
-        }
-        return true;
+        return std::ranges::none_of(words_of(expression), [&](const auto& entry) {
+            const std::string& word = entry.second;
+            // `wN_k` from a `while`, `fN_k` from a counted `for`.
+            const bool loop_variable = word.size() > 1 && (word[0] == 'w' || word[0] == 'f') &&
+                                       std::isdigit(static_cast<unsigned char>(word[1])) != 0;
+            return arguments.contains(word) || loop_variable ||
+                   (numbered(word, 'v') && !constant_names.contains(word));
+        });
     }
 
     // A Python `while True:` over loop variables, broken out of when the
@@ -1253,28 +1162,14 @@ public:
             kernel_helpers_ = true;
             helpers_ += kernel_helpers();
         }
-        std::vector<std::string> operands;
-        operands.reserve(launch.arguments.size());
-        for (const TensorInfo& argument : launch.arguments) {
-            operands.push_back(argument.name);
-        }
         // An op launched again at the same shapes reuses its `_opN`.
-        std::string key = launch.op;
-        for (const TensorInfo& argument : launch.arguments) {
-            key += ";" + python_tuple(argument.shape) + dtype_name(argument.dtype);
-        }
-        const auto [launched, is_first] = launched_.try_emplace(key, launches_);
-        if (!is_first) {
-            return results_of(launch,
-                              define("_op" + std::to_string(launched->second) + "(" +
-                                     join(operands, ", ") + ")"));
+        const auto [op, new_op] = op_of(launch);
+        if (!new_op) {
+            return call_op(launch, op);
         }
         // The kernel, once a program.
-        const std::string program_key =
-            join(launch.program.parameters, ",") + "\n" + launch.program.body;
-        auto [kernel, is_new] = kernels_.try_emplace(program_key, "");
-        if (is_new) {
-            kernel->second = "_kernel" + std::to_string(kernels_.size() - 1);
+        const auto [kernel, new_kernel] = kernel_of(launch);
+        if (new_kernel) {
             if (launch.program.body.find("_multiply)") != std::string::npos && !multiply_) {
                 // The combining function a tile's `prod` reduces with.
                 multiply_ = true;
@@ -1285,10 +1180,10 @@ public:
             definitions_ += "if triton is not None:\n\n";
             definitions_ += "    @triton.jit  # " + launch.name + "\n";
             definitions_ +=
-                "    def " + kernel->second + "(" + join(launch.program.parameters, ", ") + "):\n";
-            definitions_ += indented(launch.program.body, "    ") + "\n\n";
+                "    def " + kernel + "(" + join(launch.program.parameters, ", ") + "):\n";
+            definitions_ += indent_lines(launch.program.body, "    ") + "\n\n";
         }
-        const std::string id = std::to_string(launches_++);
+        const std::string id = std::to_string(op);
         std::vector<std::string> inputs;
         inputs.reserve(launch.arguments.size());
         for (std::size_t i = 0; i < launch.arguments.size(); ++i) {
@@ -1308,27 +1203,17 @@ public:
             outputs.push_back("out" + std::to_string(i));
             // A result written atomically starts from the operation's identity.
             const TensorInfo& result = launch.results[i];
-            const std::string& parameter = launch.program.parameters[launch.arguments.size() + i];
-            const auto atomic = launch.program.atomics.find(parameter);
+            const auto atomic = atomic_result(launch, i);
             const std::string options =
                 ", dtype=" + dtype_name(result.dtype) + ", device=a0.device)\n";
-            if (atomic == launch.program.atomics.end()) {
-                text += "    " + outputs.back() + " = torch.empty(" + python_tuple(result.shape) +
-                        options;
-            } else if (atomic->second == Reduction::Sum) {
-                text += "    " + outputs.back() + " = torch.zeros(" + python_tuple(result.shape) +
-                        options;
+            text += "    " + outputs.back();
+            if (!atomic) {
+                text += " = torch.empty(" + python_tuple(result.shape) + options;
+            } else if (*atomic == Reduction::Sum) {
+                text += " = torch.zeros(" + python_tuple(result.shape) + options;
             } else {
-                const bool lowest = atomic->second == Reduction::Max;
-                std::string limit = lowest ? "-float(\"inf\")" : "float(\"inf\")";
-                if (!sema::is_float(result.dtype)) {
-                    limit = "torch.iinfo(" + dtype_name(result.dtype) + ").";
-                    limit += lowest ? "min" : "max";
-                }
-                text += "    " + outputs.back() + " = torch.full(" + python_tuple(result.shape);
-                text += ", ";
-                text += limit;
-                text += options;
+                text += " = torch.full(" + python_tuple(result.shape) + ", " +
+                        reduction_identity(*atomic, result.dtype) + options;
             }
             call.push_back(outputs.back());
         }
@@ -1338,8 +1223,7 @@ public:
         if (launch.stages != 0) {
             call.push_back("num_stages=" + std::to_string(launch.stages));
         }
-        text += "    " + kernel->second + "[" + python_tuple(launch.grid) + "](" +
-                join(call, ", ") + ")\n";
+        text += "    " + kernel + "[" + python_tuple(launch.grid) + "](" + join(call, ", ") + ")\n";
         text += "    return " + join(outputs, ", ") + "\n\n\n";
         // The op's body, for another device and for the backward pass.
         const auto [body, results] = emit_body(launch.arguments, launch.body, "    ");
@@ -1372,20 +1256,7 @@ public:
             text += "    return _launch" + id + "(" + parameters + ")\n\n\n";
         }
         definitions_ += text;
-        return results_of(launch, define("_op" + id + "(" + join(operands, ", ") + ")"));
-    }
-
-    // The names of a launch's results: `value`, or its elements.
-    std::vector<std::string> results_of(const KernelLaunch& launch, const std::string& value) {
-        if (launch.results.size() == 1) {
-            return {value};
-        }
-        std::vector<std::string> names;
-        names.reserve(launch.results.size());
-        for (std::size_t i = 0; i < launch.results.size(); ++i) {
-            names.push_back(define(value + "[" + std::to_string(i) + "]"));
-        }
-        return names;
+        return call_op(launch, op);
     }
 
     // The class for an op's `grad` (see `end_custom_gradient`); its name.
@@ -1440,9 +1311,6 @@ public:
     }
 
 private:
-    // `std.quant::linear_int4_groups` natively. tinygemm reads the high
-    // nibble first and dequantizes `(q - 8) * scale + zero`, so the weights
-    // are repacked and `(q - z) * s` becomes the zero `(8 - z) * s`.
     // Linear layers that read one input with parameter weights of their own
     // -- a layer's query, key, and value projections, its gate and up --
     // become one product over their weights side by side, sliced after: at
@@ -1466,22 +1334,8 @@ private:
             bool reshaped = false;
             std::string rounded;
         };
-        std::vector<std::string> lines;
-        std::size_t highest = 0;
-        {
-            std::string current;
-            for (const char c : body) {
-                if (c == '\n') {
-                    lines.push_back(current);
-                    current.clear();
-                } else {
-                    current += c;
-                }
-            }
-            if (!current.empty()) {
-                lines.push_back(current);
-            }
-        }
+        const std::vector<std::string> lines = split_lines(body);
+        const auto fresh = [&] { return "v" + std::to_string(next_++); };
         const auto parameter_index = [&](const std::string& word) -> std::optional<std::size_t> {
             if (!numbered(word, 'p')) {
                 return std::nullopt;
@@ -1489,44 +1343,41 @@ private:
             const std::size_t index = std::stoul(word.substr(1));
             return index < parameter_types_.size() ? std::optional(index) : std::nullopt;
         };
+        // `pK.reshape((N,))`: the parameter K.
+        const auto reshaped_parameter =
+            [&](std::string_view expression) -> std::optional<std::size_t> {
+            const std::size_t dot = expression.find(".reshape((");
+            const std::string_view size =
+                dot == std::string_view::npos ? "" : expression.substr(dot + 10);
+            if (size.size() < 4 || !size.ends_with(",))") ||
+                size.find_first_not_of("0123456789") != size.size() - 3) {
+                return std::nullopt;
+            }
+            return parameter_index(std::string(expression.substr(0, dot)));
+        };
         std::vector<Linear> linears;
         const std::string prefix = "    ";
-        // `    vS = pK.reshape((N,))`: an 8-bit layer's scales of shape
-        // [Out, 1] as its helper takes them.
+        // `vS = pK.reshape((N,))`: an 8-bit layer's scales of shape [Out, 1]
+        // as its helper takes them.
         std::map<std::string, std::size_t> scales;
         for (std::size_t i = 0; i < lines.size(); ++i) {
-            const std::string& line = lines[i];
-            for (const std::string& name : value_names(line)) {
-                highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
-            }
-            if (const std::size_t view = line.find(" = p");
-                line.starts_with(prefix) && line[prefix.size()] != ' ' &&
-                view != std::string::npos && line.find(".reshape((") != std::string::npos) {
-                const std::string name = line.substr(prefix.size(), view - prefix.size());
-                const std::string source = line.substr(view + 3, line.find('.', view) - view - 3);
-                if (const auto index = parameter_index(source); index && numbered(name, 'v')) {
-                    scales[name] = *index;
-                }
-            }
-            // `    vN = F.linear(x, pW, pB | None)`, or an 8-bit layer's
-            // `    vN = _K_linear(x, pW, S, pB | None, R)` with S its scales, at
-            // the top level.
-            const std::size_t equals = line.find(" = ");
-            const std::size_t open =
-                equals == std::string::npos ? std::string::npos : line.find('(', equals);
-            if (!line.starts_with(prefix) || line[prefix.size()] == ' ' ||
-                open == std::string::npos || !line.ends_with(")")) {
+            const auto assignment = top_level_assignment(lines[i]);
+            if (!assignment) {
                 continue;
             }
-            const std::string call = line.substr(equals + 3, open - equals - 3);
-            const bool eight = eight_bit_call(call).has_value();
-            if (call != "F.linear" && !eight) {
+            const auto& [out, expression] = *assignment;
+            if (const auto index = reshaped_parameter(expression)) {
+                scales[out] = *index;
+            }
+            // `vN = F.linear(x, pW, pB | None)`, or an 8-bit layer's
+            // `vN = _K_linear(x, pW, S, pB | None, R)` with S its scales.
+            const std::optional<Call> call = call_of(expression);
+            const bool eight = call && eight_bit_call(call->callee).has_value();
+            if (!call || (call->callee != "F.linear" && !eight)) {
                 continue;
             }
-            const std::string out = line.substr(prefix.size(), equals - prefix.size());
-            std::vector<std::string> parts =
-                call_arguments(std::string_view(line).substr(open + 1, line.size() - open - 2));
-            if (parts.size() != (eight ? 5U : 3U) || out.find_first_of(" ,") != std::string::npos) {
+            std::vector<std::string> parts = call->arguments;
+            if (parts.size() != (eight ? 5U : 3U)) {
                 continue;
             }
             std::optional<std::size_t> scale;
@@ -1555,8 +1406,15 @@ private:
             if (shape.size() != 2) {
                 continue;
             }
-            linears.push_back(
-                {i, out, parts[0], *weight, bias, eight ? call : "", scale, reshaped, rounded});
+            linears.push_back({i,
+                               out,
+                               parts[0],
+                               *weight,
+                               bias,
+                               eight ? call->callee : "",
+                               scale,
+                               reshaped,
+                               rounded});
         }
         // Groups: one input, all biased or none, the same kind of layer,
         // input width, dtype and scales but for their rows, distinct weights.
@@ -1589,15 +1447,19 @@ private:
             if (members.size() < 2) {
                 continue;
             }
-            const auto join = [&](const std::vector<std::size_t>& indices) {
-                std::string list;
+            // `_adjacent(pA, pB, ...)`, its parameters' paths noted in `fused`.
+            const auto adjacent = [&](const std::vector<std::size_t>& indices) {
                 std::vector<std::string> paths;
-                for (std::size_t j = 0; j < indices.size(); ++j) {
-                    list += (j == 0 ? "" : ", ") + std::string("p") + std::to_string(indices[j]);
-                    paths.push_back(parameters_[indices[j]]);
+                paths.reserve(indices.size());
+                for (const std::size_t index : indices) {
+                    paths.push_back(parameters_[index]);
                 }
                 fused.push_back(paths);
-                return list;
+                return "_adjacent(" +
+                       join(indices,
+                            ", ",
+                            [](std::size_t index) { return "p" + std::to_string(index); }) +
+                       ")";
             };
             std::vector<std::size_t> weights;
             std::vector<std::size_t> biases;
@@ -1614,20 +1476,20 @@ private:
                 }
             }
             const Linear& first = linears[members.front()];
-            const std::string weight = "v" + std::to_string(++highest);
-            std::string text = prefix + weight + " = _adjacent(" + join(weights) + ")\n";
+            const std::string weight = fresh();
+            std::string text = prefix + weight + " = " + adjacent(weights) + "\n";
             std::string bias = "None";
             if (!biases.empty()) {
-                bias = "v" + std::to_string(++highest);
-                text += prefix + bias + " = _adjacent(" + join(biases) + ")\n";
+                bias = fresh();
+                text += prefix + bias + " = " + adjacent(biases) + "\n";
             }
             std::string scale;
             if (!row_scales.empty()) {
-                scale = "v" + std::to_string(++highest);
-                text += prefix + scale + " = _adjacent(" + join(row_scales) + ")\n";
+                scale = fresh();
+                text += prefix + scale + " = " + adjacent(row_scales) + "\n";
                 if (first.reshaped) {
                     const std::string joined = scale;
-                    scale = "v" + std::to_string(++highest);
+                    scale = fresh();
                     text += prefix;
                     text += scale;
                     text += " = ";
@@ -1637,7 +1499,7 @@ private:
                     text += ",))\n";
                 }
             }
-            const std::string product = "v" + std::to_string(++highest);
+            const std::string product = fresh();
             text += prefix;
             text += product;
             text += " = ";
@@ -1705,6 +1567,10 @@ private:
                "    return first.as_strided((rows, *first.shape[1:]), first.stride())\n\n\n";
     }
 
+    // `_int4_pack` and `_int4_linear`: `std.quant::linear_int4_groups`
+    // natively. tinygemm reads the high nibble first and dequantizes
+    // `(q - 8) * scale + zero`, so the weights are repacked and `(q - z) * s`
+    // becomes the zero `(8 - z) * s`.
     static std::string int4_helpers() {
         return "def _int4_pack(packed, scale, zero):\n"
                "    out_features, groups, half = packed.shape\n"
@@ -2208,15 +2074,10 @@ private:
     bool paged_helper_ = false;                       // `_paged_attend` is used
     std::map<std::string, std::string> flex_blocks_;  // mask and sizes -> its `_flex_blocks`
     std::map<std::string, std::string> paged_blocks_; // table, rows, positions, sizes -> blocks
-    std::map<ScalarKind, std::string> zeros_;         // per-dtype zero constants
     std::vector<std::vector<std::string>> loop_names_;
     std::size_t loops_ = 0;
-    bool full_precision_ = false;                // f32 kernel products in f32, not TF32
-    bool kernel_helpers_ = false;                // Triton's import and `_KernelCall` are used
-    std::string helpers_;                        // module-level helpers before `definitions_`
-    std::map<std::string, std::string> kernels_; // a kernel's program -> its function
-    std::size_t launches_ = 0;
-    std::map<std::string, std::size_t> launched_; // an op at its shapes -> its `_opN`
+    bool full_precision_ = false; // f32 kernel products in f32, not TF32
+    bool kernel_helpers_ = false; // Triton's import and `_KernelCall` are used
 
     static std::string kernel_helpers() {
         return "import os\n"
@@ -2253,20 +2114,6 @@ private:
                "leaves))\n"
                "\n"
                "\n";
-    }
-
-    // Every line of `text` with `prefix` before it, blank lines left blank.
-    static std::string indented(const std::string& text, const std::string& prefix) {
-        std::string out;
-        std::size_t start = 0;
-        while (start < text.size()) {
-            std::size_t end = text.find('\n', start);
-            end = end == std::string::npos ? text.size() : end + 1;
-            const std::string line = text.substr(start, end - start);
-            out += (line == "\n" ? "" : prefix) + line;
-            start = end;
-        }
-        return out;
     }
 };
 

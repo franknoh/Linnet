@@ -273,7 +273,8 @@ std::vector<std::string> GradientTarget::open_loop(std::int64_t start,
         return inner_.begin_counted(start, stop, initial);
     }
     if (!inner_.supports_while()) {
-        throw GradientError("this format writes no runtime loops");
+        throw GradientError("this format writes no runtime loops; StableHLO, ONNX, PyTorch and "
+                            "JAX do");
     }
     // As the evaluator writes a `for`: a `while` over the index, carried first.
     std::vector<TensorInfo> carried{scalar_integer(start)};

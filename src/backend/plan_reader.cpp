@@ -54,8 +54,9 @@ public:
     }
 
     ir::Module run() {
-        if (document_["version"].as_int() != 1) {
-            fail("unsupported plan version");
+        if (const std::int64_t version = document_["version"].as_int(); version != 1) {
+            fail("plan version " + std::to_string(version) +
+                 ", but this compiler reads version 1: write the plan again with `linnet plan`");
         }
         if (document_["module"].is_string()) {
             module_index(document_["module"].as_string());

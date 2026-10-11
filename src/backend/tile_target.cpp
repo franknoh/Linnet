@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <limits>
 #include <numeric>
 
 namespace linnet::backend {
@@ -13,39 +12,6 @@ namespace {
 
 bool is_power_of_two(std::int64_t n) {
     return n > 0 && (n & (n - 1)) == 0;
-}
-
-// The extremes of an integer dtype, the identities of `min` and `max`.
-std::string integer_limit(ScalarKind dtype, bool highest) {
-    const auto text = [](auto low, auto high, bool top) {
-        return top ? std::to_string(high) : std::to_string(low);
-    };
-    switch (dtype) {
-    case ScalarKind::I8:
-        return text(std::numeric_limits<std::int8_t>::min(),
-                    std::numeric_limits<std::int8_t>::max(),
-                    highest);
-    case ScalarKind::I16:
-        return text(std::numeric_limits<std::int16_t>::min(),
-                    std::numeric_limits<std::int16_t>::max(),
-                    highest);
-    case ScalarKind::I32:
-        return text(std::numeric_limits<std::int32_t>::min(),
-                    std::numeric_limits<std::int32_t>::max(),
-                    highest);
-    case ScalarKind::U8:
-        return highest ? "255" : "0";
-    case ScalarKind::U16:
-        return highest ? "65535" : "0";
-    case ScalarKind::U32:
-        return highest ? "4294967295" : "0";
-    case ScalarKind::U64:
-        return highest ? "18446744073709551615" : "0";
-    default:
-        return text(std::numeric_limits<std::int64_t>::min(),
-                    std::numeric_limits<std::int64_t>::max(),
-                    highest);
-    }
 }
 
 } // namespace
@@ -88,25 +54,15 @@ std::string TileTarget::finish(const std::vector<TensorInfo>& results,
 // A constant is a Python literal; the library types it where it is used.
 std::string TileTarget::constant(const Literal& literal, ScalarKind dtype) {
     std::string text;
-    switch (literal.kind) {
-    case Literal::Kind::Integer:
-        text = sema::is_float(dtype) ? python_float(static_cast<double>(literal.integer))
-                                     : std::to_string(literal.integer);
-        break;
-    case Literal::Kind::Real:
-        text = python_float(literal.real);
-        break;
-    case Literal::Kind::Boolean:
-        text = literal.integer != 0 ? "True" : "False";
-        break;
-    case Literal::Kind::Lowest:
-    case Literal::Kind::Highest: {
+    if (auto finite = python_literal(literal, dtype)) {
+        text = std::move(*finite);
+    } else {
         const bool highest = literal.kind == Literal::Kind::Highest;
+        const sema::IntegerLimits limits = sema::integer_limits(dtype);
         text = sema::is_float(dtype)       ? (highest ? "float(\"inf\")" : "-float(\"inf\")")
                : dtype == ScalarKind::Bool ? (highest ? "True" : "False")
-                                           : integer_limit(dtype, highest);
-        break;
-    }
+               : highest                   ? std::to_string(limits.highest)
+                                           : std::to_string(limits.lowest);
     }
     if (text.starts_with('-')) {
         text = "(" + text + ")";
@@ -215,7 +171,7 @@ std::string TileTarget::reshape(const TensorInfo& value, const Dims& shape) {
     if (shape.empty()) {
         throw KernelError("a tile cannot become a scalar by reshaping; reduce it instead");
     }
-    return define(library_ + ".reshape(" + value.name + ", " + shape_list(shape) + ")");
+    return define(library_ + ".reshape(" + value.name + ", " + python_tuple(shape) + ")");
 }
 
 std::string
@@ -229,10 +185,10 @@ TileTarget::transpose(const TensorInfo& value, const Dims& permutation, const Di
 std::string TileTarget::broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) {
     if (value.shape.empty()) {
         if (literals_.contains(value.name)) {
-            return define(library_ + ".full(" + shape_list(shape) + ", " + value.name + ", " +
+            return define(library_ + ".full(" + python_tuple(shape) + ", " + value.name + ", " +
                           dtype_name(value.dtype) + ")");
         }
-        return define(library_ + ".zeros(" + shape_list(shape) + ", " + dtype_name(value.dtype) +
+        return define(library_ + ".zeros(" + python_tuple(shape) + ", " + dtype_name(value.dtype) +
                       ") + " + value.name);
     }
     std::string source = value.name;
@@ -273,7 +229,7 @@ std::string TileTarget::broadcast(const TensorInfo& value, const Dims& dims, con
         source = define(source + "[" + index + "]");
     }
     if (expanded != shape) {
-        source = define(library_ + ".broadcast_to(" + source + ", " + shape_list(shape) + ")");
+        source = define(library_ + ".broadcast_to(" + source + ", " + python_tuple(shape) + ")");
     }
     return source;
 }
@@ -442,12 +398,9 @@ std::string TileTarget::unique(const std::string& name) {
     return candidate;
 }
 
-std::string TileTarget::shape_list(const Dims& shape) {
-    std::string text = "(";
-    for (std::size_t i = 0; i < shape.size(); ++i) {
-        text += (i == 0 ? "" : ", ") + std::to_string(shape[i]);
-    }
-    return text + (shape.size() == 1 ? ",)" : ")");
+std::string TileTarget::dtype_name(ScalarKind dtype) const {
+    return library_ + "." +
+           (dtype == ScalarKind::Bool ? bool_name_ : std::string(dtype_names(dtype).numpy));
 }
 
 std::string TileTarget::place(std::size_t position, std::size_t own, std::size_t rank) {

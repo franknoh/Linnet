@@ -69,19 +69,17 @@ public:
     gather(const TensorInfo& source, const TensorInfo& indices, const Dims& shape) override;
     std::string
     reduce(Reduction kind, const TensorInfo& body, const Dims& dims, const Dims& shape) override;
-    void release(const std::vector<std::string>& names) override { (void)names; }
-    bool supports_while() const override { return false; }
     bool supports_counted() const override { return true; }
 
     KernelProgram program() override { return {parameters_, body_, atomics_}; }
 
 protected:
-    TileTarget(std::string library, bool full_precision)
-        : library_(std::move(library)), full_precision_(full_precision) {}
+    TileTarget(std::string library, std::string bool_name, bool full_precision)
+        : library_(std::move(library)), bool_name_(std::move(bool_name)),
+          full_precision_(full_precision) {}
 
     // ---- what each library spells its own way
 
-    virtual std::string dtype_name(sema::ScalarKind dtype) const = 0;
     virtual std::string cast(const std::string& value, sema::ScalarKind dtype) const = 0;
     virtual std::string arange(std::int64_t length) const = 0;
     virtual std::string permute(const std::string& value, const Dims& permutation) const = 0;
@@ -99,14 +97,16 @@ protected:
     virtual std::string product(const std::string& value, std::int64_t axis) const = 0;
     // ---- shared
 
+    // `tl.float32`, `jnp.bfloat16`.
+    std::string dtype_name(sema::ScalarKind dtype) const;
     std::string define(const std::string& expression);
     // A parameter's name, unique and not a Python word.
     std::string unique(const std::string& name);
-    static std::string shape_list(const Dims& shape);
     // `x[None, :]`: a tile of `own` axes placed at `position` among `rank`.
     static std::string place(std::size_t position, std::size_t own, std::size_t rank);
 
-    std::string library_; // `tl`, `jnp`
+    std::string library_;   // `tl`, `jnp`
+    std::string bool_name_; // the library's boolean dtype, after `library_.`
     bool full_precision_ = false;
     std::vector<std::string> parameters_;
     std::map<std::string, Reduction> atomics_; // results written atomically

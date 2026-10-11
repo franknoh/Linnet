@@ -19,7 +19,7 @@ namespace {
 
 class TritonTarget final : public TileTarget {
 public:
-    explicit TritonTarget(bool full_precision) : TileTarget("tl", full_precision) {}
+    explicit TritonTarget(bool full_precision) : TileTarget("tl", "int1", full_precision) {}
 
     // ---------------------------------------------------------------- loops
 
@@ -118,37 +118,6 @@ public:
     }
 
 private:
-    std::string dtype_name(ScalarKind dtype) const override {
-        switch (dtype) {
-        case ScalarKind::Bool:
-            return "tl.int1";
-        case ScalarKind::I8:
-            return "tl.int8";
-        case ScalarKind::I16:
-            return "tl.int16";
-        case ScalarKind::I32:
-            return "tl.int32";
-        case ScalarKind::I64:
-            return "tl.int64";
-        case ScalarKind::U8:
-            return "tl.uint8";
-        case ScalarKind::U16:
-            return "tl.uint16";
-        case ScalarKind::U32:
-            return "tl.uint32";
-        case ScalarKind::U64:
-            return "tl.uint64";
-        case ScalarKind::F16:
-            return "tl.float16";
-        case ScalarKind::BF16:
-            return "tl.bfloat16";
-        case ScalarKind::F32:
-            return "tl.float32";
-        case ScalarKind::F64:
-            return "tl.float64";
-        }
-        return "tl.float32";
-    }
     std::string cast(const std::string& value, ScalarKind dtype) const override {
         return "tl.cast(" + value + ", " + dtype_name(dtype) + ")";
     }
@@ -156,7 +125,7 @@ private:
         return "tl.arange(0, " + std::to_string(length) + ")";
     }
     std::string permute(const std::string& value, const Dims& permutation) const override {
-        return "tl.permute(" + value + ", " + shape_list(permutation) + ")";
+        return "tl.permute(" + value + ", " + python_tuple(permutation) + ")";
     }
     // Triton's integer `//` and `%` round toward zero, as Linnet's do.
     std::string
@@ -180,7 +149,7 @@ private:
     }
 
     // Triton has no product reduction of its own: `tl.reduce` with the
-    // generated module's `_multiply` (`TorchSourceTarget` writes it).
+    // generated module's `_multiply` (`TorchTarget` writes it).
     std::string product(const std::string& value, std::int64_t axis) const override {
         return "tl.reduce(" + value + ", " + std::to_string(axis) + ", _multiply)";
     }

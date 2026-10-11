@@ -75,7 +75,6 @@ private:
         shape::Solver solver;
         TypeId result = no_type;
         std::vector<std::vector<IndexVar>> index_scopes;
-        std::string owner;
         std::vector<std::string_view> unbound_reported; // per statement, to report once
         bool in_kernel = false;
     };

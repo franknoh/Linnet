@@ -427,26 +427,24 @@ CallName call_name(std::string_view implementation);
 std::vector<const TensorInfo*>
 operand_pointers(const std::vector<std::optional<TensorInfo>>& operands);
 
-// Whether `owner` -- a top-level block, or `sema::no_entity` for the module
-// itself -- of module `root_module` declares an entry called `name` (any
-// entry when `name` is empty).
-bool declares_entry(const ir::Module& module,
-                    std::uint32_t root_module,
-                    sema::EntityId owner,
-                    std::string_view name = {});
-// The top-level block of module `root_module` called `root`, or with `root`
-// empty the only one that declares an entry; otherwise why not, ending with
+// The module of the file compiled, loaded first; the others are what it uses.
+constexpr std::uint32_t root_module = 0;
+
+// Whether `owner` -- a top-level block of the root module, or
+// `sema::no_entity` for the module itself -- declares an entry called `name`
+// (any entry when `name` is empty).
+bool declares_entry(const ir::Module& module, sema::EntityId owner, std::string_view name = {});
+// The root module's top-level block called `root`, or with `root` empty the
+// only one that declares an entry; otherwise why not, ending with
 // `no_entry_hint` when no block has an entry.
 std::expected<sema::EntityId, std::string>
 find_root_block(const ir::Module& module,
-                std::uint32_t root_module,
                 std::string_view root,
                 std::string_view no_entry_hint = "name one with --root");
 
 struct GraphExportOptions {
     std::string root;  // root block; empty selects the only block with entries
     std::string entry; // entry to export; empty selects the block's only entry
-    std::uint32_t root_module = 0;
     std::map<std::string, std::string> bindings; // generic name -> integer or dtype
     bool optionals_present = false;
     // Optional parameters that are absent even though `optionals_present`
@@ -525,8 +523,6 @@ std::string prune_python_assignments(const std::string& body, const std::string&
 // a use inside a loop counts at the loop's end; `live_tail` is never released.
 std::string release_dead_values(const std::string& body, const std::string& live_tail);
 
-// `"ik,kj->ij"` for a contraction whose operands and result name grid axes:
-// one letter per axis, in order of first appearance.
 // Weight-only computation split out of a generated Python body so that it
 // runs once, at load, rather than on every call (see `GraphExportOptions::
 // prepare`). A top-level `vN = ...` line is weight-only when it reads nothing
@@ -549,6 +545,8 @@ PreparedSplit split_prepared(const std::string& body,
                              const std::vector<std::string>& parameter_paths,
                              const std::string& constants);
 
+// `"ik,kj->ij"` for a contraction whose operands and result name grid axes:
+// one letter per axis, in order of first appearance.
 std::string einsum_equation(const Dims& lhs_axes, const Dims& rhs_axes, const Dims& out_axes);
 
 // A kernel's program as a kernel target wrote it: its parameters in order --
@@ -580,11 +578,13 @@ struct KernelLaunch {
     std::int64_t stages = 0;
 };
 
-// Python literals the source targets (`torch`, `jax`) print: a tuple of
-// sizes, `(2, 3)` or `(4,)`, and a float with every digit kept and a
-// decimal point (`1.0`, not `1`).
+// Python literals the source and kernel targets print: a tuple of sizes,
+// `(2, 3)` or `(4,)`; a float with every digit kept and a decimal point
+// (`1.0`, not `1`); a literal of `dtype`, but for `Lowest` and `Highest`,
+// which each library spells its own way.
 std::string python_tuple(const Dims& dims);
 std::string python_float(double value);
+std::optional<std::string> python_literal(const Literal& literal, sema::ScalarKind dtype);
 
 // How each format names a scalar dtype: MLIR (`bf16`, `ui8`), the ONNX text
 // format (`bfloat16`, `double`) and its `TensorProto.DataType` number, and
@@ -605,5 +605,28 @@ bool word_char(char c);
 bool numbered(std::string_view word, char prefix);
 std::vector<std::pair<std::size_t, std::string>> words_of(std::string_view text);
 std::set<std::string> value_names(std::string_view text);
+
+// Its lines (a last line without a newline included).
+std::vector<std::string> split_lines(std::string_view text);
+
+// A generated value's assignment, `<indent>vN = expression`, at any indent.
+struct Assignment {
+    std::string indent;
+    std::string name;
+    std::string expression;
+};
+std::optional<Assignment> assignment_of(std::string_view line);
+
+// `name = expr` of a top-level (four-space) generated assignment.
+std::optional<std::pair<std::string, std::string>> top_level_assignment(const std::string& line);
+
+// A call `callee(a, f(b, c))`: the callee and the arguments split at the
+// commas outside brackets and strings; none when `expression` is not one
+// call spanning it whole.
+struct Call {
+    std::string callee;
+    std::vector<std::string> arguments;
+};
+std::optional<Call> call_of(std::string_view expression);
 
 } // namespace linnet::backend

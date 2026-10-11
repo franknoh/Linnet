@@ -5,7 +5,6 @@
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
-#include <cstdio>
 #include <map>
 #include <set>
 #include <string>
@@ -24,7 +23,7 @@ public:
 
     std::expected<std::string, std::string> run() {
         std::string out = "{\"version\":1";
-        out += ",\"module\":" + json_string(model_.module_paths.at(options_.root_module));
+        out += ",\"module\":" + json_string(model_.module_paths.at(root_module));
         if (options_.functions) {
             if (!has_entry(no_entity)) {
                 return std::unexpected("no module-level `entry` in this file");
@@ -72,7 +71,6 @@ private:
 
     std::expected<EntityId, std::string> find_root() const {
         return find_root_block(module_,
-                               options_.root_module,
                                options_.root,
                                has_entry(no_entity)
                                    ? "the module-level entries are in `plan --functions`"
@@ -81,9 +79,7 @@ private:
 
     // Whether `block` (or the root module itself, for `no_entity`) declares
     // an entry.
-    bool has_entry(EntityId block) const {
-        return declares_entry(module_, options_.root_module, block);
-    }
+    bool has_entry(EntityId block) const { return declares_entry(module_, block); }
 
     // ------------------------------------------------------------ dimensions
 
@@ -541,12 +537,9 @@ private:
                 attrs.push_back("\"atomic\":" + json_string(a.name));
             }
             break;
-        case ir::OpKind::ConstFloat: {
-            char buffer[64];
-            std::snprintf(buffer, sizeof buffer, "%.17g", a.number);
-            attrs.push_back(std::string("\"value\":") + buffer);
+        case ir::OpKind::ConstFloat:
+            attrs.push_back("\"value\":" + shortest_float(a.number));
             break;
-        }
         case ir::OpKind::ConstDim:
             attrs.push_back("\"value\":" + dim(a.dim));
             break;

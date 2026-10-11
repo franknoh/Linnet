@@ -62,6 +62,14 @@ bool is_valid_package_name(std::string_view name);
 // `git@github.com:a/b.git`), lowercased; empty for a local `file://` URL.
 std::string git_host(std::string_view url);
 
+// A git URL past its scheme and user name (`host/path`, `host:port/path`,
+// `host:path`), and whether it is a `file://` URL.
+struct GitAddress {
+    std::string_view rest;
+    bool is_file = false;
+};
+GitAddress git_address(std::string_view url);
+
 // Whether a git URL is on GitHub or the Hugging Face Hub, the hosts a
 // dependency comes from without a warning.
 bool is_known_git_host(std::string_view url);

@@ -1,7 +1,8 @@
 #include "linnet/opt/egraph.hpp"
 
+#include "linnet/support/text.hpp"
+
 #include <algorithm>
-#include <cstdio>
 #include <deque>
 #include <map>
 #include <optional>
@@ -32,9 +33,7 @@ struct Node {
 
 std::string attributes_key(const Module& module, const Attributes& a) {
     const sema::TypeStore& types = module.types();
-    char number[32];
-    std::snprintf(number, sizeof number, "%.17g", a.number);
-    std::string key = std::to_string(a.integer) + "|" + number + "|" +
+    std::string key = std::to_string(a.integer) + "|" + shortest_float(a.number) + "|" +
                       module.model().dims.to_string(a.dim) + "|" + a.name + "|";
     for (const std::string& name : a.names) {
         key += name + ",";
@@ -745,7 +744,7 @@ bool saturate(Module& module, const SaturationOptions& options) {
 }
 
 Pass saturation_pass(Legality allowed) {
-    return {"saturate", Legality::Exact, [allowed](Module& module) {
+    return {"saturate", [allowed](Module& module) {
                 SaturationOptions options;
                 options.allowed = allowed;
                 return saturate(module, options);
@@ -755,7 +754,7 @@ Pass saturation_pass(Legality allowed) {
 std::vector<Pass> optimizing_passes(Legality allowed) {
     std::vector<Pass> passes = canonical_passes();
     passes.push_back(saturation_pass(allowed));
-    passes.push_back({"dce", Legality::Exact, eliminate_dead_code});
+    passes.push_back({"dce", eliminate_dead_code});
     return passes;
 }
 

@@ -2,6 +2,7 @@
 
 #include "linnet/diagnostic/codes.hpp"
 #include "linnet/package/manifest.hpp"
+#include "linnet/support/files.hpp"
 #include "linnet/syntax/parser.hpp"
 
 #include <map>
@@ -156,9 +157,8 @@ private:
     }
 
     std::optional<std::uint32_t> load(const fs::path& file, bool is_requested) {
+        const std::string key = path_key(file);
         std::error_code error;
-        const fs::path canonical = fs::weakly_canonical(file, error);
-        const std::string key = (error ? file : canonical).generic_string();
         if (const auto found = loaded_.find(key); found != loaded_.end()) {
             return found->second;
         }

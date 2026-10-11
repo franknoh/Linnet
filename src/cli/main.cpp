@@ -21,6 +21,7 @@
 #include "linnet/package/spec_manifest.hpp"
 #include "linnet/sema/analysis.hpp"
 #include "linnet/source/source_manager.hpp"
+#include "linnet/support/files.hpp"
 #include "linnet/support/text.hpp"
 #include "linnet/syntax/lexer.hpp"
 #include "linnet/syntax/parser.hpp"
@@ -732,13 +733,11 @@ int run_emit(std::span<const std::string_view> args, const Options& options) {
     std::string text;
     if (path == "-") {
         text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+    } else if (auto file = read_file(std::filesystem::path(path))) {
+        text = std::move(*file);
     } else {
-        std::ifstream stream{std::filesystem::path(path), std::ios::binary};
-        if (!stream) {
-            std::fprintf(stderr, "linnet: cannot read '%s'\n", std::string(path).c_str());
-            return exit_failure;
-        }
-        text.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+        std::fprintf(stderr, "linnet: cannot read '%s'\n", std::string(path).c_str());
+        return exit_failure;
     }
     auto core = backend::import_plan(text);
     if (!core) {
@@ -748,7 +747,7 @@ int run_emit(std::span<const std::string_view> args, const Options& options) {
     // Adapters translate whole graphs; values nothing uses are not worth
     // a line of source.
     opt::eliminate_dead_code(*core);
-    const auto source = emit::emit_source(*core, emit::EmitOptions{});
+    const auto source = emit::emit_source(*core);
     if (!source) {
         std::fprintf(stderr, "linnet: cannot emit source: %s\n", source.error().c_str());
         return exit_failure;
@@ -822,7 +821,7 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
         opt::run_pipeline(core, opt::optimizing_passes(*allowed));
     }
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
-    const auto plan = backend::export_plan(core, backend::PlanOptions{root, 0, modules, functions});
+    const auto plan = backend::export_plan(core, backend::PlanOptions{root, modules, functions});
     if (!plan) {
         std::fprintf(stderr, "linnet: %s\n", plan.error().c_str());
         return exit_failure;
@@ -893,9 +892,7 @@ int run_spec_test(std::span<const std::string_view> args,
             root / "diagnostics" / std::filesystem::path(spec_case.file).stem().concat(".stderr");
         std::error_code error;
         if (problem.empty() && std::filesystem::is_regular_file(snapshot, error)) {
-            std::ifstream stream(snapshot, std::ios::binary);
-            const std::string expected{std::istreambuf_iterator<char>(stream),
-                                       std::istreambuf_iterator<char>()};
+            const std::string expected = read_file(snapshot).value_or("");
             // Snapshots name files relative to the spec-tests directory.
             std::string relative = rendered;
             const std::string prefix = (root / "").generic_string();
@@ -1030,7 +1027,7 @@ int run_inspect(std::span<const std::string_view> args, Options options, const c
                 std::fputs(ir::print(core).c_str(), stdout);
                 return exit_success;
             }
-            const auto text = emit::emit_source(core, emit::EmitOptions{});
+            const auto text = emit::emit_source(core);
             if (!text) {
                 std::fprintf(stderr, "linnet: cannot emit source: %s\n", text.error().c_str());
                 return exit_failure;

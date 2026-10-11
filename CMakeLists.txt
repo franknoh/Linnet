@@ -90,6 +90,7 @@ add_library(linnet_core STATIC
     src/shape/solver.cpp
     src/source/source_manager.cpp
     src/source/utf8.cpp
+    src/support/files.cpp
     src/support/text.cpp
     src/syntax/lexer.cpp
     src/syntax/parser.cpp)

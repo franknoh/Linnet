@@ -22,12 +22,8 @@ Style make_style(Severity severity, bool color) {
     if (!color) {
         return {};
     }
-    std::string_view severity_color = "\x1b[1;31m";
-    if (severity == Severity::Warning) {
-        severity_color = "\x1b[1;33m";
-    } else if (severity == Severity::Note) {
-        severity_color = "\x1b[1;36m";
-    }
+    const std::string_view severity_color =
+        severity == Severity::Warning ? "\x1b[1;33m" : "\x1b[1;31m";
     return {severity_color, "\x1b[1;34m", "\x1b[1m", "\x1b[0m"};
 }
 
