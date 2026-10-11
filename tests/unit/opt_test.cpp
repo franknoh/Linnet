@@ -1,8 +1,6 @@
-#include "linnet/ir/lower.hpp"
 #include "linnet/opt/passes.hpp"
-#include "linnet/sema/analysis.hpp"
-#include "linnet/syntax/parser.hpp"
 
+#include "lowered.hpp"
 #include "test.hpp"
 
 #include <string>
@@ -11,26 +9,13 @@ using namespace linnet;
 
 namespace {
 
-std::string optimized(const std::string& source) {
-    SourceManager sources;
-    DiagnosticSink sink;
-    const FileId file = sources.add_file("m.linnet", source).value();
-    const ast::Ast tree = parse(sources, file, sink);
-    const ast::Ast* const modules[] = {&tree};
-    const sema::AnalysisResult analysis = sema::analyze(sources, modules, sink);
-    CHECK(!sink.has_errors());
-    ir::Module module = ir::lower(sources, modules, analysis.model);
-    opt::run_pipeline(module, opt::canonical_passes());
-    return ir::print(module);
-}
+using test::count;
 
-std::size_t count(const std::string& text, const std::string& needle) {
-    std::size_t total = 0;
-    for (std::size_t at = text.find(needle); at != std::string::npos;
-         at = text.find(needle, at + 1)) {
-        ++total;
-    }
-    return total;
+std::string optimized(const std::string& source) {
+    return test::with_lowered(source, [](ir::Module& module) {
+        opt::run_pipeline(module, opt::canonical_passes());
+        return ir::print(module);
+    });
 }
 
 } // namespace
