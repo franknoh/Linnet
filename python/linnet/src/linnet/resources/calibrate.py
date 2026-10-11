@@ -483,34 +483,11 @@ def _spawned(rank: int, world: int, port: int, out: str) -> None:
     device = torch.device("cuda", rank)
     dist.init_process_group("nccl", rank=rank, world_size=world, device_id=device)
     try:
-        # Every process at once, as a split model's issue their calls: they
-        # share the host, and a step waits for the slowest.
-        dist.barrier()
-        host, dispatch = _host_costs(device)
-        every: list[tuple[dict[str, float], float]] = [({}, 0.0)] * world
-        dist.all_gather_object(every, (host, dispatch))
         found = _collectives(device)
     finally:
         dist.destroy_process_group()
     if rank == 0:
-        slowest = {kind: max(h[kind] for h, _ in every) for kind in host}
-        result = {"collectives": found, "host": slowest, "dispatch": max(d for _, d in every)}
-        Path(out).write_text(json.dumps(result), encoding="utf-8")
-
-
-def _host_costs(device: torch.device) -> tuple[dict[str, float], float]:
-    """Host seconds of each kind of eager call as the generated code makes
-    it, and of a call's dispatch alone. Each kind alone costs the host less
-    than in the generated code: the kinds (not autograd's, measured in a
-    chain already) are scaled to a small decoder's step."""
-    host = _host_by_kind(device)
-    dispatch = _host(device)
-    scale = _generated(device, host, dispatch)
-    scaled = {
-        kind: cost if kind in ("backward", "product_backward") else cost * scale
-        for kind, cost in host.items()
-    }
-    return scaled, dispatch
+        Path(out).write_text(json.dumps(found), encoding="utf-8")
 
 
 def measure(name: str, *, collectives: bool = True) -> Profile:
@@ -524,7 +501,9 @@ def measure(name: str, *, collectives: bool = True) -> Profile:
     _, total = torch.cuda.mem_get_info()
     # The host first: autograd's nodes measure slower after long runs on
     # the device.
-    host, dispatch = _host_costs(device)
+    host = _host_by_kind(device)
+    dispatch = _host(device)
+    scale = _generated(device, host, dispatch)
     small, strided, gap = _kernel(device)
     peaks, sizes, skinny = _products(device)
     same, broadcast = _elementwise(device)
@@ -541,7 +520,13 @@ def measure(name: str, *, collectives: bool = True) -> Profile:
         "attention": _attention(device),
         "decode": _decode(device),
         "dispatch": dispatch,
-        "host": host,
+        # Each kind alone costs the host less than in the generated code:
+        # the kinds (not autograd's, measured in a chain already) scaled to a
+        # small decoder's step.
+        "host": {
+            kind: cost if kind in ("backward", "product_backward") else cost * scale
+            for kind, cost in host.items()
+        },
         "kernel": small,
         "strided_kernel": strided,
         "gap": gap,
@@ -607,9 +592,9 @@ def profile(devices: int = 1, *, refresh: bool = False) -> DeviceSpec:
         with tempfile.TemporaryDirectory() as work:
             out = str(Path(work) / "collectives.json")
             spawn(_spawned, args=(count, port, out), nprocs=count)
-            spawned = json.loads(Path(out).read_text(encoding="utf-8"))
-            found["latency"], found["link"], found["reduce"] = spawned["collectives"]
-            found["host"], found["dispatch"] = spawned["host"], spawned["dispatch"]
+            found["latency"], found["link"], found["reduce"] = json.loads(
+                Path(out).read_text(encoding="utf-8")
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(found, indent=2) + "\n", encoding="utf-8")
     return DeviceSpec.load(path)
