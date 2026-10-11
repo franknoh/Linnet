@@ -36,13 +36,14 @@ compared with measured models in the docs.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
     import torch
@@ -378,8 +379,9 @@ def _kernel(device: torch.device) -> tuple[float, float, float]:
     eagerly, timed behind long products so that the host is ahead and the
     kernels run back to back: a contiguous one, and one reading a permuted
     view with a broadcast operand (PyTorch's unvectorized kernel). Also the
-    gap between two kernels run back to back: kernels of about 10 us in a
-    row against their work done in one kernel."""
+    gap between two kernels run back to back: the median time from one
+    kernel's end to the next one's start, as the profiler records a queue
+    of them (0 where the profiler cannot record the device)."""
     import torch
 
     big = torch.randn(8192, 8192, device=device, dtype=torch.bfloat16)
@@ -406,11 +408,46 @@ def _kernel(device: torch.device) -> tuple[float, float, float]:
 
     small = queued(lambda: x.add_(1.0))
     strided = queued(lambda: heads * row)
-    medium = torch.zeros(8 << 20, device=device, dtype=torch.bfloat16)
-    whole = torch.zeros(32 * medium.numel(), device=device, dtype=torch.bfloat16)
-    each = queued(lambda: medium.add_(1.0), count=200)
-    once = _time(lambda: whole.add_(1.0), repeats=3) / 32
-    return small, strided, max(each - once, 0.0)
+    return small, strided, _gap(device, lambda: queued(lambda: x.mul_(1.0), count=200))
+
+
+class _Span(Protocol):
+    start: float  # microseconds
+    end: float
+
+
+class _Recorded(Protocol):
+    """A kernel as the profiler records it."""
+
+    name: str
+    device_type: object
+    time_range: _Span
+
+
+def _gap(device: torch.device, run: Callable[[], object]) -> float:
+    """Seconds from one kernel's end to the next one's start while `run`
+    queues small kernels on `device`, by the profiler's records."""
+    import statistics
+
+    import torch
+    from torch.profiler import ProfilerActivity, profile
+
+    try:
+        with profile(activities=[ProfilerActivity.CUDA]) as recorded:
+            run()
+            torch.cuda.synchronize(device)
+    except RuntimeError:
+        return 0.0
+    events = cast("list[_Recorded]", recorded.events())
+    spans = sorted(
+        (event.time_range.start, event.time_range.end)
+        for event in events
+        if str(event.device_type).endswith("CUDA")
+    )
+    # The queued kernels are the last ones (the long products ran first);
+    # microseconds from inside their run.
+    gaps = [after[0] - before[1] for before, after in itertools.pairwise(spans[-150:])]
+    return statistics.median(gaps) / 1e6 if len(gaps) > 10 else 0.0
 
 
 def _collectives(device: torch.device) -> tuple[float, float, float]:
