@@ -10,11 +10,15 @@ in bf16 or f16:
 
 - one row (a decoding step of one sequence): `kernels.gemv8`, the weight
   read once and widened in registers on CUDA cores;
-- more rows: `kernels.w8a16`, the weight widened to the input's dtype tile
-  by tile on tensor cores; or, `rounded` (`numerics="fast"`), the input
-  rounded to 8 bits too and the two multiplied in 8 bits: FP8 by
-  `torch._scaled_mm` (a scale per row of the input, or per 128 of its
-  inputs against block weights), int8 by `kernels.int8_mm`.
+- up to 64 rows: `kernels.w8a16`, the weight widened to the input's dtype
+  tile by tile on tensor cores;
+- more rows: the weight dequantized for the call (`kernels.dequantize8`),
+  then cuBLAS;
+- past 32 rows and `rounded` (`numerics="fast"`): the input rounded to 8
+  bits too and the two multiplied in 8 bits: FP8 by `torch._scaled_mm` (a
+  scale per row of the input, or per 128 of its inputs against block
+  weights), int8 by `kernels.int8_mm`. Up to 32 rows, reading the weight
+  bounds the product either way.
 
 Anywhere else the weight is dequantized for the call and multiplied by
 `F.linear`.
@@ -81,6 +85,31 @@ def _int8_kernels(weight: torch.Tensor) -> int:
     return int(_capability(weight) >= (8, 0) and in_features % 128 == 0 and out_features % 16 == 0)
 
 
+# Measured on an H100 over Llama 3.1 8B's projections: rounding the input
+# pays from 33 rows; Linnet's tiles beat cuBLAS over a dequantized weight up
+# to 64.
+_FEW = 32
+_TILED = 64
+
+
+def _weight_only(
+    flat: torch.Tensor,
+    weight: torch.Tensor,
+    scale: torch.Tensor,
+    fp8: bool,
+    group: int = 0,
+    row_block: int = 1,
+) -> torch.Tensor:
+    assert kernels is not None
+    rows = flat.shape[0]
+    if rows == 1:
+        return kernels.gemv8(flat, weight, scale, fp8, group, row_block)
+    if rows <= _TILED:
+        return kernels.w8a16(flat, weight, scale, fp8, group, row_block)
+    dequantized = kernels.dequantize8(weight, scale, fp8, group, row_block, flat.dtype)
+    return functional.linear(flat, dequantized)
+
+
 def _finish(x: torch.Tensor, y: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
     y = y.reshape(*x.shape[:-1], y.shape[-1])
     return y if bias is None else y + bias
@@ -100,13 +129,11 @@ def fp8_linear(x: torch.Tensor, operands: Fp8Operands, bias: torch.Tensor | None
     weight, transposed, scale, rounded, fast = operands
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
-        if flat.shape[0] == 1:
-            y = kernels.gemv8(flat, weight, scale, True)
-        elif rounded and fast == 2:
+        if rounded and fast == 2 and flat.shape[0] > _FEW:
             q, rows = kernels.fp8_rows(flat)
             y = _scaled_mm(q, transposed, scale_a=rows, scale_b=scale, out_dtype=flat.dtype)
         else:
-            y = kernels.w8a16(flat, weight, scale, True)
+            y = _weight_only(flat, weight, scale, True)
     else:
         decoded = weight.view(torch.float8_e4m3fn).float() * scale.reshape(-1, 1)
         y = functional.linear(flat, decoded.to(flat.dtype))
@@ -132,16 +159,14 @@ def fp8_block_linear(
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
         rows = flat.shape[0]
-        if rows == 1:
-            y = kernels.gemv8(flat, weight, scale, True, block, block)
-        elif rounded and fast == 2:
+        if rounded and fast == 2 and rows > _FEW:
             # cuBLAS takes the block-scaled product of rows in fours.
             padded = -(-rows // 4) * 4
             q, scales = kernels.fp8_groups(flat, block, padded)
             y = _scaled_mm(q, transposed, scale_a=scales, scale_b=scale.t(), out_dtype=flat.dtype)
             y = y[:rows] if padded != rows else y
         else:
-            y = kernels.w8a16(flat, weight, scale, True, block, block)
+            y = _weight_only(flat, weight, scale, True, block, block)
     else:
         out_features, in_features = weight.shape
         decoded = weight.view(torch.float8_e4m3fn).float()
@@ -162,13 +187,11 @@ def int8_linear(x: torch.Tensor, operands: Int8Operands, bias: torch.Tensor | No
     weight, scale, rounded, fast = operands
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
-        if flat.shape[0] == 1:
-            y = kernels.gemv8(flat, weight, scale, False)
-        elif rounded:
+        if rounded and flat.shape[0] > _FEW:
             q, rows = kernels.int8_rows(flat)
             y = kernels.int8_mm(q, weight, rows, scale, flat.dtype)
         else:
-            y = kernels.w8a16(flat, weight, scale, False)
+            y = _weight_only(flat, weight, scale, False)
     else:
         y = functional.linear(flat, (weight.float() * scale[:, None]).to(flat.dtype))
     return _finish(x, y, bias)
@@ -189,10 +212,7 @@ def int8_group_linear(
     weight, scale, group, fast = operands
     flat = x.reshape(-1, x.shape[-1])
     if fast and kernels is not None and flat.dtype in _HALF:
-        if flat.shape[0] == 1:
-            y = kernels.gemv8(flat, weight, scale, False, group, 1)
-        else:
-            y = kernels.w8a16(flat, weight, scale, False, group, 1)
+        y = _weight_only(flat, weight, scale, False, group)
     else:
         out_features, in_features = weight.shape
         grouped = weight.float().reshape(out_features, in_features // group, group)

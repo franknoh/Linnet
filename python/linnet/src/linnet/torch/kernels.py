@@ -12,6 +12,7 @@ generated code falls back to plain PyTorch arithmetic without it.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from typing import Protocol
 
@@ -424,13 +425,16 @@ def _w8a16_kernel(
     block_k: tl.constexpr,
     group_m: tl.constexpr,
 ):
-    # A block_m by block_n tile of the output per program, programs ordered
-    # in groups of `group_m` row tiles so neighbours share weight tiles in
-    # L2. Each step widens block_k of every weight row to `x`'s dtype (exact:
+    # A block_m by block_n tile of the output per program, over one of the
+    # split's equal stretches of the inputs (axis 1); programs ordered in
+    # groups of `group_m` row tiles so neighbours share weight tiles in L2.
+    # Each step widens block_k of every weight row to `x`'s dtype (exact:
     # every FP8 and int8 value is a bf16 and an f16), scaled first when the
     # scales are per group (block_k divides the group), and multiplies on
     # tensor cores.
     pid = tl.program_id(0)
+    part = tl.program_id(1)
+    span = depth // tl.num_programs(1)
     tiles_m = tl.cdiv(rows, block_m)
     tiles_n = tl.cdiv(width, block_n)
     per_group = group_m * tiles_n
@@ -444,7 +448,7 @@ def _w8a16_kernel(
     live_m = rm < rows
     live_n = rn < width
     acc = tl.zeros((block_m, block_n), dtype=tl.float32)
-    for k0 in range(0, depth, block_k):
+    for k0 in range(part * span, (part + 1) * span, block_k):
         x = tl.load(
             x_ptr + rm[:, None] * depth + (k0 + rk)[None, :], mask=live_m[:, None], other=0.0
         )
@@ -462,18 +466,37 @@ def _w8a16_kernel(
         acc = tl.dot(x, tl.trans(w.to(x_ptr.dtype.element_ty)), acc)
     if group == 0:
         acc = acc * tl.load(scale_ptr + rn, mask=live_n, other=0.0).to(tl.float32)[None, :]
-    out = y_ptr + rm[:, None] * width + rn[None, :]
+    out = y_ptr + part * rows * width + rm[:, None] * width + rn[None, :]
     tl.store(out, acc.to(y_ptr.dtype.element_ty), mask=live_m[:, None] & live_n[None, :])
 
 
-# Tiles by row count: (rows up to, block_m, block_n, block_k, warps, stages).
+# Tiles by row count, measured on an H100 over Llama 3.1 8B's joined
+# projections: (rows up to, block_m, block_n, block_k, warps, stages). Past
+# 64 rows cuBLAS over the weight dequantized for the call is faster.
 _W8A16_TILES = (
-    (16, 16, 64, 128, 4, 4),
+    (16, 16, 64, 128, 8, 4),
     (32, 32, 64, 128, 4, 4),
-    (64, 64, 64, 128, 4, 3),
-    (256, 64, 128, 128, 4, 3),
-    (1 << 62, 128, 128, 64, 8, 3),
+    (1 << 62, 64, 64, 128, 4, 4),
 )
+
+
+@functools.cache
+def _processors(device: torch.device) -> int:
+    return torch.cuda.get_device_properties(device).multi_processor_count
+
+
+def _split(programs: int, depth: int, block_k: int, device: torch.device) -> int:
+    """Parts the inputs split into so that a few rows' tiles fill the GPU's
+    multiprocessors twice over (each part sums a stretch of the inputs,
+    and the parts are added after)."""
+    split = 1
+    while (
+        split < 8
+        and programs * split < 2 * _processors(device)
+        and depth % (2 * split * block_k) == 0
+    ):
+        split *= 2
+    return split
 
 
 def _w8a16(
@@ -488,7 +511,7 @@ def _w8a16(
     """`F.linear(x, W)` for `x` [rows, In] (`bf16` or `f16`) and the 8-bit
     weights of `_gemv8`, widened to `x`'s dtype inside the product: the
     weight is read once, at half of `bf16`'s bytes, and `x` is not rounded.
-    In is a multiple of 128 and of the group."""
+    In is a multiple of 128 and of the group. Meant for up to 64 rows."""
     rows, depth = x.shape
     width = weight.shape[0]
     _, block_m, block_n, block_k, warps, stages = next(
@@ -496,10 +519,15 @@ def _w8a16(
     )
     if group:
         block_k = min(block_k, group)
-    y = torch.empty(rows, width, dtype=x.dtype, device=x.device)
+    programs = triton.cdiv(rows, block_m) * triton.cdiv(width, block_n)
+    split = _split(programs, depth, block_k, x.device)
+    if split == 1:
+        y = torch.empty(rows, width, dtype=x.dtype, device=x.device)
+    else:
+        y = torch.empty(split, rows, width, dtype=torch.float32, device=x.device)
 
-    def grid(_meta: dict[str, object]) -> tuple[int]:
-        return (triton.cdiv(rows, block_m) * triton.cdiv(width, block_n),)
+    def grid(_meta: dict[str, object]) -> tuple[int, int]:
+        return (programs, split)
 
     kernel[grid](
         x.contiguous(),
@@ -520,7 +548,7 @@ def _w8a16(
         num_warps=warps,
         num_stages=stages,
     )
-    return y
+    return y if split == 1 else y.sum(0).to(x.dtype)
 
 
 @triton_op("linnet::w8a16", mutates_args=())
@@ -550,27 +578,117 @@ def w8a16(
 
 
 @triton.jit
-def _rows8_kernel(x_ptr, q_ptr, scale_ptr, depth, fp8: tl.constexpr, block: tl.constexpr):
+def _dequantize8_kernel(
+    weight_ptr,
+    scale_ptr,
+    out_ptr,
+    depth,
+    scale_columns,
+    fp8: tl.constexpr,
+    group: tl.constexpr,
+    row_block: tl.constexpr,
+    block: tl.constexpr,
+):
+    # `block` weights of one row per program, widened and scaled in f32, then
+    # rounded to the output's dtype, as `std.quant`'s bodies dequantize.
+    row = tl.program_id(0)
+    cols = tl.program_id(1) * block + tl.arange(0, block)
+    live = cols < depth
+    w = _widen8(tl.load(weight_ptr + row.to(tl.int64) * depth + cols, mask=live, other=0), fp8)
+    if group == 0:
+        step = tl.load(scale_ptr + row).to(tl.float32)
+    else:
+        step = tl.load(
+            scale_ptr + (row // row_block) * scale_columns + cols // group, mask=live, other=0.0
+        ).to(tl.float32)
+    out = out_ptr + row.to(tl.int64) * depth + cols
+    tl.store(out, (w * step).to(out_ptr.dtype.element_ty), mask=live)
+
+
+def dequantize8(
+    weight: torch.Tensor,
+    scale: torch.Tensor,
+    fp8: bool,
+    group: int,
+    row_block: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """The weight of `_gemv8` dequantized to `dtype` in one kernel: for a
+    call of many rows, which cuBLAS multiplies faster than Linnet's kernel
+    widens the weight. Called outside `torch.compile` and inside, where
+    Dynamo traces the launch."""
+    kernel = wrap_triton(_dequantize8_kernel) if torch.compiler.is_compiling() else None
+    return _dequantize8(kernel or _dequantize8_kernel, weight, scale, fp8, group, row_block, dtype)
+
+
+def _dequantize8(
+    kernel: _Launcher,
+    weight: torch.Tensor,
+    scale: torch.Tensor,
+    fp8: bool,
+    group: int,
+    row_block: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    width, depth = weight.shape
+    out = torch.empty(width, depth, dtype=dtype, device=weight.device)
+
+    def grid(_meta: dict[str, object]) -> tuple[int, int]:
+        return (width, triton.cdiv(depth, 1024))
+
+    kernel[grid](
+        weight,
+        scale,
+        out,
+        depth,
+        scale.shape[-1] if group else 1,
+        fp8=fp8,
+        group=group,
+        row_block=row_block,
+        block=1024,
+        num_warps=4,
+    )
+    return out
+
+
+@triton.jit
+def _rows8_kernel(
+    x_ptr, q_ptr, scale_ptr, depth, fp8: tl.constexpr, block: tl.constexpr, whole: tl.constexpr
+):
     # One row per program: its largest magnitude, then the row over its
     # scale (that magnitude over the type's largest value: 448 for FP8, 127
-    # for int8) rounded to the type, int8 to the nearest level.
+    # for int8) rounded to the type, int8 to the nearest level. A row that
+    # fits in `block` (`whole`) is read once.
     row = tl.program_id(0).to(tl.int64)
     base = row * depth
-    top = tl.zeros((block,), dtype=tl.float32)
-    for k0 in range(0, depth, block):
-        offsets = k0 + tl.arange(0, block)
-        x = tl.load(x_ptr + base + offsets, mask=offsets < depth, other=0.0).to(tl.float32)
-        top = tl.maximum(top, tl.abs(x))
-    scale = tl.maximum(tl.max(top, axis=0), 1e-12) / (448.0 if fp8 else 127.0)
-    for k0 in range(0, depth, block):
-        offsets = k0 + tl.arange(0, block)
+    largest = 448.0 if fp8 else 127.0
+    if whole:
+        offsets = tl.arange(0, block)
         live = offsets < depth
-        x = tl.load(x_ptr + base + offsets, mask=live, other=0.0).to(tl.float32) / scale
+        x = tl.load(x_ptr + base + offsets, mask=live, other=0.0).to(tl.float32)
+        scale = tl.maximum(tl.max(tl.abs(x), axis=0), 1e-12) / largest
+        x = x / scale
         if fp8:
             q = tl.clamp(x, -448.0, 448.0).to(q_ptr.dtype.element_ty)
         else:
             q = tl.clamp(tl.where(x >= 0, x + 0.5, x - 0.5), -127.0, 127.0).to(tl.int8)
         tl.store(q_ptr + base + offsets, q, mask=live)
+    else:
+        top = tl.zeros((block,), dtype=tl.float32)
+        for k0 in range(0, depth, block):
+            offsets = k0 + tl.arange(0, block)
+            x = tl.load(x_ptr + base + offsets, mask=offsets < depth, other=0.0).to(tl.float32)
+            top = tl.maximum(top, tl.abs(x))
+        scale = tl.maximum(tl.max(top, axis=0), 1e-12) / largest
+        for k0 in range(0, depth, block):
+            offsets = k0 + tl.arange(0, block)
+            live = offsets < depth
+            x = tl.load(x_ptr + base + offsets, mask=live, other=0.0).to(tl.float32) / scale
+            if fp8:
+                q = tl.clamp(x, -448.0, 448.0).to(q_ptr.dtype.element_ty)
+            else:
+                q = tl.clamp(tl.where(x >= 0, x + 0.5, x - 0.5), -127.0, 127.0).to(tl.int8)
+            tl.store(q_ptr + base + offsets, q, mask=live)
     tl.store(scale_ptr + row, scale)
 
 
@@ -582,11 +700,23 @@ def _rows8(kernel: _Launcher, x: torch.Tensor, fp8: bool) -> tuple[torch.Tensor,
     dtype = torch.float8_e4m3fn if fp8 else torch.int8
     q = torch.empty(rows, depth, dtype=dtype, device=x.device)
     scale = torch.empty(rows, 1, dtype=torch.float32, device=x.device)
+    # A row of up to 16384 inputs in registers, read once.
+    whole = depth <= 16384
+    block = triton.next_power_of_2(depth) if whole else 4096
 
     def grid(_meta: dict[str, object]) -> tuple[int]:
         return (rows,)
 
-    kernel[grid](x.contiguous(), q, scale, depth, fp8=fp8, block=1024, num_warps=4)
+    kernel[grid](
+        x.contiguous(),
+        q,
+        scale,
+        depth,
+        fp8=fp8,
+        block=block,
+        whole=whole,
+        num_warps=4 if block <= 4096 else 8,
+    )
     return q, scale
 
 
@@ -610,22 +740,25 @@ def int8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 @triton.jit
-def _fp8_groups_kernel(x_ptr, q_ptr, scale_ptr, rows, padded, depth, group: tl.constexpr):
-    # One (row, group) per program: the group's largest magnitude over 448,
-    # the group over it rounded to FP8. Rows past `rows`, up to `padded`, are
-    # zeros with a scale of one. The scales are written column by column
-    # ([groups, padded]), the layout `torch._scaled_mm` reads.
+def _fp8_groups_kernel(
+    x_ptr, q_ptr, scale_ptr, rows, padded, depth, group: tl.constexpr, groups: tl.constexpr
+):
+    # `groups` groups of one row per program: each group's largest magnitude
+    # over 448, the group over it rounded to FP8. Rows past `rows`, up to
+    # `padded`, are zeros with a scale of one. The scales are written column
+    # by column ([In / group, padded]), the layout `torch._scaled_mm` reads.
     row = tl.program_id(0)
-    g = tl.program_id(1)
-    offsets = g * group + tl.arange(0, group)
+    first = tl.program_id(1) * groups
+    g = first + tl.arange(0, groups)
+    offsets = g[:, None] * group + tl.arange(0, group)[None, :]
     base = row.to(tl.int64) * depth
-    x = tl.load(x_ptr + base + offsets, mask=(offsets < depth) & (row < rows), other=0.0)
-    x = x.to(tl.float32)
-    top = tl.max(tl.abs(x), axis=0)
+    live = (g < depth // group)[:, None]
+    x = tl.load(x_ptr + base + offsets, mask=live & (row < rows), other=0.0).to(tl.float32)
+    top = tl.max(tl.abs(x), axis=1)
     scale = tl.where(row < rows, tl.maximum(top, 1e-12) / 448.0, 1.0)
-    q = tl.clamp(x / scale, -448.0, 448.0).to(q_ptr.dtype.element_ty)
-    tl.store(q_ptr + base + offsets, q, mask=offsets < depth)
-    tl.store(scale_ptr + g * padded + row, scale)
+    q = tl.clamp(x / scale[:, None], -448.0, 448.0).to(q_ptr.dtype.element_ty)
+    tl.store(q_ptr + base + offsets, q, mask=live)
+    tl.store(scale_ptr + g * padded + row, scale, mask=g < depth // group)
 
 
 def _fp8_groups(
@@ -640,9 +773,9 @@ def _fp8_groups(
     scale = torch.empty(depth // group, padded, dtype=torch.float32, device=x.device)
 
     def grid(_meta: dict[str, object]) -> tuple[int, int]:
-        return (padded, depth // group)
+        return (padded, triton.cdiv(depth // group, 8))
 
-    kernel[grid](x.contiguous(), q, scale, rows, padded, depth, group=group, num_warps=4)
+    kernel[grid](x.contiguous(), q, scale, rows, padded, depth, group=group, groups=8, num_warps=4)
     return q, scale.t()
 
 
@@ -674,8 +807,11 @@ def _int8_mm_kernel(
     group_m: tl.constexpr,
 ):
     # int8 rows times int8 weight rows on tensor cores, summed in int32
-    # (exactly), then both scales and the output's dtype in one epilogue.
+    # (exactly) over one of the split's stretches of the inputs (axis 1),
+    # then both scales and the output's dtype in one epilogue.
     pid = tl.program_id(0)
+    part = tl.program_id(1)
+    span = depth // tl.num_programs(1)
     tiles_m = tl.cdiv(rows, block_m)
     tiles_n = tl.cdiv(width, block_n)
     per_group = group_m * tiles_n
@@ -689,7 +825,7 @@ def _int8_mm_kernel(
     live_m = rm < rows
     live_n = rn < width
     acc = tl.zeros((block_m, block_n), dtype=tl.int32)
-    for k0 in range(0, depth, block_k):
+    for k0 in range(part * span, (part + 1) * span, block_k):
         x = tl.load(x_ptr + rm[:, None] * depth + (k0 + rk)[None, :], mask=live_m[:, None], other=0)
         w = tl.load(
             weight_ptr + rn[None, :].to(tl.int64) * depth + (k0 + rk)[:, None],
@@ -700,14 +836,15 @@ def _int8_mm_kernel(
     x_scale = tl.load(x_scale_ptr + rm, mask=live_m, other=0.0)
     scale = tl.load(scale_ptr + rn, mask=live_n, other=0.0).to(tl.float32)
     y = acc.to(tl.float32) * x_scale[:, None] * scale[None, :]
-    out = y_ptr + rm[:, None] * width + rn[None, :]
+    out = y_ptr + part * rows * width + rm[:, None] * width + rn[None, :]
     tl.store(out, y.to(y_ptr.dtype.element_ty), mask=live_m[:, None] & live_n[None, :])
 
 
-# Tiles by row count: (rows up to, block_m, block_n, block_k, warps, stages).
+# Tiles by row count, measured as `_W8A16_TILES`: (rows up to, block_m,
+# block_n, block_k, warps, stages).
 _INT8_TILES = (
-    (16, 16, 64, 128, 4, 4),
-    (32, 32, 64, 128, 4, 4),
+    (64, 16, 64, 128, 4, 4),
+    (256, 64, 64, 128, 4, 4),
     (512, 64, 128, 128, 4, 3),
     (1 << 62, 128, 128, 128, 4, 3),
 )
@@ -730,10 +867,15 @@ def _int8_mm(
     _, block_m, block_n, block_k, warps, stages = next(
         tiles for tiles in _INT8_TILES if rows <= tiles[0]
     )
-    y = torch.empty(rows, width, dtype=dtype, device=x.device)
+    programs = triton.cdiv(rows, block_m) * triton.cdiv(width, block_n)
+    split = _split(programs, depth, block_k, x.device)
+    if split == 1:
+        y = torch.empty(rows, width, dtype=dtype, device=x.device)
+    else:
+        y = torch.empty(split, rows, width, dtype=torch.float32, device=x.device)
 
-    def grid(_meta: dict[str, object]) -> tuple[int]:
-        return (triton.cdiv(rows, block_m) * triton.cdiv(width, block_n),)
+    def grid(_meta: dict[str, object]) -> tuple[int, int]:
+        return (programs, split)
 
     kernel[grid](
         x,
@@ -751,7 +893,7 @@ def _int8_mm(
         num_warps=warps,
         num_stages=stages,
     )
-    return y
+    return y if split == 1 else y.sum(0).to(dtype)
 
 
 @triton_op("linnet::int8_mm", mutates_args=())
