@@ -295,7 +295,8 @@ def _timing(
     model: MemoryModel, step: Callable[[], None], optimizer: torch.optim.Optimizer | None
 ) -> Timing:
     """The median of six timed steps against the predicted step time. The
-    first process measures this machine's rates when none are kept yet."""
+    first process measures this machine's rates, after the steps, when none
+    are kept yet."""
     import gc
     import statistics
     import time
@@ -309,13 +310,6 @@ def _timing(
     training = config.training
     devices = config.tensor_parallel * config.pipeline_parallel
     devices *= training.shards if training is not None else 1
-    # The others wait on the host, leaving the GPUs to the calibration.
-    host = cast("ProcessGroup", dist.new_group(backend="gloo")) if dist.is_initialized() else None
-    if host is not None and dist.get_rank() != 0:
-        dist.barrier(group=host)
-    spec = profile(devices)
-    if host is not None and dist.get_rank() == 0:
-        dist.barrier(group=host)
     seconds: list[float] = []
     # The analysis leaves a large heap; a collection of it inside a step
     # would be timed as the model's. The steps' own garbage waits.
@@ -335,6 +329,15 @@ def _timing(
             seconds.append(time.perf_counter() - begin)
     finally:
         gc.enable()
+    # The rates after the steps: a calibration in this process just before
+    # them leaves it slower to issue calls. The others wait on the host,
+    # leaving the GPUs to the calibration.
+    host = cast("ProcessGroup", dist.new_group(backend="gloo")) if dist.is_initialized() else None
+    if host is not None and dist.get_rank() != 0:
+        dist.barrier(group=host)
+    spec = profile(devices)
+    if host is not None and dist.get_rank() == 0:
+        dist.barrier(group=host)
     return Timing(model.throughput(spec).seconds, statistics.median(seconds))
 
 

@@ -260,9 +260,9 @@ zero weights), the median of six; rates calibrated on the same pair:
 
 | Model | Configuration | Predicted | Measured | Error |
 | --- | --- | ---: | ---: | ---: |
-| Llama 3.1 8B | decode, batch 1, cache 8,192 | 12.1 ms | 11.2 ms | +7.7% |
-| Llama 3.1 8B | decode, batch 16, cache 8,192 | 16.7 ms | 18.0 ms | -7.0% |
-| Llama 3.1 8B | decode, batch 32, cache 4,096 | 16.7 ms | 17.9 ms | -6.4% |
+| Llama 3.1 8B | decode, batch 1, cache 8,192 | 14.4 ms | 14.2 ms | +1.1% |
+| Llama 3.1 8B | decode, batch 16, cache 8,192 | 17.4 ms | 18.4 ms | -5.4% |
+| Llama 3.1 8B | decode, batch 32, cache 4,096 | 17.4 ms | 18.2 ms | -4.3% |
 | Llama 3.1 8B | batch 1, 8,192 tokens | 257 ms | 249 ms | +3.1% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens | 88.4 ms | 92.8 ms | -4.8% |
 | TinyLlama 1.1B | decode, batch 1, cache 2,048 | 7.80 ms | 7.47 ms | +4.5% |
@@ -271,10 +271,10 @@ zero weights), the median of six; rates calibrated on the same pair:
 | BERT base (f32) | batch 8, 512 tokens | 22.8 ms | 24.6 ms | -7.4% |
 | TinyLlama 1.1B | training, 8,192 tokens, AdamW | 346 ms | 334 ms | +3.5% |
 | Qwen2.5 0.5B | training, 8,192 tokens, AdamW | 199 ms | 210 ms | -5.1% |
-| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 149 ms | 162 ms | -8.0% |
-| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 15.7 ms | 15.9 ms | -1.6% |
-| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 15.7 ms | 15.8 ms | -0.7% |
-| Llama 3.1 8B | `decode_rows`, batch 16, tensor parallel 2 | 15.2 ms | 15.3 ms | -0.8% |
+| Llama 3.1 8B | 8,192 tokens, tensor parallel 2 | 144 ms | 140 ms | +2.4% |
+| Llama 3.1 8B | decode, batch 1, tensor parallel 2 | 17.1 ms | 17.8 ms | -3.5% |
+| Llama 3.1 8B | decode, batch 16, tensor parallel 2 | 17.2 ms | 18.6 ms | -7.2% |
+| Llama 3.1 8B | `decode_rows`, batch 16, tensor parallel 2 | 16.5 ms | 19.2 ms | -13.8% |
 | TinyLlama 1.1B | training, pipeline 2 x 4, 1F1B | 119 ms | 131 ms | -9.0% |
 | TinyLlama 1.1B | batch 8, 2,048 tokens, pipeline 2 x 4 | 53.4 ms | 58.6 ms | -8.9% |
 | TinyLlama 1.1B | training, 8,192 tokens, sharded 2 ways | 372 ms | 353 ms | +5.4% |
@@ -282,16 +282,21 @@ zero weights), the median of six; rates calibrated on the same pair:
 | Llama 3.1 8B | batch 2, 8,192 tokens, pipeline 2 x 2, stages split 2 ways | 251 ms | 219 ms | +14.9% |
 | TinyLlama 1.1B | training, 8,192 tokens, pipeline 2 x 4, stages sharded 2 ways | 151 ms | 159 ms | -5.2% |
 
-The last four rows ran on four other H100s. The GPT-2 row and the three
-tensor-parallel decoding rows ran on another pair, with `validate --time`,
-which times the steps with Python's garbage collector held: the analysis
-leaves a heap whose collection would otherwise land in a step. The first
-three rows ran on a third H100, which measured a gap of 1.06 us between
-kernels.
+The last four rows ran on four other H100s. The GPT-2 row ran on another
+pair, with `validate --time`, which times the steps with Python's garbage
+collector held: the analysis leaves a heap whose collection would otherwise
+land in a step, and it measures the machine's rates after the steps, since
+a calibration just before them leaves the process slower to issue calls.
+The first three rows and the four tensor-parallel rows ran on a third pair,
+the tensor-parallel ones under `torchrun --numa-binding node`; between runs
+those moved by up to 4%.
 
-Decoding 16 or 32 rows on one GPU still comes out 6-7% short. The step
-launches about a fifth more kernels than the model counts (cuBLAS's own
-among them), each with its gap.
+Decoding 16 or 32 rows on one GPU still comes out 4-5% short: the step
+launches about a tenth more kernels than the model counts (cuBLAS's
+split-K reductions and memsets), and its GPU waits a little longer than the
+model's queue predicts. `decode_rows` under tensor parallelism comes out
+14% short: in the step, its calls take the host longer than the same calls
+measure alone.
 
 ## JSON and Python
 
@@ -368,7 +373,7 @@ when fitting.
 Under `torchrun`, each process measures its own device:
 
 ```bash
-torchrun --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
+torchrun --numa-binding node --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
     --entry decode_rows --batch 16 --cache-len 8192 --tensor-parallel 2
 ```
 
