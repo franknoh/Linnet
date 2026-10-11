@@ -8,7 +8,6 @@ Linnet's kernels -- the weight as it is, the input unrounded, or under
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -18,9 +17,7 @@ from numpy.typing import NDArray
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_sm90
 
 SOURCE = """\
 module tests.eight
@@ -78,15 +75,6 @@ where
 
 IN, OUT = 512, 256
 ENTRIES = {"rows": "by_rows", "groups": "by_groups", "blocks": "by_blocks"}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _quantize(
@@ -324,11 +312,7 @@ def test_a_layer_in_a_loop(tmp_path: Path, compile: bool) -> None:
     np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-4)
 
 
-def _cuda(capability: tuple[int, int]) -> bool:
-    return torch.cuda.is_available() and torch.cuda.get_device_capability() >= capability
-
-
-@pytest.mark.skipif(not _cuda((9, 0)), reason="FP8 kernels need compute capability 9 or later")
+@requires_sm90
 @pytest.mark.parametrize("numerics", ["equivalent", "fast"])
 @pytest.mark.parametrize("rows", [1, 3, 17, 64])
 @pytest.mark.parametrize("kind", list(ENTRIES))

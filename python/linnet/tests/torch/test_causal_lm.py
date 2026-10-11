@@ -12,26 +12,12 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 from torch.nn import functional
 
 from linnet.torch import CausalLM, LinnetModule, load
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
+from tests.helpers import LLAMA, STDLIB, TINY_LLAMA
 
 
 @pytest.fixture
 def model(tmp_path: Path) -> LinnetModule:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
+    skeleton = load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB)
     generator = torch.Generator().manual_seed(0)
     tensors = {
         name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
@@ -40,7 +26,7 @@ def model(tmp_path: Path) -> LinnetModule:
     }
     save_file(tensors, str(tmp_path / "model.safetensors"))
     return load(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=tmp_path, compile=True, trainable=True
+        LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=tmp_path, compile=True, trainable=True
     )
 
 

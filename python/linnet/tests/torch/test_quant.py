@@ -1,10 +1,9 @@
-"""`std.quant`: int8 and packed int4 weights dequantize to the values they
-were quantized from, and the quantized linear layers agree with a float
-linear over the dequantized weights."""
+"""`std.quant`: packed int4 weights unpack to the codes packed, and the int8
+and int4 linear layers agree with a float linear over the codes times their
+scales."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -13,9 +12,7 @@ import torch
 
 from linnet.torch import load
 from linnet.torch.module import BlockModule
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module quant_check
@@ -43,12 +40,7 @@ where In % 2 == 0 {
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 

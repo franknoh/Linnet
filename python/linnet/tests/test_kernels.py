@@ -18,8 +18,8 @@ import pytest
 import torch
 
 from linnet.compiler import find_compiler
+from tests.helpers import REPO
 
-REPO = Path(__file__).resolve().parents[3]
 ATOMICS = REPO / "spec-tests/valid/031_kernel_atomics.linnet"
 SCANS = REPO / "spec-tests/valid/032_cumsum.linnet"
 PRODUCTS = REPO / "spec-tests/valid/033_kernel_prod.linnet"
@@ -54,11 +54,6 @@ pub entry run<N: Dim>(x: Tensor[N; f32]) -> f32 {
 
 @pytest.fixture(autouse=True)
 def _interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                monkeypatch.setenv("LINNET_BIN", str(REPO / candidate))
-                break
     # Generated code reads them: kernels run on the CPU, in interpreters.
     monkeypatch.setenv("TRITON_INTERPRET", "1")
     monkeypatch.setenv("LINNET_PALLAS_INTERPRET", "1")

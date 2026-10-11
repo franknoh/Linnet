@@ -4,7 +4,6 @@ under `torch.compile`."""
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,15 +12,13 @@ import pytest
 import torch
 
 from linnet.torch import CompiledLinnetModule, load
+from tests.helpers import LLAMA, STDLIB, requires_cuda
 
 if TYPE_CHECKING:
     from torch.fx import GraphModule
 
     from linnet.torch.compiled import _Graph, _Prepared  # pyright: ignore[reportPrivateUsage]
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 GENERICS: dict[str, int | str] = {
     "Vocab": 11,
     "H": 8,
@@ -36,12 +33,7 @@ GENERICS: dict[str, int | str] = {
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 
@@ -100,7 +92,7 @@ def test_generated_source_is_the_default_on_cuda() -> None:
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 def test_decode_replays_as_one_cuda_graph() -> None:
     """`compile="reduce-overhead"`: the first call runs, the second captures
     the step as one CUDA graph, and later calls replay it with their inputs
@@ -130,7 +122,7 @@ def test_decode_replays_as_one_cuda_graph() -> None:
     assert len(captured) == 1 and captured[0].graph is not None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 def test_a_compile_under_capture_defers_the_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     """A step that has to compile again when it is captured -- which a
     capture cannot -- runs that call as it is and captures on the next."""

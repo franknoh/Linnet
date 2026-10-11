@@ -11,45 +11,22 @@ from pathlib import Path
 import pytest
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
 
 from linnet.plan import PlanError
 from linnet.torch import LinnetModule, bind_weights, load
+from tests.helpers import LLAMA, STDLIB, TINY_LLAMA, random_llama
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
 PATTERN = "layers.*.attention.*_proj.weight"
 ADAPTERS = ["*.lora_a", "*.lora_b"]
 
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
-    path = tmp_path / "model.safetensors"
-    save_file(tensors, str(path))
-    return path
+    return random_llama(tmp_path / "model.safetensors")
 
 
 def _model(weights: Path, **options: object) -> LinnetModule:
-    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # pyright: ignore[reportArgumentType]
+    return load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, **options)  # pyright: ignore[reportArgumentType]
 
 
 TOKENS = torch.tensor([[3, 1, 4, 1, 5, 9, 2]], dtype=torch.int32)
@@ -141,7 +118,7 @@ def test_adapters_refuse_prepared_weights() -> None:
     from linnet.compiler import find_compiler
 
     command = [find_compiler(), "torch", "--std", str(STDLIB), "--entry", "forward"]
-    for name, value in {**GENERICS, "B": 1, "S": 4}.items():
+    for name, value in {**TINY_LLAMA, "B": 1, "S": 4}.items():
         command += ["--bind", f"{name}={value}"]
     command += ["--prepare", "--lora", PATTERN, "--lora-rank", "4"]
     completed = subprocess.run([*command, str(LLAMA)], capture_output=True, text=True, check=False)

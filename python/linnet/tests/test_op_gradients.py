@@ -8,11 +8,9 @@ pass of the op's body."""
 from __future__ import annotations
 
 import importlib
-import os
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -22,9 +20,8 @@ from numpy.typing import NDArray
 
 from linnet.compiler import find_compiler
 from linnet.torch import load_function
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
 SOURCE = REPO / "spec-tests/valid/029_op_gradients.linnet"
 
 X = np.array([1.7, -2.3, 0.4, 3.9, -0.6], dtype=np.float32)
@@ -49,15 +46,6 @@ def _check(loss: object, dx: object, dw: object) -> None:
     np.testing.assert_allclose(float(np.asarray(loss)), want_loss, rtol=1e-5)
     np.testing.assert_allclose(np.asarray(dx), want_dx, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(np.asarray(dw), want_dw, rtol=1e-5, atol=1e-6)
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.mark.parametrize("compile", [False, True])

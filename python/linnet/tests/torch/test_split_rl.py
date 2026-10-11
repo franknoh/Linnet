@@ -22,12 +22,11 @@ from linnet.serve import Completion, Request
 from linnet.torch import LinnetModule, load
 from linnet.train.dpo import Pair, dpo
 from linnet.train.grpo import Prompt, grpo
+from tests.helpers import STDLIB, threes
 
 if TYPE_CHECKING:
     from torch.distributed.device_mesh import DeviceMesh
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 
 SOURCE = """\
 module tests.split_rl
@@ -96,15 +95,6 @@ where
 GENERICS: dict[str, int | str] = {"Vocab": 10, "H": 8, "Inner": 12, "Layers": 2}
 
 
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
-
-
 def _files(directory: Path) -> tuple[Path, Path]:
     source = directory / "split_rl.linnet"
     source.write_text(SOURCE, encoding="utf-8")
@@ -154,10 +144,6 @@ def _prompts() -> itertools.cycle[Prompt]:
     return itertools.cycle([Prompt([rng.randrange(10), rng.randrange(10)]) for _ in range(4)])
 
 
-def _threes(_: Prompt, completion: list[int]) -> float:
-    return sum(token == 3 for token in completion) / len(completion)
-
-
 class _Sampler:
     """Draws completions from the model's `forward`, as `Engine` would."""
 
@@ -200,7 +186,7 @@ def _run(
             policy,
             sampler,
             _prompts(),
-            _threes,
+            threes,
             optimizer=optimizer,
             steps=2,
             group=4,

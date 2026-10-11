@@ -12,9 +12,7 @@ import pytest
 
 from linnet import convert, nest
 from linnet.weights import TensorHeader
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import REPO, STDLIB
 
 CONFIG: dict[str, object] = {
     "model_type": "llama",

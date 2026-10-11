@@ -9,7 +9,6 @@ same entry's generated forward code."""
 from __future__ import annotations
 
 import importlib
-import os
 import re
 import subprocess
 from collections.abc import Callable, Sequence
@@ -22,9 +21,7 @@ import torch
 from numpy.typing import NDArray
 
 from linnet.compiler import find_compiler
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.gradients
@@ -93,15 +90,6 @@ pub entry mse<N: Dim>(predicted: Tensor[N; f32], target: Tensor[N; f32]) -> f32 
 
 GENERICS = {"V": 7, "H": 4, "C": 6, "N": 5}
 SHAPES = {"embedding": (7, 4), "norm": (4,), "w": (4, 6), "b": (6,)}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture(scope="module")

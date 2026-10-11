@@ -15,9 +15,7 @@ from linnet.resources.kvcache import PagedLayout
 from linnet.resources.planner import ExecutionPlanner, ResourceConstraint
 from linnet.resources.storage import tensor_bytes
 from linnet.resources.training import OPTIMIZERS, CheckpointPolicy, TrainingConfig, timeline
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 CHAIN = """\
 module chain

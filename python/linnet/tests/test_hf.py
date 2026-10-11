@@ -15,11 +15,9 @@ from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnkn
 
 from linnet import LinnetError, hf
 from linnet.torch import load
+from tests.helpers import LLAMA, REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
 GPT2 = REPO / "tests/fixtures/gpt2/gpt2.linnet"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 GPT2_GENERICS: dict[str, int | str] = {
     "Vocab": 11,
     "MaxPositions": 16,

@@ -4,18 +4,14 @@ Every backend computes what a Python loop does."""
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
 from numpy.typing import NDArray
 
 from linnet.torch import load_function
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
 SOURCE = REPO / "spec-tests/valid/028_for_loops.linnet"
 
 XS = np.array([[0.5, -1.0, 2.0], [1.5, 0.0, -0.5], [0.25, 0.75, 1.0]], dtype=np.float32)
@@ -35,15 +31,6 @@ def _recurrent() -> NDArray[np.float32]:
 def _counted() -> list[NDArray[np.number]]:
     ys = np.stack([X * 2.0**k for k in range(1, 5)])
     return [X * 4, np.array([0, 2, 4, 6], dtype=np.int64), ys.sum(axis=1), ys]
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.mark.parametrize("compile", [False, True])

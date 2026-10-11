@@ -9,46 +9,16 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
-from linnet.torch import LinnetModule, load
+from linnet.torch import LinnetModule
 from linnet.train import Example, pack
-from linnet.train.dpo import Pair, dpo, dpo_loss
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
+from linnet.train.dpo import dpo, dpo_loss
+from tests.helpers import random_llama, tiny_pairs, trainable_llama
 
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
-    path = tmp_path / "model.safetensors"
-    save_file(tensors, str(path))
-    return path
-
-
-def _load(weights: Path) -> LinnetModule:
-    return load(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True, trainable=True
-    )
+    return random_llama(tmp_path / "model.safetensors")
 
 
 def test_the_loss() -> None:
@@ -70,20 +40,11 @@ def test_pack_keeps_pairs_together() -> None:
     assert [b.items for b in batches] == [[0, 1], [2, 3]]
 
 
-def _pairs(count: int) -> list[Pair]:
-    """Prompts of two tokens; the preferred answer repeats 3, the other 7."""
-    generator = torch.Generator().manual_seed(2)
-    return [
-        Pair(torch.randint(0, 11, (2,), generator=generator).tolist(), [3, 3, 3, 3], [7, 7, 7, 7])  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
-        for _ in range(count)
-    ]
-
-
 def _train(model: LinnetModule, reference: LinnetModule | None) -> list[float]:
     trained = [p for p in model.parameters() if p.requires_grad]
     history = dpo(
         model,
-        _pairs(24),
+        tiny_pairs(24),
         optimizer=torch.optim.AdamW(trained, lr=1e-2),
         reference=reference,
         steps=6,
@@ -96,18 +57,18 @@ def _train(model: LinnetModule, reference: LinnetModule | None) -> list[float]:
 
 
 def test_dpo_learns_the_preference(weights: Path) -> None:
-    model = _load(weights)
+    model = trainable_llama(weights)
     margins = _train(model, None)
     assert margins[0] == pytest.approx(0, abs=1e-6)  # the reference is the model itself
     assert margins[-1] > max(0.3, margins[1])
 
 
 def test_a_reference_model_gives_the_same_steps(weights: Path) -> None:
-    computed_first = _load(weights)
+    computed_first = trainable_llama(weights)
     _train(computed_first, None)
-    alongside = _load(weights)
+    alongside = trainable_llama(weights)
     # Loaded alike, it runs the same generated code; never stepped, it stays.
-    _train(alongside, _load(weights))
+    _train(alongside, trainable_llama(weights))
     theirs = dict(computed_first.named_parameters())
     for name, parameter in alongside.named_parameters():
         torch.testing.assert_close(parameter.detach(), theirs[name].detach())

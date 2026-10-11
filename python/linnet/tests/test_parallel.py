@@ -16,19 +16,9 @@ import pytest
 import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
+from tests.helpers import STDLIB
+
 from .test_serve import GENERICS, SOURCE
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture

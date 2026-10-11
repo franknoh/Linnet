@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import importlib
 import subprocess
-from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -17,8 +16,8 @@ from numpy.typing import NDArray
 
 from linnet.compiler import find_compiler
 from linnet.torch import load_function
+from tests.helpers import REPO
 
-REPO = Path(__file__).resolve().parents[3]
 SOURCE = REPO / "spec-tests/valid/032_cumsum.linnet"
 
 X = np.random.default_rng(0).standard_normal((3, 5)).astype(np.float32)

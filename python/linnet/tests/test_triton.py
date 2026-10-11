@@ -13,11 +13,9 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 
 from linnet import LinnetError, triton
 from linnet.torch import load
+from tests.helpers import LLAMA, REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
 SOURCE = REPO / "tests/fixtures/gpt2/gpt2.linnet"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
 GENERICS: dict[str, int | str] = {
     "Vocab": 11,
     "MaxPositions": 16,

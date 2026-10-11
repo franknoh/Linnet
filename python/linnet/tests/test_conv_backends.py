@@ -9,7 +9,6 @@ table for a VAE's first convolution has 2.4 billion entries."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +17,7 @@ import torch
 import torch.nn.functional as functional
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.convolve
@@ -45,15 +43,6 @@ where
 # (H, K, Stride, Pad): a ResNet stem, a residual block, a downsampling block,
 # and the geometry whose shapes fit two answers (stride 1 with no padding).
 GEOMETRIES = [(16, 7, 2, 3), (16, 3, 1, 1), (16, 3, 2, 1), (4, 3, 2, 1)]
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _case(

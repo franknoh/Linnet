@@ -10,7 +10,6 @@ the input to FP8 too."""
 from __future__ import annotations
 
 import importlib
-import os
 import subprocess
 from pathlib import Path
 
@@ -23,9 +22,7 @@ from safetensors.torch import save_file
 from linnet.compiler import find_compiler
 from linnet.torch import load
 from linnet.weights import write_bindings
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_sm90
 
 SOURCE = """\
 module tests.fp8
@@ -50,15 +47,6 @@ IN, OUT, ROWS = 512, 32, 3
 BYTES = np.arange(256, dtype=np.uint8)
 # The two NaN bytes: PyTorch's NaN, the body's 480.
 VALID = (BYTES & 0x7F) != 0x7F
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _expected() -> NDArray[np.float32]:
@@ -205,10 +193,7 @@ def test_onnx_embeds_and_multiplies(
     np.testing.assert_allclose(got, _input() @ dequantized.T, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (9, 0),
-    reason="FP8 products need compute capability 9 or later",
-)
+@requires_sm90
 @pytest.mark.parametrize("rows", [1, ROWS])
 def test_cuda_fast_multiplies_in_fp8(
     source: Path, checkpoint: tuple[Path, Path, NDArray[np.float32]], rows: int

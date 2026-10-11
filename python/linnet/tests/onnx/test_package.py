@@ -15,9 +15,8 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 from linnet import LinnetError
 from linnet.onnx import export_model
 from linnet.torch import load
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 SOURCE = REPO / "tests/fixtures/gpt2/gpt2.linnet"
 GENERICS: dict[str, int | str] = {
     "Vocab": 11,

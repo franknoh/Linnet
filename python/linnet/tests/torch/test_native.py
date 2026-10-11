@@ -4,16 +4,13 @@ and the `numerics="fast"` tier must agree up to the input dtype's rounding."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 import torch
 
 from linnet.torch import CompiledLinnetModule, load
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.native
@@ -56,12 +53,7 @@ pub block Ops<H: Dim, T: Float> {
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(1)  # pyright: ignore[reportUnknownMemberType]
 
 

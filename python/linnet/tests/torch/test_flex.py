@@ -6,7 +6,6 @@ end to end that each see only themselves."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -15,9 +14,7 @@ import torch
 
 from linnet.compiler import find_compiler
 from linnet.torch import load
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_cuda
 
 SOURCE = """\
 module tests.flex
@@ -71,15 +68,6 @@ where
 """
 
 GENERICS: dict[str, int | str] = {"B": 3, "H": 4, "Hk": 2, "K": 128, "P": 256, "D": 16}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture
@@ -152,7 +140,7 @@ def _prompts_inputs(device: str) -> list[torch.Tensor]:
     return [t.to(device) for t in [*tensors, torch.tensor([100, 256, 37], dtype=torch.int32)]]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention runs on CUDA")
+@requires_cuda
 @pytest.mark.parametrize("entry", ["rows", "packed", "prompts"])
 def test_flex_attention_agrees_with_the_arithmetic(source: Path, entry: str) -> None:
     inputs = {"rows": _rows_inputs, "packed": _packed_inputs, "prompts": _prompts_inputs}[entry](

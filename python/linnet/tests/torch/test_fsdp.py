@@ -19,35 +19,29 @@ from typing import TYPE_CHECKING
 
 import pytest
 import torch
-from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
+from safetensors.torch import load_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.compiler import find_compiler
-from linnet.torch import LinnetModule, fully_shard, load
-from linnet.train import Example, pack, train
+from linnet.torch import fully_shard
+from linnet.train import pack, train
+from tests.helpers import (
+    LLAMA,
+    STDLIB,
+    TINY_LLAMA,
+    random_llama,
+    tiny_examples,
+    trainable_llama,
+)
 
 if TYPE_CHECKING:
     from torch.distributed.tensor import DTensor
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
 UNITS = ["embedding", "layers.0", "layers.1", "norm", "lm_head"]
 
 
 def _generate(*flags: str, target: str = "torch") -> subprocess.CompletedProcess[str]:
     command = [find_compiler(), target, "--std", str(STDLIB), "--entry", "loss_packed"]
-    for name, value in {**GENERICS, "P": 12}.items():
+    for name, value in {**TINY_LLAMA, "P": 12}.items():
         command += ["--bind", f"{name}={value}"]
     return subprocess.run(
         [*command, *flags, str(LLAMA)], capture_output=True, text=True, check=False
@@ -79,34 +73,10 @@ def test_generated_code_gathers_each_parameter_where_it_is_used() -> None:
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
     directory = tmp_path / "weights"
     directory.mkdir()
-    save_file(tensors, str(directory / "model.safetensors"))
+    random_llama(directory / "model.safetensors")
     return directory
-
-
-def _load(weights: Path) -> LinnetModule:
-    return load(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True, trainable=True
-    )
-
-
-def _examples() -> list[Example]:
-    generator = torch.Generator().manual_seed(1)
-    return [
-        Example.prompted(
-            torch.randint(0, 11, (2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
-            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
-        )
-        for n in [5, 6, 4, 7]
-    ]
 
 
 def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
@@ -117,7 +87,7 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
-        model = _load(Path(weights))
+        model = trainable_llama(Path(weights))
         assert fully_shard(model) == UNITS
         part = model.get_parameter("root.embedding.weight")
         assert tuple(part.to_local().shape) == ((6, 8) if rank == 0 else (5, 8))  # pyright: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
@@ -128,7 +98,7 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
                 assert local.untyped_storage().nbytes() == local.numel() * local.element_size()
 
         # Backward keeps the parts: no whole weight outlives the forward.
-        mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
+        mine = next(pack(tiny_examples()[2 * rank : 2 * rank + 2], tokens=12))
         wholes: list[weakref.ref[torch.Tensor]] = []
         gathered = fsdp._whole  # pyright: ignore[reportPrivateUsage]
 
@@ -164,8 +134,8 @@ def test_sharded_training_matches_one_process(weights: Path, tmp_path: Path) -> 
     torch.multiprocessing.spawn(_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)  # pyright: ignore[reportPrivateImportUsage]
     sharded = load_file(str(tmp_path / "sharded.safetensors"))
 
-    model = _load(weights)
-    examples = _examples()
+    model = trainable_llama(weights)
+    examples = tiny_examples()
     both = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
     trained = [p for p in model.parameters() if p.requires_grad]
     train(
@@ -190,7 +160,7 @@ def _lora_rank(rank: int, world: int, port: int, weights: str, out: str) -> None
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
-        model = _load(Path(weights))
+        model = trainable_llama(Path(weights))
         model.add_lora(ADAPTED, rank=2, alpha=4)
         fully_shard(model)
         # The adapted weights are split, in their own dtype; the adapters
@@ -201,7 +171,7 @@ def _lora_rank(rank: int, world: int, port: int, weights: str, out: str) -> None
         assert not hasattr(adapter, "to_local") and adapter.requires_grad
         with pytest.raises(Exception, match="before"):
             model.add_lora(ADAPTED)
-        mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
+        mine = next(pack(tiny_examples()[2 * rank : 2 * rank + 2], tokens=12))
         trained = [p for p in model.parameters() if p.requires_grad]
         train(model, itertools.repeat(mine), optimizer=torch.optim.SGD(trained, lr=0.1), steps=3)
         model.save_weights(
@@ -218,9 +188,9 @@ def test_adapters_on_a_sharded_model_match_one_process(weights: Path, tmp_path: 
     torch.multiprocessing.spawn(_lora_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)  # pyright: ignore[reportPrivateImportUsage]
     sharded = load_file(str(tmp_path / "adapters.safetensors"))
 
-    model = _load(weights)
+    model = trainable_llama(weights)
     model.add_lora(ADAPTED, rank=2, alpha=4)
-    examples = _examples()
+    examples = tiny_examples()
     both = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
     trained = [p for p in model.parameters() if p.requires_grad]
     train(

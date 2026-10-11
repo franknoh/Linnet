@@ -4,7 +4,6 @@ on the CPU, and Linnet's Triton kernel on CUDA -- agree."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -13,9 +12,7 @@ import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import CompiledLinnetModule, load
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_cuda
 
 SOURCE = """\
 module tests.mxfp4
@@ -75,15 +72,6 @@ GENERICS: dict[str, int | str] = {"E": 4, "Out": 24, "G": 3, "K": 2}
 FP4 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
 
 
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
-
-
 @pytest.fixture
 def model_files(tmp_path: Path) -> tuple[Path, Path, torch.Tensor, torch.Tensor]:
     source = tmp_path / "mxfp4.linnet"
@@ -137,7 +125,7 @@ def test_the_experts_products(
     torch.testing.assert_close(model.run_entry("shared", [shared, experts]), expected_shared)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="the kernel runs on CUDA")
+@requires_cuda
 def test_the_kernel_reads_the_bytes_as_they_are(
     model_files: tuple[Path, Path, torch.Tensor, torch.Tensor],
 ) -> None:
@@ -206,7 +194,7 @@ def test_the_routed_forms_multiply_each_row_by_its_experts(
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="the kernel runs on CUDA")
+@requires_cuda
 @pytest.mark.parametrize("rows", [3, 96])
 def test_the_routed_experts_on_cuda(
     model_files: tuple[Path, Path, torch.Tensor, torch.Tensor], rows: int

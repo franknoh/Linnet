@@ -11,46 +11,19 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
+from safetensors.torch import load_file  # pyright: ignore[reportUnknownVariableType]
 
-from linnet.torch import LinnetModule, fully_shard, load
+from linnet.torch import LinnetModule, fully_shard
 from linnet.train import Batch, Example, cosine_schedule, pack, train
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
+from tests.helpers import random_llama, trainable_llama
 
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
     directory = tmp_path / "weights"
     directory.mkdir()
-    save_file(tensors, str(directory / "model.safetensors"))
+    random_llama(directory / "model.safetensors")
     return directory
-
-
-def _load(weights: Path) -> LinnetModule:
-    return load(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True, trainable=True
-    )
 
 
 def _batches(seed: int = 1) -> list[Batch]:
@@ -85,11 +58,11 @@ def _weights(model: LinnetModule) -> dict[str, torch.Tensor]:
 
 
 def test_a_resumed_run_ends_where_an_unbroken_one_does(weights: Path, tmp_path: Path) -> None:
-    unbroken = _load(weights)
+    unbroken = trainable_llama(weights)
     assert _run(unbroken, 4, None) == [1, 2, 3, 4]
 
-    assert _run(_load(weights), 2, tmp_path / "run") == [1, 2]
-    resumed = _load(weights)
+    assert _run(trainable_llama(weights), 2, tmp_path / "run") == [1, 2]
+    resumed = trainable_llama(weights)
     assert _run(resumed, 4, tmp_path / "run") == [3, 4]
     for name, value in _weights(unbroken).items():
         torch.testing.assert_close(_weights(resumed)[name], value)
@@ -105,7 +78,7 @@ def test_a_lora_run_keeps_only_its_adapters(weights: Path, tmp_path: Path) -> No
         FileSystemReader,  # pyright: ignore[reportPrivateImportUsage]
     )
 
-    model = _load(weights)
+    model = trainable_llama(weights)
     model.add_lora("layers.*.attention.*_proj.weight", rank=2, alpha=4)
     _run(model, 1, tmp_path / "run")
     metadata = FileSystemReader(str(tmp_path / "run" / "step-00000001")).read_metadata()
@@ -121,7 +94,7 @@ def _sharded_rank(rank: int, world: int, port: int, weights: str, out: str) -> N
     try:
 
         def sharded() -> LinnetModule:
-            model = _load(Path(weights))
+            model = trainable_llama(Path(weights))
             fully_shard(model)
             return model
 

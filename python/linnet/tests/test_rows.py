@@ -10,7 +10,6 @@ write its caches in place rather than copy them."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -20,9 +19,7 @@ import torch
 
 from linnet.compiler import find_compiler
 from linnet.torch import load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.rows
@@ -76,15 +73,6 @@ where
 """
 
 GENERICS: dict[str, int | str] = {"B": 3, "Hk": 2, "H": 4, "S": 8, "D": 4, "N": 3}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture
