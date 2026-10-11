@@ -1,4 +1,5 @@
-"""Group-wise 4-bit weights for `std.quant::Int4GroupLinear`.
+"""Group-wise 4-bit weights for `std.quant::Int4GroupLinear`, and 8-bit
+ones for `std.quant::Int8GroupLinear`.
 
 `quantize_int4_groups` rounds one `[Out, In]` weight to the nearest of 16
 levels per group of `group` consecutive inputs (asymmetric: a scale and a
@@ -8,10 +9,17 @@ zero point per group), in the layout the block declares:
     scale   [Out, In / group]             the model's float dtype
     zero    [Out, In / group]             u8, in 0..15
 
+`quantize_int8_groups` rounds one to symmetric int8 instead, a scale per
+group:
+
+    weight  [Out, In]                     i8, in -127..127
+    scale   [Out, In / group]             the model's float dtype
+
 `quantize_checkpoint` does that to the linear weights of a SafeTensors
 checkpoint and writes the result under Linnet parameter paths, next to every
-other tensor, copied as it is. A block declared with `Int4GroupLinear` where
-it had `Linear` then loads it with the same paths:
+other tensor, copied as it is. A block declared with `Int4GroupLinear` (or
+`Int8GroupLinear`, with `bits=8`) where it had `Linear` then loads it with
+the same paths:
 
     from linnet.quant import quantize_checkpoint
 
@@ -77,6 +85,35 @@ def quantize_int4_groups(
     return packed, scale, zero
 
 
+def quantize_int8_groups(
+    weight: np.ndarray, group: int = 128, dtype: str = "f32"
+) -> tuple[np.ndarray, np.ndarray]:
+    """`(q, scale)` for a `[Out, In]` weight: the largest magnitude of each
+    group over 127, rounded to `dtype` (the dtype it is stored in, which the
+    levels are then rounded against), and `q` the nearest levels; `scale`
+    is f32."""
+    if weight.ndim != 2:
+        raise LinnetError(f"a linear weight is [Out, In]; this one is {list(weight.shape)}")
+    out_features, in_features = weight.shape
+    if group <= 0 or in_features % group != 0:
+        raise LinnetError(f"groups of {group} must divide the {in_features} inputs")
+    grouped = weight.astype(np.float32).reshape(out_features, in_features // group, group)
+    scale = np.abs(grouped).max(axis=-1) / 127.0
+    scale = np.where(scale > 0, scale, 1.0).astype(np.float32)
+    stored = DTYPES[dtype].safetensors
+    scale = decode_floats(stored, encode_floats(scale, stored)).reshape(scale.shape)
+    q = np.clip(np.round(grouped / scale[..., None]), -127, 127).astype(np.int8)
+    return q.reshape(out_features, in_features), scale
+
+
+def dequantize_int8_groups(q: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """The f32 `[Out, In]` weight `Int8GroupLinear` computes with."""
+    out_features, in_features = q.shape
+    groups = scale.shape[1]
+    grouped = q.astype(np.float32).reshape(out_features, groups, in_features // groups)
+    return (grouped * scale[..., None]).reshape(out_features, in_features)
+
+
 def dequantize_int4_groups(packed: np.ndarray, scale: np.ndarray, zero: np.ndarray) -> np.ndarray:
     """The f32 `[Out, In]` weight the block computes with."""
     out_features, groups, half = packed.shape
@@ -93,11 +130,18 @@ def quantize_checkpoint(
     group: int = 128,
     dtype: str = "bf16",
     bindings: str | Path | Mapping[str, str] | None = None,
+    bits: int = 4,
 ) -> list[str]:
     """Writes `output` with every tensor of `weights` under its Linnet path
     (`bindings` maps paths to checkpoint names, as for loading), quantizing
-    the `.weight` tensors whose path matches one of `patterns` into
-    `.weight`, `.scale`, and `.zero`. Returns the quantized paths."""
+    the `.weight` tensors whose path matches one of `patterns`: into
+    `.weight`, `.scale` and `.zero` for `Int4GroupLinear` (`bits` 4), or
+    `.weight` and `.scale` for `Int8GroupLinear` (`bits` 8). Returns the
+    quantized paths."""
+    if bits not in (4, 8):
+        raise LinnetError(f"weights are quantized to 4 or 8 bits, not {bits}")
+    if dtype not in ("bf16", "f16", "f32"):
+        raise LinnetError(f"scales are stored as bf16, f16, or f32, not {dtype}")
     paths_of = _paths_of(bindings)
     chosen = list(patterns)
     out: list[tuple[str, str, tuple[int, ...], bytes]] = []
@@ -106,8 +150,14 @@ def quantize_checkpoint(
         for path in paths_of.get(tensor.name, [tensor.name]):
             if path.endswith(".weight") and any(fnmatch.fnmatchcase(path, p) for p in chosen):
                 values = decode_floats(tensor.dtype, tensor.data).reshape(tensor.shape)
-                packed, scale, zero = quantize_int4_groups(values, group)
-                out += _int4_tensors(path.removesuffix(".weight"), packed, scale, zero, dtype)
+                prefix = path.removesuffix(".weight")
+                if bits == 8:
+                    q, scale = quantize_int8_groups(values, group, dtype)
+                    out.append((prefix + ".weight", "I8", tuple(q.shape), q.tobytes()))
+                    out.append(_scale_tensor(prefix, scale, dtype))
+                else:
+                    packed, scale, zero = quantize_int4_groups(values, group)
+                    out += _int4_tensors(prefix, packed, scale, zero, dtype)
                 quantized.append(path)
             else:
                 out.append((path, tensor.dtype, tensor.shape, tensor.data))
@@ -130,16 +180,21 @@ def _paths_of(bindings: str | Path | Mapping[str, str] | None) -> dict[str, list
     return paths_by_tensor(mapping)
 
 
+def _scale_tensor(
+    prefix: str, scale: np.ndarray, dtype: str
+) -> tuple[str, str, tuple[int, ...], bytes]:
+    scale_dtype = DTYPES[dtype].safetensors
+    return (prefix + ".scale", scale_dtype, tuple(scale.shape), encode_floats(scale, scale_dtype))
+
+
 def _int4_tensors(
     prefix: str, packed: np.ndarray, scale: np.ndarray, zero: np.ndarray, dtype: str
 ) -> list[tuple[str, str, tuple[int, ...], bytes]]:
     if dtype not in ("bf16", "f16", "f32"):
         raise LinnetError(f"scales are stored as bf16, f16, or f32, not {dtype}")
-    scale_dtype = DTYPES[dtype].safetensors
-    scale_bytes = encode_floats(scale, scale_dtype)
     return [
         (prefix + ".weight", "U8", tuple(packed.shape), packed.tobytes()),
-        (prefix + ".scale", scale_dtype, tuple(scale.shape), scale_bytes),
+        _scale_tensor(prefix, scale, dtype),
         (prefix + ".zero", "U8", tuple(zero.shape), zero.tobytes()),
     ]
 

@@ -19,7 +19,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   normalizations, attention (grouped, masked, with sinks, over pages),
   rotary positions, KV caches, convolutions, pooling, losses, mixture of
   experts, tensor-parallel collectives, counter-based randomness and
-  quantized weights (int8, int4, MXFP4).
+  quantized weights (int8 and FP8 scaled per row, group or block; int4;
+  MXFP4).
 - The specification in `spec/`, with an executable suite in `spec-tests/`.
 
 ### Compiler and tools
@@ -57,6 +58,10 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
 - `linnet.serve`: continuous batching with packed prompts and a CUDA graph
   per step, serving from pages of one cache pool, and an OpenAI-compatible
   HTTP server.
+- 8-bit weights on GPUs: Linnet's kernels multiply int8 and FP8 weights as
+  they are stored; under `numerics="fast"` a prompt's rows round to 8 bits
+  too (W8A8). `linnet.quant` quantizes checkpoints to int4 and int8 groups
+  and imports GPTQ and AWQ.
 - `linnet.train`: supervised fine-tuning, DPO and GRPO in PyTorch and JAX,
   with LoRA, fully sharded data parallelism, tensor parallelism (with
   `train`, and in pipelines) and checkpoints; the models

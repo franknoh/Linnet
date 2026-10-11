@@ -74,7 +74,7 @@ def test_quantized_linears_match_dequantized_float(tmp_path: Path) -> None:
     model.load_state_dict(
         {
             "root.eight.weight": torch.tensor(q8),
-            "root.eight.scale": torch.tensor(scale8),
+            "root.eight.scale": torch.tensor(scale8)[:, None],
             "root.eight.bias": torch.tensor(bias),
             "root.four.weight": torch.tensor(_pack_int4(q4)),
             "root.four.scale": torch.tensor(scale4),
