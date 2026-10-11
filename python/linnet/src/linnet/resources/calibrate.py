@@ -205,17 +205,21 @@ def _host_by_kind(device: torch.device) -> dict[str, float]:
 _DECODER = {"Vocab": 256, "H": 64, "Heads": 4, "KvHeads": 2, "Inner": 128, "Layers": 4}
 
 
-def _generated(device: torch.device, host: Mapping[str, float], dispatch: float) -> float:
+def _generated(
+    device: torch.device, host: Mapping[str, float], dispatch: float
+) -> tuple[float, float]:
     """How much more the generated code's calls cost the host than the
     kinds' costs measured alone add up to: a small decoder's eager decoding
-    step (`calibration.linnet`) on the host, against the sum
-    `linnet.resources.performance` makes of the same step's calls."""
+    step (`calibration.linnet`) on the host, less what the runtime spends
+    before the step's first call, against the sum
+    `linnet.resources.performance` makes of the same step's calls. Also
+    that time before the first call, per argument of the entry."""
     import torch
 
     from .. import torch as linnet_torch
     from .analysis import MemoryModel
     from .config import ExecutionConfig
-    from .performance import DeviceSpec, _costs  # pyright: ignore[reportPrivateUsage]
+    from .performance import DeviceSpec, _costs, arguments  # pyright: ignore[reportPrivateUsage]
 
     source = Path(__file__).with_name("calibration.linnet")
     generics: dict[str, int | str] = {**_DECODER, "Batch": 1, "MaxSeq": 64, "T": "bf16"}
@@ -241,7 +245,35 @@ def _generated(device: torch.device, host: Mapping[str, float], dispatch: float)
         "unit", 0, {"bf16": 1e30, "f32": 1e30}, 1e30, 1e30, 0.0, host=host, dispatch=dispatch
     )
     counted = sum(op.host for op in _costs(model.graph, model.env(), unit, 1, False)[0])
-    return best / counted
+    lead = min(_lead(lambda: decode(token, pos)) for _ in range(5))
+    return (best - lead) / counted, lead / arguments(model.graph)
+
+
+def _lead(call: Callable[[], object]) -> float:
+    """Host seconds from calling an entry to its first kernel launch, by the
+    profiler's records (0 where it cannot record them)."""
+    import torch
+    from torch.profiler import ProfilerActivity, profile, record_function
+
+    try:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as recorded:
+            with record_function("linnet.entry"):
+                call()
+            torch.cuda.synchronize()
+    except RuntimeError:
+        return 0.0
+    events = cast("list[_Recorded]", recorded.events())
+    begin = min((e.time_range.start for e in events if e.name == "linnet.entry"), default=None)
+    launches = [
+        e.time_range.start
+        for e in events
+        if e.name.startswith(("cudaLaunchKernel", "cuLaunchKernel"))
+        and begin is not None
+        and e.time_range.start >= begin
+    ]
+    if begin is None or not launches:
+        return 0.0
+    return (min(launches) - begin) / 1e6
 
 
 def _products(
@@ -518,7 +550,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
     # the device.
     host = _host_by_kind(device)
     dispatch = _host(device)
-    scale = _generated(device, host, dispatch)
+    scale, entry = _generated(device, host, dispatch)
     small, strided, gap = _kernel(device)
     peaks, sizes, skinny = _products(device)
     same, broadcast = _elementwise(device)
@@ -535,6 +567,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
         "attention": _attention(device),
         "decode": _decode(device),
         "dispatch": dispatch,
+        "entry": entry,
         # Each kind alone costs the host less than in the generated code:
         # the kinds (not autograd's, measured in a chain already) scaled to a
         # small decoder's step.

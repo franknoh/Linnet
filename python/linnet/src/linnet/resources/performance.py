@@ -68,6 +68,7 @@ class _Profile(TypedDict):
     kernel: NotRequired[float]
     strided_kernel: NotRequired[float]
     gap: NotRequired[float]
+    entry: NotRequired[float]
     reduce: NotRequired[float | None]
     source: NotRequired[str]
 
@@ -92,9 +93,11 @@ class DeviceSpec:
     - `dispatch`: the host's seconds per eager call, over a decoder layer's
       mix; `host`: the same by kind of call (`view`, `elementwise`,
       `product`, ...) and per autograd node (`backward`,
-      `product_backward`); `kernel`: a small kernel's device seconds,
-      issued eagerly, and `strided_kernel` one reading a strided view, both
-      with the `gap` between kernels the device runs back to back.
+      `product_backward`); `entry`: the host's seconds per argument (an
+      input, a parameter, a state) before an entry's first call;
+      `kernel`: a small kernel's device seconds, issued eagerly, and
+      `strided_kernel` one reading a strided view, both with the `gap`
+      between kernels the device runs back to back.
     - `link`: an all-reduce's bus bandwidth; `latency`: a small one's
       seconds; `reduce`: one token's as the generated code calls it with the
       next call reading it, host included.
@@ -120,6 +123,7 @@ class DeviceSpec:
     kernel: float = 0.0
     strided_kernel: float = 0.0
     gap: float = 0.0
+    entry: float = 0.0
     reduce: float = 0.0
     source: str = "data sheet"
 
@@ -203,6 +207,7 @@ class DeviceSpec:
             kernel=float(data.get("kernel", 0.0)),
             strided_kernel=float(data.get("strided_kernel", 0.0)),
             gap=float(data.get("gap", 0.0)),
+            entry=float(data.get("entry", 0.0)),
             reduce=float(data.get("reduce") or 0.0) or _H100.reduce,
             source=str(data.get("source", "measured")),
         )
@@ -289,7 +294,7 @@ _H100 = DeviceSpec(
     dispatch=5.95e-6,
     kernel=2.07e-6,
     strided_kernel=3.25e-6,
-    gap=1.0e-6,
+    gap=1.09e-6,
     reduce=20.6e-6,
     source="measured: H100 SXM, PyTorch 2.14.1+cu130",
 )
@@ -332,6 +337,7 @@ def _from_sheet(
         kernel=_H100.kernel,
         strided_kernel=_H100.strided_kernel,
         gap=_H100.gap,
+        entry=_H100.entry,
         reduce=_H100.reduce,
         source="data sheet, at the H100's measured share of its own",
     )
@@ -752,7 +758,9 @@ def _costs(
                 "torch.Tensor.index_copy": ("write", "view", "cast"),
                 "torch.Tensor.index_put": ("write", "view") + ("view",) * (operands > 3),
             }.get(full, ("write", "cast", "cast", "view", "view"))
-            forward.append(_Op(host(*calls), memory(2 * update), "memory"))
+            # Its index arguments' casts are kernels of their own.
+            kernels = sum(call != "view" for call in calls)
+            forward.append(_Op(host(*calls), memory(2 * update, kernels), "memory", kernels))
         elif implementation in ("torch.rms_norm", "torch.nn.functional.layer_norm"):
             # The fast normalizations are two calls: the normalization, then
             # times the (broadcast) weight.
@@ -794,6 +802,13 @@ class _Part:
     once: float = 0.0  # also once a step: a stage's sharded weights gathered
 
 
+def arguments(graph: TensorGraph) -> int:
+    """What the runtime passes an entry: its inputs, and every parameter
+    and state it reads."""
+    persistent = sum(1 for o in graph.objects if o.persistent and o.owns_storage)
+    return len(graph.inputs) + persistent
+
+
 def _part(
     graph: TensorGraph,
     env: Mapping[str, int],
@@ -817,6 +832,9 @@ def _part(
     weights once a step and sums each micro-batch's gradients."""
     forward, backward = _costs(graph, env, device, processes, training, fuse=not staged)
     clock = _Clock(not compiled, device.gap)
+    if not compiled:
+        # The runtime hands every argument to the entry before its first call.
+        clock.host = device.entry * arguments(graph)
     once = 0.0
     summing: _Op | None = None
     if shards > 1 and training:
