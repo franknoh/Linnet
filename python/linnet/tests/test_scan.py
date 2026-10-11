@@ -2,8 +2,6 @@
 bound to a name stacks each iteration's `yield` along a new first axis.
 Every backend computes what a Python loop does."""
 
-# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false
-
 from __future__ import annotations
 
 import os

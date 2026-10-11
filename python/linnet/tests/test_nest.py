@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pytest
-from safetensors.numpy import save_file  # type: ignore[import-untyped]
+from safetensors.numpy import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet import ir, nest
 

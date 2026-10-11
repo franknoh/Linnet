@@ -3,7 +3,7 @@
 interpreter, generated PyTorch (tinygemm and Linnet's kernel on CUDA), and
 ONNX Runtime's `MatMulNBits`."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.quant import (
     dequantize_int4_groups,
@@ -74,7 +74,7 @@ def model_files(tmp_path: Path) -> tuple[Path, Path, np.ndarray]:
     from a float one under other names, and the weight it computes with."""
     source = tmp_path / "q4.linnet"
     source.write_text(SOURCE, encoding="utf-8")
-    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(0)
     weight = torch.randn(OUT, IN)
     save_file({"model.proj.weight": weight}, str(tmp_path / "float.safetensors"))
     quantized = quantize_checkpoint(

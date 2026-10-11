@@ -59,7 +59,7 @@ def _tinyllama_bindings(layers: int) -> dict[str, str]:
 def test_tinyllama_logits_match_transformers(tmp_path: Path) -> None:
     from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
     from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
-    from transformers import AutoModelForCausalLM  # pyright: ignore[reportUnknownVariableType]
+    from transformers import AutoModelForCausalLM
 
     repo = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     config = json.loads(Path(hf_hub_download(repo, "config.json")).read_text())
@@ -126,7 +126,7 @@ def test_tinyllama_logits_match_transformers(tmp_path: Path) -> None:
 
 def test_gpt2_logits_match_transformers(tmp_path: Path) -> None:
     from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
-    from transformers import AutoModelForCausalLM  # pyright: ignore[reportUnknownVariableType]
+    from transformers import AutoModelForCausalLM
 
     repo = "openai-community/gpt2"
     config = json.loads(Path(hf_hub_download(repo, "config.json")).read_text())
@@ -183,7 +183,7 @@ def test_resnet18_logits_match_transformers(tmp_path: Path) -> None:
     inference batch normalization against the published ResNet-18."""
     from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
     from transformers import (
-        AutoModelForImageClassification,  # pyright: ignore[reportUnknownVariableType]
+        AutoModelForImageClassification,
     )
 
     from linnet import nest

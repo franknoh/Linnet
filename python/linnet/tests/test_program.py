@@ -55,9 +55,9 @@ def test_program_is_typed_and_prints_like_the_language(llama: Program) -> None:
 
 def test_program_dataclasses_are_immutable(llama: Program) -> None:
     with pytest.raises(AttributeError):
-        llama.root_block.name = "Other"  # type: ignore[misc]
+        llama.root_block.name = "Other"  # pyright: ignore[reportAttributeAccessIssue]
     with pytest.raises(TypeError):
-        llama.blocks["Model"] = llama.root_block  # type: ignore[index]
+        llama.blocks["Model"] = llama.root_block  # pyright: ignore[reportIndexIssue]
 
 
 def test_format_dim_parenthesizes_by_precedence() -> None:

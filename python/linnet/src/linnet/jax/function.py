@@ -10,8 +10,6 @@ the function sees abstract arrays, whose shapes and dtypes bind its
 generics the same way.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -40,6 +38,19 @@ if TYPE_CHECKING:
     Input: TypeAlias = jax.Array | NDArray[np.generic] | bool | int | float
     # The compiled function: the generated `main` under `jax.jit`, all results in a sequence.
     _Compiled: TypeAlias = Callable[..., Sequence[jax.Array]]
+
+
+def _spec(param: ir.Value, value: Input) -> ir.InputSpec:
+    """An input as `ir.bind_entry` sees it: an array's shape and dtype, or
+    None for a Python number (for a scalar input only)."""
+    if isinstance(value, bool | int | float):
+        if not isinstance(param.type, ir.ScalarType):
+            raise LinnetError(f"input `{param.name}` is a tensor; pass an array")
+        return None
+    found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
+    return [int(size) for size in np.shape(value)], str(
+        value.dtype
+    ) if found is None else found.name
 
 
 class Function:
@@ -77,19 +88,7 @@ class Function:
         `generics` binds by name what the inputs do not determine. A single
         result is returned as it is, several as a tuple."""
         params = self.function.params
-        if len(params) != len(inputs):
-            raise LinnetError(f"`{self.name}` takes {len(params)} inputs, got {len(inputs)}")
-        env = ir.Bindings()
-        ir.bind_named(env, self.function.generics, generics or {})
-        for param, value in zip(params, inputs, strict=True):
-            if isinstance(value, bool | int | float):
-                if not isinstance(param.type, ir.ScalarType):
-                    raise LinnetError(f"input `{param.name}` is a tensor; pass an array")
-                continue
-            found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
-            dtype = str(value.dtype) if found is None else found.name
-            ir.bind_input(env, param, [int(size) for size in np.shape(value)], dtype)
-        ir.require_bound(env, self.function)
+        env = ir.bind_entry(ir.Bindings(), self.function, inputs, _spec, generics)
         bindings = ir.bind_names(env, self.function.generics)
         values = [
             self._number(param, value, env) if isinstance(value, bool | int | float) else value
@@ -110,7 +109,7 @@ class Function:
     def _number(self, param: ir.Value, value: bool | float, env: ir.Bindings) -> jax.Array:
         declared = param.type
         assert isinstance(declared, ir.ScalarType)
-        return jnp.asarray(value, dtype=NUMPY_TYPES[env.dtype(declared.dtype)])
+        return jnp.asarray(value, dtype=NUMPY_TYPES[env.dtype(declared.dtype)])  # pyright: ignore[reportUnknownMemberType]
 
     # ---- one compilation per binding
 
@@ -122,7 +121,7 @@ class Function:
         path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise LinnetError(f"internal: `{self.name}` compiled with parameters or state")
-        return jax.jit(module.main), path
+        return jax.jit(module.main), path  # pyright: ignore[reportUnknownMemberType]
 
 
 def load_function(
@@ -142,7 +141,7 @@ def load_function(
     program = compile_plan(source, std_root=std_root, optimize=False, functions=True)
     # Linnet's `i64` needs 64-bit integers. The generated code turns them on
     # when it first loads; on now, the caller's `int64` inputs stay 64-bit.
-    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_enable_x64", True)  # pyright: ignore[reportUnknownMemberType]
     return Function(program, name, source=Path(source), std_root=std_root, numerics=numerics)
 
 

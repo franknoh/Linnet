@@ -259,9 +259,8 @@ def copies(model: LinnetModule) -> Copies:
     shards: ProcessGroup | None = getattr(model, "shard_group", None)
     if shards is None:
         return Copies()
-    found = getattr(model, "copies_layout", None)
-    if isinstance(found, Copies):
-        return found
+    if model.copies_layout is not None:
+        return model.copies_layout
     import torch.distributed as dist
 
     from ..torch.module import owner_of
@@ -278,7 +277,7 @@ def copies(model: LinnetModule) -> Copies:
             mine = cast("ProcessGroup", made)  # a member's is the group itself
     split = frozenset(
         id(getattr(owner, leaf))
-        for owner, leaf in (owner_of(model, path) for path in getattr(model, "shard_parts", {}))
+        for owner, leaf in (owner_of(model, path) for path in model.shard_parts)
     )
     layout = Copies(mine, shards, split)
     model.copies_layout = layout
@@ -342,14 +341,14 @@ def _clip_split(parameters: list[torch.Tensor], limit: float, layout: Copies) ->
     holds alike, counted once."""
     import torch.distributed as dist
 
-    held = [p for p in parameters if p.grad is not None]
+    held = [(p, p.grad) for p in parameters if p.grad is not None]
     if not held:
         return 0.0
-    device = held[0].grad.device  # type: ignore[union-attr]
+    device = held[0][1].device
     parts = torch.zeros((), dtype=torch.float32, device=device)
     whole = torch.zeros((), dtype=torch.float32, device=device)
-    for p in held:
-        squares = cast(torch.Tensor, p.grad).float().pow(2).sum()
+    for p, grad in held:
+        squares = grad.float().pow(2).sum()
         if id(p) in layout.split:
             parts = parts + squares
         else:
@@ -357,8 +356,8 @@ def _clip_split(parameters: list[torch.Tensor], limit: float, layout: Copies) ->
     dist.all_reduce(parts, group=layout.shards)
     norm = (parts + whole).sqrt()
     scale = (limit / (norm + 1e-6)).clamp(max=1.0)
-    for p in held:
-        cast(torch.Tensor, p.grad).mul_(scale.to(cast(torch.Tensor, p.grad).dtype))
+    for _, grad in held:
+        grad.mul_(scale.to(grad.dtype))
     return float(norm)
 
 

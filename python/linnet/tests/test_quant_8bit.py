@@ -4,7 +4,7 @@ backend multiplies by the dequantized weight, and PyTorch on a GPU runs
 Linnet's kernels -- the weight as it is, the input unrounded, or under
 `numerics="fast"` rounded to 8 bits too."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import torch
 from numpy.typing import NDArray
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import load
 

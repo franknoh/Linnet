@@ -234,9 +234,8 @@ def export(
 
     program = ir.load_program(source, root=root, std_root=std_root)
     function = program.entry(entry)
-    root_bindings = ir.bind_generics(
-        program.root.generics,
-        {k: v for k, v in values.items() if k in {g.name for g in program.root.generics}},
+    root_bindings = ir.bind_root(
+        program, {k: v for k, v in values.items() if k in {g.name for g in program.root.generics}}
     )
     entry_bindings = ir.bind_generics(
         function.generics,

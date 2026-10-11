@@ -2,7 +2,7 @@
 data flow computes what the whole entry computes, and the stages run as a
 pipeline over processes train as one process does."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportPrivateImportUsage=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import cast
 
 import pytest
 import torch
-from safetensors.torch import load_file, save_file  # type: ignore[import-untyped]
+from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.compiler import bind_arguments, run_compiler
 from linnet.torch import LinnetModule, load

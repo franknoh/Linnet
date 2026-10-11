@@ -38,12 +38,12 @@ class BlockInstance:
 
     name: str
     env: ir.Bindings
-    params: dict[str, torch.Tensor | None] = field(default_factory=dict)  # type: ignore[arg-type]
+    params: dict[str, torch.Tensor | None] = field(default_factory=dict)
     # None for an optional sub-block left out.
-    subs: dict[str, BlockInstance | list[BlockInstance] | None] = field(default_factory=dict)  # type: ignore[arg-type]
+    subs: dict[str, BlockInstance | list[BlockInstance] | None] = field(default_factory=dict)
     # `state` members: the current values, and a hook that persists a write
     # in the owning module so the next call starts from it.
-    states: dict[str, torch.Tensor] = field(default_factory=dict)  # type: ignore[arg-type]
+    states: dict[str, torch.Tensor] = field(default_factory=dict)
     on_write: Callable[[str, torch.Tensor], None] | None = None
 
 
@@ -392,11 +392,7 @@ class Interpreter:
                     )
                 # An optional argument left out is `None`, which only the
                 # implementations that take one see (`native.OptionalArgs`).
-                return [
-                    NATIVE[selected](
-                        cast(list[torch.Tensor], operands), result_dtype() if result_type else None
-                    )
-                ]
+                return [NATIVE[selected](cast(list[torch.Tensor | None], operands))]
             callee = self.program.functions[cast(str, attrs["callee"])]
             callee_env = self._callee_env(callee, self._substitution(op), env, operands)
             if callee.gradient is not None:

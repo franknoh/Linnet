@@ -4,8 +4,6 @@ FlexAttention over the key blocks its mask reaches when compiled for CUDA
 numbers -- a serving step's rows at their own lengths, and prompts packed
 end to end that each see only themselves."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import os

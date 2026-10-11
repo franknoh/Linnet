@@ -80,7 +80,6 @@ class Lowering:
     and a copy of anything else; `permute`, `broadcast` and `slice` are
     views."""
 
-    name: str = "torch"
     in_place_writes: frozenset[str] = frozenset(
         {
             "torch.Tensor.index_copy",

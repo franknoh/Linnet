@@ -427,7 +427,10 @@ class _Reader:
     def program(self, plan: dict[str, JsonValue], text: str = "") -> Program:
         version = _int(plan.get("version", 0))
         if version != 1:
-            raise LinnetError(f"unsupported plan version {version!r}")
+            raise LinnetError(
+                f"plan version {version}, but this package reads version 1: write the plan "
+                "again with the `linnet` compiler of the same release"
+            )
         blocks = {name: self.block(name, data) for name, data in _object(plan["blocks"]).items()}
         functions = [self.function(f) for f in _list(plan["functions"])]
         # A plan of functions (`--functions`) has no root block.
@@ -800,35 +803,64 @@ def default_of(generic: Generic) -> int | str | None:
     return None
 
 
-def bind_generics(generics: Sequence[Generic], values: Mapping[str, int | str]) -> Bindings:
-    """Binds generics by name, using declared defaults for the rest.
+def bind_generics(
+    generics: Sequence[Generic],
+    values: Mapping[str, int | str],
+    constraints: Sequence[Constraint] = (),
+    owner: str = "",
+) -> Bindings:
+    """Binds generics by name, using declared defaults for the rest (a
+    default may be in terms of the generics before it), and checks
+    `constraints` under them: a root block's `where` clause, which the
+    checker proves at every call inside the program but not for values given
+    from outside.
 
-    Raises `LinnetError` for a generic that is neither given nor defaulted,
-    and for a value of the wrong kind.
+    Raises `PlanError` for a generic that is neither given nor defaulted, a
+    value of the wrong kind, a dtype Linnet does not have, a name no generic
+    has, and a constraint that fails.
     """
-    dims: dict[int, int] = {}
-    packs: dict[int, tuple[int, ...]] = {}
-    dtypes: dict[int, str] = {}
+    env = Bindings()
     for generic in generics:
         value = values.get(generic.name)
         if value is None:
-            value = default_of(generic)
-            if value is None:
-                raise LinnetError(f"generic `{generic.name}` needs a value")
+            default = generic.default
+            try:
+                if isinstance(default, DimArg):
+                    env.dims[generic.id] = env.dim(default.dim)
+                    continue
+                if isinstance(default, DTypeArg):
+                    env.dtypes[generic.id] = env.dtype(default.dtype)
+                    continue
+            except PlanError:
+                pass  # in terms of a generic not bound yet
+            raise PlanError(f"generic `{generic.name}` needs a value")
         if generic.kind == "dtype":
-            if not isinstance(value, str):
-                raise LinnetError(f"`{generic.name}` is a dtype; give its name")
-            dtypes[generic.id] = value
+            if not isinstance(value, str) or value not in DTYPES:
+                raise PlanError(f"`{generic.name}` is a dtype; give one of {sorted(DTYPES)}")
+            env.dtypes[generic.id] = value
         elif generic.kind == "dim":
             if not isinstance(value, int):
-                raise LinnetError(f"`{generic.name}` is a dimension; give an integer")
-            dims[generic.id] = value
+                raise PlanError(f"`{generic.name}` is a dimension; give an integer")
+            env.dims[generic.id] = value
         else:
-            raise LinnetError(f"`{generic.name}` is a shape pack and cannot be bound by name")
+            raise PlanError(f"`{generic.name}` is a shape pack and cannot be bound by name")
     unknown = sorted(set(values) - {g.name for g in generics})
     if unknown:
-        raise LinnetError(f"unknown generics: {', '.join(unknown)}")
-    return Bindings(dims, packs, dtypes)
+        raise PlanError(f"unknown generics: {', '.join(unknown)}")
+    for constraint in constraints:
+        if not env.holds(constraint):
+            raise PlanError(
+                f"the generics given to `{owner}` break its `where` clause "
+                f"({constraint.relation} does not hold)"
+            )
+    return env
+
+
+def bind_root(program: Program, values: Mapping[str, int | str]) -> Bindings:
+    """`bind_generics` for the generics of `program`'s root block and its
+    `where` clause."""
+    root = program.root
+    return bind_generics(root.generics, values, root.constraints, root.name)
 
 
 def bound(env: Bindings, generic: Generic) -> bool:
@@ -950,6 +982,41 @@ def require_bound(env: Bindings, function: Function) -> None:
     for constraint in function.constraints:
         if not env.holds(constraint):
             raise PlanError(f"the inputs break the `where` clause of `{name}`")
+
+
+# An entry input as binding sees it: its shape and its dtype's Linnet name
+# (None leaves the dtype unchecked); None for one that binds nothing, such
+# as a Python number for a scalar.
+InputSpec: TypeAlias = "tuple[Sequence[int], str | None] | None"
+InputT = TypeVar("InputT")
+
+
+def bind_entry(
+    env: Bindings,
+    function: Function,
+    inputs: Sequence[InputT],
+    spec: Callable[[Value, InputT], InputSpec],
+    given: Mapping[str, int | str] | None = None,
+) -> Bindings:
+    """A copy of `env` (the root's bindings) with `function`'s own generics
+    bound: by name from `given`, then from each input as `spec` sees it
+    (`bind_input`), every one bound or defaulted and the `where` clause
+    holding (`require_bound`)."""
+    params = function.params
+    if len(params) != len(inputs):
+        raise PlanError(f"`{function.short_name}` takes {len(params)} inputs, got {len(inputs)}")
+    env = env.copy()
+    bind_named(env, function.generics, given or {})
+    for param, value in zip(params, inputs, strict=True):
+        if (found := spec(param, value)) is not None:
+            bind_input(env, param, *found)
+    require_bound(env, function)
+    return env
+
+
+def shape_only(param: Value, shape: Sequence[int]) -> InputSpec:
+    """`bind_entry`'s view of an input by its shape alone, for a tensor input."""
+    return (shape, None) if isinstance(param.type, TensorType) else None
 
 
 def bind_names(env: Bindings, generics: Sequence[Generic]) -> dict[str, str]:
@@ -1143,7 +1210,7 @@ def parameter_count(
     """The number of parameter elements once the root generics are bound.
     With `mapping` (path -> checkpoint tensor), a tensor several paths are
     bound to (a tied embedding) counts once, as published figures do."""
-    bindings = bind_generics(program.root.generics, values)
+    bindings = bind_root(program, values)
     counted: set[str] = set()
     total = 0
     for entry in program.manifest:

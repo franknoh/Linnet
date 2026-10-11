@@ -27,6 +27,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# `BLOCK_BYTES` is this module's own, to set for its losses alone.
+from ..blockwise import BLOCK_BYTES, block_rows
+
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
@@ -40,13 +43,10 @@ if TYPE_CHECKING:
     # row's log-sum-exp.
     _LogProbsSaved: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
 
-# The f32 logits of one block of rows.
-BLOCK_BYTES = 1 << 30
-
 
 def _blocks(n: int, vocab: int) -> tuple[int, int]:
     """Rows per block, and blocks."""
-    rows = max(1, min(n, BLOCK_BYTES // (4 * vocab)))
+    rows = min(n, block_rows(vocab, BLOCK_BYTES))
     return rows, -(-n // rows)
 
 

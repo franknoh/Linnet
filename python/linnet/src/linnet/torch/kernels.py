@@ -1,6 +1,11 @@
 """Triton kernels the generated PyTorch calls for operations PyTorch has no
-kernel of its own for. Each is a `torch.library.triton_op`, so it runs the
-same inside `torch.compile` and a captured CUDA graph as outside them.
+kernel of its own for. `int4_linear` and `mxfp4_experts` are
+`torch.library.triton_op`s, which run the same inside `torch.compile` and a
+captured CUDA graph as outside them. The 8-bit kernels (`gemv8`, `w8a16`,
+`fp8_rows`, `int8_rows`, `fp8_groups`, `int8_mm`) are custom ops inside
+`torch.compile` and launched directly outside it, where an op's host cost
+would be most of a decoding step's; `dequantize8` is launched directly
+everywhere, Dynamo tracing the launch.
 
 Importing this module needs Triton (and so a CUDA build of PyTorch); the
 generated code falls back to plain PyTorch arithmetic without it.
@@ -8,7 +13,7 @@ generated code falls back to plain PyTorch arithmetic without it.
 
 # Triton reads a kernel's annotations and resolves only its own, so the kernels
 # stay unannotated.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUntypedFunctionDecorator=false, reportMissingTypeStubs=false, reportMissingParameterType=false, reportUnknownParameterType=false
+# pyright: reportMissingParameterType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUntypedFunctionDecorator=false
 
 from __future__ import annotations
 
@@ -17,16 +22,19 @@ from collections.abc import Callable
 from typing import Protocol
 
 import torch
-import triton  # type: ignore[import-untyped]
-import triton.language as tl  # type: ignore[import-untyped]
+import triton  # pyright: ignore[reportMissingTypeStubs]
+import triton.language as tl  # pyright: ignore[reportMissingTypeStubs]
 from torch.library import triton_op, wrap_triton
 
 
-class _Launcher(Protocol):
+class Launcher(Protocol):
     """A Triton kernel, or one wrapped for `torch.compile` (`wrap_triton`):
-    indexed by its grid, then called."""
+    indexed by its grid (a tuple, or a function of the launch's
+    meta-parameters), then called."""
 
-    def __getitem__(self, grid: Callable[..., tuple[int, ...]], /) -> Callable[..., object]: ...
+    def __getitem__(
+        self, grid: Callable[..., tuple[int, ...]] | tuple[int, ...], /
+    ) -> Callable[..., object]: ...
 
 
 @triton.jit
@@ -254,7 +262,7 @@ def int4_linear(
     tiles = next((tiles for tiles in _INT4_TILES if rows <= tiles[0]), _INT4_TILES[-1])
     _, block_m, block_n, warps, stages, waves = tiles
     programs = triton.cdiv(rows, block_m) * triton.cdiv(width, block_n)
-    budget = waves * torch.cuda.get_device_properties(x.device).multi_processor_count
+    budget = waves * _processors(x.device)
     split = 1
     while split < 4 and programs * split * 2 <= budget and depth % (2 * split * block_k) == 0:
         split *= 2
@@ -335,7 +343,7 @@ def _gemv8_kernel(
 
 
 def _gemv8(
-    kernel: _Launcher,
+    kernel: Launcher,
     x: torch.Tensor,
     weight: torch.Tensor,
     scale: torch.Tensor,
@@ -500,7 +508,7 @@ def _split(programs: int, depth: int, block_k: int, device: torch.device) -> int
 
 
 def _w8a16(
-    kernel: _Launcher,
+    kernel: Launcher,
     x: torch.Tensor,
     weight: torch.Tensor,
     scale: torch.Tensor,
@@ -623,7 +631,7 @@ def dequantize8(
 
 
 def _dequantize8(
-    kernel: _Launcher,
+    kernel: Launcher,
     weight: torch.Tensor,
     scale: torch.Tensor,
     fp8: bool,
@@ -693,7 +701,7 @@ def _rows8_kernel(
     tl.store(scale_ptr + row, scale)
 
 
-def _rows8(kernel: _Launcher, x: torch.Tensor, fp8: bool) -> tuple[torch.Tensor, torch.Tensor]:
+def _rows8(kernel: Launcher, x: torch.Tensor, fp8: bool) -> tuple[torch.Tensor, torch.Tensor]:
     """Each row of `x` [rows, In] rounded to FP8 E4M3 or int8 with a scale
     of its own: the rounded rows and the scales ([rows, 1], f32), in one
     kernel, as `torch._scaled_mm` and `int8_mm` take them."""
@@ -763,7 +771,7 @@ def _fp8_groups_kernel(
 
 
 def _fp8_groups(
-    kernel: _Launcher, x: torch.Tensor, group: int, padded: int
+    kernel: Launcher, x: torch.Tensor, group: int, padded: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Each `group` inputs of each row of `x` [rows, In] rounded to FP8 E4M3
     with a scale of their own, the rows padded with zeros to `padded`: the
@@ -851,7 +859,7 @@ _INT8_TILES = (
 
 
 def _int8_mm(
-    kernel: _Launcher,
+    kernel: Launcher,
     x: torch.Tensor,
     weight: torch.Tensor,
     x_scale: torch.Tensor,
@@ -973,4 +981,16 @@ def one_shot_all_reduce_kernel(
     tl.store(out_ptr + offsets, total.to(dtype), mask=live)
 
 
-__all__ = ["int4_linear", "mxfp4_experts", "one_shot_all_reduce_kernel"]
+__all__ = [
+    "Launcher",
+    "dequantize8",
+    "fp8_groups",
+    "fp8_rows",
+    "gemv8",
+    "int4_linear",
+    "int8_mm",
+    "int8_rows",
+    "mxfp4_experts",
+    "one_shot_all_reduce_kernel",
+    "w8a16",
+]

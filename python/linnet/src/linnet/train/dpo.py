@@ -19,8 +19,6 @@ model's own before training, computed for every pair first: a LoRA run then
 needs one model.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import itertools
@@ -223,7 +221,7 @@ def _reference(
         with torch.no_grad():
             for batch in rounds[0]:
                 first, second, which = _paired(batch, _answers(model, entry, batch, device))
-                for k, c, r in zip(which, first.tolist(), second.tolist(), strict=True):
+                for k, c, r in zip(which, first.tolist(), second.tolist(), strict=True):  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType, reportUnknownVariableType]
                     found[k] = (c, r)
         known += [found[k] for k in range(len(chosen_pairs))]
     return known

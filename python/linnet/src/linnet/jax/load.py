@@ -9,7 +9,7 @@ model-specific exists on the Python side. Inference only: the wrapped module
 has no VJP.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from types import ModuleType
     from typing import TypeAlias
 
-    from jax._src.lib.mlir import ir as mlir_ir
+    from jax._src.lib.mlir import ir as mlir_ir  # pyright: ignore[reportPrivateImportUsage]
     from jax.core import ShapedArray
     from jax.sharding import Sharding
     from jax.typing import ArrayLike, DTypeLike
@@ -74,15 +74,15 @@ class LinnetFunction:
         numerics: str = "equivalent",
         cast_dtype: bool = False,
     ) -> None:
-        self._source = source
+        self.source = source
         self.numerics = numerics
         self.cast_dtype = cast_dtype
         self.program = program
         self.generics = dict(generics)
-        self._root = ir.bind_generics(program.root.generics, self.generics)
+        self._root = ir.bind_root(program, self.generics)
         self.weights = weights
         self._weights = self.weights
-        self._std_root = std_root
+        self.std_root = std_root
         self.root = root
         self.entry = entry
         # How a weight goes to the devices when an entry first compiles:
@@ -95,7 +95,7 @@ class LinnetFunction:
         manifest = program.manifest
         self.parameter_paths: list[str] = [entry.path for entry in manifest]
         self.optional_paths: set[str] = {e.path for e in manifest if e.optional}
-        self._cache: dict[_Key, CompiledEntry] = {}
+        self.cache: dict[_Key, CompiledEntry] = {}
         # Set by `LinnetModel`, which runs several entries over one copy of
         # the weights and keeps their state on the device: the weights are
         # written back once placed (and cast), so the next entry finds them
@@ -125,7 +125,7 @@ class LinnetFunction:
         if target == "jax":
             arguments += lora_arguments(getattr(self, "lora", None))
         arguments += bind_arguments(bindings)
-        arguments += ["--absent-file", "-", *std_arguments(self._std_root), str(self._source)]
+        arguments += ["--absent-file", "-", *std_arguments(self.std_root), str(self.source)]
 
         def run(absent: list[str]) -> str:
             return run_compiler(*arguments, stdin="".join(f"{path}\n" for path in absent))
@@ -139,7 +139,7 @@ class LinnetFunction:
                 optional = [
                     path
                     for path in paths
-                    if any(self._matches(pattern, path) for pattern in self.optional_paths)
+                    if any(self.matches(pattern, path) for pattern in self.optional_paths)
                 ]
                 self.absent = sorted(path for path in optional if path not in self._weights)
                 if not self.absent:
@@ -148,7 +148,7 @@ class LinnetFunction:
         return run(self.absent)
 
     @staticmethod
-    def _matches(pattern: str, path: str) -> bool:
+    def matches(pattern: str, path: str) -> bool:
         """Manifest paths spell array elements `[*]`; weights spell them `.0`."""
         return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
@@ -156,7 +156,7 @@ class LinnetFunction:
         for entry in manifest:
             if entry.optional or entry.kind == "state":  # state is never a weight
                 continue
-            if not any(self._matches(entry.path, path) for path in self._weights):
+            if not any(self.matches(entry.path, path) for path in self._weights):
                 raise LinnetError(f"missing weights for `{entry.path}`")
         # Which optional parameters are absent is read off the first export
         # (see `_export`): checkpoints mix them, a bias on some projections
@@ -166,16 +166,18 @@ class LinnetFunction:
     # ---- entry generics from input shapes
 
     def _bindings_for(self, inputs: Sequence[ArrayLike]) -> dict[str, int | str]:
-        arguments = self._signature.params
-        if len(arguments) != len(inputs):
-            raise LinnetError(
-                f"entry `{self.entry}` takes {len(arguments)} inputs, got {len(inputs)}"
-            )
-        env = self._root.copy()
-        for argument, value in zip(arguments, inputs, strict=True):
-            if isinstance(argument.type, ir.TensorType):
-                ir.bind_input(env, argument, [int(d) for d in np.shape(value)], None)
-        return {**self.generics, **ir.bind_names(env, self._signature.generics)}
+        signature = self._signature
+        given = {
+            g.name: self.generics[g.name] for g in signature.generics if g.name in self.generics
+        }
+        env = ir.bind_entry(
+            self._root,
+            signature,
+            inputs,
+            lambda param, value: ir.shape_only(param, [int(d) for d in np.shape(value)]),
+            given,
+        )
+        return {**self.generics, **ir.bind_names(env, signature.generics)}
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
         text = self._export("stablehlo", bindings)
@@ -257,9 +259,9 @@ class LinnetFunction:
         computes in. Paths bound to one checkpoint tensor share one array."""
         bindings = self._bindings_for(inputs)
         key = tuple(sorted(bindings.items()))
-        if key not in self._cache:
-            self._cache[key] = self._compile(bindings)
-        compiled = self._cache[key]
+        if key not in self.cache:
+            self.cache[key] = self._compile(bindings)
+        compiled = self.cache[key]
         return dict(zip(compiled.parameters, compiled.arrays, strict=True))
 
     def apply(
@@ -275,9 +277,9 @@ class LinnetFunction:
         `(result, new_state)`; other entries return the result alone."""
         bindings = self._bindings_for(inputs)
         key = tuple(sorted(bindings.items()))
-        if key not in self._cache:
-            self._cache[key] = self._compile(bindings)
-        compiled = self._cache[key]
+        if key not in self.cache:
+            self.cache[key] = self._compile(bindings)
+        compiled = self.cache[key]
         if parameters is self._weights:
             arrays = list(compiled.arrays)
         else:
@@ -479,8 +481,8 @@ def _wrap_module(text: str) -> jax.export.Exported:
     """A `jax.export.Exported` around a StableHLO module whose function is
     `@main`, so JAX can call it like one of its own exports."""
     from jax import export
-    from jax._src.interpreters import mlir as jax_mlir  # pyright: ignore[reportPrivateUsage]
-    from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateUsage]
+    from jax._src.interpreters import mlir as jax_mlir
+    from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateImportUsage]
     from jax.tree_util import tree_flatten
 
     with jax_mlir.make_ir_context():

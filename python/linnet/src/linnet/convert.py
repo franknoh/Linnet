@@ -344,7 +344,7 @@ def convert(
 
         card = nest.Card.read(directory)
         program = card.program(std_root)
-        values = ir.bind_generics(program.root.generics, card.generics)
+        values = ir.bind_root(program, card.generics)
         bindings = _complete_bindings(program, values, bindings, tensors)
         write_bindings(directory / "bindings.json", bindings)
         unbound = _unbound(program, values, tensors, bindings)

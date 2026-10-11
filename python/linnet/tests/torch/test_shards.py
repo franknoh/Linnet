@@ -4,8 +4,6 @@
 checkpoint holds `Shards` times over, and the result is the whole model's,
 on every process."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import os
@@ -16,8 +14,8 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 import torch.distributed as dist
-from safetensors.torch import save_file  # type: ignore[import-untyped]
-from torch.multiprocessing.spawn import spawn
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
+from torch.multiprocessing.spawn import spawn  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import load
 from linnet.weights import write_bindings
@@ -215,8 +213,8 @@ def training_batches() -> list[Batch]:
     generator = torch.Generator().manual_seed(1)
     examples = [
         Example.prompted(
-            torch.randint(0, 10, (2,), generator=generator).tolist(),
-            torch.randint(0, 10, (n,), generator=generator).tolist(),
+            torch.randint(0, 10, (2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+            torch.randint(0, 10, (n,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         )
         for n in (5, 6, 3, 7, 4, 5)
     ]

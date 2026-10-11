@@ -1,7 +1,6 @@
 """SafeTensors checkpoints and the bindings that map Linnet paths onto them."""
 
 # NumPy's stubs leave `frombuffer` partly unknown on some versions.
-# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -63,7 +62,7 @@ def numpy_array(tensor: RawTensor) -> np.ndarray:
     if found is None:
         raise LinnetError(f"`{tensor.name}` has dtype {tensor.dtype}, which Linnet does not read")
     if found.name == "bf16":
-        import ml_dtypes  # type: ignore[import-untyped]
+        import ml_dtypes
 
         dtype = np.dtype(ml_dtypes.bfloat16)
     else:

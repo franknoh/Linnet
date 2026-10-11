@@ -20,7 +20,7 @@ i32, segments [P] i32, targets [P] i64, weights [P] f32) -> f32`, the
 weighted sum of each position's cross-entropy for its target.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -187,12 +187,7 @@ def train(
 
         zeros = jax.tree.map(jnp.zeros_like, trained)
         (grads, loss), _ = jax.lax.scan(one, (zeros, jnp.zeros((), jnp.float32)), stacked)
-        norm = _global_norm(grads)
-        if clip is not None:
-            scale = jnp.minimum(1.0, clip / (norm + 1e-6))
-            grads = jax.tree.map(lambda g: g * scale.astype(g.dtype), grads)
-        updates, state = optimizer.update(grads, state, trained)
-        trained = jax.tree.map(lambda p, u: p + u.astype(p.dtype), trained, updates)
+        trained, state, norm = _apply_updates(optimizer, trained, state, grads, clip)
         return trained, state, loss, norm
 
     if mesh is None:
@@ -447,13 +442,7 @@ class Learner:
             def apply(
                 trained: _Tree, state: object, grads: _Tree
             ) -> tuple[_Tree, object, jax.Array]:
-                norm = _global_norm(grads)
-                if clip is not None:
-                    scale = jnp.minimum(1.0, clip / (norm + 1e-6))
-                    grads = jax.tree.map(lambda g: g * scale.astype(g.dtype), grads)
-                updates, state = self.optimizer.update(grads, state, trained)
-                trained = jax.tree.map(lambda p, u: p + u.astype(p.dtype), trained, updates)
-                return trained, state, norm
+                return _apply_updates(self.optimizer, trained, state, grads, clip)
 
             self._apply[clip] = jax.jit(apply, donate_argnums=(0, 1))
         self.trained, self.state, norm = self._apply[clip](self.trained, self.state, grads)
@@ -499,7 +488,7 @@ def _spread(
     try:
         from jax import shard_map
     except ImportError:  # JAX before 0.6
-        from jax.experimental.shard_map import shard_map  # type: ignore[no-redef]
+        from jax.experimental.shard_map import shard_map
 
     axis = mesh.axis_names[0]
     # Every array here was placed by `_split_as`: its sharding is a `NamedSharding`.
@@ -719,9 +708,9 @@ def merge_lora(model: SourceFunction, parameters: Mapping[str, jax.Array]) -> di
     """`parameters` with each adapter's product added into its weight,
     `W + B @ A * alpha / rank` in f32, and the adapters left out: plain
     weights for the model loaded again without adapters, or for serving."""
-    if getattr(model, "lora", None) is None:
+    if model.lora is None:
         return dict(parameters)
-    _, rank, alpha = cast("tuple[tuple[str, ...], int, float]", model.lora)
+    _, rank, alpha = model.lora
     merged = {path: value for path, value in parameters.items() if not lora.is_adapter(path)}
     for path, down in parameters.items():
         if not path.endswith("." + lora.DOWN):
@@ -861,6 +850,21 @@ def _chosen(
     its paths matches), floating-point, each once by its holding path."""
     picked = ir.chosen_paths(paths, trainable, ties)
     return [p for p in picked if p not in ties and jnp.issubdtype(weights[p].dtype, jnp.floating)]
+
+
+def _apply_updates(
+    optimizer: Optimizer, trained: _Tree, state: object, grads: _Tree, clip: float | None
+) -> tuple[_Tree, object, jax.Array]:
+    """`grads` clipped to the global norm `clip` at most and the optimizer's
+    updates added to `trained`, inside a traced step: the parameters, the
+    optimizer's state, and the norm before clipping."""
+    norm = _global_norm(grads)
+    if clip is not None:
+        scale = jnp.minimum(1.0, clip / (norm + 1e-6))
+        grads = jax.tree.map(lambda g: g * scale.astype(g.dtype), grads)
+    updates, state = optimizer.update(grads, state, trained)
+    trained = jax.tree.map(lambda p, u: p + u.astype(p.dtype), trained, updates)
+    return trained, state, norm
 
 
 def _global_norm(tree: Mapping[str, jax.Array]) -> jax.Array:

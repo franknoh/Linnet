@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from .. import dtypes
+from ..blockwise import SPLIT_LOSSES, block_rows
 from ..parallel import ONE_SHOT_BYTES
 from . import expr as ex
 from .graph import Category, Confidence, MemoryObject, Step, TensorGraph
@@ -111,19 +112,12 @@ def _element(obj: MemoryObject) -> int:
     return dtypes.dtype(obj.dtype).element_bytes
 
 
-# A vocabulary split across processes: each runs the loss over its part.
-_SPLIT_LOSSES = {
-    "linnet.split_cross_entropy": "linnet.linear_cross_entropy",
-    "linnet.split_token_log_probs": "linnet.linear_token_log_probs",
-}
-
-
 def _base(implementation: str) -> str:
     """`torch.softmax(input dtype)` is `torch.softmax` computed in the input
     dtype: the same storage. A loss over a split vocabulary holds what the
     loss over its part does."""
     base = implementation.removesuffix("(input dtype)")
-    return _SPLIT_LOSSES.get(base, base)
+    return SPLIT_LOSSES.get(base, base)
 
 
 class GenericBackend:
@@ -155,10 +149,6 @@ class GenericBackend:
 
     def alignment(self) -> int:
         return 1
-
-
-# The f32 logits of one block of rows in `linnet.torch.loss`.
-LOSS_BLOCK_BYTES = 1 << 30
 
 
 def _cublas_workspace() -> Estimate:
@@ -429,7 +419,7 @@ def _loss_workspace(
     vocab = ex.evaluate(weight.shape[0], env)
     width = ex.evaluate(weight.shape[1], env)
     rows = _numel(hidden, env) // ex.evaluate(hidden.shape[-1], env)
-    block = min(rows, max(1, LOSS_BLOCK_BYTES // (4 * vocab)))
+    block = min(rows, block_rows(vocab))
     second = min(block, rows - block)  # the next block, when there is one
     e = _element(hidden)
     update = vocab * width * (e + 4)
@@ -480,7 +470,6 @@ _NO_WORKSPACE = frozenset(
         "torch.softmax",
         "torch.sigmoid",
         "torch.relu",
-        "torch.tanh",
         "torch.nn.functional.silu",
         "torch.nn.functional.gelu",
         "torch.tril",

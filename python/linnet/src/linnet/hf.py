@@ -514,7 +514,7 @@ def export(
 
     program = ir.load_program(source, root=root, std_root=std_root)
     root_values = {g.name: values[g.name] for g in program.root.generics if g.name in values}
-    bound = ir.bind_generics(program.root.generics, root_values)
+    bound = ir.bind_root(program, root_values)
     resolved = {
         g.name: (
             bound.dtypes[g.id]
@@ -580,7 +580,10 @@ def export(
 
 def _copy_tokenizer(repo: str, directory: Path) -> tuple[str, ...]:
     try:
-        from huggingface_hub import hf_hub_download, list_repo_files  # type: ignore[import-untyped]
+        from huggingface_hub import (
+            hf_hub_download,  # pyright: ignore[reportUnknownVariableType]
+            list_repo_files,
+        )
     except ImportError:
         raise LinnetError(
             "huggingface-hub is not installed (pip install 'linnet-lang[nest]')"

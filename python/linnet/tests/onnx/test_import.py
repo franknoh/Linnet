@@ -2,7 +2,7 @@
 back through the PyTorch adapter with the graph's initializers — computes
 what the graph computes."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-import onnx  # type: ignore[import-untyped]
+import onnx
 import pytest
 import torch
-from onnx import TensorProto, helper, numpy_helper  # type: ignore[import-untyped]
+from onnx import TensorProto, helper, numpy_helper
 
 from linnet.onnx import OnnxImportError, find_compiler, import_onnx
 from linnet.torch import load
@@ -32,7 +32,7 @@ def _compiler() -> None:
             if (REPO / candidate).exists():
                 os.environ["LINNET_BIN"] = str(REPO / candidate)
                 break
-    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(0)
 
 
 def _compiler_ok(*args: str) -> None:
@@ -264,7 +264,7 @@ def test_torch_exported_mlp_imports(tmp_path: Path) -> None:
     """A model exported by PyTorch's own ONNX exporter imports, and the
     Linnet version agrees with the module."""
     pytest.importorskip("onnxscript")
-    torch.manual_seed(1)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(1)
     model = torch.nn.Sequential(
         torch.nn.Linear(6, 10),
         torch.nn.LayerNorm(10),
@@ -273,7 +273,7 @@ def test_torch_exported_mlp_imports(tmp_path: Path) -> None:
     )
     x = torch.randn(4, 6)
     path = tmp_path / "mlp.onnx"
-    torch.onnx.export(model, (x,), str(path), dynamo=True)  # pyright: ignore[reportUnknownMemberType]
+    torch.onnx.export(model, (x,), str(path), dynamo=True)
     result = import_onnx(
         path, output=tmp_path / "mlp.linnet", weights=tmp_path / "w", std_root=STDLIB
     )
@@ -308,11 +308,11 @@ def test_torch_decompositions_recover(tmp_path: Path) -> None:
     """RMS norms, SiLU, and a hand-written softmax come back as the library
     operations, and the imported module still agrees with PyTorch."""
     pytest.importorskip("onnxscript")
-    torch.manual_seed(2)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(2)
     model = _Decomposed()
     x = torch.randn(2, 3, 8)
     path = tmp_path / "decomposed.onnx"
-    torch.onnx.export(model, (x,), str(path), dynamo=True)  # pyright: ignore[reportUnknownMemberType]
+    torch.onnx.export(model, (x,), str(path), dynamo=True)
     result = import_onnx(
         path, output=tmp_path / "decomposed.linnet", weights=tmp_path / "w", std_root=STDLIB
     )

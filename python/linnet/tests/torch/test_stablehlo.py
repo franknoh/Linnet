@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import torch
 from numpy.typing import NDArray
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet import find_compiler
 from linnet.torch import load

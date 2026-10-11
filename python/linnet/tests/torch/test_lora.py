@@ -2,7 +2,7 @@
 model, trains its adapters alone, merges them into its weights with the same
 outputs, and saves and loads them on their own."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors import safe_open  # type: ignore[import-untyped]
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors import safe_open
+from safetensors.torch import save_file
 
 from linnet.plan import PlanError
 from linnet.torch import LinnetModule, bind_weights, load
@@ -49,7 +49,7 @@ def weights(tmp_path: Path) -> Path:
 
 
 def _model(weights: Path, **options: object) -> LinnetModule:
-    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # type: ignore[arg-type]
+    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # pyright: ignore[reportArgumentType]
 
 
 TOKENS = torch.tensor([[3, 1, 4, 1, 5, 9, 2]], dtype=torch.int32)
@@ -69,7 +69,7 @@ def _train(model: LinnetModule, steps: int) -> list[float]:
     for _ in range(steps):
         loss = model.run_entry("loss_packed", PACKED)
         loss.backward()
-        optimizer.step()
+        optimizer.step()  # pyright: ignore[reportUnknownMemberType]
         optimizer.zero_grad()
         losses.append(float(loss.detach()))
     return losses
@@ -118,9 +118,9 @@ def test_adapters_save_and_load_alone(weights: Path, tmp_path: Path) -> None:
     with torch.no_grad():
         expected = model.run_entry("forward", [TOKENS])
     saved = model.save_weights(tmp_path / "adapters.safetensors", names="linnet", include=ADAPTERS)
-    with safe_open(str(saved), framework="pt") as handle:  # type: ignore[no-untyped-call]
-        keys = set(handle.keys())
-    assert len(keys) == 16 and all(key.split(".")[-1] in ("lora_a", "lora_b") for key in keys)
+    with safe_open(str(saved), framework="pt") as handle:
+        keys = set(handle.keys())  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+    assert len(keys) == 16 and all(key.split(".")[-1] in ("lora_a", "lora_b") for key in keys)  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
 
     again = _model(weights, compile=True)
     again.add_lora(PATTERN, rank=4, alpha=8)

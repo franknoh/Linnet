@@ -4,8 +4,6 @@ computes the same thing shares the result -- with the same numbers as when
 it runs on every call. Views of a weight are not prepared (that would copy
 the weights), and a model being trained keeps everything in the graph."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import os
@@ -15,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.compiler import find_compiler
 from linnet.torch import CompiledLinnetModule, load
@@ -172,13 +170,13 @@ def test_jax_shares_prepared_values(files: tuple[Path, Path, dict[str, np.ndarra
     model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
     x = np.arange(5, dtype=np.float32) * 0.1
     for entry in ("first", "second"):
-        got = np.asarray(model.run_entry(entry, [jnp.asarray(x)]))
+        got = np.asarray(model.run_entry(entry, [jnp.asarray(x)]))  # pyright: ignore[reportUnknownMemberType]
         np.testing.assert_allclose(got, _expected(arrays, x, entry), rtol=1e-5, atol=1e-5)
     flat = np.arange(15, dtype=np.float32) * 0.1
-    got = np.asarray(model.run_entry("flat", [jnp.asarray(flat)]))
+    got = np.asarray(model.run_entry("flat", [jnp.asarray(flat)]))  # pyright: ignore[reportUnknownMemberType]
     np.testing.assert_allclose(got, _expected(arrays, flat, "flat"), rtol=1e-5, atol=1e-5)
     three = np.arange(3, dtype=np.float32) * 0.1
-    got = np.asarray(model.run_entry("turned", [jnp.asarray(three)]))
+    got = np.asarray(model.run_entry("turned", [jnp.asarray(three)]))  # pyright: ignore[reportUnknownMemberType]
     np.testing.assert_allclose(got, _expected(arrays, three, "turned"), rtol=1e-5, atol=1e-5)
     assert len(model._prepared) == 1  # pyright: ignore[reportPrivateUsage]
 

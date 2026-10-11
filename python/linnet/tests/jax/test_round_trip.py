@@ -2,7 +2,7 @@
 back with the same weights, and agrees with the original; Linnet examples run
 in JAX through the same `load`."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -123,8 +123,8 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
     )
     with jax.default_matmul_precision("highest"):
         expected = forward(params, tokens)
-    actual = jax.jit(model)(tokens)
-    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=1e-5, rtol=1e-5)
+    actual = jax.jit(model)(tokens)  # pyright: ignore[reportUnknownVariableType]
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=1e-5, rtol=1e-5)  # pyright: ignore[reportUnknownArgumentType]
 
     again = export_linnet(
         forward, params, (tokens,), output=tmp_path / "again/model.linnet", std_root=STDLIB
@@ -187,7 +187,10 @@ def test_activation_recovery(tmp_path: Path) -> None:
     _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
     model = load(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
     np.testing.assert_allclose(
-        np.asarray(model(x)), np.asarray(mlp(params, x)), atol=1e-5, rtol=1e-5
+        np.asarray(model(x)),  # pyright: ignore[reportUnknownArgumentType]
+        np.asarray(mlp(params, x)),
+        atol=1e-5,
+        rtol=1e-5,
     )
 
 
@@ -255,7 +258,7 @@ def test_linnet_example_runs_in_jax(tmp_path: Path) -> None:
         gate, up = h @ weights[p + "mlp.gate.weight"].T, h @ weights[p + "mlp.up.weight"].T
         x = x + (jax.nn.silu(gate) * up) @ weights[p + "mlp.down.weight"].T
     reference = rms_norm(x, weights["norm.weight"]) @ weights["head.weight"].T
-    np.testing.assert_allclose(np.asarray(out), np.asarray(reference), atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(np.asarray(out), np.asarray(reference), atol=1e-4, rtol=1e-4)  # pyright: ignore[reportUnknownArgumentType]
 
 
 def test_unsupported_operations_are_named(tmp_path: Path) -> None:

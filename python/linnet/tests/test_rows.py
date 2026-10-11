@@ -6,7 +6,7 @@ into their own row (`write_tokens`), and attention masked per sequence
 must compute the same numbers on every path, and the generated PyTorch must
 write its caches in place rather than copy them."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -230,10 +230,10 @@ def test_xla(source: Path, target: str) -> None:
     stored, mixed = _expected(case)
     store = loader(source, generics=GENERICS, weights={}, std_root=STDLIB, entry="store")
     got_store, state = store(jnp.asarray(case["prompt"]), jnp.int32(2), jnp.int32(1))
-    np.testing.assert_allclose(np.asarray(got_store), stored, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(got_store), stored, atol=1e-6)  # pyright: ignore[reportUnknownArgumentType]
     step = loader(source, generics=GENERICS, weights={}, std_root=STDLIB, entry="step")
     got, _ = step(*(jnp.asarray(case[k]) for k in ("value", "at", "query")), state=state)
-    np.testing.assert_allclose(np.asarray(got), mixed, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(np.asarray(got), mixed, atol=1e-5, rtol=1e-5)  # pyright: ignore[reportUnknownArgumentType]
 
 
 def test_onnx(source: Path, tmp_path: Path) -> None:
@@ -241,7 +241,7 @@ def test_onnx(source: Path, tmp_path: Path) -> None:
     sequence, `ScatterND` for a slot's span), and attention with a mask per
     sequence two `MatMul`s around a `Softmax`. Both must be right."""
     onnxruntime = pytest.importorskip("onnxruntime")
-    from safetensors.numpy import save_file  # type: ignore[import-untyped]
+    from safetensors.numpy import save_file  # pyright: ignore[reportUnknownVariableType]
 
     from linnet.onnx import export_model
 

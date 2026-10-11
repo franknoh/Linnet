@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
+from ..blockwise import SPLIT_LOSSES, block_rows
 from ..quant import FEW_ROWS, TILED_ROWS
 from . import expr as ex
 from .graph import Category, TensorGraph
@@ -49,7 +50,7 @@ from .graph import Category, TensorGraph
 MIB = 1 << 20
 
 
-class _Profile(TypedDict):
+class Profile(TypedDict):
     """A profile as `python -m linnet.resources.calibrate` writes it."""
 
     name: str
@@ -182,7 +183,7 @@ class DeviceSpec:
     @classmethod
     def load(cls, path: str | Path) -> DeviceSpec:
         """A profile `python -m linnet.resources.calibrate` wrote."""
-        data: _Profile = json.loads(Path(path).read_text(encoding="utf-8"))
+        data: Profile = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             name=str(data["name"]),
             memory=int(data["memory"]),
@@ -421,17 +422,11 @@ _ROUNDED = ("torch._scaled_mm", "torch._scaled_mm(blocks)", "linnet.int8_linear(
 _WRITES = ("torch.Tensor.index_copy", "torch.Tensor.index_put", "torch.Tensor.index_put(tokens)")
 _COLLECTIVES = ("torch.distributed.all_reduce", "torch.distributed.all_gather")
 _LOSSES = ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs")
-# A vocabulary split across processes: each runs the loss over its part.
-_SPLIT_LOSSES = {
-    "linnet.split_cross_entropy": "linnet.linear_cross_entropy",
-    "linnet.split_token_log_probs": "linnet.linear_token_log_probs",
-}
 # The chunked loss's passes over its f32 logits, bytes per logit: making
 # them (bf16, then f32) and their log-sum-exp; with gradients also the
 # softmax, its scaling and its cast back.
 _LOSS_BYTES = 16
 _LOSS_GRAD_BYTES = 46
-_LOSS_BLOCK_BYTES = 1 << 30  # f32 logits per block, as `linnet.torch.loss`
 
 
 @dataclass(slots=True)
@@ -534,6 +529,12 @@ def _fused(graph: TensorGraph) -> dict[int, list[int]]:
     return {members[0]: members for members in groups.values() if len(members) > 1}
 
 
+def host_time(graph: TensorGraph, env: Mapping[str, int], device: DeviceSpec) -> float:
+    """The host's seconds to issue the calls the generated code makes for
+    one step, on one process, without training."""
+    return sum(op.host for op in _costs(graph, env, device, 1, False)[0])
+
+
 def _costs(
     graph: TensorGraph,
     env: Mapping[str, int],
@@ -571,21 +572,20 @@ def _costs(
         rate: float,
         nbytes: float,
         issued: float,
-        kernels: int = 1,
         read_rate: float = 0.0,
     ) -> _Op:
         compute = flops / rate
         moved = nbytes / (read_rate or device.bandwidth)
-        floor = kernels * (device.kernel - device.gap)
+        floor = device.kernel - device.gap
         if compute >= moved:
-            return _Op(issued, max(compute, floor), "compute", kernels)
-        return _Op(issued, max(moved, floor), "memory", kernels)
+            return _Op(issued, max(compute, floor), "compute")
+        return _Op(issued, max(moved, floor), "memory")
 
     for step in graph.steps:
         if step.index in hoisted or step.index in joined:
             continue
         implementation = (step.implementation or "").split("(")[0]
-        implementation = _SPLIT_LOSSES.get(implementation, implementation)
+        implementation = SPLIT_LOSSES.get(implementation, implementation)
         full = step.implementation or ""
         owned = [o for o in step.outputs if graph.objects[o].owns_storage]
         read = sum(_bytes(graph, i, env) for i in dict.fromkeys(step.inputs))
@@ -719,7 +719,7 @@ def _costs(
             # A block of rows at a time: its products, then passes over its
             # f32 logits, one kernel after another; with gradients the
             # weight's gradient is summed in f32 every block as well.
-            blocks = -(-rows // max(1, _LOSS_BLOCK_BYTES // (4 * weight[0])))
+            blocks = -(-rows // block_rows(weight[0]))
             calls = (3 if gradients else 1) * host("product") + (11 if gradients else 5) * host(
                 "elementwise"
             )
@@ -936,7 +936,7 @@ def step_time(
             seconds = summed
     limit: Literal["compute", "memory", "communication", "host"] = max(
         ("compute", "memory", "communication", "host"), key=lambda k: totals[k]
-    )  # type: ignore[assignment]
+    )
     return Throughput(
         tokens * replicas,
         seconds,
@@ -949,4 +949,4 @@ def step_time(
     )
 
 
-__all__ = ["DEVICES", "DeviceSpec", "Throughput", "device", "step_time"]
+__all__ = ["DEVICES", "DeviceSpec", "Profile", "Throughput", "device", "step_time"]

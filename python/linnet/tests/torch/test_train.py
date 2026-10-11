@@ -2,7 +2,7 @@
 masks, gradient accumulation following the mean over every batch of a
 step, and a training loop that lowers the loss and saves what it trained."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import LinnetModule, load
 from linnet.train import Example, cosine_schedule, pack, train
@@ -92,8 +92,8 @@ def _examples() -> list[Example]:
     lengths = [5, 6, 4, 7]
     return [
         Example.prompted(
-            torch.randint(0, 11, (2,), generator=generator).tolist(),
-            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),
+            torch.randint(0, 11, (2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
+            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
         )
         for n in lengths
     ]
@@ -176,7 +176,7 @@ def test_data_parallel_steps_match_one_process(weights: Path, tmp_path: Path) ->
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    torch.multiprocessing.spawn(
+    torch.multiprocessing.spawn(  # pyright: ignore[reportPrivateImportUsage]
         _data_parallel_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2
     )
     ranks = [torch.load(tmp_path / f"rank{rank}.pt") for rank in range(2)]

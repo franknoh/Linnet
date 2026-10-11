@@ -1,8 +1,6 @@
 """XLA's options for a program by what bounds it: a pass over many tokens
 does many FLOPs a byte of its weights, a step over one does about one."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import importlib
@@ -81,7 +79,7 @@ def test_options_stay_on_the_outermost_jit(
     weights = {"proj.weight": np.eye(8, dtype=np.float32)}
     make = load_source if loader == "load_source" else load
     function = make(source, generics={"H": 8, "T": "f32"}, weights=weights, std_root=STDLIB)
-    x = jnp.ones((4, 8), jnp.float32)
+    x = jnp.ones((4, 8), jnp.float32)  # pyright: ignore[reportUnknownMemberType]
     np.testing.assert_allclose(np.asarray(function(x)), np.ones((4, 8)))
     parameters = function.parameters_for(x)
 
@@ -91,7 +89,7 @@ def test_options_stay_on_the_outermost_jit(
     def loss(values: dict[str, jax.Array]) -> jax.Array:
         return jnp.sum(run(values))
 
-    np.testing.assert_allclose(np.asarray(jax.jit(run)(parameters)), np.ones((4, 8)))
+    np.testing.assert_allclose(np.asarray(jax.jit(run)(parameters)), np.ones((4, 8)))  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
     if loader == "load_source":
-        grads = jax.jit(jax.grad(loss))(parameters)
-        np.testing.assert_allclose(np.asarray(grads["proj.weight"]), np.full((8, 8), 4.0))
+        grads = jax.jit(jax.grad(loss))(parameters)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        np.testing.assert_allclose(np.asarray(grads["proj.weight"]), np.full((8, 8), 4.0))  # pyright: ignore[reportUnknownArgumentType]

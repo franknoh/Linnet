@@ -7,7 +7,7 @@ replaces is donated to it, so XLA writes the new cache into the old one's
 memory rather than beside it.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -59,11 +59,11 @@ class LinnetModel:
             first = self._first
             kind = SourceFunction if self._generated else LinnetFunction
             function = kind(
-                first._source,  # pyright: ignore[reportPrivateUsage]
+                first.source,
                 first.program,
                 first.generics,
                 self.weights,
-                first._std_root,  # pyright: ignore[reportPrivateUsage]
+                first.std_root,
                 first.root,
                 name,
                 first.numerics,
@@ -85,12 +85,12 @@ class LinnetModel:
     def run_entry(self, name: str, inputs: Sequence[ArrayLike]) -> Result:  # pyright: ignore[reportExplicitAny]
         function = self._function(name)
         outcome = function.apply(function.weights, *inputs, state=self.state)
-        if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):
+        if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):  # pyright: ignore[reportUnknownArgumentType]
             return outcome
         result, state = outcome
         mesh = self.mesh
         if mesh is not None:
-            state = {path: self._shard_state(value, mesh) for path, value in state.items()}
+            state = {path: self._shard_state(value, mesh) for path, value in state.items()}  # pyright: ignore[reportUnknownArgumentType]
         self.state = state
         return result
 
@@ -134,7 +134,7 @@ class LinnetModel:
         functions = list({id(f): f for f in (self._first, *self._functions.values())}.values())
         replaced: dict[str, jax.Array] = {}
         for function in functions:
-            for compiled in function._cache.values():  # pyright: ignore[reportPrivateUsage]
+            for compiled in function.cache.values():
                 for i, path in enumerate(compiled.parameters):
                     if path not in parameters:
                         continue
@@ -163,11 +163,9 @@ class LinnetModel:
         for function in self._functions.values():
             if not isinstance(function, SourceFunction):
                 continue
-            for compiled in function._cache.values():  # pyright: ignore[reportPrivateUsage]
+            for compiled in function.cache.values():
                 if compiled.module is not None:
-                    compiled.prepared = function._prepared_values(  # pyright: ignore[reportPrivateUsage]
-                        compiled.module, compiled.arrays
-                    )
+                    compiled.prepared = function.prepared_values(compiled.module, compiled.arrays)
 
     def reset_state(self) -> None:
         self.state = {}
@@ -182,7 +180,7 @@ class LinnetModel:
         from ..parallel import split_axis
 
         if isinstance(mesh, int):
-            mesh = Mesh(np.array(jax.devices()[:mesh]), ("model",))
+            mesh = Mesh(np.array(jax.devices()[:mesh]), ("model",))  # pyright: ignore[reportUnknownArgumentType]
         axis_name = mesh.axis_names[0]
         devices = mesh.devices.size
         self.mesh = mesh
@@ -190,7 +188,7 @@ class LinnetModel:
         for path, value in list(self.weights.items()):
             # Checkpoint names the bindings map from stay on the host; only
             # the model's own paths go to the devices.
-            if not any(LinnetFunction._matches(pattern, path) for pattern in manifest):  # pyright: ignore[reportPrivateUsage]
+            if not any(LinnetFunction.matches(pattern, path) for pattern in manifest):
                 continue
             shape = tuple(np.shape(value))
             axis = split_axis(path, shape, devices, rules)

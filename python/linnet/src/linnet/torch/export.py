@@ -46,10 +46,9 @@ from ..plan import PlanError
 from .dtypes import LINNET_DTYPES
 
 if TYPE_CHECKING:
-    import sympy  # type: ignore[import-untyped]  # torch depends on sympy
+    import sympy  # pyright: ignore[reportMissingTypeStubs]  # torch depends on sympy
     from torch.export.graph_signature import ExportGraphSignature, InputSpec
     from torch.fx.node import Argument
-    from torch.utils._sympy.value_ranges import ValueRanges
 
 
 class ExportError(PlanError):
@@ -100,7 +99,7 @@ class _Symbols:
             return dim
         if isinstance(dim, torch.SymInt):
             return self.json(dim.node.expr)
-        import sympy  # type: ignore[import-untyped]  # torch depends on sympy
+        import sympy  # pyright: ignore[reportMissingTypeStubs]  # torch depends on sympy
 
         if isinstance(dim, sympy.Integer):
             return int(dim)
@@ -284,9 +283,6 @@ class _Program(Protocol):
     def graph_signature(self) -> ExportGraphSignature: ...
 
     @property
-    def range_constraints(self) -> Mapping[sympy.Symbol, ValueRanges[sympy.Expr]]: ...
-
-    @property
     def constants(self) -> Mapping[str, object]: ...
 
     def run_decompositions(self) -> _Program: ...
@@ -339,7 +335,7 @@ def export_linnet(
     weights_path: Path | None = None
     bindings_path: Path | None = None
     if weights is not None:
-        from safetensors.torch import save_file  # type: ignore[import-untyped]
+        from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
         weights_path, bindings_path = exporter.hierarchy.weights_files(weights)
         tensors = {
@@ -650,18 +646,10 @@ class _Exporter:
     def result_of(self, node: torch.fx.Node) -> tuple[torch.dtype, tuple[Dim, ...] | None]:
         return self._result(node)
 
-    def elementwise(
-        self,
-        node: torch.fx.Node,
-        kind: str,
-        *operands: _Value,
-        attrs: dict[str, object] | None = None,
-    ) -> _Value:
-        return self.builder.op(kind, list(operands), self._result(node), attrs, name=node.name)
+    def elementwise(self, node: torch.fx.Node, kind: str, *operands: _Value) -> _Value:
+        return self.builder.op(kind, list(operands), self._result(node), name=node.name)
 
-    def binary(
-        self, node: torch.fx.Node, kind: str, attrs: dict[str, object] | None = None
-    ) -> _Value:
+    def binary(self, node: torch.fx.Node, kind: str) -> _Value:
         dtype, _ = self._result(node)
         a, b = node.args[0], node.args[1]
         left = self.scalar(a, dtype) if not isinstance(a, torch.fx.Node) else self.value_of(a)
@@ -674,7 +662,7 @@ class _Exporter:
                 [right, self.builder.const(cast(float, alpha), dtype)],
                 (right.dtype, right.shape),
             )
-        return self.builder.op(kind, [left, right], self._result(node), attrs, name=node.name)
+        return self.builder.op(kind, [left, right], self._result(node), name=node.name)
 
     def unify(self, left: _Value, right: _Value, dtype: torch.dtype) -> tuple[_Value, _Value]:
         """Casts operands to the result dtype; comparisons keep their own."""

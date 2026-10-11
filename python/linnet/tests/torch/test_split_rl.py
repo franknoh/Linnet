@@ -2,8 +2,6 @@
 `gloo` processes, each with half of every split weight, train as the whole
 model does on one -- the same steps and the same weights after."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import itertools
@@ -17,8 +15,8 @@ from typing import TYPE_CHECKING, cast
 import pytest
 import torch
 import torch.distributed as dist
-from safetensors.torch import save_file  # type: ignore[import-untyped]
-from torch.multiprocessing.spawn import spawn
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
+from torch.multiprocessing.spawn import spawn  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.serve import Completion, Request
 from linnet.torch import LinnetModule, load
@@ -146,7 +144,7 @@ def _model(
 def _pairs() -> list[Pair]:
     generator = torch.Generator().manual_seed(2)
     return [
-        Pair(torch.randint(0, 10, (2,), generator=generator).tolist(), [3, 3, 3], [7, 7, 7])
+        Pair(torch.randint(0, 10, (2,), generator=generator).tolist(), [3, 3, 3], [7, 7, 7])  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         for _ in range(8)
     ]
 

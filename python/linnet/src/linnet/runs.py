@@ -3,8 +3,6 @@
 step, the directories checkpoints go in, how GRPO samples and scores a
 step's completions, and how DPO lays out its pairs."""
 
-# pyright: reportUnknownMemberType=false
-
 from __future__ import annotations
 
 import random

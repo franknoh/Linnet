@@ -3,7 +3,7 @@ of every parameter, the generated code gathers a parameter where it is used
 and drops it after, backward keeps the parts rather than the wholes, and
 training takes the steps one process takes over every process's batches."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false, reportAttributeAccessIssue=false, reportPrivateUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import torch
-from safetensors.torch import load_file, save_file  # type: ignore[import-untyped]
+from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.compiler import find_compiler
 from linnet.torch import LinnetModule, fully_shard, load
@@ -102,8 +102,8 @@ def _examples() -> list[Example]:
     generator = torch.Generator().manual_seed(1)
     return [
         Example.prompted(
-            torch.randint(0, 11, (2,), generator=generator).tolist(),
-            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),
+            torch.randint(0, 11, (2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
+            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
         )
         for n in [5, 6, 4, 7]
     ]
@@ -120,17 +120,17 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
         model = _load(Path(weights))
         assert fully_shard(model) == UNITS
         part = model.get_parameter("root.embedding.weight")
-        assert tuple(part.to_local().shape) == ((6, 8) if rank == 0 else (5, 8))
+        assert tuple(part.to_local().shape) == ((6, 8) if rank == 0 else (5, 8))  # pyright: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
         # The part owns its memory; a view would keep the whole table alive.
         for parameter in model.parameters():
-            local = parameter.to_local() if hasattr(parameter, "to_local") else None
+            local = parameter.to_local() if hasattr(parameter, "to_local") else None  # pyright: ignore[reportAttributeAccessIssue, reportUnknownVariableType]
             if local is not None:
                 assert local.untyped_storage().nbytes() == local.numel() * local.element_size()
 
         # Backward keeps the parts: no whole weight outlives the forward.
         mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
         wholes: list[weakref.ref[torch.Tensor]] = []
-        gathered = fsdp._whole
+        gathered = fsdp._whole  # pyright: ignore[reportPrivateUsage]
 
         def recording(part: DTensor, dtype: torch.dtype) -> torch.Tensor:
             whole = gathered(part, dtype)
@@ -138,14 +138,14 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str) -> None:
                 wholes.append(weakref.ref(whole))
             return whole
 
-        fsdp._whole = recording
+        fsdp._whole = recording  # pyright: ignore[reportPrivateUsage]
         try:
             loss = model.run_entry("loss_packed", mine.inputs(mine.count))
             gc.collect()
             assert wholes and all(ref() is None for ref in wholes)
             loss.backward()
         finally:
-            fsdp._whole = gathered
+            fsdp._whole = gathered  # pyright: ignore[reportPrivateUsage]
         model.zero_grad(set_to_none=True)
 
         trained = [p for p in model.parameters() if p.requires_grad]
@@ -161,7 +161,7 @@ def test_sharded_training_matches_one_process(weights: Path, tmp_path: Path) -> 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    torch.multiprocessing.spawn(_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)
+    torch.multiprocessing.spawn(_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)  # pyright: ignore[reportPrivateImportUsage]
     sharded = load_file(str(tmp_path / "sharded.safetensors"))
 
     model = _load(weights)
@@ -215,7 +215,7 @@ def test_adapters_on_a_sharded_model_match_one_process(weights: Path, tmp_path: 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    torch.multiprocessing.spawn(_lora_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)
+    torch.multiprocessing.spawn(_lora_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2)  # pyright: ignore[reportPrivateImportUsage]
     sharded = load_file(str(tmp_path / "adapters.safetensors"))
 
     model = _load(weights)

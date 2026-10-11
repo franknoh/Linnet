@@ -3,8 +3,6 @@ a run stopped after two steps and resumed ends where an unbroken run ends,
 optimizer state and schedule included, for a whole model and for one split
 across processes; a LoRA run keeps only its adapters."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import os
@@ -13,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import load_file, save_file  # type: ignore[import-untyped]
+from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import LinnetModule, fully_shard, load
 from linnet.train import Batch, Example, cosine_schedule, pack, train
@@ -59,8 +57,8 @@ def _batches(seed: int = 1) -> list[Batch]:
     generator = torch.Generator().manual_seed(seed)
     examples = [
         Example.prompted(
-            torch.randint(0, 11, (2,), generator=generator).tolist(),
-            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),
+            torch.randint(0, 11, (2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         )
         for n in [5, 6, 4, 7, 5, 6, 7, 4]
     ]
@@ -103,7 +101,9 @@ def test_a_resumed_run_ends_where_an_unbroken_one_does(weights: Path, tmp_path: 
 
 
 def test_a_lora_run_keeps_only_its_adapters(weights: Path, tmp_path: Path) -> None:
-    from torch.distributed.checkpoint import FileSystemReader
+    from torch.distributed.checkpoint import (
+        FileSystemReader,  # pyright: ignore[reportPrivateImportUsage]
+    )
 
     model = _load(weights)
     model.add_lora("layers.*.attention.*_proj.weight", rank=2, alpha=4)
@@ -141,7 +141,7 @@ def test_a_sharded_run_resumes(weights: Path, tmp_path: Path) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    torch.multiprocessing.spawn(
+    torch.multiprocessing.spawn(  # pyright: ignore[reportPrivateImportUsage, reportUnknownMemberType]
         _sharded_rank, args=(2, port, str(weights), str(tmp_path)), nprocs=2
     )
     unbroken = load_file(str(tmp_path / "unbroken.safetensors"))

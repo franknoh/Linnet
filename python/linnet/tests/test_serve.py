@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, ParamSpec, TypeAlias, TypedDict, TypeVar, cast
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.serve import Completion, Engine, Request
 from linnet.torch import LinnetModule, load
@@ -407,7 +407,7 @@ def _greedy(model: torch.nn.Module, request: Request) -> list[int]:
     device = next(iter(model.parameters())).device
     for _ in range(request.max_new_tokens):
         tokens = torch.tensor([ids], dtype=torch.int32, device=device)
-        token = int(model.run_entry("forward", [tokens])[0, -1].argmax())  # type: ignore[operator]
+        token = int(model.run_entry("forward", [tokens])[0, -1].argmax())  # pyright: ignore[reportCallIssue, reportUnknownArgumentType, reportUnknownMemberType]
         out.append(token)
         ids.append(token)
     return out
@@ -456,7 +456,7 @@ def test_identical_prompts_share_one_pass(model_files: tuple[Path, Path]) -> Non
         def counting(prompts: list[list[int]], *args: object, **kwargs: object) -> None:
             passed.append(sum(len(p) for p in prompts))
 
-        engine.backend.prefill_packed = _spied(prefill, counting)  # type: ignore[method-assign]
+        engine.backend.prefill_packed = _spied(prefill, counting)
         done, _ = engine.run(requests)
         return [c.tokens for c in done], passed
 

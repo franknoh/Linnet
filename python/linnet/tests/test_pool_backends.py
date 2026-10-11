@@ -3,8 +3,6 @@
 does. Before they had one, an export read every window through an index
 table: 1.8 GB of it for a ResNet stem at batch 32."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import os
@@ -15,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 import torch.nn.functional as functional
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.compiler import find_compiler
 
@@ -109,7 +107,7 @@ def test_xla_pooling_is_f_max_pool2d(
     model = load_model(
         source, generics=generics, weights=weights, std_root=STDLIB, generated=generated
     )
-    got = np.asarray(model.run_entry("forward", [jnp.asarray(x.numpy())]))
+    got = np.asarray(model.run_entry("forward", [jnp.asarray(x.numpy())]))  # pyright: ignore[reportUnknownMemberType]
     np.testing.assert_allclose(got, expected.numpy(), atol=1e-6, rtol=1e-6)
 
 
