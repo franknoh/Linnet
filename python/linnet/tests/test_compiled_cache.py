@@ -4,7 +4,6 @@ read compiles anew."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -15,9 +14,7 @@ import pytest
 from linnet import compiler
 from linnet.generated import import_generated, write_generated
 from linnet.plan import compile_plan
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module cached
@@ -31,11 +28,6 @@ pub entry double(x: Tensor[4; f32]) -> Tensor[4; f32] {
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LINNET_HOME", str(tmp_path / "home"))
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                monkeypatch.setenv("LINNET_BIN", str(REPO / candidate))
-                break
 
 
 def _counting(monkeypatch: pytest.MonkeyPatch) -> list[int]:

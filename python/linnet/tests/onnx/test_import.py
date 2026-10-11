@@ -6,8 +6,6 @@ what the graph computes."""
 
 from __future__ import annotations
 
-import os
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -18,28 +16,14 @@ import pytest
 import torch
 from onnx import TensorProto, helper, numpy_helper
 
-from linnet.onnx import OnnxImportError, find_compiler, import_onnx
+from linnet.onnx import OnnxImportError, import_onnx
 from linnet.torch import load
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, compiler_ok
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)
-
-
-def _compiler_ok(*args: str) -> None:
-    completed = subprocess.run(
-        [find_compiler(), *args], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _tensor(name: str, array: npt.NDArray[np.generic]) -> TensorProto:
@@ -239,8 +223,8 @@ def test_hand_built_transformer_round_trips(tmp_path: Path) -> None:
     assert "pub entry forward<batch: Dim, seq: Dim>" in source
     assert "sub blocks: [Block; 2]" in source
     assert "layer_norm<" in source and "softmax<" in source
-    _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
-    _compiler_ok("fmt", "--check", str(result.source))
+    compiler_ok("lint", "--std", str(STDLIB), str(result.source))
+    compiler_ok("fmt", "--check", str(result.source))
 
     module = load(
         result.source,

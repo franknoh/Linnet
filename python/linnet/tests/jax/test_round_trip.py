@@ -6,7 +6,6 @@ in JAX through the same `load`."""
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import TypeAlias, TypedDict
 
@@ -17,10 +16,9 @@ import numpy.typing as npt
 import pytest
 from jax.typing import ArrayLike
 
-from linnet.jax import ExportError, export_linnet, find_compiler, import_stablehlo, load
+from linnet.jax import ExportError, export_linnet, import_stablehlo, load
+from tests.helpers import REPO, STDLIB, compiler_ok
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 FIXTURES = REPO / "tests" / "fixtures"
 
 Layer: TypeAlias = dict[str, jax.Array]
@@ -30,13 +28,6 @@ class Params(TypedDict):
     embedding: jax.Array
     layers: list[Layer] | dict[str, Layer]  # a list, or a stack keyed "0", "1", ...
     head: jax.Array
-
-
-def _compiler_ok(*args: str) -> None:
-    completed = subprocess.run(
-        [find_compiler(), *args], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def rms_norm(x: jax.Array, weight: ArrayLike) -> jax.Array:
@@ -110,8 +101,8 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
     assert "recovered softmax from its decomposition" in result.notes
     assert "sigmoid<" not in source  # subsumed by silu
     assert result.bindings is None
-    _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
-    _compiler_ok("fmt", "--check", str(result.source))
+    compiler_ok("lint", "--std", str(STDLIB), str(result.source))
+    compiler_ok("fmt", "--check", str(result.source))
 
     # Both sides at full f32 precision: on a GPU, XLA's default is TF32.
     model = load(
@@ -184,7 +175,7 @@ def test_activation_recovery(tmp_path: Path) -> None:
     source = result.source.read_text()
     assert "gelu<" in source and "sigmoid<" in source
     assert source.count("tanh(") == 1
-    _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
+    compiler_ok("lint", "--std", str(STDLIB), str(result.source))
     model = load(result.source, generics={}, weights=tmp_path / "weights", std_root=STDLIB)
     np.testing.assert_allclose(
         np.asarray(model(x)),  # pyright: ignore[reportUnknownArgumentType]

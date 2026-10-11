@@ -19,12 +19,11 @@ from torch.multiprocessing.spawn import spawn  # pyright: ignore[reportUnknownVa
 
 from linnet.torch import load
 from linnet.weights import write_bindings
+from tests.helpers import STDLIB
 
 if TYPE_CHECKING:
     from linnet.train import Batch
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 
 SOURCE = """\
 module tests.shards
@@ -55,15 +54,6 @@ where
 """
 
 GENERICS: dict[str, int | str] = {"H": 8, "Inner": 12, "Vocab": 10}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _shard(rank: int, port: int, source: str, weights: str, out: str) -> None:

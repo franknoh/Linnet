@@ -1,11 +1,11 @@
 """Continuous batching (`linnet.serve`): requests decoded together, each at
 its own length and joining as rows free up, must each get exactly the tokens
-greedy decoding over the whole sequence gives them -- on both backends."""
+greedy decoding over the whole sequence gives them -- on PyTorch, JAX and
+ONNX Runtime alike."""
 
 from __future__ import annotations
 
 import json
-import os
 import random
 import threading
 import urllib.error
@@ -21,13 +21,12 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 
 from linnet.serve import Completion, Engine, Request
 from linnet.torch import LinnetModule, load
+from tests.helpers import STDLIB, requires_cuda
 
 if TYPE_CHECKING:
     from linnet.jax import LinnetModel
     from linnet.onnx import OnnxModel
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
 
 SOURCE = """\
 module tests.serve
@@ -333,15 +332,6 @@ where
 GENERICS: dict[str, int | str] = {"Vocab": 64, "H": 32, "Heads": 4, "Batch": 3, "MaxSeq": 48}
 
 
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
-
-
 def _files(tmp_path: Path, positions: int) -> tuple[Path, Path]:
     source = tmp_path / "serve.linnet"
     source.write_text(SOURCE, encoding="utf-8")
@@ -501,7 +491,7 @@ def test_packs_fill_passes_longest_first(model_files: tuple[Path, Path]) -> None
     assert [[len(c.request.prompt) for _, c in p] for p in passes] == [[100], [40, 30]]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 def test_torch_cuda_graphs(model_files: tuple[Path, Path]) -> None:
     """On CUDA the step replays as a CUDA graph, its tokens stay on the
     device, and each step is queued before the last one is read: rows that
@@ -517,7 +507,7 @@ def test_torch_cuda_graphs(model_files: tuple[Path, Path]) -> None:
     assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 def test_mixed_passes_on_flex_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Heads 16 wide and passes of 128 tokens and more, so the prompts and
     the rows' steps both run on FlexAttention, replayed as CUDA graphs: the
@@ -715,7 +705,7 @@ def test_paged_rows_stop_at_their_longest(paged_files: tuple[Path, Path]) -> Non
         engine.submit(Request(prompt=list(range(24)), max_new_tokens=1))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 def test_paged_rows_on_flex_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pages of 16 positions read by FlexAttention, the passes replayed as
     CUDA graphs: more rows than the pool holds at their longest, so some
@@ -1056,7 +1046,7 @@ def test_backends_sample_as_torch_does(model_files: tuple[Path, Path], backend: 
     assert _alone(engine, requests[:3]) == [c.tokens for c in expected[:3]]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 def test_torch_cuda_graphs_sample(model_files: tuple[Path, Path]) -> None:
     source, weights = model_files
     reference = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)

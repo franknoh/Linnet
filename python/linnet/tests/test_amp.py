@@ -10,7 +10,6 @@ returns f32 gradients."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -19,9 +18,7 @@ import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.amp
@@ -39,15 +36,6 @@ pub block Model<I: Dim, O: Dim, T: Float = f32> {
 """
 
 GENERICS: dict[str, int | str] = {"I": 16, "O": 8}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture

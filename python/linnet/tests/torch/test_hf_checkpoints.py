@@ -1,6 +1,6 @@
-"""Real checkpoints: the Llama example loaded with TinyLlama's weights gives
-the logits `transformers` gives. Downloads about 2 GB, so it runs only with
-`LINNET_HF_TESTS=1`."""
+"""Real checkpoints give the logits `transformers` gives: the Llama example
+with TinyLlama's weights, GPT-2 and ResNet-18. Downloads about 2 GB, so it
+runs only with `LINNET_HF_TESTS=1`."""
 
 from __future__ import annotations
 
@@ -14,25 +14,15 @@ import pytest
 import torch
 
 from linnet.torch import bind_weights, load
+from tests.helpers import REPO, STDLIB
 
 if TYPE_CHECKING:
     from transformers import ResNetForImageClassification
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("LINNET_HF_TESTS") != "1", reason="set LINNET_HF_TESTS=1 to download checkpoints"
 )
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _tinyllama_bindings(layers: int) -> dict[str, str]:

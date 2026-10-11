@@ -5,7 +5,6 @@ table: 1.8 GB of it for a ResNet stem at batch 32."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -16,9 +15,7 @@ import torch.nn.functional as functional
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.compiler import find_compiler
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.pool
@@ -44,15 +41,6 @@ where
 # (H, K, Stride, Pad): a ResNet stem's pooling, one without padding, and one
 # whose windows overlap nothing.
 GEOMETRIES = [(16, 3, 2, 1), (9, 3, 1, 0), (8, 2, 2, 0)]
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def _case(

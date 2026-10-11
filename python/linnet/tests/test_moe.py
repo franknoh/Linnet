@@ -5,7 +5,6 @@ expert, reading the weights where they lie, inside a CUDA graph too."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import cast
 
@@ -15,9 +14,7 @@ import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import CompiledLinnetModule, load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_sm90
 
 SOURCE = """\
 module tests.moe
@@ -38,15 +35,6 @@ pub block Model<E: Dim, In: Dim, Out: Dim, K: Dim, T: Float = f32> {
 """
 
 GENERICS: dict[str, int | str] = {"E": 8, "In": 64, "Out": 48, "K": 2}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture
@@ -105,10 +93,7 @@ def test_jax_runs_the_body(files: tuple[Path, Path, torch.Tensor]) -> None:
     np.testing.assert_allclose(got, _expected(x, weight, experts).numpy(), atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
-    reason="the grouped matrix product needs a Hopper GPU",
-)
+@requires_sm90
 def test_cuda_groups_the_rows_by_expert(files: tuple[Path, Path, torch.Tensor]) -> None:
     source, path, weight = files
     generics = {**GENERICS, "T": "bf16"}
@@ -241,10 +226,7 @@ def test_jax_runs_the_routed_bodies(routed: tuple[Path, Path, torch.Tensor, torc
     np.testing.assert_allclose(got, expected, atol=1e-4, rtol=1e-4)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
-    reason="the grouped matrix product needs a Hopper GPU",
-)
+@requires_sm90
 def test_cuda_routes_the_rows(routed: tuple[Path, Path, torch.Tensor, torch.Tensor]) -> None:
     source, path, up, down = routed
     model = load(

@@ -8,9 +8,8 @@ from pathlib import Path
 import pytest
 
 from linnet import run_compiler
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
 MODULES = [
     block
     for block in re.findall(r"```linnet\n(.*?)```", (REPO / "LANGUAGE.md").read_text("utf-8"), re.S)

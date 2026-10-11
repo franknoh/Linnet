@@ -3,7 +3,6 @@ match hand-written PyTorch references for the same weights."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -11,19 +10,13 @@ import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import PlanError, load
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 FIXTURES = REPO / "tests" / "fixtures"
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 

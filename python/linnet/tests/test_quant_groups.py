@@ -7,7 +7,6 @@ ONNX Runtime's `MatMulNBits`."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -22,9 +21,7 @@ from linnet.quant import (
     quantize_int4_groups,
 )
 from linnet.torch import CompiledLinnetModule, load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_cuda
 
 SOURCE = """\
 module tests.q4
@@ -46,15 +43,6 @@ where
 """
 
 IN, OUT, GROUP = 256, 64, 128
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def test_rounding_stays_within_half_a_step() -> None:
@@ -123,7 +111,7 @@ def test_onnx_runs_matmulnbits(model_files: tuple[Path, Path, np.ndarray]) -> No
     np.testing.assert_allclose(got, x @ weight.T, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="tinygemm runs on CUDA")
+@requires_cuda
 def test_cuda_bf16_runs_tinygemm(
     model_files: tuple[Path, Path, np.ndarray], tmp_path: Path
 ) -> None:
@@ -174,7 +162,7 @@ def test_cuda_bf16_runs_tinygemm(
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="the kernel runs on CUDA")
+@requires_cuda
 @pytest.mark.parametrize(
     ("rows", "group", "out", "dtype"),
     [

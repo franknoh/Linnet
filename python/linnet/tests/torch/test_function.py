@@ -6,7 +6,6 @@ model's parameters too."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -15,19 +14,13 @@ from torch.nn import functional
 
 from linnet.plan import PlanError
 from linnet.torch import load, load_function
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 EXAMPLE = REPO / "tests" / "fixtures" / "functions" / "functions.linnet"
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 

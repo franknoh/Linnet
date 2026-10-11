@@ -12,9 +12,7 @@ import pytest
 import torch
 
 from linnet.torch import load_function
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, requires_cuda
 
 SOURCE = """\
 module tests.sinks
@@ -93,7 +91,7 @@ def test_the_sink_takes_its_share(tmp_path: Path, numerics: str, compile: bool) 
     assert bool((got[1, :, 0] == 0).all())
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention runs on CUDA")
+@requires_cuda
 @pytest.mark.parametrize(("queries", "batch"), [(128, 1), (1, 2), (128, 2)])
 def test_flex_attention_folds_the_sink_in(tmp_path: Path, queries: int, batch: int) -> None:
     """Under `torch.compile` on CUDA, FlexAttention over the blocks the mask

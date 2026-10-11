@@ -4,8 +4,6 @@ the engine reporting the policy's own log-probabilities sees no mismatch."""
 
 from __future__ import annotations
 
-import itertools
-import random
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -15,63 +13,38 @@ import numpy as np
 import optax  # pyright: ignore[reportMissingTypeStubs]
 import pytest
 import torch
-from safetensors.numpy import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.jax import SourceFunction, load_source
 from linnet.jax.dpo import dpo
 from linnet.jax.grpo import grpo
-from linnet.packing import Pair, Prompt
 from linnet.serve import Completion, Request
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
+from tests.helpers import (
+    LLAMA,
+    STDLIB,
+    TINY_LLAMA,
+    random_llama,
+    threes,
+    tiny_pairs,
+    tiny_prompts,
+)
 
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    from linnet.torch import load as load_torch
-
-    skeleton = load_torch(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): (torch.randn(p.shape, generator=generator) * 0.3).numpy()
-        for name, p in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
     directory = tmp_path / "weights"
     directory.mkdir()
-    save_file(tensors, str(directory / "model.safetensors"))
+    random_llama(directory / "model.safetensors")
     return directory
 
 
 def _entry(weights: Path, entry: str) -> SourceFunction:
-    return load_source(LLAMA, generics=GENERICS, weights=weights, entry=entry, std_root=STDLIB)
-
-
-def _pairs(count: int) -> list[Pair]:
-    generator = torch.Generator().manual_seed(2)
-    return [
-        Pair(torch.randint(0, 11, (2,), generator=generator).tolist(), [3, 3, 3, 3], [7, 7, 7, 7])  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
-        for _ in range(count)
-    ]
+    return load_source(LLAMA, generics=TINY_LLAMA, weights=weights, entry=entry, std_root=STDLIB)
 
 
 def test_dpo_raises_the_margin(weights: Path) -> None:
     _, history = dpo(
         _entry(weights, "log_probs_packed"),
-        _pairs(24),
+        tiny_pairs(24),
         optimizer=optax.adamw(1e-2),
         steps=6,
         pairs_per_step=4,
@@ -89,7 +62,7 @@ def test_dpo_takes_the_steps_pytorch_takes(weights: Path) -> None:
 
     params, _ = dpo(
         _entry(weights, "log_probs_packed"),
-        _pairs(8),
+        tiny_pairs(8),
         optimizer=optax.sgd(0.1),
         steps=2,
         pairs_per_step=4,
@@ -98,12 +71,12 @@ def test_dpo_takes_the_steps_pytorch_takes(weights: Path) -> None:
         clip=None,
     )
     theirs = load_torch(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True, trainable=True
+        LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True, trainable=True
     )
     trained = [p for p in theirs.parameters() if p.requires_grad]
     dpo_torch(
         theirs,
-        _pairs(8),
+        tiny_pairs(8),
         optimizer=torch.optim.SGD(trained, lr=0.1),
         steps=2,
         pairs_per_step=4,
@@ -161,21 +134,12 @@ class _Sampler:
         return done, None
 
 
-def _prompts() -> itertools.cycle[Prompt]:
-    rng = random.Random(0)
-    return itertools.cycle([Prompt([rng.randrange(11), rng.randrange(11)]) for _ in range(8)])
-
-
-def _threes(_: Prompt, completion: list[int]) -> float:
-    return sum(token == 3 for token in completion) / len(completion)
-
-
 def test_grpo_learns_what_the_reward_asks(weights: Path) -> None:
     _, history = grpo(
         _entry(weights, "log_probs_packed"),
         _Sampler(_entry(weights, "forward")),
-        _prompts(),
-        _threes,
+        tiny_prompts(),
+        threes,
         optimizer=optax.adamw(3e-2),
         steps=10,
         group=6,
@@ -197,8 +161,8 @@ def test_grpo_takes_the_engine_weights_each_step(weights: Path) -> None:
     params, _ = grpo(
         _entry(weights, "log_probs_packed"),
         sampler,
-        _prompts(),
-        _threes,
+        tiny_prompts(),
+        threes,
         optimizer=optax.sgd(0.1),
         steps=3,
         group=4,
@@ -231,7 +195,7 @@ import optax
 from jax.sharding import Mesh
 
 sys.path.insert(0, sys.argv[2])
-from test_rl import _entry, _pairs, _prompts, _Sampler, _threes  # noqa: E402
+from test_rl import _entry, tiny_pairs, tiny_prompts, _Sampler, threes  # noqa: E402
 
 from linnet.jax.dpo import dpo  # noqa: E402
 from linnet.jax.grpo import grpo  # noqa: E402
@@ -248,8 +212,8 @@ def compare(split, one):
 
 # DPO: two batches a step, one per device.
 options = dict(optimizer=optax.sgd(0.1), steps=2, pairs_per_step=4, beta=0.5, tokens=24, clip=None)
-split, _ = dpo(_entry(weights, "log_probs_packed"), _pairs(8), mesh=mesh, **options)
-one, _ = dpo(_entry(weights, "log_probs_packed"), _pairs(8), **options)
+split, _ = dpo(_entry(weights, "log_probs_packed"), tiny_pairs(8), mesh=mesh, **options)
+one, _ = dpo(_entry(weights, "log_probs_packed"), tiny_pairs(8), **options)
 compare(split, one)
 
 # GRPO: one batch a step, the other device's a batch that learns nothing;
@@ -257,9 +221,9 @@ compare(split, one)
 options = dict(optimizer=optax.sgd(0.1), steps=2, group=4, prompts_per_step=2, max_new_tokens=6,
                tokens=64, clip_grad=None)
 split, _ = grpo(_entry(weights, "log_probs_packed"), _Sampler(_entry(weights, "forward")),
-                _prompts(), _threes, mesh=mesh, remat=True, **options)
+                tiny_prompts(), threes, mesh=mesh, remat=True, **options)
 one, _ = grpo(_entry(weights, "log_probs_packed"), _Sampler(_entry(weights, "forward")),
-              _prompts(), _threes, **options)
+              tiny_prompts(), threes, **options)
 compare(split, one)
 print("same")
 """

@@ -12,9 +12,7 @@ from torch.nn import functional
 
 import linnet.torch.loss as chunked
 from linnet.torch import load_function
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.losses

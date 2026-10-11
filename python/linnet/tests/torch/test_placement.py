@@ -3,7 +3,6 @@ must compute exactly what the model computes on one device."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -14,9 +13,7 @@ from linnet.compiler import find_compiler
 from linnet.sizes import parse_size
 from linnet.torch import CompiledLinnetModule, Placement, load
 from linnet.torch.placement import apply, plan
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.placement
@@ -53,12 +50,7 @@ GENERICS: dict[str, int | str] = {"D": 16, "Layers": 4, "T": "f32"}
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 

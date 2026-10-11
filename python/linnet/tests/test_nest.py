@@ -14,9 +14,7 @@ import pytest
 from safetensors.numpy import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet import ir, nest
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import REPO, STDLIB
 
 CARD = """\
 [model]

@@ -19,27 +19,12 @@ import optax  # pyright: ignore[reportMissingTypeStubs]
 import pytest
 import torch
 from jax.typing import ArrayLike
-from safetensors.numpy import save_file
 
 from linnet.jax import SourceFunction, load_source
 from linnet.jax import loss as blockwise
 from linnet.jax.train import train
-from linnet.packing import Example, Packed, pack
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
+from linnet.packing import Packed, pack
+from tests.helpers import LLAMA, STDLIB, TINY_LLAMA, random_llama, tiny_examples
 
 
 def _dense_log_probs(hidden: jax.Array, weight: jax.Array, targets: jax.Array) -> jax.Array:
@@ -84,50 +69,30 @@ def test_blockwise_losses_match_dense(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    from linnet.torch import load as load_torch
-
-    skeleton = load_torch(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): (torch.randn(p.shape, generator=generator) * 0.3).numpy()
-        for name, p in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
     directory = tmp_path / "weights"
     directory.mkdir()
-    save_file(tensors, str(directory / "model.safetensors"))
+    random_llama(directory / "model.safetensors")
     return directory
 
 
 def _model(weights: Path | Mapping[str, ArrayLike]) -> SourceFunction:
     return load_source(
-        LLAMA, generics=GENERICS, weights=weights, entry="loss_packed", std_root=STDLIB
+        LLAMA, generics=TINY_LLAMA, weights=weights, entry="loss_packed", std_root=STDLIB
     )
-
-
-def _examples() -> list[Example]:
-    generator = torch.Generator().manual_seed(1)
-    return [
-        Example.prompted(
-            torch.randint(0, 11, (2,), generator=generator).tolist(),
-            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),
-        )
-        for n in [5, 6, 4, 7]
-    ]
 
 
 def test_loss_packed_matches_pytorch(weights: Path) -> None:
     from linnet.torch import load as load_torch
     from linnet.train import Batch
 
-    batch = next(pack(_examples(), tokens=24))
+    batch = next(pack(tiny_examples(), tokens=24))
     arrays = batch.arrays(batch.count)
     model = _model(weights)
     params = model.parameters_for(*arrays)
     loss, grads = jax.value_and_grad(lambda p: model.apply(p, *arrays))(params)
 
     theirs = load_torch(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True, trainable=True
+        LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True, trainable=True
     )
     expected = theirs.run_entry("loss_packed", Batch.of(batch).inputs(batch.count))
     expected.backward()
@@ -141,7 +106,7 @@ def test_loss_packed_matches_pytorch(weights: Path) -> None:
 
 
 def test_training_lowers_the_loss(weights: Path) -> None:
-    batch = next(pack(_examples(), tokens=24))
+    batch = next(pack(tiny_examples(), tokens=24))
     params, history = train(
         _model(weights),
         itertools.repeat(batch),
@@ -168,7 +133,7 @@ def _one_step(
 
 
 def test_accumulated_batches_follow_the_mean_over_all_of_them(weights: Path) -> None:
-    examples = _examples()
+    examples = tiny_examples()
     halves = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
     whole = [next(pack(examples, tokens=24))]
     accumulated = _one_step(_model(weights), halves, accumulate=2)
@@ -182,7 +147,7 @@ def test_tied_paths_train_as_one_and_frozen_ones_stay(weights: Path) -> None:
 
     loaded = load_file(str(weights / "model.safetensors"))
     loaded["lm_head.weight"] = loaded["embedding.weight"]  # one tensor, two paths
-    batch = [next(pack(_examples(), tokens=24))]
+    batch = [next(pack(tiny_examples(), tokens=24))]
     model = _model(loaded)
     start = model.parameters_for(*batch[0].arrays(1.0))
     assert start["lm_head.weight"] is start["embedding.weight"]
@@ -203,7 +168,7 @@ def test_tied_paths_train_as_one_and_frozen_ones_stay(weights: Path) -> None:
 
 
 def _four_batches() -> list[Packed]:
-    examples = _examples() * 2
+    examples = tiny_examples() * 2
     return [next(pack(examples[i : i + 2], tokens=12)) for i in range(0, 8, 2)]
 
 
@@ -254,7 +219,7 @@ import optax
 from jax.sharding import Mesh
 
 sys.path.insert(0, sys.argv[2])
-from test_train import GENERICS, LLAMA, STDLIB, _four_batches, _model  # noqa: E402
+from test_train import TINY_LLAMA, LLAMA, STDLIB, _four_batches, _model  # noqa: E402
 
 from linnet.jax import load_source  # noqa: E402
 from linnet.jax.train import train  # noqa: E402
@@ -275,7 +240,7 @@ for path, value in one.items():
 # Computing in bf16 from f32 masters: the parts are gathered in bf16, the
 # gradients reduced in f32, as one device casts and accumulates.
 def bf16():
-    return load_source(LLAMA, generics={**GENERICS, "T": "bf16"}, weights=weights,
+    return load_source(LLAMA, generics={**TINY_LLAMA, "T": "bf16"}, weights=weights,
                        entry="loss_packed", std_root=STDLIB, cast_dtype=True)
 
 
@@ -343,7 +308,7 @@ ADAPTED = "layers.*.attention.*_proj.weight"
 def test_adapters_start_as_the_base_and_train_alone(weights: Path) -> None:
     from linnet.jax.train import merge_lora
 
-    batch = next(pack(_examples(), tokens=24))
+    batch = next(pack(tiny_examples(), tokens=24))
     arrays = batch.arrays(batch.count)
     base = _model(weights)
     base_loss = float(base(*arrays))
@@ -372,7 +337,7 @@ def test_adapters_match_pytorch(weights: Path) -> None:
     from linnet.torch import load as load_torch
     from linnet.train import Batch
 
-    batch = next(pack(_examples(), tokens=24))
+    batch = next(pack(tiny_examples(), tokens=24))
     arrays = batch.arrays(batch.count)
     model = _model(weights)
     model.add_lora(ADAPTED, rank=2, alpha=4)
@@ -383,7 +348,7 @@ def test_adapters_match_pytorch(weights: Path) -> None:
             params[path] = jnp.full(params[path].shape, 0.05, jnp.float32)
     loss, grads = jax.value_and_grad(lambda p: model.apply(p, *arrays))(params)
 
-    theirs = load_torch(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    theirs = load_torch(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
     theirs.add_lora(ADAPTED, rank=2, alpha=4)
     with torch.no_grad():
         for name, parameter in theirs.named_parameters():

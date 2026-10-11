@@ -4,7 +4,6 @@ of their fields. Every backend computes the same numbers."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -12,9 +11,7 @@ import pytest
 import torch
 
 from linnet.torch import load_function
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.structs
@@ -40,15 +37,6 @@ pub entry stats<N: Dim>(x: Tensor[N; f32]) -> Moments<N, f32> {
     return moments(x)
 }
 """
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture

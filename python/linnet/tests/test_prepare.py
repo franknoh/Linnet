@@ -6,7 +6,6 @@ the weights), and a model being trained keeps everything in the graph."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -17,9 +16,7 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 
 from linnet.compiler import find_compiler
 from linnet.torch import CompiledLinnetModule, load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.prepare
@@ -73,15 +70,6 @@ pub block Model<E: Dim, I: Dim, T: Float = f32> {
 """
 
 GENERICS: dict[str, int | str] = {"E": 3, "I": 5}
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture

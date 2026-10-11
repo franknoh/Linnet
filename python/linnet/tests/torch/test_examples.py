@@ -1,9 +1,10 @@
-"""The model examples (Llama, GPT-2, ViT) materialize into PyTorch and agree
-with straightforward PyTorch implementations of the same architectures."""
+"""The model examples (Llama, ViT, CLIP) and the GPT-2 fixture materialize
+into PyTorch and agree with straightforward PyTorch implementations of the
+same architectures; the Llama example decodes, samples and trains as its
+reference does, and the training example learns."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -11,20 +12,14 @@ import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import LinnetModule, load
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 EXAMPLES = REPO / "examples"
 FIXTURES = REPO / "tests" / "fixtures"
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 

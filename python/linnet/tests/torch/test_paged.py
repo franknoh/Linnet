@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from linnet.torch import paged
+from tests.helpers import requires_cuda
 
 SIZE = 16
 
@@ -91,7 +92,7 @@ def test_flex_attention_gives_the_gathered_numbers() -> None:
     torch.testing.assert_close(flexed, gathered, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@requires_cuda
 @pytest.mark.parametrize(("heads", "kv_heads", "size"), [(32, 4, 64), (32, 32, 64), (32, 4, 16)])
 def test_compiled_flex_attention_gives_the_gathered_numbers(
     heads: int, kv_heads: int, size: int

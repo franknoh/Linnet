@@ -3,7 +3,6 @@ materializer on the same weights: Linnet semantics are not Torch-specific."""
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from collections.abc import Sequence
@@ -18,9 +17,8 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 
 from linnet import find_compiler
 from linnet.torch import load
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 EXAMPLES = REPO / "examples"
 FIXTURES = REPO / "tests" / "fixtures"
 
@@ -29,12 +27,7 @@ jax.config.update("jax_enable_x64", True)  # `i64` inputs (PRNG keys) stay 64-bi
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 

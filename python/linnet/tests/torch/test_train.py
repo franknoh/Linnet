@@ -13,25 +13,10 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import LinnetModule, load
 from linnet.train import Example, cosine_schedule, pack, train
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
+from tests.helpers import LLAMA, STDLIB, TINY_LLAMA, random_llama, tiny_examples
 
 
 def test_pack_lays_out_targets_and_masks() -> None:
@@ -58,23 +43,16 @@ def test_pack_starts_a_batch_rather_than_split_a_sequence() -> None:
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
     directory = tmp_path / "weights"
     directory.mkdir()
-    save_file(tensors, str(directory / "model.safetensors"))
+    random_llama(directory / "model.safetensors")
     return directory
 
 
 def _load(weights: Path) -> LinnetModule:
     return load(
         LLAMA,
-        generics=GENERICS,
+        generics=TINY_LLAMA,
         std_root=STDLIB,
         weights=weights,
         compile=True,
@@ -87,18 +65,6 @@ def model(weights: Path) -> LinnetModule:
     return _load(weights)
 
 
-def _examples() -> list[Example]:
-    generator = torch.Generator().manual_seed(1)
-    lengths = [5, 6, 4, 7]
-    return [
-        Example.prompted(
-            torch.randint(0, 11, (2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
-            torch.randint(0, 11, (n - 2,), generator=generator).tolist(),  # pyright: ignore[reportUnknownArgumentType]
-        )
-        for n in lengths
-    ]
-
-
 def _gradients(model: LinnetModule) -> dict[str, torch.Tensor]:
     grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
     model.zero_grad()
@@ -106,7 +72,7 @@ def _gradients(model: LinnetModule) -> dict[str, torch.Tensor]:
 
 
 def test_accumulated_batches_follow_the_mean_over_all_of_them(model: LinnetModule) -> None:
-    examples = _examples()
+    examples = tiny_examples()
     first, second = next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))
     together = next(pack(examples, tokens=24))
     count = first.count + second.count
@@ -123,7 +89,7 @@ def test_accumulated_batches_follow_the_mean_over_all_of_them(model: LinnetModul
 
 
 def test_training_lowers_the_loss_and_saves(model: LinnetModule, tmp_path: Path) -> None:
-    batch = next(pack(_examples(), tokens=24))
+    batch = next(pack(tiny_examples(), tokens=24))
     trained = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trained, lr=3e-2)
     history = train(
@@ -146,7 +112,7 @@ def test_adapters_alone_are_saved(model: LinnetModule, tmp_path: Path) -> None:
     trained = [p for p in model.parameters() if p.requires_grad]
     train(
         model,
-        pack(_examples(), tokens=24),
+        pack(tiny_examples(), tokens=24),
         optimizer=torch.optim.AdamW(trained, lr=1e-2),
         save_to=tmp_path / "run",
     )
@@ -161,7 +127,7 @@ def _data_parallel_rank(rank: int, world: int, port: int, weights: str, out: str
     dist.init_process_group("gloo", rank=rank, world_size=world)
     try:
         model = _load(Path(weights))
-        mine = next(pack(_examples()[2 * rank : 2 * rank + 2], tokens=12))
+        mine = next(pack(tiny_examples()[2 * rank : 2 * rank + 2], tokens=12))
         trained = [p for p in model.parameters() if p.requires_grad]
         train(model, itertools.repeat(mine), optimizer=torch.optim.SGD(trained, lr=0.1), steps=3)
         parameters = {n: p.detach().clone() for n, p in model.named_parameters()}
@@ -182,7 +148,7 @@ def test_data_parallel_steps_match_one_process(weights: Path, tmp_path: Path) ->
     ranks = [torch.load(tmp_path / f"rank{rank}.pt") for rank in range(2)]
 
     model = _load(weights)
-    examples = _examples()
+    examples = tiny_examples()
     both = [next(pack(examples[:2], tokens=12)), next(pack(examples[2:], tokens=12))]
     trained = [p for p in model.parameters() if p.requires_grad]
     train(

@@ -6,54 +6,29 @@ samples, and a policy that learns what its reward asks for."""
 
 from __future__ import annotations
 
-import itertools
 import os
-import random
 import socket
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.serve import Completion, Request
 from linnet.torch import LinnetModule, fully_shard, load
-from linnet.train.grpo import Prompt, group_advantages, grpo, grpo_loss
+from linnet.train.grpo import group_advantages, grpo, grpo_loss
+from tests.helpers import LLAMA, STDLIB, TINY_LLAMA, random_llama, threes, tiny_prompts
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
 TOKENS = torch.tensor([[3, 1, 4, 1, 5, 9, 2]], dtype=torch.int32)
 
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
-    path = tmp_path / "model.safetensors"
-    save_file(tensors, str(path))
-    return path
+    return random_llama(tmp_path / "model.safetensors")
 
 
 def _model(weights: Path, **options: object) -> LinnetModule:
-    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # pyright: ignore[reportArgumentType]
+    return load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, **options)  # pyright: ignore[reportArgumentType]
 
 
 def test_group_advantages() -> None:
@@ -138,15 +113,6 @@ class _Sampler:
         return done, None
 
 
-def _prompts() -> itertools.cycle[Prompt]:
-    rng = random.Random(0)
-    return itertools.cycle([Prompt([rng.randrange(11), rng.randrange(11)]) for _ in range(8)])
-
-
-def _threes(_: Prompt, completion: list[int]) -> float:
-    return sum(token == 3 for token in completion) / len(completion)
-
-
 def test_grpo_learns_what_the_reward_asks(weights: Path) -> None:
     torch.manual_seed(0)
     policy = _model(weights, compile=True, trainable=True)
@@ -154,8 +120,8 @@ def test_grpo_learns_what_the_reward_asks(weights: Path) -> None:
     history = grpo(
         policy,
         _Sampler(_model(weights)),
-        _prompts(),
-        _threes,
+        tiny_prompts(),
+        threes,
         optimizer=torch.optim.AdamW(trained, lr=3e-2),
         steps=10,
         group=6,
@@ -176,8 +142,8 @@ def test_grpo_reuses_samples_against_a_reference(weights: Path) -> None:
     history = grpo(
         policy,
         _Sampler(_model(weights)),
-        _prompts(),
-        _threes,
+        tiny_prompts(),
+        threes,
         optimizer=torch.optim.AdamW(trained, lr=3e-2),
         steps=2,
         group=4,
@@ -194,7 +160,7 @@ def test_grpo_reuses_samples_against_a_reference(weights: Path) -> None:
     assert history[1].kl is not None and history[1].kl > 0
     with pytest.raises(ValueError, match="reference"):
         # No engine: the options are refused before one is needed.
-        grpo(policy, None, [], _threes, optimizer=torch.optim.SGD(trained), steps=1, beta=0.1)  # pyright: ignore[reportArgumentType]
+        grpo(policy, None, [], threes, optimizer=torch.optim.SGD(trained), steps=1, beta=0.1)  # pyright: ignore[reportArgumentType]
 
 
 def _grpo_rank(rank: int, world: int, port: int, weights: str) -> None:
@@ -212,8 +178,8 @@ def _grpo_rank(rank: int, world: int, port: int, weights: str) -> None:
         history = grpo(
             policy,
             sampler,
-            _prompts(),
-            _threes,
+            tiny_prompts(),
+            threes,
             optimizer=torch.optim.AdamW(trained, lr=3e-2),
             steps=3,
             group=4,
@@ -260,7 +226,7 @@ def test_uniform_groups_are_counted_and_dropped(weights: Path) -> None:
     history = grpo(
         policy,
         _Sampler(_model(weights)),
-        _prompts(),
+        tiny_prompts(),
         lambda prompt, completion: 1.0,
         optimizer=torch.optim.SGD(trained, lr=0.1),
         steps=1,
@@ -282,8 +248,8 @@ def test_a_resumed_grpo_run_ends_where_an_unbroken_one_does(weights: Path, tmp_p
         history = grpo(
             policy,
             _Sampler(_model(weights)),
-            _prompts(),
-            _threes,
+            tiny_prompts(),
+            threes,
             optimizer=torch.optim.AdamW(trained, lr=3e-2),
             steps=steps,
             group=4,
@@ -328,8 +294,8 @@ def test_corrections_for_the_same_policy_change_nothing(weights: Path) -> None:
         history = grpo(
             policy,
             _Sampler(_model(weights)),
-            _prompts(),
-            _threes,
+            tiny_prompts(),
+            threes,
             optimizer=torch.optim.AdamW(trained, lr=3e-2),
             steps=3,
             group=4,
@@ -351,8 +317,8 @@ def test_corrections_for_the_same_policy_change_nothing(weights: Path) -> None:
         grpo(
             plain,
             _Sampler(_model(weights)),
-            _prompts(),
-            _threes,
+            tiny_prompts(),
+            threes,
             optimizer=torch.optim.SGD([p for p in plain.parameters() if p.requires_grad]),
             steps=1,
             temperature=0.7,

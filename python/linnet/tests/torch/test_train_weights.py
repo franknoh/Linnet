@@ -16,11 +16,9 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from linnet.torch import LinnetModule, load
+from tests.helpers import STDLIB
 
 from ..test_serve import GENERICS, SOURCE
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 
 
 @pytest.fixture

@@ -6,7 +6,6 @@ back into Linnet."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -20,19 +19,13 @@ from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariable
 
 from linnet.onnx import export_function, find_compiler, import_onnx
 from linnet.torch import load
+from tests.helpers import REPO, STDLIB
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 FIXTURES = REPO / "tests" / "fixtures"
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)
 
 

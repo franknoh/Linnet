@@ -4,8 +4,6 @@ original on several input shapes."""
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,20 +11,12 @@ import torch
 from torch import nn
 from torch.export import Dim
 
-from linnet import find_compiler
 from linnet.torch import ExportError, export_linnet, load
-
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB, compiler_ok
 
 
 @pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
+def _seed() -> None:
     torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
 
 
@@ -94,13 +84,6 @@ class Mlp(nn.Module):
         return self.net(self.norm(x)) * self.scale
 
 
-def _compiler_ok(*args: str) -> None:
-    completed = subprocess.run(
-        [find_compiler(), *args], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-
-
 def test_transformer_round_trip(tmp_path: Path) -> None:
     model = Transformer()
     tokens = torch.randint(0, 11, (2, 5))
@@ -118,8 +101,8 @@ def test_transformer_round_trip(tmp_path: Path) -> None:
     assert "seq >= 2" in source and "batch >=" not in source
     assert "sub layers: [Layer; 2]" in source
     assert result.bindings is None  # every parameter path is spelled as in PyTorch
-    _compiler_ok("lint", "--std", str(STDLIB), str(result.source))
-    _compiler_ok("fmt", "--check", str(result.source))
+    compiler_ok("lint", "--std", str(STDLIB), str(result.source))
+    compiler_ok("fmt", "--check", str(result.source))
 
     copy = load(
         result.source,

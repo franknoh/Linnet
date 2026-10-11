@@ -5,7 +5,6 @@ Heads = 2` would otherwise split 5 features into two heads of 2."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -13,9 +12,7 @@ import torch
 
 from linnet import LinnetError
 from linnet.torch import load
-
-REPO = Path(__file__).resolve().parents[3]
-STDLIB = REPO / "stdlib"
+from tests.helpers import STDLIB
 
 SOURCE = """\
 module tests.constrained
@@ -33,15 +30,6 @@ where
     }
 }
 """
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 @pytest.fixture

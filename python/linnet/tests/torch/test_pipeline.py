@@ -21,42 +21,22 @@ from linnet.compiler import bind_arguments, run_compiler
 from linnet.torch import LinnetModule, load
 from linnet.torch.stages import split
 from linnet.train import Example, pack
+from tests.helpers import LLAMA, STDLIB, TINY_LLAMA, random_llama
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
-LLAMA = REPO / "examples/01-llama/src/lib.linnet"
-GENERICS: dict[str, int | str] = {
-    "Vocab": 11,
-    "H": 8,
-    "Heads": 4,
-    "KvHeads": 2,
-    "Inner": 16,
-    "Layers": 2,
-    "Batch": 1,
-    "MaxSeq": 8,
-    "T": "f32",
-}
 UNITS = ["embedding", "layers.0", "layers.1", "norm", "lm_head"]
 
 
 @pytest.fixture
 def weights(tmp_path: Path) -> Path:
-    skeleton = load(LLAMA, generics=GENERICS, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
-    tensors = {
-        name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
-        for name, parameter in skeleton.named_parameters()
-        if not name.endswith(".bias")
-    }
     directory = tmp_path / "weights"
     directory.mkdir()
-    save_file(tensors, str(directory / "model.safetensors"))
+    random_llama(directory / "model.safetensors")
     return directory
 
 
 def _model(weights: Path) -> LinnetModule:
     return load(
-        LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True, trainable=True
+        LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True, trainable=True
     )
 
 
@@ -93,7 +73,7 @@ def test_split_stages_compute_what_main_computes(weights: Path, starts: list[str
         str(STDLIB),
         "--entry",
         "loss_packed",
-        *bind_arguments({**GENERICS, "P": 12}),
+        *bind_arguments({**TINY_LLAMA, "P": 12}),
         str(LLAMA),
     )
     pieces = split(source, lambda path: _stage(path, starts), len(starts) + 1)
@@ -151,7 +131,7 @@ def _rank(rank: int, world: int, port: int, weights: str, out: str, schedule: st
     try:
         pipe = pipeline(
             LLAMA,
-            generics=GENERICS,
+            generics=TINY_LLAMA,
             std_root=STDLIB,
             weights=weights,
             entry="loss_packed",
@@ -341,7 +321,7 @@ def _sharded_rank(rank: int, port: int, weights: str, bindings: str, out: str) -
         mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names=("pp", "dp"))
         pipe = pipeline(
             LLAMA,
-            generics=GENERICS,
+            generics=TINY_LLAMA,
             std_root=STDLIB,
             weights=weights,
             bindings=bindings or None,
@@ -403,7 +383,7 @@ def test_a_pipeline_of_sharded_stages_trains_as_one_process(
     torch.multiprocessing.spawn(_sharded_rank, args=(port, str(weights), bindings, out), nprocs=4)
     model = load(
         LLAMA,
-        generics=GENERICS,
+        generics=TINY_LLAMA,
         std_root=STDLIB,
         weights=weights,
         bindings=bindings or None,

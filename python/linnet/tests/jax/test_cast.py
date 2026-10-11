@@ -3,7 +3,6 @@ loader does, so every backend's row in a benchmark computes in one dtype."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -11,10 +10,10 @@ import pytest
 import torch
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
+from tests.helpers import STDLIB
+
 pytest.importorskip("jax")
 
-REPO = Path(__file__).resolve().parents[4]
-STDLIB = REPO / "stdlib"
 
 SOURCE = """\
 module tests.cast
@@ -27,15 +26,6 @@ pub block Model<T: Float> {
     }
 }
 """
-
-
-@pytest.fixture(autouse=True)
-def _compiler() -> None:
-    if "LINNET_BIN" not in os.environ:
-        for candidate in ("build/debug/linnet", "build/release/linnet"):
-            if (REPO / candidate).exists():
-                os.environ["LINNET_BIN"] = str(REPO / candidate)
-                break
 
 
 def test_an_f32_checkpoint_runs_in_bf16(tmp_path: Path) -> None:
