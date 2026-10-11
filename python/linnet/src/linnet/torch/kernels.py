@@ -416,6 +416,7 @@ def _w8a16_kernel(
     rows,
     width,
     depth,
+    span,
     scale_columns,
     fp8: tl.constexpr,
     group: tl.constexpr,
@@ -434,7 +435,6 @@ def _w8a16_kernel(
     # tensor cores.
     pid = tl.program_id(0)
     part = tl.program_id(1)
-    span = depth // tl.num_programs(1)
     tiles_m = tl.cdiv(rows, block_m)
     tiles_n = tl.cdiv(width, block_n)
     per_group = group_m * tiles_n
@@ -448,21 +448,19 @@ def _w8a16_kernel(
     live_m = rm < rows
     live_n = rn < width
     acc = tl.zeros((block_m, block_n), dtype=tl.float32)
-    for start in range(part * span, (part + 1) * span, block_k):
-        # A stretch starts at a whole step: Triton reads it in wide loads.
-        k0 = tl.multiple_of(start, block_k)
-        x = tl.load(
-            x_ptr + rm[:, None] * depth + (k0 + rk)[None, :], mask=live_m[:, None], other=0.0
-        )
-        bits = tl.load(
-            weight_ptr + rn[:, None].to(tl.int64) * depth + (k0 + rk)[None, :],
-            mask=live_n[:, None],
-            other=0,
-        )
-        w = _widen8(bits, fp8)
+    # This part's stretch of the inputs, `span` (a multiple of block_k)
+    # from its start: the loop runs from zero, so Triton reads in wide loads.
+    first_k = part * span
+    xs = x_ptr + first_k + rm[:, None] * depth + rk[None, :]
+    ws = weight_ptr + first_k + rn[:, None].to(tl.int64) * depth + rk[None, :]
+    for k0 in range(0, span, block_k):
+        x = tl.load(xs + k0, mask=live_m[:, None], other=0.0)
+        w = _widen8(tl.load(ws + k0, mask=live_n[:, None], other=0), fp8)
         if group != 0:
             step = tl.load(
-                scale_ptr + (rn // row_block) * scale_columns + k0 // group, mask=live_n, other=0.0
+                scale_ptr + (rn // row_block) * scale_columns + (first_k + k0) // group,
+                mask=live_n,
+                other=0.0,
             )
             w = w * step.to(tl.float32)[:, None]
         acc = tl.dot(x, tl.trans(w.to(x_ptr.dtype.element_ty)), acc)
@@ -539,6 +537,7 @@ def _w8a16(
         rows,
         width,
         depth,
+        depth // split,
         scale.shape[-1] if group else 1,
         fp8=fp8,
         group=group,
@@ -803,6 +802,7 @@ def _int8_mm_kernel(
     rows,
     width,
     depth,
+    span,
     block_m: tl.constexpr,
     block_n: tl.constexpr,
     block_k: tl.constexpr,
@@ -813,7 +813,6 @@ def _int8_mm_kernel(
     # then both scales and the output's dtype in one epilogue.
     pid = tl.program_id(0)
     part = tl.program_id(1)
-    span = depth // tl.num_programs(1)
     tiles_m = tl.cdiv(rows, block_m)
     tiles_n = tl.cdiv(width, block_n)
     per_group = group_m * tiles_n
@@ -827,14 +826,12 @@ def _int8_mm_kernel(
     live_m = rm < rows
     live_n = rn < width
     acc = tl.zeros((block_m, block_n), dtype=tl.int32)
-    for start in range(part * span, (part + 1) * span, block_k):
-        k0 = tl.multiple_of(start, block_k)
-        x = tl.load(x_ptr + rm[:, None] * depth + (k0 + rk)[None, :], mask=live_m[:, None], other=0)
-        w = tl.load(
-            weight_ptr + rn[None, :].to(tl.int64) * depth + (k0 + rk)[:, None],
-            mask=live_n[None, :],
-            other=0,
-        )
+    first_k = part * span
+    xs = x_ptr + first_k + rm[:, None] * depth + rk[None, :]
+    ws = weight_ptr + first_k + rn[None, :].to(tl.int64) * depth + rk[:, None]
+    for k0 in range(0, span, block_k):
+        x = tl.load(xs + k0, mask=live_m[:, None], other=0)
+        w = tl.load(ws + k0, mask=live_n[None, :], other=0)
         acc = tl.dot(x, w, acc, out_dtype=tl.int32)
     x_scale = tl.load(x_scale_ptr + rm, mask=live_m, other=0.0)
     scale = tl.load(scale_ptr + rn, mask=live_n, other=0.0).to(tl.float32)
@@ -889,6 +886,7 @@ def _int8_mm(
         rows,
         width,
         depth,
+        depth // split,
         block_m=block_m,
         block_n=block_n,
         block_k=block_k,
