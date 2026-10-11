@@ -135,8 +135,8 @@ def fp8_block_linear(
         if rows == 1:
             y = kernels.gemv8(flat, weight, scale, True, block, block)
         elif rounded and fast == 2:
-            # cuBLAS takes the block-scaled product in whole tiles of rows.
-            padded = -(-rows // 16) * 16
+            # cuBLAS takes the block-scaled product of rows in fours.
+            padded = -(-rows // 4) * 4
             q, scales = kernels.fp8_groups(flat, block, padded)
             y = _scaled_mm(q, transposed, scale_a=scales, scale_b=scale.t(), out_dtype=flat.dtype)
             y = y[:rows] if padded != rows else y

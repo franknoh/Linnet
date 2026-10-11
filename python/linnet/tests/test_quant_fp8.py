@@ -164,7 +164,7 @@ def test_torch_binds_and_multiplies(
 def test_jax_binds_and_multiplies(
     source: Path, checkpoint: tuple[Path, Path, NDArray[np.float32]]
 ) -> None:
-    pytest.importorskip("jax")
+    jax = pytest.importorskip("jax")
     from linnet.jax import load as load_jax
     from linnet.jax import load_source
 
@@ -178,9 +178,10 @@ def test_jax_binds_and_multiplies(
             std_root=STDLIB,
             entry="forward",
         )
-        np.testing.assert_allclose(
-            np.asarray(function(_input())), _input() @ dequantized.T, rtol=1e-5, atol=1e-5
-        )
+        # f32 products in f32 on a GPU too (XLA's default there is coarser).
+        with jax.default_matmul_precision("highest"):
+            got = np.asarray(function(_input()))
+        np.testing.assert_allclose(got, _input() @ dequantized.T, rtol=1e-5, atol=1e-4)
 
 
 def test_onnx_embeds_and_multiplies(
