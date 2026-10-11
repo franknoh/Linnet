@@ -113,15 +113,17 @@ where
     }
 }
 
-// A linear layer whose weight is stored as per-row int4, two per byte.
+// A linear layer whose weight is stored as per-row int4, two per byte, with
+// one scale a row as the 8-bit layers store theirs (`[Out, 1]` in `T`).
 pub block Int4Linear<In: Dim, Out: Dim, T: Float = bf16>
 where In % 2 == 0 {
     param weight: Tensor[Out, In / 2; i8]
-    param scale: Tensor[Out; f32]
+    param scale: Tensor[Out, 1; T]
     param bias: Tensor[Out; T]? = none
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
-        return linear(x, dequantize_int4<Out, In / 2, T>(weight, scale), bias)
+        let rows = cast<f32>(reshape(scale, [Out]))
+        return linear(x, dequantize_int4<Out, In / 2, T>(weight, rows), bias)
     }
 }
 

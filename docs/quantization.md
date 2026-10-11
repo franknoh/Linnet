@@ -10,7 +10,7 @@ use std.quant::{Int4Linear, Int8Linear}
 
 pub block Mlp<H: Dim, Inner: Dim, T: Float = bf16>
 where H % 2 == 0 {
-    sub up: Int4Linear<H, Inner, T>      // weight: Tensor[Inner, H / 2; i8], scale: Tensor[Inner; f32]
+    sub up: Int4Linear<H, Inner, T>      // weight: Tensor[Inner, H / 2; i8], scale: Tensor[Inner, 1; T]
     sub down: Int8Linear<Inner, H, T>    // weight: Tensor[H, Inner; i8], scale: Tensor[H, 1; T]
     ...
 }
@@ -23,7 +23,7 @@ nibble.
 | --- | --- |
 | `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, 1; T]`, optional bias |
 | `Int8GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, In / Group; T]`, optional bias |
-| `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale`, optional bias |
+| `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale: Tensor[Out, 1; T]`, optional bias |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
 | `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; u8]` (FP8 E4M3 bytes), `scale: Tensor[Out, 1; T]`, optional bias |
 | `Fp8BlockLinear<In, Out, Block = 128, T>` | `weight: Tensor[Out, In; u8]`, `scale: Tensor[Out / Block, In / Block; T]`, optional bias |

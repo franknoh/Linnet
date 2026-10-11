@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Protocol
+from typing import Concatenate, ParamSpec, Protocol, TypeVar
 
 import torch
 import triton  # pyright: ignore[reportMissingTypeStubs]
 import triton.language as tl  # pyright: ignore[reportMissingTypeStubs]
 from torch.library import triton_op, wrap_triton
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 class Launcher(Protocol):
@@ -35,6 +38,36 @@ class Launcher(Protocol):
     def __getitem__(
         self, grid: Callable[..., tuple[int, ...]] | tuple[int, ...], /
     ) -> Callable[..., object]: ...
+
+
+def _launched(
+    op: Callable[_P, _R], launch: Callable[Concatenate[Launcher, _P], _R], kernel: Launcher
+) -> Callable[_P, _R]:
+    """`launch` run with `kernel`: the custom op `op` inside `torch.compile`,
+    which keeps it opaque, and outside it the kernel launched directly,
+    whose host cost is a quarter of the op's."""
+
+    def run(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if torch.compiler.is_compiling():
+            return op(*args, **kwargs)
+        return launch(kernel, *args, **kwargs)
+
+    return run
+
+
+@triton.jit
+def _grouped_tile(
+    pid, rows, width, block_m: tl.constexpr, block_n: tl.constexpr, group_m: tl.constexpr
+):
+    # Program `pid`'s output tile (its row and column tile), programs
+    # ordered in groups of `group_m` row tiles so that neighbours share
+    # weight tiles in L2.
+    tiles_m = tl.cdiv(rows, block_m)
+    tiles_n = tl.cdiv(width, block_n)
+    per_group = group_m * tiles_n
+    first = (pid // per_group) * group_m
+    size = min(tiles_m - first, group_m)
+    return first + (pid % per_group) % size, (pid % per_group) // size
 
 
 @triton.jit
@@ -262,10 +295,7 @@ def int4_linear(
     tiles = next((tiles for tiles in _INT4_TILES if rows <= tiles[0]), _INT4_TILES[-1])
     _, block_m, block_n, warps, stages, waves = tiles
     programs = triton.cdiv(rows, block_m) * triton.cdiv(width, block_n)
-    budget = waves * _processors(x.device)
-    split = 1
-    while split < 4 and programs * split * 2 <= budget and depth % (2 * split * block_k) == 0:
-        split *= 2
+    split = _split(programs, depth, block_k, x.device, waves, most=4)
     if split == 1:
         y = torch.empty(rows, width, dtype=x.dtype, device=x.device)
     else:
@@ -400,19 +430,8 @@ def _gemv8_op(
     return _gemv8(wrap_triton(_gemv8_kernel), x, weight, scale, fp8, group, row_block)
 
 
-def gemv8(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    scale: torch.Tensor,
-    fp8: bool,
-    group: int = 0,
-    row_block: int = 1,
-) -> torch.Tensor:
-    """See `_gemv8`: a custom op inside `torch.compile`, and outside it the
-    kernel launched directly, whose host cost is a quarter of the op's."""
-    if torch.compiler.is_compiling():
-        return _gemv8_op(x, weight, scale, fp8, group, row_block)
-    return _gemv8(_gemv8_kernel, x, weight, scale, fp8, group, row_block)
+# See `_gemv8`.
+gemv8 = _launched(_gemv8_op, _gemv8, _gemv8_kernel)
 
 
 @triton.jit
@@ -441,15 +460,8 @@ def _w8a16_kernel(
     # every FP8 and int8 value is a bf16 and an f16), scaled first when the
     # scales are per group (block_k divides the group), and multiplies on
     # tensor cores.
-    pid = tl.program_id(0)
     part = tl.program_id(1)
-    tiles_m = tl.cdiv(rows, block_m)
-    tiles_n = tl.cdiv(width, block_n)
-    per_group = group_m * tiles_n
-    first = (pid // per_group) * group_m
-    size = min(tiles_m - first, group_m)
-    tile_m = first + (pid % per_group) % size
-    tile_n = (pid % per_group) // size
+    tile_m, tile_n = _grouped_tile(tl.program_id(0), rows, width, block_m, block_n, group_m)
     rm = tile_m * block_m + tl.arange(0, block_m)
     rn = tile_n * block_n + tl.arange(0, block_n)
     rk = tl.arange(0, block_k)
@@ -493,14 +505,18 @@ def _processors(device: torch.device) -> int:
     return torch.cuda.get_device_properties(device).multi_processor_count
 
 
-def _split(programs: int, depth: int, block_k: int, device: torch.device) -> int:
+def _split(
+    programs: int, depth: int, block_k: int, device: torch.device, waves: int = 4, most: int = 8
+) -> int:
     """Parts the inputs split into so that a few rows' tiles fill the GPU's
-    multiprocessors twice over (each part sums a stretch of the inputs,
-    and the parts are added after)."""
+    multiprocessors: doubled, up to `most`, while twice the programs still
+    fit in `waves` waves of them and the parts' stretches stay whole
+    `block_k`s (each part sums a stretch of the inputs, and the parts are
+    added after)."""
     split = 1
     while (
-        split < 8
-        and programs * split < 2 * _processors(device)
+        split < most
+        and programs * split * 2 <= waves * _processors(device)
         and depth % (2 * split * block_k) == 0
     ):
         split *= 2
@@ -572,18 +588,8 @@ def _w8a16_op(
     return _w8a16(wrap_triton(_w8a16_kernel), x, weight, scale, fp8, group, row_block)
 
 
-def w8a16(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    scale: torch.Tensor,
-    fp8: bool,
-    group: int = 0,
-    row_block: int = 1,
-) -> torch.Tensor:
-    """See `_w8a16`, launched as `gemv8` is."""
-    if torch.compiler.is_compiling():
-        return _w8a16_op(x, weight, scale, fp8, group, row_block)
-    return _w8a16(_w8a16_kernel, x, weight, scale, fp8, group, row_block)
+# See `_w8a16`.
+w8a16 = _launched(_w8a16_op, _w8a16, _w8a16_kernel)
 
 
 @triton.jit
@@ -734,18 +740,17 @@ def _rows8_op(x: torch.Tensor, fp8: bool) -> tuple[torch.Tensor, torch.Tensor]:
     return _rows8(wrap_triton(_rows8_kernel), x, fp8)
 
 
+_rows8_launched = _launched(_rows8_op, _rows8, _rows8_kernel)
+
+
 def fp8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """See `_rows8`, launched as `gemv8` is."""
-    if torch.compiler.is_compiling():
-        return _rows8_op(x, True)
-    return _rows8(_rows8_kernel, x, True)
+    """See `_rows8`."""
+    return _rows8_launched(x, True)
 
 
 def int8_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """See `_rows8`, launched as `gemv8` is."""
-    if torch.compiler.is_compiling():
-        return _rows8_op(x, False)
-    return _rows8(_rows8_kernel, x, False)
+    """See `_rows8`."""
+    return _rows8_launched(x, False)
 
 
 @triton.jit
@@ -793,11 +798,8 @@ def _fp8_groups_op(x: torch.Tensor, group: int, padded: int) -> tuple[torch.Tens
     return _fp8_groups(wrap_triton(_fp8_groups_kernel), x, group, padded)
 
 
-def fp8_groups(x: torch.Tensor, group: int, padded: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """See `_fp8_groups`, launched as `gemv8` is."""
-    if torch.compiler.is_compiling():
-        return _fp8_groups_op(x, group, padded)
-    return _fp8_groups(_fp8_groups_kernel, x, group, padded)
+# See `_fp8_groups`.
+fp8_groups = _launched(_fp8_groups_op, _fp8_groups, _fp8_groups_kernel)
 
 
 @triton.jit
@@ -819,15 +821,8 @@ def _int8_mm_kernel(
     # int8 rows times int8 weight rows on tensor cores, summed in int32
     # (exactly) over one of the split's stretches of the inputs (axis 1),
     # then both scales and the output's dtype in one epilogue.
-    pid = tl.program_id(0)
     part = tl.program_id(1)
-    tiles_m = tl.cdiv(rows, block_m)
-    tiles_n = tl.cdiv(width, block_n)
-    per_group = group_m * tiles_n
-    first = (pid // per_group) * group_m
-    size = min(tiles_m - first, group_m)
-    tile_m = first + (pid % per_group) % size
-    tile_n = (pid % per_group) // size
+    tile_m, tile_n = _grouped_tile(tl.program_id(0), rows, width, block_m, block_n, group_m)
     rm = tile_m * block_m + tl.arange(0, block_m)
     rn = tile_n * block_n + tl.arange(0, block_n)
     rk = tl.arange(0, block_k)
@@ -916,17 +911,8 @@ def _int8_mm_op(
     return _int8_mm(wrap_triton(_int8_mm_kernel), x, weight, x_scale, scale, dtype)
 
 
-def int8_mm(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    x_scale: torch.Tensor,
-    scale: torch.Tensor,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    """See `_int8_mm`, launched as `gemv8` is."""
-    if torch.compiler.is_compiling():
-        return _int8_mm_op(x, weight, x_scale, scale, dtype)
-    return _int8_mm(_int8_mm_kernel, x, weight, x_scale, scale, dtype)
+# See `_int8_mm`.
+int8_mm = _launched(_int8_mm_op, _int8_mm, _int8_mm_kernel)
 
 
 @triton.jit
