@@ -400,3 +400,47 @@ def test_adapters_match_pytorch(weights: Path) -> None:
             np.testing.assert_allclose(
                 np.asarray(grads[path]), parameter.grad.numpy(), rtol=1e-4, atol=1e-6
             )
+
+
+class _Need:
+    """One call's memory on each device, as `Compiled.memory_analysis()`
+    reports it."""
+
+    def __init__(self, temp: int) -> None:
+        self.temp_size_in_bytes = temp
+        self.output_size_in_bytes = 1 << 20
+        self.alias_size_in_bytes = 0
+
+
+class _Gpu:
+    """A device with 60 GiB in XLA's pool, `used` of it in use."""
+
+    def __init__(self, index: int, used: int) -> None:
+        self.index = index
+        self.used = used
+
+    def memory_stats(self) -> Mapping[str, int] | None:
+        return {"bytes_limit": 60 << 30, "bytes_in_use": self.used}
+
+    def __str__(self) -> str:
+        return f"cuda:{self.index}"
+
+
+class _Cpu:
+    def memory_stats(self) -> Mapping[str, int] | None:
+        return None
+
+
+def test_a_device_short_of_memory_stops_the_first_call() -> None:
+    """A device that runs out of memory mid-call leaves the others waiting
+    in a collective: the first call stops first, naming it (2026-10-11, 4
+    H100s, GRPO with the engine's whole model beside GPU 0's part)."""
+    from linnet.compiler import LinnetError
+    from linnet.jax.train import check_memory
+
+    need = _Need(35 << 30)
+    check_memory(need, [_Gpu(i, 10 << 30) for i in range(4)])
+    with pytest.raises(LinnetError, match=r"cuda:0 \(27\.0 GiB free\)") as raised:
+        check_memory(need, [_Gpu(0, 33 << 30), *(_Gpu(i, 10 << 30) for i in range(1, 4))])
+    assert "cuda:1" not in str(raised.value)
+    check_memory(need, [_Cpu()])  # no allocator to ask
