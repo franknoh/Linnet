@@ -2639,7 +2639,7 @@ std::optional<Call> call_of(std::string_view expression) {
     for (std::size_t i = open; i < expression.size(); ++i) {
         const char c = expression[i];
         if (quote != 0) {
-            quote = c == quote ? 0 : quote;
+            quote = c == quote ? '\0' : quote;
         } else if (c == '"' || c == '\'') {
             quote = c;
         } else if (c == '(' || c == '[' || c == '{') {
