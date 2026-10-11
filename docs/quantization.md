@@ -1,7 +1,7 @@
 # Quantization
 
-Run int8, int4, group-wise 4-bit (GPTQ, AWQ), FP8, and MXFP4 weights on
-every backend. A quantized weight is an ordinary parameter, an integer tensor plus
+Run 8-bit (int8 and FP8, scaled per row, per group or per block), int4,
+group-wise 4-bit (GPTQ, AWQ) and MXFP4 weights on every backend. A quantized weight is an ordinary parameter, an integer tensor plus
 scales, that `std.quant` dequantizes; there is no quantized dtype, and the
 arithmetic dtype `T` is separate from the storage.
 
@@ -11,7 +11,7 @@ use std.quant::{Int4Linear, Int8Linear}
 pub block Mlp<H: Dim, Inner: Dim, T: Float = bf16>
 where Inner % 2 == 0 {
     sub up: Int4Linear<H, Inner, T>      // weight: Tensor[Inner, H / 2; i8], scale: Tensor[Inner; f32]
-    sub down: Int8Linear<Inner, H, T>    // weight: Tensor[H, Inner; i8], scale: Tensor[H; f32]
+    sub down: Int8Linear<Inner, H, T>    // weight: Tensor[H, Inner; i8], scale: Tensor[H, 1; T]
     ...
 }
 ```
@@ -21,18 +21,23 @@ nibble.
 
 | `std.quant` | Format |
 | --- | --- |
-| `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out; f32]`, optional bias |
+| `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, 1; T]`, optional bias |
+| `Int8GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, In / Group; T]`, optional bias |
 | `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale`, optional bias |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
 | `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; u8]` (FP8 E4M3 bytes), `scale: Tensor[Out, 1; T]`, optional bias |
+| `Fp8BlockLinear<In, Out, Block = 128, T>` | `weight: Tensor[Out, In; u8]`, `scale: Tensor[Out / Block, In / Block; T]`, optional bias |
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
+| `dequantize_int8_groups<Out, Groups, Group, T>(q, scale)` | symmetric int8, a scale per `Group` inputs |
+| `linear_int8(x, weight, scale, bias)`, `linear_int8_groups<Group>(...)` | linear layers over int8 weights |
 | `unpack_int4<R, H>(packed)`, `unpack_uint4<R, H>(packed)` | signed or unsigned nibbles |
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
 | `decode_fp8(bits)` | FP8 E4M3 bytes as `f32` values |
 | `dequantize_fp8<*S, N, T>(q, scale)` | per-row FP8: `decode_fp8(q) * scale`, cast to `T` |
-| `linear_fp8(x, weight, scale, bias)` | a linear layer over per-row FP8 weights |
+| `dequantize_fp8_blocks<RowBlocks, ColBlocks, Block, T>(q, scale)` | FP8, a scale per `Block` by `Block` block |
+| `linear_fp8(x, weight, scale, bias)`, `linear_fp8_blocks<Block>(...)` | linear layers over FP8 weights |
 | `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: E2M1 values in blocks of 32, one E8M0 scale byte a block |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
@@ -77,7 +82,8 @@ quantize_checkpoint("model.safetensors", "model-int4.safetensors",
 
 `bindings` maps checkpoint names to Linnet paths. Each matched `proj.weight`
 becomes `proj.weight`, `proj.scale`, and `proj.zero`; other tensors are
-copied. Declare `Int4GroupLinear` where the source had `Linear`.
+copied. Declare `Int4GroupLinear` where the source had `Linear`. With
+`bits=8`, each becomes `proj.weight` and `proj.scale` for `Int8GroupLinear`.
 
 ### Importing GPTQ and AWQ
 
@@ -95,33 +101,57 @@ GPTQ checkpoints in activation order (`desc_act`) import without rounding
 again: the layer gets an `order` and gathers its inputs first, at some cost
 in speed.
 
-## FP8 weights
+## 8-bit weights
 
-`Fp8Linear` reads FP8 E4M3 weights with one scale a row, the layout of
-`compressed-tensors` checkpoints (`FP8-dynamic`): bind `scale` to the
-checkpoint's `weight_scale`. An `F8_E4M3` tensor binds to a `u8`
-parameter as its bytes, and `decode_fp8` turns them into values; PyTorch,
-JAX and StableHLO decode them as their own FP8 type.
+Four blocks cover the 8-bit checkpoints in use. Bind `scale` to the
+checkpoint's scale tensor; an `F8_E4M3` tensor binds to a `u8` parameter as
+its bytes.
 
-| Backend | `linear_fp8` runs as |
-| --- | --- |
-| PyTorch, CUDA (compute capability 9 or later), `bf16`, `numerics="fast"`, one row | a Triton kernel that widens the FP8 bytes in registers; the input stays in `bf16` |
-| the same, more rows | each input row rounded to FP8 with its own scale, then `torch._scaled_mm` |
-| everywhere else | the weight decoded and scaled, then `linear` |
+| Block | Checkpoints | `scale` binds to |
+| --- | --- | --- |
+| `Int8Linear` | `compressed-tensors` int8 per channel (W8A8, W8A16) | `weight_scale`, `[Out, 1]` |
+| `Int8GroupLinear<..., Group>` | `compressed-tensors` int8 per group, `quantize_checkpoint(bits=8)` | `weight_scale`, `[Out, In / Group]` |
+| `Fp8Linear` | `compressed-tensors` FP8 (FP8-dynamic) | `weight_scale`, `[Out, 1]` |
+| `Fp8BlockLinear` | DeepSeek-V3, Qwen3 FP8 | `weight_scale_inv`, `[Out / 128, In / 128]` |
 
-RedHatAI's Llama 3.1 8B Instruct FP8-dynamic checkpoint against the bf16
-one, on one H100. Same host, CUDA graphs for decoding, a 512-token prompt
-run eagerly:
+`Int8GroupLinear` and `Fp8BlockLinear` need the group or block to divide
+the widths: state `where In % 128 == 0` (and `Out % 128 == 0` for blocks)
+up to the root block.
 
-| | Perplexity | Time to first token | Decoding | Peak memory |
-| --- | ---: | ---: | ---: | ---: |
-| bf16 | 9.55 | 19.1 ms | 162 tokens/s | 16.3 GiB |
-| FP8 | 9.62 | 20.3 ms | 197 tokens/s | 9.9 GiB |
+PyTorch on CUDA, in bf16 or f16, multiplies the 8-bit weight as it is:
 
-Projections that read one input (a layer's query, key and value, its gate
-and up) multiply as one FP8 product, as bf16's do. The prompt's FP8
-products take less device time than bf16's, but run eagerly its calls
-cost the host about as much as they save.
+| Rows | `numerics="equivalent"` | `numerics="fast"` (the default) |
+| --- | --- | --- |
+| 1 | a CUDA-core kernel: the weight read once, widened in registers | the same |
+| 2 to 32 | a tensor-core kernel: the weight widened to the input's dtype | the same |
+| 33 to 64 | the same | the input rounded to 8 bits too, multiplied in 8 bits |
+| more | the weight dequantized for the call, then cuBLAS | the same as 33 to 64 |
+
+Rounded inputs multiply by `torch._scaled_mm` for FP8 (a scale per row, or
+per 128 inputs against blocks) and by Linnet's kernel for int8. Int8 groups
+never round the input.
+
+FP8 needs compute capability 8.9 or later (9.0 for the FP8 products), and
+In a multiple of 128. Elsewhere, and on JAX, ONNX and StableHLO, the weight
+is dequantized and multiplied; JAX with `--prepare` dequantizes it once.
+Sibling projections (query, key and value; gate and up) multiply as one
+product, as bf16's do.
+
+On one H100 (same host, CUDA graphs for decoding, a 512-token prompt run
+eagerly):
+
+| Model | Weights | Perplexity | Time to first token | Decoding | Peak memory |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Llama 3.1 8B Instruct | bf16 | 9.55 | 18.9 ms | 163 tokens/s | 16.3 GiB |
+| | FP8, a scale per row | 9.62 | 18.7 ms | 275 tokens/s | 9.9 GiB |
+| | int8 W8A8 | 9.70 | 21.0 ms | 271 tokens/s | 9.9 GiB |
+| Qwen3 8B | bf16 | 12.71 | 21.6 ms | 157 tokens/s | 16.9 GiB |
+| | FP8, 128 x 128 blocks | 12.84 | 23.2 ms | 238 tokens/s | 10.4 GiB |
+
+Rounding the input costs some accuracy: under `numerics="equivalent"` the
+same checkpoints reach 9.59 (FP8) and 9.55 (int8) on Llama, and 12.77 on
+Qwen3. Block-scaled prompts run at bf16's speed: cuBLAS's block-scaled
+FP8 product is no faster at these sizes.
 
 ## MXFP4 experts
 
@@ -149,7 +179,3 @@ With `triton_kernels` and CUDA graphs, gpt-oss-20b on one H100 decodes at
 (vLLM: 299 and 4313). Without CUDA graphs, `triton_kernels` adds host
 overhead to every routed product. More measurements:
 [Benchmarks](https://linnet.franknoh.dev/benchmarks).
-
-Not supported yet: activation quantization other than FP8's, and per-group
-scales for 8-bit
-weights.
