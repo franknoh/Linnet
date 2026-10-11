@@ -708,9 +708,9 @@ def merge_lora(model: SourceFunction, parameters: Mapping[str, jax.Array]) -> di
     """`parameters` with each adapter's product added into its weight,
     `W + B @ A * alpha / rank` in f32, and the adapters left out: plain
     weights for the model loaded again without adapters, or for serving."""
-    if getattr(model, "lora", None) is None:
+    if model.lora is None:
         return dict(parameters)
-    _, rank, alpha = cast("tuple[tuple[str, ...], int, float]", model.lora)
+    _, rank, alpha = model.lora
     merged = {path: value for path, value in parameters.items() if not lora.is_adapter(path)}
     for path, down in parameters.items():
         if not path.endswith("." + lora.DOWN):

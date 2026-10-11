@@ -74,7 +74,7 @@ class LinnetFunction:
         numerics: str = "equivalent",
         cast_dtype: bool = False,
     ) -> None:
-        self._source = source
+        self.source = source
         self.numerics = numerics
         self.cast_dtype = cast_dtype
         self.program = program
@@ -82,7 +82,7 @@ class LinnetFunction:
         self._root = ir.bind_root(program, self.generics)
         self.weights = weights
         self._weights = self.weights
-        self._std_root = std_root
+        self.std_root = std_root
         self.root = root
         self.entry = entry
         # How a weight goes to the devices when an entry first compiles:
@@ -95,7 +95,7 @@ class LinnetFunction:
         manifest = program.manifest
         self.parameter_paths: list[str] = [entry.path for entry in manifest]
         self.optional_paths: set[str] = {e.path for e in manifest if e.optional}
-        self._cache: dict[_Key, CompiledEntry] = {}
+        self.cache: dict[_Key, CompiledEntry] = {}
         # Set by `LinnetModel`, which runs several entries over one copy of
         # the weights and keeps their state on the device: the weights are
         # written back once placed (and cast), so the next entry finds them
@@ -125,7 +125,7 @@ class LinnetFunction:
         if target == "jax":
             arguments += lora_arguments(getattr(self, "lora", None))
         arguments += bind_arguments(bindings)
-        arguments += ["--absent-file", "-", *std_arguments(self._std_root), str(self._source)]
+        arguments += ["--absent-file", "-", *std_arguments(self.std_root), str(self.source)]
 
         def run(absent: list[str]) -> str:
             return run_compiler(*arguments, stdin="".join(f"{path}\n" for path in absent))
@@ -139,7 +139,7 @@ class LinnetFunction:
                 optional = [
                     path
                     for path in paths
-                    if any(self._matches(pattern, path) for pattern in self.optional_paths)
+                    if any(self.matches(pattern, path) for pattern in self.optional_paths)
                 ]
                 self.absent = sorted(path for path in optional if path not in self._weights)
                 if not self.absent:
@@ -148,7 +148,7 @@ class LinnetFunction:
         return run(self.absent)
 
     @staticmethod
-    def _matches(pattern: str, path: str) -> bool:
+    def matches(pattern: str, path: str) -> bool:
         """Manifest paths spell array elements `[*]`; weights spell them `.0`."""
         return re.fullmatch(re.escape(pattern).replace(r"\[\*\]", r"\.\d+"), path) is not None
 
@@ -156,7 +156,7 @@ class LinnetFunction:
         for entry in manifest:
             if entry.optional or entry.kind == "state":  # state is never a weight
                 continue
-            if not any(self._matches(entry.path, path) for path in self._weights):
+            if not any(self.matches(entry.path, path) for path in self._weights):
                 raise LinnetError(f"missing weights for `{entry.path}`")
         # Which optional parameters are absent is read off the first export
         # (see `_export`): checkpoints mix them, a bias on some projections
@@ -259,9 +259,9 @@ class LinnetFunction:
         computes in. Paths bound to one checkpoint tensor share one array."""
         bindings = self._bindings_for(inputs)
         key = tuple(sorted(bindings.items()))
-        if key not in self._cache:
-            self._cache[key] = self._compile(bindings)
-        compiled = self._cache[key]
+        if key not in self.cache:
+            self.cache[key] = self._compile(bindings)
+        compiled = self.cache[key]
         return dict(zip(compiled.parameters, compiled.arrays, strict=True))
 
     def apply(
@@ -277,9 +277,9 @@ class LinnetFunction:
         `(result, new_state)`; other entries return the result alone."""
         bindings = self._bindings_for(inputs)
         key = tuple(sorted(bindings.items()))
-        if key not in self._cache:
-            self._cache[key] = self._compile(bindings)
-        compiled = self._cache[key]
+        if key not in self.cache:
+            self.cache[key] = self._compile(bindings)
+        compiled = self.cache[key]
         if parameters is self._weights:
             arrays = list(compiled.arrays)
         else:

@@ -87,9 +87,8 @@ def quantize_int4_groups(
     scale = (high - low) / 15.0
     scale = np.where(scale > 0, scale, 1.0).astype(np.float32)
     zero = np.clip(np.round(-low / scale), 0, 15).astype(np.uint8)
-    q = np.clip(np.round(grouped / scale[..., None]) + zero[..., None], 0, 15).astype(np.uint8)
-    packed = (q[..., 0::2] | (q[..., 1::2] << 4)).astype(np.uint8)
-    return packed, scale, zero
+    q = np.clip(np.round(grouped / scale[..., None]) + zero[..., None], 0, 15)
+    return pack_int4_groups(q.reshape(out_features, in_features), group), scale, zero
 
 
 def quantize_int8_groups(

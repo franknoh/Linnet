@@ -31,7 +31,6 @@ which every process holds; a gathered slice's is its slice of the gradient.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
@@ -42,6 +41,8 @@ if TYPE_CHECKING:
     from torch.autograd.function import FunctionCtx
     from torch.distributed import ProcessGroup
 
+    from .kernels import Launcher  # needs Triton, which a run may not have
+
 # The largest message the one-shot kernel sums (`linnet.parallel`). Past it
 # NCCL is faster: the kernel reads every peer's whole part, where NCCL
 # splits the work.
@@ -50,12 +51,6 @@ _MAX_BLOCKS = ONE_SHOT_BYTES // 2 // _BLOCK  # of the narrowest dtype the kernel
 _DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 _one_shots: dict[str, OneShot] = {}
-
-
-class _Launcher(Protocol):
-    """A Triton kernel: indexed by its grid, then called with its arguments."""
-
-    def __getitem__(self, grid: tuple[int, ...], /) -> Callable[..., object]: ...
 
 
 class OneShot:
@@ -83,7 +78,7 @@ class OneShot:
         )
 
         # `triton.jit` carries no types: to the checker the kernel is a plain function.
-        self.kernel = cast(_Launcher, one_shot_all_reduce_kernel)
+        self.kernel = cast("Launcher", one_shot_all_reduce_kernel)
         # Every process's flags are zero before anyone can set one.
         torch.cuda.synchronize()
         dist.barrier(group)

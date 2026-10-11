@@ -50,7 +50,7 @@ from .graph import Category, TensorGraph
 MIB = 1 << 20
 
 
-class _Profile(TypedDict):
+class Profile(TypedDict):
     """A profile as `python -m linnet.resources.calibrate` writes it."""
 
     name: str
@@ -183,7 +183,7 @@ class DeviceSpec:
     @classmethod
     def load(cls, path: str | Path) -> DeviceSpec:
         """A profile `python -m linnet.resources.calibrate` wrote."""
-        data: _Profile = json.loads(Path(path).read_text(encoding="utf-8"))
+        data: Profile = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             name=str(data["name"]),
             memory=int(data["memory"]),
@@ -527,6 +527,12 @@ def _fused(graph: TensorGraph) -> dict[int, list[int]]:
         if weight.category == Category.PARAMETER and weight.persistent:
             groups.setdefault((step.inputs[0], implementation), []).append(step.index)
     return {members[0]: members for members in groups.values() if len(members) > 1}
+
+
+def host_time(graph: TensorGraph, env: Mapping[str, int], device: DeviceSpec) -> float:
+    """The host's seconds to issue the calls the generated code makes for
+    one step, on one process, without training."""
+    return sum(op.host for op in _costs(graph, env, device, 1, False)[0])
 
 
 def _costs(
@@ -943,4 +949,4 @@ def step_time(
     )
 
 
-__all__ = ["DEVICES", "DeviceSpec", "Throughput", "device", "step_time"]
+__all__ = ["DEVICES", "DeviceSpec", "Profile", "Throughput", "device", "step_time"]

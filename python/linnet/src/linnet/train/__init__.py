@@ -259,9 +259,8 @@ def copies(model: LinnetModule) -> Copies:
     shards: ProcessGroup | None = getattr(model, "shard_group", None)
     if shards is None:
         return Copies()
-    found = getattr(model, "copies_layout", None)
-    if isinstance(found, Copies):
-        return found
+    if model.copies_layout is not None:
+        return model.copies_layout
     import torch.distributed as dist
 
     from ..torch.module import owner_of
@@ -278,7 +277,7 @@ def copies(model: LinnetModule) -> Copies:
             mine = cast("ProcessGroup", made)  # a member's is the group itself
     split = frozenset(
         id(getattr(owner, leaf))
-        for owner, leaf in (owner_of(model, path) for path in getattr(model, "shard_parts", {}))
+        for owner, leaf in (owner_of(model, path) for path in model.shard_parts)
     )
     layout = Copies(mine, shards, split)
     model.copies_layout = layout

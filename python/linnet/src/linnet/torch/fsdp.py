@@ -126,7 +126,7 @@ def fully_shard(
             setattr(owner, leaf, split)
     model.fully_sharded = tuple(units)
     model.gathered_dtypes = computes
-    model._recompile()  # pyright: ignore[reportPrivateUsage]
+    model.recompile()
     return units
 
 

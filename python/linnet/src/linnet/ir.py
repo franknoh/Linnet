@@ -427,7 +427,10 @@ class _Reader:
     def program(self, plan: dict[str, JsonValue], text: str = "") -> Program:
         version = _int(plan.get("version", 0))
         if version != 1:
-            raise LinnetError(f"unsupported plan version {version!r}")
+            raise LinnetError(
+                f"plan version {version}, but this package reads version 1: write the plan "
+                "again with the `linnet` compiler of the same release"
+            )
         blocks = {name: self.block(name, data) for name, data in _object(plan["blocks"]).items()}
         functions = [self.function(f) for f in _list(plan["functions"])]
         # A plan of functions (`--functions`) has no root block.

@@ -49,11 +49,14 @@ if TYPE_CHECKING:
     import torch
     from torch.distributed import ProcessGroup
 
-    from .performance import DeviceSpec
+    from .performance import DeviceSpec, Profile
 
 
-def _time(run: Callable[[], object], repeats: int = 20) -> float:
-    """The best of a few timings of `repeats` calls, in device seconds per call."""
+def _time(
+    run: Callable[[], object], repeats: int = 20, before: Callable[[], object] | None = None
+) -> float:
+    """The best of a few timings of `repeats` calls, in device seconds per
+    call; `before` queues work ahead of each timing."""
     import torch
 
     for _ in range(3):
@@ -61,6 +64,8 @@ def _time(run: Callable[[], object], repeats: int = 20) -> float:
     torch.cuda.synchronize()
     best = float("inf")
     for _ in range(5):
+        if before is not None:
+            before()
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
@@ -69,6 +74,24 @@ def _time(run: Callable[[], object], repeats: int = 20) -> float:
         end.record()
         torch.cuda.synchronize()
         best = min(best, start.elapsed_time(end) / 1000 / repeats)
+    return best
+
+
+def _host_time(run: Callable[[], object], calls: int, warmup: int = 0) -> float:
+    """The best of a few timings of `calls` calls on the host, each ended by
+    waiting for the device: host seconds per call."""
+    import torch
+
+    for _ in range(warmup):
+        run()
+    torch.cuda.synchronize()
+    best = float("inf")
+    for _ in range(5):
+        begin = time.perf_counter()
+        for _ in range(calls):
+            run()
+        torch.cuda.synchronize()
+        best = min(best, (time.perf_counter() - begin) / calls)
     return best
 
 
@@ -111,15 +134,7 @@ def _host(device: torch.device) -> float:
         return 40  # the calls above
 
     calls = layer()
-    torch.cuda.synchronize()
-    best = float("inf")
-    for _ in range(5):
-        begin = time.perf_counter()
-        for _ in range(200):
-            layer()
-        torch.cuda.synchronize()
-        best = min(best, (time.perf_counter() - begin) / 200 / calls)
-    return best
+    return _host_time(layer, 200) / calls
 
 
 def _host_by_kind(device: torch.device) -> dict[str, float]:
@@ -157,19 +172,7 @@ def _host_by_kind(device: torch.device) -> dict[str, float]:
         "reduction": lambda: torch.softmax(scores, dim=-1),
         "mask": lambda: scores.masked_fill(mask, -1e30),
     }
-    found: dict[str, float] = {}
-    for kind, call in calls.items():
-        for _ in range(50):
-            call()
-        torch.cuda.synchronize()
-        best = float("inf")
-        for _ in range(5):
-            begin = time.perf_counter()
-            for _ in range(500):
-                call()
-            torch.cuda.synchronize()
-            best = min(best, (time.perf_counter() - begin) / 500)
-        found[kind] = best
+    found = {kind: _host_time(call, 500, warmup=50) for kind, call in calls.items()}
 
     def backward(steps: list[Callable[[torch.Tensor], torch.Tensor]]) -> float:
         best = float("inf")
@@ -215,24 +218,14 @@ def _generated(device: torch.device, host: Mapping[str, float], dispatch: float)
     from .. import torch as linnet_torch
     from .analysis import MemoryModel
     from .config import ExecutionConfig
-    from .performance import DeviceSpec, _costs  # pyright: ignore[reportPrivateUsage]
+    from .performance import DeviceSpec, host_time
 
     source = Path(__file__).with_name("calibration.linnet")
     generics: dict[str, int | str] = {**_DECODER, "Batch": 1, "MaxSeq": 64, "T": "bf16"}
     module = linnet_torch.load(source, generics=generics, device=device, compile=True)
-    decode: Callable[..., object] = getattr(module, "decode")  # noqa: B009
     token = torch.zeros(1, 1, dtype=torch.int32, device=device)
     pos = torch.tensor(0, dtype=torch.int32, device=device)
-    for _ in range(10):
-        decode(token, pos)
-    torch.cuda.synchronize()
-    best = float("inf")
-    for _ in range(5):
-        begin = time.perf_counter()
-        for _ in range(50):
-            decode(token, pos)
-        torch.cuda.synchronize()
-        best = min(best, (time.perf_counter() - begin) / 50)
+    best = _host_time(lambda: module.run_entry("decode", [token, pos]), 50, warmup=10)
     model = MemoryModel(
         source,
         ExecutionConfig(entry="decode", batch=1, cache=64, bindings=dict(_DECODER), dtype="bf16"),
@@ -240,7 +233,7 @@ def _generated(device: torch.device, host: Mapping[str, float], dispatch: float)
     unit = DeviceSpec(
         "unit", 0, {"bf16": 1e30, "f32": 1e30}, 1e30, 1e30, 0.0, host=host, dispatch=dispatch
     )
-    counted = sum(op.host for op in _costs(model.graph, model.env(), unit, 1, False)[0])
+    counted = host_time(model.graph, model.env(), unit)
     return best / counted
 
 
@@ -390,21 +383,13 @@ def _kernel(device: torch.device) -> tuple[float, float, float]:
     heads = torch.randn(16, 1, 32, 128, device=device, dtype=torch.bfloat16).permute(0, 2, 1, 3)
     row = torch.randn(1, 128, device=device, dtype=torch.bfloat16)
 
+    def fill() -> None:
+        # Long products ahead, so the host queues the kernels timed.
+        for _ in range(24):
+            torch.matmul(big, big, out=product)
+
     def queued(call: Callable[[], object], count: int = 2000) -> float:
-        best = float("inf")
-        for _ in range(5):
-            torch.cuda.synchronize()
-            for _ in range(24):
-                torch.matmul(big, big, out=product)
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            for _ in range(count):
-                call()
-            end.record()
-            torch.cuda.synchronize()
-            best = min(best, start.elapsed_time(end) / 1000 / count)
-        return best
+        return _time(call, count, before=fill)
 
     small = queued(lambda: x.add_(1.0))
     strided = queued(lambda: heads * row)
@@ -505,7 +490,7 @@ def _spawned(rank: int, world: int, port: int, out: str) -> None:
         Path(out).write_text(json.dumps(found), encoding="utf-8")
 
 
-def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
+def measure(name: str, *, collectives: bool = True) -> Profile:
     """This device's rates; under `torchrun`, with `collectives`, those of
     the collectives between its processes too."""
     import torch
@@ -522,7 +507,7 @@ def measure(name: str, *, collectives: bool = True) -> dict[str, object]:
     small, strided, gap = _kernel(device)
     peaks, sizes, skinny = _products(device)
     same, broadcast = _elementwise(device)
-    found: dict[str, object] = {
+    found: Profile = {
         "name": name,
         "source": f"measured: {torch.cuda.get_device_name()}, PyTorch {torch.__version__}",
         "memory": int(total),
@@ -594,7 +579,7 @@ def profile(devices: int = 1, *, refresh: bool = False) -> DeviceSpec:
     # The collectives in processes of their own, below: this one may be
     # one of a group already (`validate --time` under `torchrun`).
     found = measure("local", collectives=False)
-    found["source"] = f"{found['source']}, on {platform.node()}"
+    found["source"] = f"{found.get('source', 'measured')}, on {platform.node()}"
     if count > 1:
         import socket
         import tempfile

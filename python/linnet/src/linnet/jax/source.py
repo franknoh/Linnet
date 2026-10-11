@@ -73,7 +73,7 @@ class SourceFunction(LinnetFunction):
         if (sharded, remat) == (self.sharded, self.remat):
             return
         self.sharded, self.remat = sharded, remat
-        self._cache.clear()
+        self.cache.clear()
         self.parameters = {}
 
     def add_lora(
@@ -93,7 +93,7 @@ class SourceFunction(LinnetFunction):
         chosen = (patterns,) if isinstance(patterns, str) else tuple(patterns)
         self.lora = (chosen, rank, float(alpha))
         self._lora_seed = seed
-        self._cache.clear()
+        self.cache.clear()
         self.parameters = {}
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
@@ -101,7 +101,7 @@ class SourceFunction(LinnetFunction):
         # the JAX source supplies the function that runs.
         compiled = super()._compile(bindings)
         text = self._export("jax", bindings)
-        module = import_generated(self._work, f"{self.entry}_{len(self._cache)}", text)
+        module = import_generated(self._work, f"{self.entry}_{len(self.cache)}", text)
         path: Path = module.__linnet_path__
         # Adapters come after the parameters both exports share.
         shared = list(module.PARAMETERS)[: len(compiled.parameters)]
@@ -124,7 +124,7 @@ class SourceFunction(LinnetFunction):
         )
         jitted = jit_with_options(module.main, donated, compiled.options)
         compiled.module = module
-        compiled.prepared = self._prepared_values(module, compiled.arrays)
+        compiled.prepared = self.prepared_values(module, compiled.arrays)
 
         def call(*arguments: ArrayLike) -> jax.Array | tuple[jax.Array, ...]:
             # A lone result is returned bare, as the StableHLO path does. The
@@ -166,7 +166,7 @@ class SourceFunction(LinnetFunction):
             dtypes.append(weight.dtype)
         return values, dtypes
 
-    def _prepared_values(self, module: ModuleType, arrays: Sequence[jax.Array]) -> list[jax.Array]:
+    def prepared_values(self, module: ModuleType, arrays: Sequence[jax.Array]) -> list[jax.Array]:
         """The entry's weight-only values (`prepare`), computed once and kept
         by key in `self.prepared`, which `LinnetModel` shares across entries."""
         keys = list(getattr(module, "PREPARED", []))
@@ -190,7 +190,7 @@ class SourceFunction(LinnetFunction):
 
     def generated_source(self) -> str:
         """The JAX source of the most recently compiled entry."""
-        for compiled in reversed(list(self._cache.values())):
+        for compiled in reversed(list(self.cache.values())):
             if compiled.source_path is not None:
                 return compiled.source_path.read_text(encoding="utf-8")
         raise LinnetError("no entry has been compiled yet")
@@ -225,11 +225,11 @@ def load_source(
         cast_dtype=cast_dtype,
     )
     return SourceFunction(
-        function._source,  # pyright: ignore[reportPrivateUsage]
+        function.source,
         function.program,
         function.generics,
         function.weights,
-        function._std_root,  # pyright: ignore[reportPrivateUsage]
+        function.std_root,
         function.root,
         function.entry,
         function.numerics,

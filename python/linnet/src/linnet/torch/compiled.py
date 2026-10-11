@@ -25,7 +25,15 @@ from .. import ir, lora
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import generated_directory, import_generated, write_generated
 from ..plan import PlanError
-from .module import BlockModule, LinnetModule, Result, argument, owner_of, spec
+from .module import (
+    BlockModule,
+    LinnetModule,
+    Result,
+    adapted_weight,
+    argument,
+    owner_of,
+    spec,
+)
 from .placement import Placement
 from .regions import regional
 
@@ -214,7 +222,7 @@ class CompiledLinnetModule(LinnetModule):
             raise PlanError("no linear weight matches " + ", ".join(chosen))
         self.lora = (tuple(chosen), rank, alpha)
         self.lora_paths = adapted
-        self._recompile()
+        self.recompile()
         self.set_trainable(list(lora.PATTERNS))
         return adapted
 
@@ -235,16 +243,13 @@ class CompiledLinnetModule(LinnetModule):
             for path in self.lora_paths:
                 owner, _ = owner_of(self, path)
                 weight = owner.get_parameter("weight")
-                delta = (
-                    owner.get_parameter(lora.UP).float() @ owner.get_parameter(lora.DOWN).float()
-                )
-                weight.copy_((weight.float() + delta * (alpha / rank)).to(weight.dtype))
+                weight.copy_(adapted_weight(owner, weight, alpha / rank).to(weight.dtype))
                 del owner._parameters[lora.DOWN]
                 del owner._parameters[lora.UP]
         merged = self.lora_paths
         self.lora = None
         self.lora_paths = []
-        self._recompile()
+        self.recompile()
         return merged
 
     def copy_weights(self, source: LinnetModule) -> None:
@@ -262,13 +267,7 @@ class CompiledLinnetModule(LinnetModule):
             keys = generated.prepared_keys
             if not keys or all(key in done for key in keys) or generated.prepare is None:
                 continue
-            inputs: list[torch.Tensor] = []
-            for name in generated.prepare_inputs:
-                if name.startswith("p"):
-                    owner, leaf = owner_of(self, generated.parameters[int(name[1:])])
-                    inputs.append(argument(owner, leaf))
-                else:
-                    inputs.append(generated.constants[generated.constant_names.index(name)])
+            inputs = self._prepare_inputs(generated)
             with torch.no_grad():
                 values = generated.prepare(*inputs, self.interpreter.device)
                 for key, value in zip(keys, values, strict=True):
@@ -280,7 +279,7 @@ class CompiledLinnetModule(LinnetModule):
                     else:
                         self._prepared[key] = value
 
-    def _recompile(self) -> None:
+    def recompile(self) -> None:
         """Drops every compiled entry and prepared value: the parameters
         changed."""
         self._compiled.clear()
@@ -464,19 +463,25 @@ class CompiledLinnetModule(LinnetModule):
             return []
         if not all(key in self._prepared for key in generated.prepared_keys):
             self._lay_out(generated.fused)
-            inputs: list[torch.Tensor] = []
-            for name in generated.prepare_inputs:
-                if name.startswith("p"):
-                    owner, leaf = owner_of(self, generated.parameters[int(name[1:])])
-                    inputs.append(argument(owner, leaf))
-                else:
-                    inputs.append(generated.constants[generated.constant_names.index(name)])
+            inputs = self._prepare_inputs(generated)
             assert generated.prepare is not None
             with torch.no_grad():
                 values = generated.prepare(*inputs, self.interpreter.device)
             for key, value in zip(generated.prepared_keys, values, strict=True):
                 self._prepared.setdefault(key, value)
         return [self._prepared[key] for key in generated.prepared_keys]
+
+    def _prepare_inputs(self, generated: _Generated) -> list[torch.Tensor]:
+        """What the entry's `prepare` reads: parameters (`pN`) as they are
+        now, and its constants."""
+        inputs: list[torch.Tensor] = []
+        for name in generated.prepare_inputs:
+            if name.startswith("p"):
+                owner, leaf = owner_of(self, generated.parameters[int(name[1:])])
+                inputs.append(argument(owner, leaf))
+            else:
+                inputs.append(generated.constants[generated.constant_names.index(name)])
+        return inputs
 
     def _lay_out(self, groups: list[list[str]]) -> None:
         """Puts each group of parameters `prepare` joins (`FUSED`: a layer's

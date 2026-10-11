@@ -24,7 +24,8 @@ from typing import Protocol
 
 import torch
 
-_FP4 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0)
+# The values of the sixteen FP4 (E2M1) codes.
+FP4 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0)
 
 # The weights' storage -> (their versions, the copy made from them). The
 # swizzled copy is `triton_kernels`' own weight and precision config, which
@@ -44,6 +45,16 @@ def available(x: torch.Tensor) -> bool:
         and hasattr(torch, "_grouped_mm")
         and torch.cuda.get_device_capability(x.device)[0] >= 9
     )
+
+
+def mxfp4_values(blocks: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
+    """MXFP4 weights in f32: `blocks` `[..., G, 16]` u8, two codes a byte,
+    the low nibble first, and `scales` `[..., G]` u8, a power of two biased by
+    127 for each group of 32, to `[..., G * 32]`."""
+    table = torch.tensor(FP4, dtype=torch.float32, device=blocks.device)
+    values = torch.stack([table[(blocks & 15).long()], table[(blocks >> 4).long()]], dim=-1)
+    factor = torch.exp2(scales.float() - 127)[..., None]
+    return (values.reshape(*blocks.shape[:-1], 32) * factor).reshape(*blocks.shape[:-2], -1)
 
 
 def _triton_kernels() -> bool:
@@ -91,15 +102,11 @@ def dequantized(blocks: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     entry = _dequantized.get(blocks.data_ptr())
     if entry is None or entry[0] != versions:
         count, out_features, groups, _ = blocks.shape
-        table = torch.tensor(_FP4, dtype=torch.float32, device=blocks.device)
         weight = torch.empty(
             count, out_features, groups * 32, dtype=torch.bfloat16, device=blocks.device
         )
         for e in range(count):
-            nibbles = torch.stack([blocks[e] & 15, blocks[e] >> 4], dim=-1).long()
-            factor = torch.exp2(scales[e].float() - 127)[..., None]
-            values = table[nibbles].reshape(out_features, groups, 32) * factor
-            weight[e] = values.reshape(out_features, groups * 32).to(torch.bfloat16)
+            weight[e] = mxfp4_values(blocks[e], scales[e]).to(torch.bfloat16)
         entry = (versions, weight)
         _dequantized[blocks.data_ptr()] = entry
     return entry[1]

@@ -78,9 +78,6 @@ def _write_tokens(args: Args) -> torch.Tensor:
     )
 
 
-_FP4 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0)
-
-
 def mxfp4_experts(
     x: torch.Tensor, blocks: torch.Tensor, scales: torch.Tensor, experts: torch.Tensor
 ) -> torch.Tensor:
@@ -95,11 +92,9 @@ def mxfp4_experts(
             pass
         else:
             return kernel(x, blocks, scales, experts)
-    table = torch.tensor(_FP4, dtype=torch.float32, device=x.device)
-    taken = blocks[experts]
-    values = torch.stack([table[(taken & 15).long()], table[(taken >> 4).long()]], dim=-1)
-    factor = torch.exp2(scales[experts].float() - 127)[..., None]
-    weight = (values.reshape(*taken.shape[:-1], 32) * factor).reshape(*taken.shape[:-2], -1)
+    from .moe import mxfp4_values
+
+    weight = mxfp4_values(blocks[experts], scales[experts])
     return torch.einsum("rki,rkoi->rko", x.float(), weight).to(x.dtype)
 
 
@@ -127,7 +122,7 @@ def mxfp4_grouped(
     rows, chosen = experts.shape
     count, out_features = blocks.shape[0], blocks.shape[1]
     shared = weights is None
-    from .moe import available
+    from .moe import available, mxfp4_values
     from .moe import mxfp4_grouped as grouped
 
     if available(x):
@@ -135,11 +130,7 @@ def mxfp4_grouped(
         if weights is None:
             return y
         return (y.float() * weights.float()[..., None]).sum(1).to(x.dtype)
-    table = torch.tensor(_FP4, dtype=torch.float32, device=x.device)
-    values = torch.stack([table[(blocks & 15).long()], table[(blocks >> 4).long()]], dim=-1)
-    factor = torch.exp2(scales.float() - 127)[..., None]
-    weight = (values.reshape(*blocks.shape[:-1], 32) * factor).reshape(count, out_features, -1)
-    weight = weight.to(x.dtype)
+    weight = mxfp4_values(blocks, scales).to(x.dtype)
     width = weight.shape[-1]
     if weights is None:
         every = functional.linear(x, weight.reshape(count * out_features, width))

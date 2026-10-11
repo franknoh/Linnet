@@ -186,11 +186,6 @@ def _instantiate_sub(
 class LinnetModule(nn.Module):
     """The root block as a PyTorch module."""
 
-    if TYPE_CHECKING:
-        # How processes hold the model as they train it, once `linnet.train`
-        # has worked it out (`linnet.train.copies`).
-        copies_layout: Copies
-
     def __init__(
         self, program: ir.Program, generics: Mapping[str, int | str], device: torch.device
     ) -> None:
@@ -208,6 +203,9 @@ class LinnetModule(nn.Module):
         # The paths bound to one part of their tensor, split across processes
         # (`bind_weights(shard=...)`): the axis and the part's extent.
         self.shard_parts: dict[str, tuple[int, int]] = {}
+        # How processes hold the model as they train it, once `linnet.train`
+        # has worked it out (`linnet.train.copies`).
+        self.copies_layout: Copies | None = None
         root = program.root
         env = ir.bind_root(program, generics)
         self.root = BlockModule(program, root.name, env, device)
@@ -362,9 +360,7 @@ class LinnetModule(nn.Module):
                 if absent:
                     continue
                 if path in adapted:
-                    down = their_owner.get_parameter(lora.DOWN).float()
-                    up = their_owner.get_parameter(lora.UP).float()
-                    value = value.float() + (up @ down) * scale
+                    value = adapted_weight(their_owner, value, scale)
                 if value.data_ptr() != tensor.data_ptr():
                     tensor.copy_(value)
 
@@ -459,6 +455,14 @@ def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
         return value.reshape(-1).view(torch.uint8).numpy().tobytes()
 
     return read
+
+
+def adapted_weight(owner: torch.nn.Module, weight: torch.Tensor, scale: float) -> torch.Tensor:
+    """`weight` with the product of the adapter `owner` holds added in, in
+    f32: `W + B @ A * scale`."""
+    down = owner.get_parameter(lora.DOWN).float()
+    up = owner.get_parameter(lora.UP).float()
+    return weight.float() + (up @ down) * scale
 
 
 def spec(param: ir.Value, value: object) -> ir.InputSpec:
