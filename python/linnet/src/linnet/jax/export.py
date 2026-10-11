@@ -15,7 +15,7 @@ Operations without a verified mapping stop the export with a diagnostic that
 names every one of them; custom calls are never mapped.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -372,8 +372,8 @@ class _Translator:
         self.imports: set[str] = set()
 
     def run(self) -> dict[str, object]:
-        from jax._src.interpreters import mlir as jax_mlir  # pyright: ignore[reportPrivateUsage]
-        from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateUsage]
+        from jax._src.interpreters import mlir as jax_mlir
+        from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateImportUsage]
 
         with jax_mlir.make_ir_context():
             module = ir.Module.parse(self.text)

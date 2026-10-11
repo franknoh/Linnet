@@ -2,8 +2,6 @@
 and the output-head forms that PyTorch computes a block of rows at a time.
 Values and gradients agree with PyTorch's own, whatever the blocks."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,7 +105,7 @@ def test_the_head_loss_matches_pytorch(
     theirs = [hidden.clone().requires_grad_(), weight.clone().requires_grad_()]
     nll = functional.cross_entropy(theirs[0] @ theirs[1].T, targets, reduction="none")
     want = (weights * nll).sum()
-    want.backward()
+    want.backward()  # pyright: ignore[reportUnknownMemberType]
 
     torch.testing.assert_close(got, want)
     for mine, reference in zip(ours, theirs, strict=True):
@@ -132,7 +130,7 @@ def test_the_head_log_probs_match_pytorch(
     theirs = [hidden.clone().requires_grad_(), weight.clone().requires_grad_()]
     logp = functional.log_softmax(theirs[0] @ theirs[1].T, dim=-1)
     want = logp.gather(1, targets[:, None]).squeeze(1)
-    (want * scale).sum().backward()
+    (want * scale).sum().backward()  # pyright: ignore[reportUnknownMemberType]
 
     torch.testing.assert_close(got, want)
     for mine, reference in zip(ours, theirs, strict=True):
@@ -158,9 +156,9 @@ def test_the_logit_forms_match_pytorch(source: Path, compile: bool) -> None:
     def entry(name: str) -> object:
         return load_function(source, name, std_root=STDLIB, compile=compile)
 
-    torch.testing.assert_close(entry("normalized")(logits), reference)  # type: ignore[operator]
+    torch.testing.assert_close(entry("normalized")(logits), reference)  # pyright: ignore[reportCallIssue]
     picked = reference.gather(1, targets[:, None]).squeeze(1)
-    torch.testing.assert_close(entry("picked")(logits, targets), picked)  # type: ignore[operator]
-    torch.testing.assert_close(entry("loss")(logits, targets, weights), -(weights * picked).sum())  # type: ignore[operator]
+    torch.testing.assert_close(entry("picked")(logits, targets), picked)  # pyright: ignore[reportCallIssue]
+    torch.testing.assert_close(entry("loss")(logits, targets, weights), -(weights * picked).sum())  # pyright: ignore[reportCallIssue]
     spread = -(reference.exp() * reference).sum(-1)
-    torch.testing.assert_close(entry("spread")(logits), spread)  # type: ignore[operator]
+    torch.testing.assert_close(entry("spread")(logits), spread)  # pyright: ignore[reportCallIssue]

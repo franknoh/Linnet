@@ -3,7 +3,7 @@ FlexAttention path lists, for each block of 128 tokens, the pages it reads in
 part and whole; these tests hold the lists and the mask to what each token
 sees, and FlexAttention's numbers (eager, on the CPU) to the gathered path's."""
 
-# pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 

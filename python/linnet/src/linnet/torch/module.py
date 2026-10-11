@@ -552,7 +552,7 @@ def bind_weights(
     rest are still checked, and still decide which optional parameters are
     present, so every stage compiles the same model.
     """
-    from safetensors import safe_open  # type: ignore[import-untyped]
+    from safetensors import safe_open
 
     available = safetensors_index(weights)
     mapping = read_bindings(bindings) if bindings is not None else {}

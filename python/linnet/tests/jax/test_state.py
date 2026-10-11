@@ -1,8 +1,6 @@
 """Entries with `state` members run in JAX functionally: state in, state out,
 by parameter path, agreeing with the Torch materializer's stateful view."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import jax.numpy as jnp
@@ -17,7 +15,7 @@ SOURCE = REPO / "spec-tests/valid/020_state.linnet"
 
 def test_state_is_threaded_through_calls() -> None:
     step = load(SOURCE, generics={"B": 1, "Max": 4, "D": 3}, weights={}, std_root=STDLIB)
-    key0 = jnp.arange(3, dtype=jnp.float32).reshape(1, 1, 3)
+    key0 = jnp.arange(3, dtype=jnp.float32).reshape(1, 1, 3)  # pyright: ignore[reportUnknownMemberType]
     key1 = key0 + 10
 
     out0, state = step(key0, jnp.int32(0))  # every state starts at zeros
@@ -35,4 +33,4 @@ def test_state_is_threaded_through_calls() -> None:
 
     # Restarting from fresh state reproduces the first call.
     again, _ = step(key0, jnp.int32(0))
-    np.testing.assert_allclose(np.asarray(again), np.asarray(out0))
+    np.testing.assert_allclose(np.asarray(again), np.asarray(out0))  # pyright: ignore[reportUnknownArgumentType]

@@ -4,7 +4,7 @@ floating input), emitted by the compiler as a backward pass of the exported
 operations. Each format's gradient matches PyTorch's autograd run over the
 same entry's generated forward code."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -263,7 +263,7 @@ def test_stablehlo(source: Path, entry: str) -> None:
         text, options.DeviceList((device,)), options.CompileOptions()
     )
     buffers = [jax.device_put(a, device) for a in _arguments(entry, paths)]
-    _check([np.asarray(o) for o in executable.execute(buffers)], labels, expected)
+    _check([np.asarray(o) for o in executable.execute(buffers)], labels, expected)  # pyright: ignore[reportUnknownArgumentType]
 
 
 STATEFUL = """\
@@ -316,7 +316,7 @@ def _run(
         text, options.DeviceList((device,)), options.CompileOptions()
     )
     buffers = [jax.device_put(a, device) for a in arguments]
-    return [np.asarray(o, np.float32) for o in executable.execute(buffers)]
+    return [np.asarray(o, np.float32) for o in executable.execute(buffers)]  # pyright: ignore[reportUnknownArgumentType]
 
 
 @pytest.mark.parametrize("target", ["torch", "jax", "onnx", "stablehlo"])

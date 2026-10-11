@@ -8,7 +8,7 @@ ONNX runtime with nothing else, and `save` writes it with external data
 when it is too large for one protobuf.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class Exported:
     outputs: tuple[Port, ...]
     parameters: tuple[str, ...]  # the paths now embedded
     # With `embed=False`: the checked weights as initializers-to-be, by input name.
-    weights: dict[str, TensorProto] = field(default_factory=dict)  # pyright: ignore[reportUnknownVariableType]
+    weights: dict[str, TensorProto] = field(default_factory=dict)
 
     def save(self, path: str | Path, *, external_threshold: int = 1 << 30) -> Path:
         """Writes the model; weights beyond `external_threshold` bytes go next to it."""
@@ -151,7 +151,7 @@ def export_model(
     # A checkpoint tensor may serve several parameters (an output head tied
     # to the embedding): each gets its own initializer.
     declared = {i.name: i for i in model.graph.input}
-    skipped = set(held) if not embed else set()
+    skipped = set(held) if not embed else set()  # pyright: ignore[reportUnknownVariableType]
     wanted: dict[str, list[tuple[str, str]]] = {}
     found: dict[str, TensorProto] = {}
     checked: set[str] = set()  # held: header checked, bytes not read

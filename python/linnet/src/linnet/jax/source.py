@@ -7,8 +7,6 @@ ordinary JAX, `jax.grad` differentiates it — this is how a Linnet model is
 trained in JAX — and `jax.jit`/`jax.vmap` compose with it as usual.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -161,7 +159,7 @@ class SourceFunction(LinnetFunction):
                 host = lora.initial_down(rank, in_features, draws)
             else:
                 host = np.zeros((out_features, rank), dtype=np.float32)
-            value = jax.numpy.asarray(host, dtype=weight.dtype)
+            value = jax.numpy.asarray(host, dtype=weight.dtype)  # pyright: ignore[reportUnknownMemberType]
             if self.placement is not None:
                 value = self.placement(path, value)
             values.append(value)
@@ -185,8 +183,8 @@ class SourceFunction(LinnetFunction):
                 prepared = module.prepare(*values)
                 return tuple(prepared[i] for i in missing)
 
-            values = jax.jit(only_missing)(*inputs)
-            for i, value in zip(missing, values, strict=True):
+            values = jax.jit(only_missing)(*inputs)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            for i, value in zip(missing, values, strict=True):  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]
                 self.prepared[keys[i]] = value
         return [self.prepared[key] for key in keys]
 

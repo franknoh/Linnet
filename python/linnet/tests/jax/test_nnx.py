@@ -1,7 +1,7 @@
 """A Linnet model as a Flax NNX module: the block hierarchy becomes module
 state under the parameter paths, and calls read the module's arrays."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -82,7 +82,9 @@ def test_exported_model_as_nnx_module(tmp_path: Path) -> None:
     graphdef, state = nnx.split(model)
     merged = nnx.merge(graphdef, state)
     np.testing.assert_allclose(
-        np.asarray(merged(tokens)), np.asarray(forward(params, tokens)), atol=1e-5
+        np.asarray(merged(tokens)),  # pyright: ignore[reportUnknownArgumentType]
+        np.asarray(forward(params, tokens)),
+        atol=1e-5,
     )
 
 
@@ -112,7 +114,9 @@ def test_apply_with_new_parameters(tmp_path: Path) -> None:
 
     halved = jax.tree_util.tree_map(half, params)
     np.testing.assert_allclose(
-        np.asarray(function.apply(scaled, tokens)), np.asarray(forward(halved, tokens)), atol=1e-5
+        np.asarray(function.apply(scaled, tokens)),  # pyright: ignore[reportUnknownArgumentType]
+        np.asarray(forward(halved, tokens)),
+        atol=1e-5,
     )
 
 
@@ -139,7 +143,7 @@ def test_nnx_module_trains_over_generated_source(tmp_path: Path) -> None:
     y = x @ jnp.array([[1.0, -2.0, 0.5]], jnp.float32).T
 
     def loss(module: object) -> jax.Array:
-        return jnp.mean((module(x) - y) ** 2)  # type: ignore[operator]
+        return jnp.mean((module(x) - y) ** 2)  # pyright: ignore[reportCallIssue, reportUnknownArgumentType]
 
     first = float(loss(model))
     for _ in range(100):

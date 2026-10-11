@@ -1,7 +1,7 @@
 """`cumsum(x, axis = k)`: running sums along one axis, in the tensor's own
 dtype, the same on every backend as NumPy's."""
 
-# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -77,4 +77,4 @@ def test_stablehlo() -> None:
         text, options.DeviceList((device,)), options.CompileOptions()
     )
     outputs = executable.execute([jax.device_put(a, device) for a in (X, COUNTS)])
-    _check(tuple(np.asarray(output) for output in outputs))
+    _check(tuple(np.asarray(output) for output in outputs))  # pyright: ignore[reportUnknownArgumentType]

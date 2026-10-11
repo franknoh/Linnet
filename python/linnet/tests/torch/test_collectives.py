@@ -2,8 +2,6 @@
 call after call and replayed in a CUDA graph, and leaves larger messages to
 NCCL; gathers lay the parts as NCCL does. Needs two CUDA devices."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import os
@@ -13,7 +11,7 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed as dist
-from torch.multiprocessing.spawn import spawn
+from torch.multiprocessing.spawn import spawn  # pyright: ignore[reportUnknownVariableType]
 
 pytestmark = pytest.mark.skipif(
     torch.cuda.device_count() < 2, reason="the one-shot all-reduce needs two CUDA devices"
@@ -33,7 +31,7 @@ def _sum(rank: int, port: int, out: str) -> None:
     problems: list[str] = []
 
     def nccl(x: torch.Tensor) -> torch.Tensor:
-        return funcol.wait_tensor(funcol.all_reduce(x, "sum", group))
+        return funcol.wait_tensor(funcol.all_reduce(x, "sum", group))  # pyright: ignore[reportUnknownMemberType]
 
     generator = torch.Generator(device="cuda").manual_seed(rank)
     for dtype, count in (
@@ -55,7 +53,7 @@ def _sum(rank: int, port: int, out: str) -> None:
             problems.append(f"call {i}")
     # Gathered side by side, as NCCL lays the parts.
     part = torch.randn(4, 8, device="cuda", generator=generator)
-    whole = funcol.wait_tensor(funcol.all_gather_tensor(part, 1, group))
+    whole = funcol.wait_tensor(funcol.all_gather_tensor(part, 1, group))  # pyright: ignore[reportUnknownMemberType]
     if not torch.equal(all_gather(part, group), whole):
         problems.append("gather")
     # Captured in a CUDA graph and replayed.

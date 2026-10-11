@@ -133,11 +133,11 @@ def source(tmp_path: Path, text: str, name: str = "model") -> Path:
 
 
 def memory(model: Path, config: ExecutionConfig, **kwargs: object) -> MemoryModel:
-    return MemoryModel(model, config, std_root=STDLIB, **kwargs)  # type: ignore[arg-type]
+    return MemoryModel(model, config, std_root=STDLIB, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
 def config(**kwargs: object) -> ExecutionConfig:
-    return ExecutionConfig(backend="generic", **kwargs)  # type: ignore[arg-type]
+    return ExecutionConfig(backend="generic", **kwargs)  # pyright: ignore[reportArgumentType]
 
 
 HALVES = """\
@@ -333,7 +333,7 @@ def test_the_cuda_model_says_how_sure_it_is(tmp_path: Path) -> None:
 
 
 def training(tmp_path: Path, batch: int = 4, **kwargs: object) -> MemoryModel:
-    train = TrainingConfig(**kwargs)  # type: ignore[arg-type]
+    train = TrainingConfig(**kwargs)  # pyright: ignore[reportArgumentType]
     return memory(
         source(tmp_path, MLP),
         config(batch=batch, bindings={"H": 32, "Layers": 3}, training=train),
@@ -864,7 +864,7 @@ where
 def _attend(tmp_path: Path, **kwargs: object) -> MemoryModel:
     return memory(
         source(tmp_path, ATTEND),
-        ExecutionConfig(batch=2, context=16, bindings={"H": 32, "Heads": 4}, **kwargs),  # type: ignore[arg-type]
+        ExecutionConfig(batch=2, context=16, bindings={"H": 32, "Heads": 4}, **kwargs),  # pyright: ignore[reportArgumentType]
     )
 
 

@@ -2,8 +2,6 @@
 the steps PyTorch's DPO takes; GRPO learns what its reward asks, and with
 the engine reporting the policy's own log-probabilities sees no mismatch."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import itertools
@@ -14,10 +12,10 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax  # type: ignore[import-untyped]
+import optax  # pyright: ignore[reportMissingTypeStubs]
 import pytest
 import torch
-from safetensors.numpy import save_file  # type: ignore[import-untyped]
+from safetensors.numpy import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.jax import SourceFunction, load_source
 from linnet.jax.dpo import dpo
@@ -65,7 +63,7 @@ def _entry(weights: Path, entry: str) -> SourceFunction:
 def _pairs(count: int) -> list[Pair]:
     generator = torch.Generator().manual_seed(2)
     return [
-        Pair(torch.randint(0, 11, (2,), generator=generator).tolist(), [3, 3, 3, 3], [7, 7, 7, 7])
+        Pair(torch.randint(0, 11, (2,), generator=generator).tolist(), [3, 3, 3, 3], [7, 7, 7, 7])  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         for _ in range(count)
     ]
 
@@ -220,7 +218,7 @@ def test_grpo_takes_the_engine_weights_each_step(weights: Path) -> None:
     path = "layers.0.mlp.gate.weight"
     assert not np.allclose(np.asarray(sampler.parameters[path]), np.asarray(start[path]))
     assert not np.allclose(np.asarray(sampler.parameters[path]), np.asarray(params[path]))
-    assert jnp.asarray(params[path]).dtype == jnp.float32
+    assert jnp.asarray(params[path]).dtype == jnp.float32  # pyright: ignore[reportUnknownMemberType]
 
 
 MESH_SCRIPT = """

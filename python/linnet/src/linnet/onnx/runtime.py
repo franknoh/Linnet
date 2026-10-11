@@ -214,7 +214,7 @@ class OnnxModel:
         options: _Options,
         providers: Sequence[Provider],
     ) -> None:
-        import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
+        import onnxruntime  # pyright: ignore[reportMissingTypeStubs]
 
         self._ort = cast("_Ort", onnxruntime)
         self._source = source
@@ -973,7 +973,7 @@ def load_model(
     `cast_dtype=True` converts the checkpoint to the dtype the generics ask
     for (`T`)."""
     try:
-        import onnxruntime  # type: ignore[import-untyped]  # pyright: ignore[reportMissingTypeStubs]
+        import onnxruntime  # pyright: ignore[reportMissingTypeStubs]
     except ImportError:
         raise LinnetError(
             "onnxruntime is not installed: pip install onnxruntime, or onnxruntime-gpu "

@@ -10,8 +10,6 @@ the function sees abstract arrays, whose shapes and dtypes bind its
 generics the same way.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -110,7 +108,7 @@ class Function:
     def _number(self, param: ir.Value, value: bool | float, env: ir.Bindings) -> jax.Array:
         declared = param.type
         assert isinstance(declared, ir.ScalarType)
-        return jnp.asarray(value, dtype=NUMPY_TYPES[env.dtype(declared.dtype)])
+        return jnp.asarray(value, dtype=NUMPY_TYPES[env.dtype(declared.dtype)])  # pyright: ignore[reportUnknownMemberType]
 
     # ---- one compilation per binding
 
@@ -122,7 +120,7 @@ class Function:
         path: Path = module.__linnet_path__
         if module.PARAMETERS or module.STATES:
             raise LinnetError(f"internal: `{self.name}` compiled with parameters or state")
-        return jax.jit(module.main), path
+        return jax.jit(module.main), path  # pyright: ignore[reportUnknownMemberType]
 
 
 def load_function(
@@ -142,7 +140,7 @@ def load_function(
     program = compile_plan(source, std_root=std_root, optimize=False, functions=True)
     # Linnet's `i64` needs 64-bit integers. The generated code turns them on
     # when it first loads; on now, the caller's `int64` inputs stay 64-bit.
-    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_enable_x64", True)  # pyright: ignore[reportUnknownMemberType]
     return Function(program, name, source=Path(source), std_root=std_root, numerics=numerics)
 
 

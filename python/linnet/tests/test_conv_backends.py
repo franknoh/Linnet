@@ -5,7 +5,7 @@ does, including where the shapes alone could not say which geometry is meant.
 Before they had one, both exports wrote the canonical gather, whose index
 table for a VAE's first convolution has 2.4 billion entries."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 import torch.nn.functional as functional
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 REPO = Path(__file__).resolve().parents[3]
 STDLIB = REPO / "stdlib"
@@ -59,7 +59,7 @@ def _compiler() -> None:
 def _case(
     tmp_path: Path, height: int, kernel: int, stride: int, pad: int
 ) -> tuple[Path, Path, torch.Tensor, torch.Tensor, dict[str, int | str]]:
-    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(0)
     source = tmp_path / "convolve.linnet"
     source.write_text(SOURCE, encoding="utf-8")
     weight, bias = torch.randn(4, 3, kernel, kernel), torch.randn(4)
@@ -89,7 +89,7 @@ def test_xla_convolution_is_f_conv2d(
 
     source, weights, x, expected, generics = _case(tmp_path, height, kernel, stride, pad)
     function = load_jax(source, generics=generics, weights=weights, std_root=STDLIB)
-    got = np.asarray(function(jnp.asarray(x.numpy())))  # pyright: ignore[reportUnknownMemberType]
+    got = np.asarray(function(jnp.asarray(x.numpy())))
     np.testing.assert_allclose(got, expected.numpy(), atol=1e-5, rtol=1e-5)
 
 
@@ -138,7 +138,7 @@ def test_onnx_runtime_folds_batch_norm_into_the_convolution(tmp_path: Path) -> N
     pytest.importorskip("onnxruntime")
     from linnet.onnx import export_model, load_model
 
-    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(0)
     source = tmp_path / "convolve_norm.linnet"
     source.write_text(BATCH_NORM_SOURCE, encoding="utf-8")
     tensors = {
@@ -216,7 +216,7 @@ def _shapes_case(
 ) -> tuple[Path, dict[str, torch.Tensor], dict[str, tuple[tuple[np.ndarray, ...], np.ndarray]]]:
     """The source, the block's weights, and per function its inputs and what
     `F.conv1d` / `F.conv2d` give for them."""
-    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(0)
     source = tmp_path / "conv_shapes.linnet"
     source.write_text(SHAPES_SOURCE, encoding="utf-8")
     weights = {
@@ -269,7 +269,7 @@ def test_conv1d_and_rectangular_conv2d_in_jax_and_onnx(tmp_path: Path, name: str
     from linnet.jax import load_function as load_jax_function
 
     function = load_jax_function(source, name, std_root=STDLIB)
-    np.testing.assert_allclose(np.asarray(function(*inputs)), expected, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(np.asarray(function(*inputs)), expected, atol=1e-5, rtol=1e-5)  # pyright: ignore[reportUnknownArgumentType]
     assert "conv_general_dilated" in function.generated_source()
 
     onnxruntime = pytest.importorskip("onnxruntime")
@@ -301,6 +301,6 @@ def test_conv1d_and_rectangular_conv2d_under_xla(tmp_path: Path) -> None:
     save_file(weights, str(path))
     function = load_jax(source, generics={}, weights=path, std_root=STDLIB, root="Model")
     signal, image = cases["signal"][0][0], cases["rectangle"][0][0]
-    one, two = function(jnp.asarray(signal), jnp.asarray(image))  # pyright: ignore[reportUnknownMemberType]
-    np.testing.assert_allclose(np.asarray(one), cases["signal"][1], atol=1e-5, rtol=1e-5)
-    np.testing.assert_allclose(np.asarray(two), cases["rectangle"][1], atol=1e-5, rtol=1e-5)
+    one, two = function(jnp.asarray(signal), jnp.asarray(image))
+    np.testing.assert_allclose(np.asarray(one), cases["signal"][1], atol=1e-5, rtol=1e-5)  # pyright: ignore[reportUnknownArgumentType]
+    np.testing.assert_allclose(np.asarray(two), cases["rectangle"][1], atol=1e-5, rtol=1e-5)  # pyright: ignore[reportUnknownArgumentType]

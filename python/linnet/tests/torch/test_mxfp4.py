@@ -2,8 +2,6 @@
 products read from it -- the canonical bodies, PyTorch's unpacked arithmetic
 on the CPU, and Linnet's Triton kernel on CUDA -- agree."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import os
@@ -12,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import CompiledLinnetModule, load
 
@@ -268,7 +266,7 @@ def test_jax_multiplies_the_chosen_experts(
         "routed": shared,
         "combined": (apart * weights[..., None]).sum(1),
     }
-    arrays = [jnp.asarray(t.numpy()) for t in (x, each, experts, weights)]
+    arrays = [jnp.asarray(t.numpy()) for t in (x, each, experts, weights)]  # pyright: ignore[reportUnknownMemberType]
     got = {
         "each": model.run_entry("each", [arrays[1], arrays[2]]),
         "shared": model.run_entry("shared", [arrays[0][:, None], arrays[2]]),

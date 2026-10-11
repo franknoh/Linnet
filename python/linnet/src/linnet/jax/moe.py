@@ -11,7 +11,7 @@ every expert and masks the result, as the canonical bodies do, so it is what
 runs where the kernel cannot (the CPU, widths it does not tile).
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false, reportMissingImports=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ def grouped(x: jax.Array, weight: jax.Array, counts: jax.Array, dtype: DTypeLike
             x, jnp.swapaxes(weight, 1, 2), counts, preferred_element_type=jnp.float32
         )
         return product.astype(dtype)
-    return _grouped_pallas(x, weight, counts, dtype, *tiles)
+    return _grouped_pallas(x, weight, counts, dtype, *tiles)  # pyright: ignore[reportUnknownVariableType]
 
 
 def _tiling(out: int, width: int, dtype: DTypeLike) -> tuple[int, int, int, int, int] | None:
@@ -191,10 +191,10 @@ def _grouped_pallas(
                     a, b, (((1,), (1,)), ((), ())), preferred_element_type=jnp.float32
                 )
 
-            acc = jax.lax.fori_loop(
+            acc = jax.lax.fori_loop(  # pyright: ignore[reportUnknownVariableType]
                 0, width // block_k, step, jnp.zeros((block_m, block_n), jnp.float32)
             )
-            plgpu.store(y_ref.at[rows, columns], acc.astype(y_ref.dtype), mask=live[:, None])
+            plgpu.store(y_ref.at[rows, columns], acc.astype(y_ref.dtype), mask=live[:, None])  # pyright: ignore[reportUnknownArgumentType]
 
     return pl.pallas_call(
         kernel,

@@ -8,7 +8,7 @@ generated code falls back to plain PyTorch arithmetic without it.
 
 # Triton reads a kernel's annotations and resolves only its own, so the kernels
 # stay unannotated.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUntypedFunctionDecorator=false, reportMissingTypeStubs=false, reportMissingParameterType=false, reportUnknownParameterType=false
+# pyright: reportMissingParameterType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUntypedFunctionDecorator=false
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from collections.abc import Callable
 from typing import Protocol
 
 import torch
-import triton  # type: ignore[import-untyped]
-import triton.language as tl  # type: ignore[import-untyped]
+import triton  # pyright: ignore[reportMissingTypeStubs]
+import triton.language as tl  # pyright: ignore[reportMissingTypeStubs]
 from torch.library import triton_op, wrap_triton
 
 

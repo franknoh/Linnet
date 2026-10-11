@@ -1,8 +1,6 @@
 """`linnet.triton.export` writes model repositories Triton loads: a config
 with the entry's static interface and an ONNX model or a Python backend."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import re
@@ -11,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet import LinnetError, triton
 from linnet.torch import load
@@ -32,7 +30,7 @@ GENERICS: dict[str, int | str] = {
 
 @pytest.fixture
 def checkpoint(tmp_path: Path) -> Path:
-    torch.manual_seed(0)
+    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
     reference = load(SOURCE, generics=GENERICS, std_root=STDLIB)
     weights = {
         name.removeprefix("root."): torch.randn(parameter.shape) * 0.3
@@ -63,7 +61,7 @@ def test_onnx_repository(tmp_path: Path, checkpoint: Path) -> None:
     (out,) = session.run(None, {"tokens": np.array([[1, 2, 3, 4]], np.int32)})
     reference = load(SOURCE, generics=GENERICS, std_root=STDLIB, weights=checkpoint)
     expected = reference(torch.tensor([[1, 2, 3, 4]], dtype=torch.int32))
-    torch.testing.assert_close(torch.from_numpy(np.array(out)), expected, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(torch.from_numpy(np.array(out)), expected, atol=1e-4, rtol=1e-4)  # pyright: ignore[reportUnknownMemberType]
 
 
 def test_python_repository_keeps_source_and_weights(tmp_path: Path, checkpoint: Path) -> None:

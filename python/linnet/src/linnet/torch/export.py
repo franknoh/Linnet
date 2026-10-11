@@ -46,7 +46,7 @@ from ..plan import PlanError
 from .dtypes import LINNET_DTYPES
 
 if TYPE_CHECKING:
-    import sympy  # type: ignore[import-untyped]  # torch depends on sympy
+    import sympy  # pyright: ignore[reportMissingTypeStubs]  # torch depends on sympy
     from torch.export.graph_signature import ExportGraphSignature, InputSpec
     from torch.fx.node import Argument
     from torch.utils._sympy.value_ranges import ValueRanges
@@ -100,7 +100,7 @@ class _Symbols:
             return dim
         if isinstance(dim, torch.SymInt):
             return self.json(dim.node.expr)
-        import sympy  # type: ignore[import-untyped]  # torch depends on sympy
+        import sympy  # pyright: ignore[reportMissingTypeStubs]  # torch depends on sympy
 
         if isinstance(dim, sympy.Integer):
             return int(dim)
@@ -339,7 +339,7 @@ def export_linnet(
     weights_path: Path | None = None
     bindings_path: Path | None = None
     if weights is not None:
-        from safetensors.torch import save_file  # type: ignore[import-untyped]
+        from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
         weights_path, bindings_path = exporter.hierarchy.weights_files(weights)
         tensors = {

@@ -91,8 +91,8 @@ def test_generated_modules_share_a_file_not_a_module(tmp_path: Path) -> None:
     source = "STATE = []\n"
     first = import_generated(directory, "entry", source)
     second = import_generated(directory, "entry", source)
-    assert first.__linnet_path__ == second.__linnet_path__  # pyright: ignore[reportAttributeAccessIssue]
+    assert first.__linnet_path__ == second.__linnet_path__
     assert first is not second
-    first.STATE.append(1)  # pyright: ignore[reportAttributeAccessIssue]
-    assert second.STATE == []  # pyright: ignore[reportAttributeAccessIssue]
-    assert write_generated(directory, "entry", source + "# other\n") != first.__linnet_path__  # pyright: ignore[reportAttributeAccessIssue]
+    first.STATE.append(1)
+    assert second.STATE == []
+    assert write_generated(directory, "entry", source + "# other\n") != first.__linnet_path__

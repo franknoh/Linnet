@@ -17,8 +17,6 @@ Without `reference` parameters, the reference log-probabilities are the
 model's own before training, computed for every pair first.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import time
@@ -176,7 +174,7 @@ def dpo(
                     refs[slot] = known[number * pairs_per_step + k]
                 rows.append((inputs, chosen, rejected, valid, refs, np.float32(total)))
             (_, found), more = gradient(learner.trained, learner.frozen, *learner.stack(rows))
-            grads = more if grads is None else add(grads, more)
+            grads = more if grads is None else add(grads, more)  # pyright: ignore[reportUnknownVariableType]
             moments += np.asarray(found)
         # A round's pairs pack into a batch at least (`pack` leaves none out).
         norm = learner.step(cast("dict[str, jax.Array]", grads), clip)

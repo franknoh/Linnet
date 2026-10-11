@@ -142,7 +142,7 @@ def test_a_compile_under_capture_defers_the_capture(monkeypatch: pytest.MonkeyPa
     reference.load_state_dict(weights, strict=False)
     graphed.load_state_dict(weights, strict=False)
     assert isinstance(graphed, CompiledLinnetModule)
-    from torch._dynamo.exc import TorchRuntimeError  # pyright: ignore[reportPrivateUsage]
+    from torch._dynamo.exc import TorchRuntimeError
 
     capture = graphed._capture  # pyright: ignore[reportPrivateUsage]
     attempts: list[int] = []
@@ -305,14 +305,12 @@ def test_intermediates_are_released_after_their_last_use(tmp_path: Path) -> None
 
 
 def test_torch_compile_compiles_each_kind_of_layer_once() -> None:
-    from torch._dynamo import register_backend  # pyright: ignore[reportPrivateImportUsage]
+    from torch._dynamo import register_backend
 
     graphs: list[str] = []
 
-    @register_backend(name="linnet_counted")  # pyright: ignore[reportUntypedFunctionDecorator]
-    def counted(  # pyright: ignore[reportUnusedFunction]
-        graph: GraphModule, inputs: list[torch.Tensor]
-    ) -> Callable[..., object]:
+    @register_backend(name="linnet_counted")
+    def counted(graph: GraphModule, inputs: list[torch.Tensor]) -> Callable[..., object]:
         graphs.append(str(graph.code))
         return graph.forward
 

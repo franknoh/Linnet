@@ -3,7 +3,7 @@ autograd over the interpreter or generated code, `jax.grad` over generated
 JAX, the compiler's own `--grad` exports -- the clause stands for the backward
 pass of the op's body."""
 
-# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -134,5 +134,5 @@ def test_grad_export_stablehlo() -> None:
         text, options.DeviceList((device,)), options.CompileOptions()
     )
     _check(
-        *(np.asarray(o) for o in executable.execute([jax.device_put(a, device) for a in (X, W)]))
+        *(np.asarray(o) for o in executable.execute([jax.device_put(a, device) for a in (X, W)]))  # pyright: ignore[reportUnknownArgumentType]
     )

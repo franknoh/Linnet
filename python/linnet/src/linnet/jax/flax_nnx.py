@@ -11,8 +11,6 @@ members are not held by the module: an entry that touches them is called
 with `state=` and returns `(result, new_state)`.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import re
@@ -44,7 +42,7 @@ class _Nnx(Protocol):
 
 def _import_nnx() -> _Nnx:
     try:
-        from flax import nnx  # type: ignore[import-untyped]
+        from flax import nnx
     except ImportError as error:  # pragma: no cover - depends on the environment
         raise LinnetError("Flax is not installed; `pip install flax`") from error
     return nnx
@@ -57,7 +55,7 @@ def to_nnx(function: LinnetFunction) -> flax_nnx.Module:
     root_name = program.root.name
     weights = function.weights
 
-    class LinnetBlock(nnx.Module):  # type: ignore[misc]
+    class LinnetBlock(nnx.Module):
         """One block of the hierarchy; its attributes are the block's members."""
 
         def __init__(self, block: str, prefix: str) -> None:
@@ -70,7 +68,7 @@ def to_nnx(function: LinnetFunction) -> flax_nnx.Module:
                     continue  # threaded through the call as `state=`, not held here
                 elif path in weights:
                     variable = nnx.Param if member.kind == "param" else nnx.Variable
-                    setattr(self, name, variable(jnp.asarray(weights[path])))
+                    setattr(self, name, variable(jnp.asarray(weights[path])))  # pyright: ignore[reportUnknownMemberType]
                 else:
                     setattr(self, name, None)  # an optional parameter that is absent
 

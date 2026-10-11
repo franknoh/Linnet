@@ -7,7 +7,7 @@ replaces is donated to it, so XLA writes the new cache into the old one's
 memory rather than beside it.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -85,12 +85,12 @@ class LinnetModel:
     def run_entry(self, name: str, inputs: Sequence[ArrayLike]) -> Result:  # pyright: ignore[reportExplicitAny]
         function = self._function(name)
         outcome = function.apply(function.weights, *inputs, state=self.state)
-        if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):
+        if not isinstance(outcome, tuple) or len(outcome) != 2 or not isinstance(outcome[1], dict):  # pyright: ignore[reportUnknownArgumentType]
             return outcome
         result, state = outcome
         mesh = self.mesh
         if mesh is not None:
-            state = {path: self._shard_state(value, mesh) for path, value in state.items()}
+            state = {path: self._shard_state(value, mesh) for path, value in state.items()}  # pyright: ignore[reportUnknownArgumentType]
         self.state = state
         return result
 
@@ -182,7 +182,7 @@ class LinnetModel:
         from ..parallel import split_axis
 
         if isinstance(mesh, int):
-            mesh = Mesh(np.array(jax.devices()[:mesh]), ("model",))
+            mesh = Mesh(np.array(jax.devices()[:mesh]), ("model",))  # pyright: ignore[reportUnknownArgumentType]
         axis_name = mesh.axis_names[0]
         devices = mesh.devices.size
         self.mesh = mesh

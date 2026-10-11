@@ -377,7 +377,7 @@ class CompiledLinnetModule(LinnetModule):
         for static, value in zip(prepared.static, inputs, strict=True):
             static.copy_(value)
         if graph is None:
-            from torch._dynamo.exc import TorchRuntimeError  # pyright: ignore[reportPrivateUsage]
+            from torch._dynamo.exc import TorchRuntimeError
 
             try:
                 graph = prepared.graph = self._capture(prepared, prepared.static)
@@ -774,7 +774,7 @@ def _mark_static(tensor: PreparedValue | int) -> None:
         return
     if not getattr(tensor, "_linnet_static", False):
         torch._dynamo.mark_static_address(tensor)  # pyright: ignore[reportPrivateUsage]
-        tensor._linnet_static = True  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+        tensor._linnet_static = True  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def _adjacent(tensors: list[torch.Tensor]) -> bool:

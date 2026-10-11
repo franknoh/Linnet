@@ -1,7 +1,7 @@
 """`linnet.jax.moe`: rows sorted by expert, each multiplied by its expert's
 weight, by the Pallas kernel on a GPU and `ragged_dot` elsewhere."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 

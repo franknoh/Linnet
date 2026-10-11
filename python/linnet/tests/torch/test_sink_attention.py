@@ -4,8 +4,6 @@ that column then dropped: the canonical body, the interpreter's fast path,
 the generated PyTorch, and on CUDA its FlexAttention path under
 `torch.compile`."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 from pathlib import Path

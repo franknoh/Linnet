@@ -9,7 +9,7 @@ model-specific exists on the Python side. Inference only: the wrapped module
 has no VJP.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from types import ModuleType
     from typing import TypeAlias
 
-    from jax._src.lib.mlir import ir as mlir_ir
+    from jax._src.lib.mlir import ir as mlir_ir  # pyright: ignore[reportPrivateImportUsage]
     from jax.core import ShapedArray
     from jax.sharding import Sharding
     from jax.typing import ArrayLike, DTypeLike
@@ -479,8 +479,8 @@ def _wrap_module(text: str) -> jax.export.Exported:
     """A `jax.export.Exported` around a StableHLO module whose function is
     `@main`, so JAX can call it like one of its own exports."""
     from jax import export
-    from jax._src.interpreters import mlir as jax_mlir  # pyright: ignore[reportPrivateUsage]
-    from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateUsage]
+    from jax._src.interpreters import mlir as jax_mlir
+    from jax._src.lib.mlir import ir  # pyright: ignore[reportPrivateImportUsage]
     from jax.tree_util import tree_flatten
 
     with jax_mlir.make_ir_context():

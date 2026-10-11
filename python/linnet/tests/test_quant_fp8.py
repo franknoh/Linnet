@@ -5,7 +5,7 @@ stored as `compressed-tensors` stores it (an `F8_E4M3` weight, a
 dequantized weight. On a GPU with FP8 products, `numerics="fast"` rounds
 the input to FP8 too."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 from numpy.typing import NDArray
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file
 
 from linnet.compiler import find_compiler
 from linnet.torch import load
@@ -88,13 +88,13 @@ def test_every_byte_decodes(source: Path, target: str, numerics: str) -> None:
     if target == "torch":
         namespace: dict[str, object] = {}
         exec(compile(text, "<generated>", "exec"), namespace)
-        (got,) = namespace["main"](torch.from_numpy(BYTES))  # type: ignore[operator]
+        (got,) = namespace["main"](torch.from_numpy(BYTES))  # pyright: ignore[reportCallIssue]
         values = np.asarray(got)
     elif target == "jax":
         pytest.importorskip("jax")
         namespace = {}
         exec(compile(text, "<generated>", "exec"), namespace)
-        (got,) = namespace["main"](BYTES)  # type: ignore[operator]
+        (got,) = namespace["main"](BYTES)  # pyright: ignore[reportCallIssue]
         values = np.asarray(got)
     elif target == "onnx":
         onnxruntime = pytest.importorskip("onnxruntime")

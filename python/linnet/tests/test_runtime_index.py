@@ -3,8 +3,6 @@
 in every backend: interpreted and generated PyTorch (with gradients through
 it), generated JAX, ONNX Runtime, and StableHLO through JAX."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -95,7 +93,7 @@ def test_jax_reads_the_position(
     from linnet.jax import load_function as load_jax_function
 
     function = load_jax_function(source, name)
-    np.testing.assert_allclose(np.asarray(function(*inputs)), expected, rtol=0, atol=0)
+    np.testing.assert_allclose(np.asarray(function(*inputs)), expected, rtol=0, atol=0)  # pyright: ignore[reportUnknownArgumentType]
 
 
 @pytest.mark.parametrize(("name", "inputs", "expected"), CASES)
@@ -115,7 +113,7 @@ def test_onnx_runtime_reads_the_position(
     for port, value in zip(exported.inputs[1:], inputs[1:], strict=True):
         feeds[port.name] = np.array(value, dtype=np.int32 if port.dtype == "i32" else np.int64)
     (got,) = session.run(None, feeds)
-    np.testing.assert_allclose(np.asarray(got), expected, rtol=0, atol=0)
+    np.testing.assert_allclose(np.asarray(got), expected, rtol=0, atol=0)  # pyright: ignore[reportUnknownArgumentType]
 
 
 @pytest.mark.parametrize("compile", [False, True])
@@ -134,4 +132,4 @@ def test_stablehlo_reads_a_parameter_at_a_runtime_row(source: Path) -> None:
     jax.config.update("jax_enable_x64", True)
     lookup = load_jax(source, generics={"N": 4, "M": 5}, weights={"weight": X2}, root="Table")
     got = lookup(jax.numpy.asarray(3, dtype=jax.numpy.int64))
-    np.testing.assert_allclose(np.asarray(got), X2[3], rtol=0, atol=0)
+    np.testing.assert_allclose(np.asarray(got), X2[3], rtol=0, atol=0)  # pyright: ignore[reportUnknownArgumentType]

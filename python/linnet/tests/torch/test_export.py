@@ -32,7 +32,7 @@ def _compiler() -> None:
 
 class RMSNorm(nn.Module):
     def __init__(self, width: int) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        super().__init__()
         self.weight = nn.Parameter(torch.ones(width))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -41,7 +41,7 @@ class RMSNorm(nn.Module):
 
 class Layer(nn.Module):
     def __init__(self, width: int, heads: int) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        super().__init__()
         self.norm = RMSNorm(width)
         self.q = nn.Linear(width, width, bias=False)
         self.k = nn.Linear(width, width, bias=False)
@@ -67,7 +67,7 @@ class Layer(nn.Module):
 
 class Transformer(nn.Module):
     def __init__(self) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        super().__init__()
         self.embedding = nn.Embedding(11, 8)
         self.layers = nn.ModuleList([Layer(8, 2) for _ in range(2)])
         self.head = nn.Linear(8, 11)
@@ -85,7 +85,7 @@ class Mlp(nn.Module):
     standard library's `layer_norm`."""
 
     def __init__(self) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        super().__init__()
         self.norm = nn.LayerNorm(6)
         self.net = nn.Sequential(nn.Linear(6, 10), nn.ReLU(), nn.Linear(10, 3), nn.GELU("tanh"))
         self.register_buffer("scale", torch.full((3,), 0.5))
@@ -167,7 +167,7 @@ def test_static_mlp_with_bindings(tmp_path: Path) -> None:
 def test_unsupported_operations_are_named() -> None:
     class Odd(nn.Module):
         def __init__(self) -> None:
-            super().__init__()  # pyright: ignore[reportUnknownMemberType]
+            super().__init__()
             self.weight = nn.Parameter(torch.ones(4))
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -23,8 +23,6 @@ weights once and keeps them whole for the step; each micro-batch's
 gradients are summed into the parts as its backward finishes them.
 """
 
-# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
-
 from __future__ import annotations
 
 import contextlib
@@ -41,8 +39,8 @@ from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.distributed.tensor import DTensor, Partial, Replicate, Shard
 from torch.utils.checkpoint import (
     CheckpointPolicy,
-    checkpoint,
-    create_selective_checkpoint_contexts,
+    checkpoint,  # pyright: ignore[reportUnknownVariableType]
+    create_selective_checkpoint_contexts,  # pyright: ignore[reportUnknownVariableType]
 )
 
 from .. import lora
@@ -261,7 +259,7 @@ class Held:
             whole = _joined(part, dtype)
         if self.trains and part.requires_grad:
             whole.requires_grad_(True)
-            whole.register_post_accumulate_grad_hook(functools.partial(self._sum, part))
+            whole.register_post_accumulate_grad_hook(functools.partial(self._sum, part))  # pyright: ignore[reportUnknownMemberType]
         self._wholes[id(part)] = whole
         return whole
 

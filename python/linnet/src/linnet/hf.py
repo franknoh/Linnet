@@ -580,7 +580,10 @@ def export(
 
 def _copy_tokenizer(repo: str, directory: Path) -> tuple[str, ...]:
     try:
-        from huggingface_hub import hf_hub_download, list_repo_files  # type: ignore[import-untyped]
+        from huggingface_hub import (
+            hf_hub_download,  # pyright: ignore[reportUnknownVariableType]
+            list_repo_files,
+        )
     except ImportError:
         raise LinnetError(
             "huggingface-hub is not installed (pip install 'linnet-lang[nest]')"

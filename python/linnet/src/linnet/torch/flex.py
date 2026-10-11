@@ -7,8 +7,6 @@ at the storage's beginning. A copy made inside the compiled graph (a clone,
 custom operator is opaque to Inductor, so its result is a buffer of its own.
 """
 
-# pyright: reportUnknownMemberType=false
-
 from __future__ import annotations
 
 import torch
@@ -22,7 +20,7 @@ def fresh_copy(x: torch.Tensor) -> torch.Tensor:
     return out
 
 
-@fresh_copy.register_fake
+@fresh_copy.register_fake  # pyright: ignore[reportUnknownMemberType]
 def _(x: torch.Tensor) -> torch.Tensor:
     return torch.empty(x.shape, dtype=x.dtype, device=x.device)
 
@@ -31,4 +29,4 @@ def _backward(_: object, grad: torch.Tensor) -> torch.Tensor:
     return grad
 
 
-fresh_copy.register_autograd(_backward)
+fresh_copy.register_autograd(_backward)  # pyright: ignore[reportUnknownMemberType]

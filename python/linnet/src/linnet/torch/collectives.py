@@ -28,7 +28,6 @@ which every process holds; a gathered slice's is its slice of the gradient.
 
 # PyTorch's symmetric memory, functional collectives, and custom-op registry,
 # and the Triton kernel, carry no complete types.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportIncompatibleMethodOverride=false
 
 from __future__ import annotations
 
@@ -79,7 +78,9 @@ class OneShot:
         flags = symm_mem.rendezvous(self.flags, group.group_name)
         self.flag_ptrs = torch.tensor(flags.buffer_ptrs, dtype=torch.int64, device=cuda)
         self.counters = torch.zeros(_MAX_BLOCKS, dtype=torch.int32, device=cuda)
-        from .kernels import one_shot_all_reduce_kernel
+        from .kernels import (
+            one_shot_all_reduce_kernel,  # pyright: ignore[reportUnknownVariableType]
+        )
 
         # `triton.jit` carries no types: to the checker the kernel is a plain function.
         self.kernel = cast(_Launcher, one_shot_all_reduce_kernel)
@@ -114,7 +115,7 @@ def one_shot_all_reduce(x: torch.Tensor, group: str) -> torch.Tensor:
     return _one_shots[group](x)
 
 
-@one_shot_all_reduce.register_fake
+@one_shot_all_reduce.register_fake  # pyright: ignore[reportUnknownMemberType]
 def _(x: torch.Tensor, group: str) -> torch.Tensor:
     return torch.empty_like(x)
 
@@ -149,7 +150,7 @@ def _eager(x: torch.Tensor) -> bool:
 def all_reduce(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
     """The sum of `x` over the processes of `group`."""
     if x.requires_grad and torch.is_grad_enabled():
-        return _Sum.apply(x, group)  # type: ignore[no-any-return]
+        return _Sum.apply(x, group)
     name = str(group.group_name)
     if (
         name in _one_shots
@@ -168,13 +169,13 @@ def all_reduce(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
         return out
     from torch.distributed import _functional_collectives as funcol
 
-    return funcol.all_reduce(x, "sum", group)
+    return funcol.all_reduce(x, "sum", group)  # pyright: ignore[reportUnknownMemberType]
 
 
 def all_gather(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
     """The processes' `x` side by side along the last axis, in rank order."""
     if x.requires_grad and torch.is_grad_enabled():
-        return _Gather.apply(x, group)  # type: ignore[no-any-return]
+        return _Gather.apply(x, group)
     if _eager(x):
         import torch.distributed as dist
 
@@ -184,14 +185,14 @@ def all_gather(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
         return torch.cat(stacked.chunk(world), dim=x.dim() - 1)
     from torch.distributed import _functional_collectives as funcol
 
-    return funcol.all_gather_tensor(x.contiguous(), x.dim() - 1, group)
+    return funcol.all_gather_tensor(x.contiguous(), x.dim() - 1, group)  # pyright: ignore[reportUnknownMemberType]
 
 
 def shared(x: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
     """`x` as every process of `group` reads it whole: itself, and in
     backward the sum of the processes' gradients of it."""
     if x.requires_grad and torch.is_grad_enabled():
-        return _Shared.apply(x, group)  # type: ignore[no-any-return]
+        return _Shared.apply(x, group)
     return x
 
 
@@ -210,7 +211,7 @@ class _Sum(torch.autograd.Function):
         return all_reduce(x, group)
 
     @staticmethod
-    def backward(ctx: FunctionCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def backward(ctx: FunctionCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
         return grad, None
 
 
@@ -221,7 +222,7 @@ class _Shared(torch.autograd.Function):
         return x.view_as(x)
 
     @staticmethod
-    def backward(ctx: _SharedCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def backward(ctx: _SharedCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
         return all_reduce(grad.contiguous(), ctx.group), None
 
 
@@ -234,7 +235,7 @@ class _Gather(torch.autograd.Function):
         return all_gather(x, group)
 
     @staticmethod
-    def backward(ctx: _GatherCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def backward(ctx: _GatherCtx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
         return grad.chunk(ctx.world, dim=-1)[ctx.rank].contiguous(), None
 
 

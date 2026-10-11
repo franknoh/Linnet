@@ -274,7 +274,7 @@ def causal_mask(shape: list[int], device: torch.device) -> torch.Tensor:
     attention kernels can use `is_causal` instead of reading it."""
     rows, columns = shape
     mask = torch.ones(rows, columns, dtype=torch.bool, device=device).tril(columns - rows)
-    mask._linnet_causal = rows == columns  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+    mask._linnet_causal = rows == columns  # pyright: ignore[reportAttributeAccessIssue]
     return mask
 
 

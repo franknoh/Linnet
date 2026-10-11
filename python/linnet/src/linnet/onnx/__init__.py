@@ -1,7 +1,5 @@
 """ONNX: import graphs as Linnet source, and package `linnet onnx` output with its weights."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from ..compiler import LinnetError, find_compiler

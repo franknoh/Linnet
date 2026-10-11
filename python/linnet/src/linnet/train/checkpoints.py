@@ -10,8 +10,6 @@ returns its step (0 when there is none). Weights that do not train (a LoRA
 run's base model) are not saved: load the model as the run did.
 """
 
-# pyright: reportUnknownMemberType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -58,7 +56,7 @@ def save_checkpoint(
 
     root = Path(directory)
     target = checkpoint_path(root, step)
-    dcp.save(
+    dcp.save(  # pyright: ignore[reportPrivateImportUsage, reportUnknownMemberType]
         cast("dict[str, object]", _state(model, optimizer, schedule, step)),
         checkpoint_id=str(target),
     )
@@ -83,7 +81,7 @@ def load_checkpoint(
     if not found:
         return 0
     state = _state(model, optimizer, schedule, 0)
-    dcp.load(cast("dict[str, object]", state), checkpoint_id=str(found[-1]))
+    dcp.load(cast("dict[str, object]", state), checkpoint_id=str(found[-1]))  # pyright: ignore[reportPrivateImportUsage, reportUnknownMemberType]
     set_optimizer_state_dict(model, optimizer, state["optimizer"])
     if schedule is not None:
         schedule.load_state_dict(cast("dict[str, object]", state["progress"]["schedule"]))

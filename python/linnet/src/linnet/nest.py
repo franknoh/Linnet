@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -301,8 +302,8 @@ def hub_safetensors_header(
     index), so it cannot see a checkpoint named the way `diffusers` names
     one. A card already says which files it means, so read those.
     """
-    from huggingface_hub import hf_hub_url  # type: ignore[import-untyped]
-    from huggingface_hub.utils import get_session  # type: ignore[import-untyped]
+    from huggingface_hub import hf_hub_url
+    from huggingface_hub.utils import get_session
 
     url = hf_hub_url(repo, filename, revision=revision)
     session = get_session()
@@ -320,11 +321,8 @@ def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> li
     assert card.weights is not None
     weights = card.weights
     beside = all((card.directory / f).is_file() for f in weights.files)
-    if not beside:
-        try:
-            import huggingface_hub  # type: ignore[import-untyped]  # noqa: F401
-        except ImportError:
-            return ["huggingface-hub is not installed (pip install 'linnet-lang[nest]')"]
+    if not beside and importlib.util.find_spec("huggingface_hub") is None:
+        return ["huggingface-hub is not installed (pip install 'linnet-lang[nest]')"]
     tensors: dict[str, tuple[tuple[int, ...], str]] = {}
     for filename in weights.files:
         try:
@@ -585,7 +583,7 @@ class HubModule(Protocol):
 
 def huggingface_hub() -> HubModule:
     try:
-        import huggingface_hub  # type: ignore[import-untyped]
+        import huggingface_hub
     except ImportError:
         raise NestError(
             "huggingface-hub is not installed (pip install 'linnet-lang[nest]')"

@@ -20,7 +20,7 @@ i32, segments [P] i32, targets [P] i64, weights [P] f32) -> f32`, the
 weighted sum of each position's cross-entropy for its target.
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -499,7 +499,7 @@ def _spread(
     try:
         from jax import shard_map
     except ImportError:  # JAX before 0.6
-        from jax.experimental.shard_map import shard_map  # type: ignore[no-redef]
+        from jax.experimental.shard_map import shard_map
 
     axis = mesh.axis_names[0]
     # Every array here was placed by `_split_as`: its sharding is a `NamedSharding`.

@@ -2,8 +2,6 @@
 learns which answer is preferred, and a reference model giving the same
 steps as reference log-probabilities computed first."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import math
@@ -11,7 +9,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import LinnetModule, load
 from linnet.train import Example, pack
@@ -76,7 +74,7 @@ def _pairs(count: int) -> list[Pair]:
     """Prompts of two tokens; the preferred answer repeats 3, the other 7."""
     generator = torch.Generator().manual_seed(2)
     return [
-        Pair(torch.randint(0, 11, (2,), generator=generator).tolist(), [3, 3, 3, 3], [7, 7, 7, 7])
+        Pair(torch.randint(0, 11, (2,), generator=generator).tolist(), [3, 3, 3, 3], [7, 7, 7, 7])  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         for _ in range(count)
     ]
 

@@ -2,15 +2,13 @@
 `labels`, `position_ids`) gives the loss transformers would, from the
 model's `loss_packed` entry, for padded rows and for padding-free ones."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 from torch.nn import functional
 
 from linnet.torch import CausalLM, LinnetModule, load
@@ -53,11 +51,11 @@ def _reference(model: LinnetModule, sequences: list[torch.Tensor], labels: list[
     for sequence, label in zip(sequences, labels, strict=True):
         logits = model.run_entry("forward", [sequence[None].to(torch.int32)])[0]
         shifted = label[1:]
-        losses.append(
+        losses.append(  # pyright: ignore[reportUnknownMemberType]
             functional.cross_entropy(logits[:-1], shifted, ignore_index=-100, reduction="sum")
         )
         count += int((shifted != -100).sum())
-    return torch.stack(losses).sum() / count
+    return torch.stack(losses).sum() / count  # pyright: ignore[reportUnknownArgumentType]
 
 
 @pytest.mark.parametrize("bucket", [1, 256])

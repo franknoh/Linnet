@@ -3,7 +3,7 @@ functions. They agree with references written in `jax.numpy`, bind their
 generics from each call's inputs, and compose with `jax.grad`, `jax.jit`,
 and `jax.vmap`."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def test_cross_entropy_and_its_gradient() -> None:
     loss = cross_entropy(logits, labels)
     assert loss.shape == () and loss.dtype == jnp.float32
     np.testing.assert_allclose(loss, _cross_entropy(logits, labels), rtol=1e-5, atol=1e-6)
-    grad = jax.grad(cross_entropy)(logits, labels)
+    grad = jax.grad(cross_entropy)(logits, labels)  # pyright: ignore[reportUnknownVariableType]
     np.testing.assert_allclose(grad, jax.grad(_cross_entropy)(logits, labels), rtol=1e-5, atol=1e-6)
     # bf16 logits bind `T` to bf16; the loss is still computed in f32.
     half = logits.astype(jnp.bfloat16)
@@ -53,7 +53,7 @@ def test_functions_compose_with_jit_and_vmap() -> None:
     ]
     # Under `vmap` the function sees one element of the leading axis at a
     # time: its generics bind to [2, 5, 7], not [4, 2, 5, 7].
-    batched = jax.jit(jax.vmap(log_probs))(logits, tokens)
+    batched = jax.jit(jax.vmap(log_probs))(logits, tokens)  # pyright: ignore[reportUnknownVariableType]
     np.testing.assert_allclose(batched, expected, rtol=1e-5, atol=1e-6)
 
     def objective(values: jax.Array) -> jax.Array:

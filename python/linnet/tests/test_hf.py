@@ -1,7 +1,7 @@
 """`linnet.hf.export` writes Transformers checkpoints that `transformers` loads
 and that compute what the Linnet program computes."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import load_file, save_file  # type: ignore[import-untyped]
+from safetensors.torch import load_file, save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet import LinnetError, hf
 from linnet.torch import load

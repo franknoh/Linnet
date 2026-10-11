@@ -2,7 +2,7 @@
 the same weights as the PyTorch materializer, agrees with it, and imports
 back into Linnet."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-import onnx  # type: ignore[import-untyped]
+import onnx
 import pytest
 import torch
-from onnx import parser  # type: ignore[import-untyped]
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from onnx import parser
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.onnx import export_function, find_compiler, import_onnx
 from linnet.torch import load
@@ -33,7 +33,7 @@ def _compiler() -> None:
             if (REPO / candidate).exists():
                 os.environ["LINNET_BIN"] = str(REPO / candidate)
                 break
-    torch.manual_seed(0)  # pyright: ignore[reportUnknownMemberType]
+    torch.manual_seed(0)
 
 
 def _export_onnx(

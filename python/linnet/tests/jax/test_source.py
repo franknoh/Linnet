@@ -2,7 +2,7 @@
 StableHLO-compiled `load`, threads state, loops with `lax.while_loop`, and
 differentiates under `jax.grad`."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -105,8 +105,8 @@ def test_jax_grad_trains_a_linnet_mlp(tmp_path: Path) -> None:
     params = dict(f.parameters)
     first = float(loss(params))
     for _ in range(200):
-        grads = grad(params)
-        params = {name: value - 0.05 * grads[name] for name, value in params.items()}
+        grads = grad(params)  # pyright: ignore[reportUnknownVariableType]
+        params = {name: value - 0.05 * grads[name] for name, value in params.items()}  # pyright: ignore[reportUnknownVariableType]
     last = float(loss(params))
     assert last < first * 0.05, (first, last)
 

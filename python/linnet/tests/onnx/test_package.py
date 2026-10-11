@@ -1,7 +1,7 @@
 """`export_model` packages `linnet onnx` output with the checkpoint inside, so
 it runs in onnxruntime with nothing else and agrees with the interpreter."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet import LinnetError
 from linnet.onnx import export_model

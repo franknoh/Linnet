@@ -936,7 +936,7 @@ def step_time(
             seconds = summed
     limit: Literal["compute", "memory", "communication", "host"] = max(
         ("compute", "memory", "communication", "host"), key=lambda k: totals[k]
-    )  # type: ignore[assignment]
+    )
     return Throughput(
         tokens * replicas,
         seconds,

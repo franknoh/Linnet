@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import PlanError, load
 

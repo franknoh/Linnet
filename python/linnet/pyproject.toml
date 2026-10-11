@@ -126,8 +126,8 @@ pythonVersion = "3.12"
 # pyright's strict rules and, of basedpyright's own, only this one: no
 # explicit `Any`.
 typeCheckingMode = "standard"
-reportMissingTypeStubs = false
 reportExplicitAny = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
 
 [tool.ruff]
 line-length = 100

@@ -4,8 +4,6 @@ process of its own (the device count is fixed when JAX starts); PyTorch runs
 two `gloo` processes with the weights and KV caches as DTensors, attention as
 its canonical body (PyTorch's CPU attention kernel has no DTensor rule)."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 import os
@@ -16,7 +14,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from .test_serve import GENERICS, SOURCE
 
@@ -110,10 +108,10 @@ def _torch_rank(rank: int, world: int, port: int, source: str, weights: str) -> 
             "compile": True,
             "numerics": "exact",
         }
-        one = load(source, **kw)
-        two = load(source, tensor_parallel=mesh, **kw)
+        one = load(source, **kw)  # pyright: ignore[reportArgumentType]
+        two = load(source, tensor_parallel=mesh, **kw)  # pyright: ignore[reportArgumentType]
         split = dict(two.named_parameters())["root.q_proj.weight"]
-        assert tuple(split.to_local().shape) == (32 // world, 32)  # pyright: ignore[reportAttributeAccessIssue]
+        assert tuple(split.to_local().shape) == (32 // world, 32)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownArgumentType, reportUnknownMemberType]
         tokens = torch.tensor([[3, 1, 4, 1, 5, 9]], dtype=torch.int32)
         torch.testing.assert_close(
             two.run_entry("forward", [tokens]),
@@ -150,7 +148,7 @@ def test_torch_on_two_processes(files: tuple[Path, Path]) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    torch.multiprocessing.spawn(_torch_rank, args=(2, port, str(source), str(weights)), nprocs=2)
+    torch.multiprocessing.spawn(_torch_rank, args=(2, port, str(source), str(weights)), nprocs=2)  # pyright: ignore[reportPrivateImportUsage, reportUnknownMemberType]
 
 
 def test_split_attention_gives_the_mask_the_heads(monkeypatch: pytest.MonkeyPatch) -> None:

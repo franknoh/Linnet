@@ -6,7 +6,7 @@ arrive in f32. JAX: `load_source(..., generics T=bf16, cast_dtype=True)`
 takes f32 master parameters, casts them for each call, and `jax.grad`
 returns f32 gradients."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import load
 
@@ -129,7 +129,7 @@ def test_jax_master_weights(files: tuple[Path, Path]) -> None:
         out = mixed.apply(parameters, jnp.asarray(x, dtype=jnp.bfloat16))
         return jnp.log(out.astype(jnp.float32)).sum()
 
-    grads = jax.grad(loss)(masters)
-    for path, grad in grads.items():
+    grads = jax.grad(loss)(masters)  # pyright: ignore[reportUnknownVariableType]
+    for path, grad in grads.items():  # pyright: ignore[reportUnknownVariableType]
         assert grad.dtype == jnp.float32, path
-        assert bool(jnp.all(jnp.isfinite(grad))) and bool(jnp.any(grad != 0)), path
+        assert bool(jnp.all(jnp.isfinite(grad))) and bool(jnp.any(grad != 0)), path  # pyright: ignore[reportUnknownArgumentType]

@@ -342,14 +342,14 @@ def _clip_split(parameters: list[torch.Tensor], limit: float, layout: Copies) ->
     holds alike, counted once."""
     import torch.distributed as dist
 
-    held = [p for p in parameters if p.grad is not None]
+    held = [(p, p.grad) for p in parameters if p.grad is not None]
     if not held:
         return 0.0
-    device = held[0].grad.device  # type: ignore[union-attr]
+    device = held[0][1].device
     parts = torch.zeros((), dtype=torch.float32, device=device)
     whole = torch.zeros((), dtype=torch.float32, device=device)
-    for p in held:
-        squares = cast(torch.Tensor, p.grad).float().pow(2).sum()
+    for p, grad in held:
+        squares = grad.float().pow(2).sum()
         if id(p) in layout.split:
             parts = parts + squares
         else:
@@ -357,8 +357,8 @@ def _clip_split(parameters: list[torch.Tensor], limit: float, layout: Copies) ->
     dist.all_reduce(parts, group=layout.shards)
     norm = (parts + whole).sqrt()
     scale = (limit / (norm + 1e-6)).clamp(max=1.0)
-    for p in held:
-        cast(torch.Tensor, p.grad).mul_(scale.to(cast(torch.Tensor, p.grad).dtype))
+    for _, grad in held:
+        grad.mul_(scale.to(grad.dtype))
     return float(norm)
 
 

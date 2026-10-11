@@ -3,7 +3,7 @@ one even after the model ran without them, a tied checkpoint tensor trained
 as one parameter, cache state starting each call detached, and the trained
 weights written back under the checkpoint's names or Linnet's."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors import safe_open  # type: ignore[import-untyped]
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors import safe_open
+from safetensors.torch import save_file
 
 from linnet.torch import LinnetModule, load
 
@@ -52,7 +52,7 @@ def _load(files: tuple[Path, Path, Path], **options: object) -> LinnetModule:
         bindings=bindings,
         std_root=STDLIB,
         device="cpu",
-        **options,  # type: ignore[arg-type]
+        **options,  # pyright: ignore[reportArgumentType]
     )
 
 
@@ -99,7 +99,7 @@ def test_gradients_reach_every_weight_after_running_without_them(
         after = model.run_entry("forward", [TOKENS])
     assert not torch.allclose(before, after)
     held = [p for group in optimizer.param_groups for p in group["params"]]
-    assert any(p is model.root.q_proj.weight for p in held)
+    assert any(p is model.root.q_proj.weight for p in held)  # pyright: ignore[reportAttributeAccessIssue]
 
 
 @pytest.mark.parametrize("compile", [False, True])
@@ -107,11 +107,11 @@ def test_a_tied_tensor_trains_as_one_parameter(
     files: tuple[Path, Path, Path], compile: bool
 ) -> None:
     model = _load(files, compile=compile, trainable=True)
-    assert model.root.head.weight is model.root.embedding.weight
+    assert model.root.head.weight is model.root.embedding.weight  # pyright: ignore[reportAttributeAccessIssue]
     optimizer = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.1)
     model.run_entry("forward", [TOKENS]).square().mean().backward()
     optimizer.step()
-    assert model.root.head.weight is model.root.embedding.weight
+    assert model.root.head.weight is model.root.embedding.weight  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_written_cache_starts_each_call_detached(files: tuple[Path, Path, Path]) -> None:
@@ -140,8 +140,8 @@ def test_trained_weights_are_written_back(files: tuple[Path, Path, Path], tmp_pa
 
     # Under the checkpoint's names: the tied tensor once, no absent bias.
     saved = model.save_weights(tmp_path / "trained.safetensors")
-    with safe_open(str(saved), framework="pt") as handle:  # type: ignore[no-untyped-call]
-        assert set(handle.keys()) == {
+    with safe_open(str(saved), framework="pt") as handle:
+        assert set(handle.keys()) == {  # pyright: ignore[reportUnknownArgumentType]
             "embedding.weight",
             "positions.weight",
             "q_proj.weight",
@@ -163,8 +163,8 @@ def test_trained_weights_are_written_back(files: tuple[Path, Path, Path], tmp_pa
     linnet = model.save_weights(
         tmp_path / "linnet.safetensors", names="linnet", dtype=torch.bfloat16
     )
-    with safe_open(str(linnet), framework="pt") as handle:  # type: ignore[no-untyped-call]
-        keys = set(handle.keys())
+    with safe_open(str(linnet), framework="pt") as handle:
+        keys = set(handle.keys())  # pyright: ignore[reportUnknownArgumentType]
         assert {"head.weight", "embedding.weight"} <= keys
         head = handle.get_tensor("head.weight")
     assert head.dtype == torch.bfloat16

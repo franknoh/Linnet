@@ -2,8 +2,6 @@
 with gradient accumulation, and TRL's `SFTTrainer` with each of its losses
 and its token accuracy and entropy, over the Llama example on the CPU."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportMissingTypeStubs=false
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.torch import CausalLM, LinnetModule, load
 
@@ -58,7 +56,7 @@ def _rows() -> list[dict[str, list[int]]]:
     generator = torch.Generator().manual_seed(1)
     rows: list[dict[str, list[int]]] = []
     for length in [4, 7, 5, 6, 3, 7, 4, 5]:
-        ids = torch.randint(1, 10, (length,), generator=generator).tolist()
+        ids = torch.randint(1, 10, (length,), generator=generator).tolist()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
         rows.append({"input_ids": ids, "completion_mask": [0, 0] + [1] * (length - 2)})
     return rows
 
@@ -111,11 +109,11 @@ def test_transformers_trainer(model: LinnetModule, tmp_path: Path) -> None:
 
 
 def _tokenizer() -> PreTrainedTokenizerFast:
-    from tokenizers import Tokenizer, models, pre_tokenizers  # type: ignore[import-untyped]
+    from tokenizers import Tokenizer, models, pre_tokenizers
 
     vocab = {f"t{i}": i for i in range(11)}
-    words = Tokenizer(models.WordLevel(vocab, unk_token="t0"))
-    words.pre_tokenizer = pre_tokenizers.Whitespace()
+    words = Tokenizer(models.WordLevel(vocab, unk_token="t0"))  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+    words.pre_tokenizer = pre_tokenizers.Whitespace()  # pyright: ignore[reportUnknownMemberType]
     return transformers.PreTrainedTokenizerFast(
         tokenizer_object=words, pad_token="t0", eos_token="t10", unk_token="t0"
     )

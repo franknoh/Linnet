@@ -3,7 +3,7 @@ value and gradient, the Llama example's `loss_packed` gives what PyTorch
 gives, and `linnet.jax.train` lowers the loss, follows the mean over
 accumulated batches, trains tied paths as one, and leaves frozen ones."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false, reportUnknownLambdaType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from typing import TypedDict, Unpack
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax  # type: ignore[import-untyped]
+import optax  # pyright: ignore[reportMissingTypeStubs]
 import pytest
 import torch
 from jax.typing import ArrayLike
-from safetensors.numpy import save_file  # type: ignore[import-untyped]
+from safetensors.numpy import save_file
 
 from linnet.jax import SourceFunction, load_source
 from linnet.jax import loss as blockwise
@@ -178,7 +178,7 @@ def test_accumulated_batches_follow_the_mean_over_all_of_them(weights: Path) -> 
 
 
 def test_tied_paths_train_as_one_and_frozen_ones_stay(weights: Path) -> None:
-    from safetensors.numpy import load_file  # type: ignore[import-untyped]
+    from safetensors.numpy import load_file
 
     loaded = load_file(str(weights / "model.safetensors"))
     loaded["lm_head.weight"] = loaded["embedding.weight"]  # one tensor, two paths

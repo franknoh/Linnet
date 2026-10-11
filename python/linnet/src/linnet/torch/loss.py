@@ -22,8 +22,6 @@ target logits are combined across the processes, never the logits. The
 hidden states' gradient each process computes is its part of the whole.
 """
 
-# pyright: reportIncompatibleMethodOverride=false, reportUnknownMemberType=false
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, cast
@@ -157,7 +155,7 @@ class _CrossEntropy(torch.autograd.Function):
         return total
 
     @staticmethod
-    def backward(
+    def backward(  # pyright: ignore[reportIncompatibleMethodOverride]
         ctx: _CrossEntropyCtx, grad_total: torch.Tensor
     ) -> tuple[torch.Tensor | None, ...]:
         grad_hidden, grad_weight = ctx.saved_tensors
@@ -194,7 +192,7 @@ class _TokenLogProbs(torch.autograd.Function):
         return out
 
     @staticmethod
-    def backward(ctx: _TokenLogProbsCtx, grad_out: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
+    def backward(ctx: _TokenLogProbsCtx, grad_out: torch.Tensor) -> tuple[torch.Tensor | None, ...]:  # pyright: ignore[reportIncompatibleMethodOverride]
         hidden, weight, targets, norms = ctx.saved_tensors
         rows = _rows(weight.shape[0])
         grad_hidden = torch.empty_like(hidden) if ctx.needs_input_grad[0] else None
@@ -271,7 +269,7 @@ def _cross_entropy_eager(
     group: ProcessGroup | None,
 ) -> torch.Tensor:
     if torch.is_grad_enabled() and (hidden.requires_grad or weight.requires_grad):
-        return _CrossEntropy.apply(hidden, weight, targets, weights, group)  # type: ignore[no-any-return]
+        return _CrossEntropy.apply(hidden, weight, targets, weights, group)
     with torch.no_grad():
         picked = _TokenLogProbs.forward(None, hidden, weight, targets, group)
     return -(weights.float() * picked).sum()
@@ -283,7 +281,7 @@ def _log_probs_eager(
     targets: torch.Tensor,
     group: ProcessGroup | None,
 ) -> torch.Tensor:
-    return _TokenLogProbs.apply(hidden, weight, targets, group)  # type: ignore[no-any-return]
+    return _TokenLogProbs.apply(hidden, weight, targets, group)
 
 
 # `torch.compile` calls these as they are: their loops over blocks are the
@@ -291,11 +289,11 @@ def _log_probs_eager(
 # `disable` carries no types; what it returns takes the same arguments.
 _cross_entropy = cast(
     "_CrossEntropyFn",
-    torch.compiler.disable(_cross_entropy_eager),
+    torch.compiler.disable(_cross_entropy_eager),  # pyright: ignore[reportUnknownMemberType]
 )
 _log_probs = cast(
     "_LogProbsFn",
-    torch.compiler.disable(_log_probs_eager),
+    torch.compiler.disable(_log_probs_eager),  # pyright: ignore[reportUnknownMemberType]
 )
 
 

@@ -17,8 +17,6 @@ params, history = grpo(policy, engine, prompts, reward, optimizer=optax.adamw(1e
 ```
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import itertools
@@ -140,12 +138,12 @@ def grpo(
             old = jax.lax.stop_gradient(mine)
         ratio = jnp.exp(mine - old)
         surrogate = jnp.minimum(ratio * advantages, jnp.clip(ratio, 1 - low, 1 + high) * advantages)
-        mismatch = jnp.zeros(())
+        mismatch = jnp.zeros(())  # pyright: ignore[reportUnknownMemberType]
         if correction_cap is not None:
             surrogate = surrogate * jnp.minimum(jnp.exp(old - sampled), correction_cap)
             mismatch = jnp.sum(jnp.abs(old - sampled) * weights)
         per_token = -surrogate
-        kl = jnp.zeros(())
+        kl = jnp.zeros(())  # pyright: ignore[reportUnknownMemberType]
         if beta:
             delta = theirs - mine
             estimate = jnp.exp(delta) - delta - 1
@@ -253,11 +251,11 @@ def grpo(
                 (value, found), more = gradient(
                     learner.trained, learner.frozen, *learner.stack(rows)
                 )
-                grads = more if grads is None else add(grads, more)
+                grads = more if grads is None else add(grads, more)  # pyright: ignore[reportUnknownVariableType]
                 loss_total += float(value)
                 moments += np.asarray(found)
             if grads is not None:
-                norm = learner.step(grads, clip_grad)
+                norm = learner.step(grads, clip_grad)  # pyright: ignore[reportUnknownArgumentType]
 
         mean = sum(rewards) / len(rewards)
         record = GrpoStep(

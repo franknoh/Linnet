@@ -40,8 +40,6 @@ order than their own:
                      bindings="bindings.json")
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
-
 from __future__ import annotations
 
 import fnmatch
@@ -296,19 +294,19 @@ def import_quantized(
             q = _nibbles(words, 0)  # [In, Out]
             zero = _nibbles(zero_words, 1).astype(np.int32) + zero_offset  # [Groups, Out]
             in_features = q.shape[0]
-            group_of = np.arange(in_features) // (in_features if group <= 0 else group)
+            group_of = np.arange(in_features) // (in_features if group <= 0 else group)  # pyright: ignore[reportUnknownVariableType]
             if layer + ".g_idx" in tensors:
                 g_idx = tensors[layer + ".g_idx"]
                 ids = np.frombuffer(g_idx.data, dtype=np.int32).reshape(g_idx.shape)
-                if not np.array_equal(ids, group_of):
+                if not np.array_equal(ids, group_of):  # pyright: ignore[reportUnknownArgumentType]
                     # Activation order: the groups hold inputs in another
                     # order. Taken in that order, each group is contiguous.
                     order = np.argsort(ids, kind="stable").astype(np.int32)
-                    if not np.array_equal(ids[order], group_of):
+                    if not np.array_equal(ids[order], group_of):  # pyright: ignore[reportUnknownArgumentType]
                         raise LinnetError(f"{layer}: its groups are not all the same size")
                     q = q[order]
         else:
-            columns = np.arange(words.shape[1] * 8).reshape(-1, 8)[:, _AWQ_REVERSE].reshape(-1)
+            columns = np.arange(words.shape[1] * 8).reshape(-1, 8)[:, _AWQ_REVERSE].reshape(-1)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             q = _nibbles(words, 1)[:, columns]  # [In, Out]
             zero = _nibbles(zero_words, 1)[:, columns].astype(np.int32)
         in_features, out_features = q.shape

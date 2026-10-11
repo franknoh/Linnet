@@ -15,7 +15,7 @@ compiled step fuses, and multiplies them in the custom op
 """
 
 # PyTorch's custom-op registry and `triton_kernels` carry no complete types.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportMissingImports=false, reportMissingTypeStubs=false
+# pyright: reportMissingImports=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _triton_kernels() -> bool:
 
 def _versions(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[int, int]:
     # Binding new weights copies into the same tensors, which bumps these.
-    return (blocks._version, scales._version)  # pyright: ignore[reportPrivateUsage]
+    return (blocks._version, scales._version)
 
 
 def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[object, object]:
@@ -72,11 +72,11 @@ def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[object, object
         quant = blocks.reshape(count, out_features, groups * 16).transpose(-2, -1)
         weight = convert_layout(
             wrap_torch_tensor(quant, dtype=FP4),
-            layout.make_default_matmul_mxfp4_w_layout(mx_axis=-2),
+            layout.make_default_matmul_mxfp4_w_layout(mx_axis=-2),  # pyright: ignore[reportUnknownMemberType]
         )
         scale = convert_layout(
             wrap_torch_tensor(scales.transpose(-2, -1)),
-            layout.make_default_matmul_mxfp4_w_scale_layout(mx_axis=-2, num_warps=8),
+            layout.make_default_matmul_mxfp4_w_scale_layout(mx_axis=-2, num_warps=8),  # pyright: ignore[reportUnknownMemberType]
         )
         precision = PrecisionConfig(b_mx_scale=scale, b_microblock_size=32)
         entry = (versions, weight, precision)
@@ -170,7 +170,7 @@ def mxfp4_grouped_routed(
     return torch.empty_like(y).index_copy_(0, order.long(), y)
 
 
-@mxfp4_grouped_routed.register_fake
+@mxfp4_grouped_routed.register_fake  # pyright: ignore[reportUnknownMemberType]
 def _(
     x: torch.Tensor,
     blocks: torch.Tensor,

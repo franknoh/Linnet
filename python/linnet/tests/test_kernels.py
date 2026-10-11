@@ -3,7 +3,7 @@ generated PyTorch, a Pallas kernel from generated JAX, run here in their
 interpreters -- and computes what the op's body computes. Its gradient is
 the op's `grad`, or else its body's."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -149,8 +149,8 @@ def test_pallas_kernels_compute_what_bodies_do() -> None:
         return squared
 
     np.testing.assert_allclose(
-        np.asarray(jax.grad(loss(kernels))(x)),
-        np.asarray(jax.grad(loss(bodies))(x)),
+        np.asarray(jax.grad(loss(kernels))(x)),  # pyright: ignore[reportUnknownArgumentType]
+        np.asarray(jax.grad(loss(bodies))(x)),  # pyright: ignore[reportUnknownArgumentType]
         rtol=1e-5,
         atol=1e-5,
     )
@@ -173,7 +173,7 @@ def test_a_pallas_kernel_takes_the_ops_grad(tmp_path: Path) -> None:
 
     loss, grad = jax.value_and_grad(total)(x)
     np.testing.assert_allclose(float(loss), 2.0 * float(x.sum()), rtol=1e-5)
-    np.testing.assert_allclose(np.asarray(grad), np.full(37, 3.0), rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(grad), np.full(37, 3.0), rtol=1e-6)  # pyright: ignore[reportUnknownArgumentType]
 
 
 def test_atomic_writes() -> None:

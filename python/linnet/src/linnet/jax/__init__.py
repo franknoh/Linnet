@@ -1,7 +1,5 @@
 """Run Linnet models and functions in JAX, and export JAX functions as Linnet."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
-
 from __future__ import annotations
 
 from ..compiler import LinnetError, find_compiler

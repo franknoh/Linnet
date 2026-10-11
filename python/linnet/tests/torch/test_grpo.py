@@ -2,7 +2,7 @@
 gradient, weights copied from a policy with adapters into the model that
 samples, and a policy that learns what its reward asks for."""
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportPrivateImportUsage=false
+# pyright: reportUnknownMemberType=false
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file  # type: ignore[import-untyped]
+from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
 from linnet.serve import Completion, Request
 from linnet.torch import LinnetModule, fully_shard, load
@@ -53,7 +53,7 @@ def weights(tmp_path: Path) -> Path:
 
 
 def _model(weights: Path, **options: object) -> LinnetModule:
-    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # type: ignore[arg-type]
+    return load(LLAMA, generics=GENERICS, std_root=STDLIB, weights=weights, **options)  # pyright: ignore[reportArgumentType]
 
 
 def test_group_advantages() -> None:
@@ -248,7 +248,7 @@ def test_grpo_across_processes(weights: Path) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    torch.multiprocessing.spawn(_grpo_rank, args=(2, port, str(weights)), nprocs=2)
+    torch.multiprocessing.spawn(_grpo_rank, args=(2, port, str(weights)), nprocs=2)  # pyright: ignore[reportPrivateImportUsage]
 
 
 def test_uniform_groups_are_counted_and_dropped(weights: Path) -> None:
