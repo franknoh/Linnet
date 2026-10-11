@@ -1,5 +1,7 @@
 module std.random
 
+use std.nn.decoding::{argmax}
+
 // Counter-based randomness with explicit keys, written in Linnet so every
 // backend draws the same numbers: a key is `Tensor[2; i64]` holding two
 // 32-bit words, and Threefry-2x32 (20 rounds, the JAX layout) turns a key
@@ -111,8 +113,5 @@ pub fn categorical<B: Dim, V: Dim, T: Float>(
     let u = uniform<B * V, f32>(key)
     let gumbel = -log(-log(1.0 - u))
     let noisy = cast<f32>(logits) + reshape(gumbel, [B, V])
-    let peak[b] = max[v] noisy[b, v]
-    let positions = iota<i32>(V)
-    let first[b] = min[v] select(noisy[b, v] == peak[b], positions[v], V)
-    return first
+    return argmax(noisy)
 }

@@ -1,7 +1,7 @@
 module std.quant
 
 use std.nn.linear::{linear}
-use std.nn.moe::{combine_experts, linear_experts_shared}
+use std.nn.moe::{combine_experts, linear_experts, linear_experts_shared}
 
 // Weight quantization as ordinary source: a quantized parameter is an
 // integer tensor plus its scales, and dequantization is arithmetic the
@@ -17,17 +17,23 @@ pub op dequantize_int8<*S: Shape, N: Dim, T: Float>(
     return cast<T>(scaled)
 }
 
-// Two signed 4-bit values per byte of a `[Rows, Half]` matrix: the low nibble
-// is element `2k` of the row, the high nibble element `2k + 1`, both in
-// `-8..7`.
-pub op unpack_int4<R: Dim, H: Dim>(packed: Tensor[R, H; i8]) -> Tensor[R, 2 * H; i8] {
+// Two 4-bit values per byte of a `[Rows, Half]` matrix: the low nibble is
+// element `2k` of the row, the high nibble element `2k + 1`, both in
+// `0..15`.
+pub op unpack_uint4<R: Dim, H: Dim, I: Integer>(packed: Tensor[R, H; I]) -> Tensor[R, 2 * H; u8] {
     let wide = cast<i32>(packed)
-    let low = wide & 15
-    let high = shr(wide, 4) & 15
-    let low_signed = select(low >= 8, low - 16, low)
-    let high_signed = select(high >= 8, high - 16, high)
-    let pairs = concat(reshape(low_signed, [R, H, 1]), reshape(high_signed, [R, H, 1]), axis = -1)
-    return cast<i8>(reshape(pairs, [R, 2 * H]))
+    let pairs = concat(
+        reshape(wide & 15, [R, H, 1]),
+        reshape(shr(wide, 4) & 15, [R, H, 1]),
+        axis = -1,
+    )
+    return cast<u8>(reshape(pairs, [R, 2 * H]))
+}
+
+// `unpack_uint4` with each value signed, in `-8..7`.
+pub op unpack_int4<R: Dim, H: Dim>(packed: Tensor[R, H; i8]) -> Tensor[R, 2 * H; i8] {
+    let nibbles = cast<i32>(unpack_uint4(packed))
+    return cast<i8>(select(nibbles >= 8, nibbles - 16, nibbles))
 }
 
 // Symmetric per-row int4 packed two per byte: `Half` bytes hold `2 * Half`
@@ -130,14 +136,8 @@ pub op dequantize_int4_groups<Out: Dim, Groups: Dim, Half: Dim, T: Float>(
     scale: Tensor[Out, Groups; T],
     zero: Tensor[Out, Groups; u8],
 ) -> Tensor[Out, Groups * (2 * Half); T] {
-    let low[o, g, j] = cast<f32>(cast<i32>(packed[o, g, j]) & 15)
-    let high[o, g, j] = cast<f32>(shr(cast<i32>(packed[o, g, j]), 4) & 15)
-    let pairs = concat(
-        reshape(low, [Out, Groups, Half, 1]),
-        reshape(high, [Out, Groups, Half, 1]),
-        axis = -1,
-    )
-    let q = reshape(pairs, [Out, Groups, 2 * Half])
+    let nibbles = unpack_uint4(reshape(packed, [Out * Groups, Half]))
+    let q = reshape(cast<f32>(nibbles), [Out, Groups, 2 * Half])
     let weight[o, g, j] = (q[o, g, j] - cast<f32>(zero[o, g])) * cast<f32>(scale[o, g])
     return cast<T>(reshape(weight, [Out, Groups * (2 * Half)]))
 }
@@ -312,15 +312,15 @@ where
 // block's weights are its FP4 values times `2 ** (scale - 127)`. That power
 // of two is built from integer shifts rather than `exp`, so it is exact. The
 // shifts saturate at `2 ** 62` in either direction, which keeps the shift
-// counts inside `i64`; every scale byte in this checkpoint's 96 expert scale
+// counts inside `i64`; every scale byte in gpt-oss-20b's 96 expert scale
 // tensors lies in 115..136, that is `2 ** -12` to `2 ** 9`, so the saturation
 // is never reached. A checkpoint that did reach it would need the product of
 // two such factors instead of one.
 //
 // The result is `[Experts, Rows, N]`, the layout the checkpoint names: `Rows`
 // is the output width of the projection and `N` its input width. The
-// reference transposes the last two axes to suit its own parameter; the
-// contractions in `gpt_oss.experts` read this layout as it stands instead.
+// reference transposes the last two axes to suit its own parameter;
+// `mxfp4_experts` and the ops after it read this layout as it stands.
 pub op dequantize_mxfp4<Experts: Dim, Rows: Dim, G: Dim, T: Float>(
     blocks: Tensor[Experts, Rows, G, 16; u8],
     scales: Tensor[Experts, Rows, G; u8],
@@ -354,20 +354,17 @@ pub op dequantize_mxfp4<Experts: Dim, Rows: Dim, G: Dim, T: Float>(
 // `std.nn.moe::linear_experts` with the experts' weights in MXFP4: row `r`'s
 // `k`-th input times its `k`-th chosen expert, `y[r, k, o] = sum_i x[r, k, i]
 // * W[experts[r, k], o, i]`, `W` as `dequantize_mxfp4` reads `blocks` and
-// `scales`. The body dequantizes, gathers the chosen experts and multiplies,
-// accumulating in f32; PyTorch on CUDA reads the chosen experts' four-bit
-// blocks and scales as they are, a quarter of the bytes of 16-bit weights,
-// and unpacks them in registers.
+// `scales`. The body dequantizes and takes `linear_experts`' form, gathering
+// the chosen experts and accumulating in f32; PyTorch on CUDA reads the
+// chosen experts' four-bit blocks and scales as they are, a quarter of the
+// bytes of 16-bit weights, and unpacks them in registers.
 pub op mxfp4_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
     x: Tensor[R, K, G * 32; T],
     blocks: Tensor[E, Out, G, 16; u8],
     scales: Tensor[E, Out, G; u8],
     experts: Tensor[R, K; i64],
 ) -> Tensor[R, K, Out; T] {
-    let weight = dequantize_mxfp4<E, Out, G, T>(blocks, scales)
-    let chosen[r, k, o, i] = weight[experts[r, k], o, i]
-    let y[r, k, o] = sum<f32>[i] cast<f32>(x[r, k, i]) * cast<f32>(chosen[r, k, o, i])
-    return cast<T>(y)
+    return linear_experts(x, dequantize_mxfp4<E, Out, G, T>(blocks, scales), experts)
 }
 
 // `mxfp4_experts` for an input every chosen expert of a row shares -- a
