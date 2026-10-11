@@ -24,8 +24,19 @@ import torch.nn.functional as functional
 # they take `OptionalArgs`.
 Args = Sequence[torch.Tensor]
 OptionalArgs = Sequence[torch.Tensor | None]
-# An implementation: the arguments and the result's dtype to the result.
-Native = Callable[[Args, torch.dtype | None], torch.Tensor]
+# An implementation: the arguments to the result.
+Native = Callable[[OptionalArgs], torch.Tensor]
+
+
+def _required(native: Callable[[Args], torch.Tensor]) -> Native:
+    """`native`, for an operation without optional arguments: none is `None`."""
+
+    def run(args: OptionalArgs) -> torch.Tensor:
+        present = [arg for arg in args if arg is not None]
+        assert len(present) == len(args)
+        return native(present)
+
+    return run
 
 
 # The arguments of the operations that take an optional one, by position.
@@ -37,14 +48,14 @@ _Masked = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Te
 _Int4Linear = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]
 
 
-def _index_copy(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _index_copy(args: Args) -> torch.Tensor:
     cache, value, at = args
     # One position when decoding, a span of them when prefilling.
     positions = at.reshape(1).long() + torch.arange(value.shape[2], device=cache.device)
     return cache.index_copy(2, positions, value)
 
 
-def _index_put(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _index_put(args: Args) -> torch.Tensor:
     """The cache writes, heads as a full slice as the generated code writes
     them (see `linnet torch`)."""
     cache, value = args[0], args[1]
@@ -59,7 +70,7 @@ def _index_put(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.ops.aten.index_put(cache, [rows, None, span], value.permute(0, 2, 1, 3))
 
 
-def _write_tokens(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _write_tokens(args: Args) -> torch.Tensor:
     """`write_tokens`: token p at (rows[p], positions[p]), every head."""
     cache, value, rows, positions = args
     return torch.ops.aten.index_put(
@@ -92,12 +103,12 @@ def mxfp4_experts(
     return torch.einsum("rki,rkoi->rko", x.float(), weight).to(x.dtype)
 
 
-def _mxfp4_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_experts(args: Args) -> torch.Tensor:
     x, blocks, scales, experts = args
     return mxfp4_experts(x, blocks, scales, experts)
 
 
-def _mxfp4_experts_shared(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_experts_shared(args: Args) -> torch.Tensor:
     x, blocks, scales, experts = args
     return mxfp4_experts(x.expand(-1, experts.shape[1], -1), blocks, scales, experts)
 
@@ -140,42 +151,42 @@ def mxfp4_grouped(
     return functional.linear(placed.reshape(rows, count * width), joined)
 
 
-def _mxfp4_grouped_shared(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_grouped_shared(args: Args) -> torch.Tensor:
     x, blocks, scales, experts = args
     return mxfp4_grouped(x, blocks, scales, experts)
 
 
-def _mxfp4_grouped_combine(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _mxfp4_grouped_combine(args: Args) -> torch.Tensor:
     x, blocks, scales, experts, weights = args
     return mxfp4_grouped(x, blocks, scales, experts, weights)
 
 
-def _linear_cross_entropy(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _linear_cross_entropy(args: Args) -> torch.Tensor:
     from .loss import linear_cross_entropy
 
     hidden, weight, targets, weights = args
     return linear_cross_entropy(hidden, weight, targets, weights)
 
 
-def _linear_token_log_probs(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _linear_token_log_probs(args: Args) -> torch.Tensor:
     from .loss import linear_token_log_probs
 
     hidden, weight, targets = args
     return linear_token_log_probs(hidden, weight, targets)
 
 
-def _one_shard(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _one_shard(args: Args) -> torch.Tensor:
     """`std.nn.parallel::all_reduce` and `all_gather` in one process, which
     holds the whole model: one shard's sum, or its slices side by side, is the
     value itself."""
     return args[0]
 
 
-def _matmul(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _matmul(args: Args) -> torch.Tensor:
     return torch.matmul(args[0], args[1])
 
 
-def _linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _linear(args: OptionalArgs) -> torch.Tensor:
     x, weight, bias = cast(_Biased, args)
     return functional.linear(x, weight, bias)
 
@@ -183,36 +194,36 @@ def _linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
 # `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and bf16
 # inputs themselves, so these results are bit-identical to the canonical
 # body's explicit casts (`tests/torch/test_native.py` checks it).
-def _softmax(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _softmax(args: Args) -> torch.Tensor:
     return torch.softmax(args[0], dim=-1)
 
 
-def _relu(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _relu(args: Args) -> torch.Tensor:
     return torch.relu(args[0])
 
 
-def _sigmoid(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _sigmoid(args: Args) -> torch.Tensor:
     return torch.sigmoid(args[0])
 
 
-def _silu(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _silu(args: Args) -> torch.Tensor:
     return functional.silu(args[0])
 
 
-def _gelu(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _gelu(args: Args) -> torch.Tensor:
     return functional.gelu(args[0], approximate="tanh")
 
 
-def _gelu_erf(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _gelu_erf(args: Args) -> torch.Tensor:
     return functional.gelu(args[0], approximate="none")
 
 
-def _rms_norm(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _rms_norm(args: Args) -> torch.Tensor:
     x, weight, eps = args
     return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
 
 
-def _layer_norm(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _layer_norm(args: OptionalArgs) -> torch.Tensor:
     x, weight, bias, eps = cast(_Norm, args)
     normalized = functional.layer_norm(x.float(), [x.shape[-1]], eps=float(eps.item()))
     scaled = normalized.to(x.dtype) * weight
@@ -249,22 +260,22 @@ def upsample_nearest2d(args: Args, shape: list[int]) -> torch.Tensor:
     return functional.interpolate(x, scale_factor=shape[2] // int(x.shape[2]), mode="nearest")
 
 
-def _batch_norm(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _batch_norm(args: Args) -> torch.Tensor:
     x, mean, variance, weight, bias, eps = args
     return functional.batch_norm(x, mean, variance, weight, bias, False, 0.0, float(eps.item()))
 
 
-def _spatial_mean(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _spatial_mean(args: Args) -> torch.Tensor:
     x = args[0]
     return x.mean(dim=(2, 3), dtype=torch.float32).to(x.dtype)
 
 
-def _embedding(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _embedding(args: Args) -> torch.Tensor:
     ids, table = args
     return functional.embedding(ids.long(), table)
 
 
-def _index_select(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _index_select(args: Args) -> torch.Tensor:
     x, order = args
     return x.index_select(-1, order.long())
 
@@ -318,12 +329,12 @@ def _sdpa(
     return out.to(query.dtype)
 
 
-def _attention(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _attention(args: OptionalArgs) -> torch.Tensor:
     query, key, value, scale, mask = cast(_Masked, args)
     return _sdpa(query, key, value, scale, mask, fast=False)
 
 
-def _sink_attention(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _sink_attention(args: Args) -> torch.Tensor:
     """`std.nn.attention::sink_attention`: two products around a softmax that
     also counts each query head's sink logit, whose share is then dropped."""
     query, key, value, sinks, scale, mask = args
@@ -343,27 +354,18 @@ def _sink_attention(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.matmul(weights, value).reshape(batch, heads, queries, width)
 
 
-def _softmax_fast(args: Args, _result: torch.dtype | None) -> torch.Tensor:
-    return torch.softmax(args[0], dim=-1)
-
-
-def _rms_norm_fast(args: Args, _result: torch.dtype | None) -> torch.Tensor:
-    x, weight, eps = args
-    return torch.rms_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
-
-
-def _layer_norm_fast(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _layer_norm_fast(args: OptionalArgs) -> torch.Tensor:
     x, weight, bias, eps = cast(_Norm, args)
     scaled = functional.layer_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
     return scaled if bias is None else scaled + bias
 
 
-def _attention_fast(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _attention_fast(args: OptionalArgs) -> torch.Tensor:
     query, key, value, scale, mask = cast(_Masked, args)
     return _sdpa(query, key, value, scale, mask, fast=True)
 
 
-def _int4_groups_linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _int4_groups_linear(args: OptionalArgs) -> torch.Tensor:
     """`std.quant::linear_int4_groups`: dequantized, then `F.linear`."""
     x, packed, scale, zero, bias = cast(_Int4Linear, args)
     out_features, groups, half = packed.shape
@@ -373,7 +375,7 @@ def _int4_groups_linear(args: OptionalArgs, _result: torch.dtype | None) -> torc
     return y if bias is None else y + bias
 
 
-def _decode_fp8(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _decode_fp8(args: OptionalArgs) -> torch.Tensor:
     """`std.quant::decode_fp8`: the bytes as `float8_e4m3fn`, widened."""
     (bits,) = cast(tuple[torch.Tensor], args)
     return bits.view(torch.float8_e4m3fn).float()
@@ -387,7 +389,7 @@ def _fp8_linear(rounded: int) -> Native:
     """`std.quant::linear_fp8` as the generated code runs it
     (`linnet.torch.quantized`); `rounded` rounds a call's input to FP8 too."""
 
-    def run(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    def run(args: OptionalArgs) -> torch.Tensor:
         from . import quantized  # imports Triton where there is one
 
         x, weight, scale, bias = cast(_EightBit, args)
@@ -399,7 +401,7 @@ def _fp8_linear(rounded: int) -> Native:
 def _fp8_block_linear(rounded: int) -> Native:
     """`std.quant::linear_fp8_blocks`, as `_fp8_linear`."""
 
-    def run(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    def run(args: OptionalArgs) -> torch.Tensor:
         from . import quantized
 
         x, weight, scale, bias = cast(_EightBit, args)
@@ -412,7 +414,7 @@ def _fp8_block_linear(rounded: int) -> Native:
 def _int8_linear(rounded: int) -> Native:
     """`std.quant::linear_int8`, as `_fp8_linear`."""
 
-    def run(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    def run(args: OptionalArgs) -> torch.Tensor:
         from . import quantized
 
         x, weight, scale, bias = cast(_EightBit, args)
@@ -421,7 +423,7 @@ def _int8_linear(rounded: int) -> Native:
     return run
 
 
-def _int8_group_linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+def _int8_group_linear(args: OptionalArgs) -> torch.Tensor:
     """`std.quant::linear_int8_groups`, as `_fp8_linear`."""
     from . import quantized
 
@@ -441,7 +443,7 @@ def _grouped(x: torch.Tensor, weight: torch.Tensor) -> bool:
     )
 
 
-def _linear_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _linear_experts(args: Args) -> torch.Tensor:
     """`std.nn.moe::linear_experts`: one grouped product over the rows sorted
     by expert on CUDA in bf16, each chosen expert's weight gathered elsewhere."""
     x, weight, experts = args
@@ -460,27 +462,27 @@ def _linear_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
     return torch.einsum("rki,rkoi->rko", x.float(), taken.float()).to(x.dtype)
 
 
-def _linear_experts_shared(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _linear_experts_shared(args: Args) -> torch.Tensor:
     """`std.nn.moe::linear_experts_shared`: the grouped product over the row
     repeated for each chosen expert, or every expert and the chosen kept."""
     x, weight, experts = args
     rows, chosen = experts.shape
     count, out_features, width = weight.shape
     if _grouped(x, weight):
-        return _linear_experts([x[:, None, :].expand(rows, chosen, width), weight, experts], None)
+        return _linear_experts([x[:, None, :].expand(rows, chosen, width), weight, experts])
     every = functional.linear(x, weight.reshape(count * out_features, width))
     every = every.reshape(rows, count, out_features)
     return every.gather(1, experts.long()[..., None].expand(rows, chosen, out_features))
 
 
-def _combine_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
+def _combine_experts(args: Args) -> torch.Tensor:
     """`std.nn.moe::combine_experts`: the grouped product weighed and summed,
     or the weighed inputs placed by expert and multiplied by every expert."""
     x, weight, experts, weights = args
     rows, chosen, width = x.shape
     count, out_features, _ = weight.shape
     if _grouped(x, weight):
-        y = _linear_experts([x, weight, experts], None).float() * weights.float()[..., None]
+        y = _linear_experts([x, weight, experts]).float() * weights.float()[..., None]
         return y.sum(1).to(x.dtype)
     placed = torch.zeros(rows, count, width, dtype=x.dtype, device=x.device)
     placed.scatter_add_(
@@ -500,38 +502,38 @@ NATIVE: dict[str, Native] = {
     "linnet.int8_linear": _int8_linear(0),
     "linnet.int8_linear(w8a8)": _int8_linear(1),
     "linnet.int8_group_linear": _int8_group_linear,
-    "torch._grouped_mm": _linear_experts,
-    "torch._grouped_mm(shared)": _linear_experts_shared,
-    "torch._grouped_mm(combined)": _combine_experts,
-    "torch.nn.functional.embedding": _embedding,
-    "torch.index_select": _index_select,
-    "torch.nn.functional.batch_norm": _batch_norm,
-    "torch.Tensor.mean": _spatial_mean,
-    "torch.Tensor.index_copy": _index_copy,
-    "torch.Tensor.index_put": _index_put,
-    "torch.Tensor.index_put(tokens)": _write_tokens,
-    "torch.distributed.all_reduce": _one_shard,
-    "torch.distributed.all_gather": _one_shard,
-    "linnet.sink_attention": _sink_attention,
-    "linnet.mxfp4_experts": _mxfp4_experts,
-    "linnet.mxfp4_experts(shared)": _mxfp4_experts_shared,
-    "linnet.mxfp4_grouped(shared)": _mxfp4_grouped_shared,
-    "linnet.linear_cross_entropy": _linear_cross_entropy,
-    "linnet.linear_token_log_probs": _linear_token_log_probs,
-    "linnet.mxfp4_grouped(combine)": _mxfp4_grouped_combine,
-    "torch.matmul": _matmul,
+    "torch._grouped_mm": _required(_linear_experts),
+    "torch._grouped_mm(shared)": _required(_linear_experts_shared),
+    "torch._grouped_mm(combined)": _required(_combine_experts),
+    "torch.nn.functional.embedding": _required(_embedding),
+    "torch.index_select": _required(_index_select),
+    "torch.nn.functional.batch_norm": _required(_batch_norm),
+    "torch.Tensor.mean": _required(_spatial_mean),
+    "torch.Tensor.index_copy": _required(_index_copy),
+    "torch.Tensor.index_put": _required(_index_put),
+    "torch.Tensor.index_put(tokens)": _required(_write_tokens),
+    "torch.distributed.all_reduce": _required(_one_shard),
+    "torch.distributed.all_gather": _required(_one_shard),
+    "linnet.sink_attention": _required(_sink_attention),
+    "linnet.mxfp4_experts": _required(_mxfp4_experts),
+    "linnet.mxfp4_experts(shared)": _required(_mxfp4_experts_shared),
+    "linnet.mxfp4_grouped(shared)": _required(_mxfp4_grouped_shared),
+    "linnet.linear_cross_entropy": _required(_linear_cross_entropy),
+    "linnet.linear_token_log_probs": _required(_linear_token_log_probs),
+    "linnet.mxfp4_grouped(combine)": _required(_mxfp4_grouped_combine),
+    "torch.matmul": _required(_matmul),
     "torch.nn.functional.linear": _linear,
-    "torch.softmax": _softmax,
-    "torch.relu": _relu,
-    "torch.sigmoid": _sigmoid,
-    "torch.nn.functional.silu": _silu,
-    "torch.nn.functional.gelu(tanh)": _gelu,
-    "torch.nn.functional.gelu": _gelu_erf,
-    "torch.rms_norm": _rms_norm,
+    "torch.softmax": _required(_softmax),
+    "torch.relu": _required(_relu),
+    "torch.sigmoid": _required(_sigmoid),
+    "torch.nn.functional.silu": _required(_silu),
+    "torch.nn.functional.gelu(tanh)": _required(_gelu),
+    "torch.nn.functional.gelu": _required(_gelu_erf),
+    "torch.rms_norm": _required(_rms_norm),
     "torch.nn.functional.layer_norm": _layer_norm,
     "torch.nn.functional.scaled_dot_product_attention": _attention,
-    "torch.softmax(input dtype)": _softmax_fast,
-    "torch.rms_norm(input dtype)": _rms_norm_fast,
+    "torch.softmax(input dtype)": _required(_softmax),
+    "torch.rms_norm(input dtype)": _required(_rms_norm),
     "torch.nn.functional.layer_norm(input dtype)": _layer_norm_fast,
     "torch.nn.functional.scaled_dot_product_attention(input dtype)": _attention_fast,
     "torch.nn.functional.scaled_dot_product_attention(enable_gqa)": _attention,

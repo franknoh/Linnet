@@ -25,7 +25,7 @@ from .. import ir, lora
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import generated_directory, import_generated, write_generated
 from ..plan import PlanError
-from .module import BlockModule, LinnetModule, Result, argument, bind_input, owner_of
+from .module import BlockModule, LinnetModule, Result, argument, owner_of, spec
 from .placement import Placement
 from .regions import regional
 
@@ -79,11 +79,10 @@ class CompiledLinnetModule(LinnetModule):
         std_root: str | Path | None,
         numerics: str,
         backend: str | None,
-        placement: Placement | None = None,
     ) -> None:
         super().__init__(program, generics, device)
         # Set by `linnet.torch.load` once the weights are bound and placed.
-        self.placement = placement
+        self.placement: Placement | None = None
         self._source = Path(source)
         self._std_root = std_root
         self._numerics = numerics
@@ -266,7 +265,7 @@ class CompiledLinnetModule(LinnetModule):
             inputs: list[torch.Tensor] = []
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
-                    owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
+                    owner, leaf = owner_of(self, generated.parameters[int(name[1:])])
                     inputs.append(argument(owner, leaf))
                 else:
                     inputs.append(generated.constants[generated.constant_names.index(name)])
@@ -468,7 +467,7 @@ class CompiledLinnetModule(LinnetModule):
             inputs: list[torch.Tensor] = []
             for name in generated.prepare_inputs:
                 if name.startswith("p"):
-                    owner, leaf = owner_of(self, generated.all_parameters[int(name[1:])])
+                    owner, leaf = owner_of(self, generated.parameters[int(name[1:])])
                     inputs.append(argument(owner, leaf))
                 else:
                     inputs.append(generated.constants[generated.constant_names.index(name)])
@@ -517,11 +516,7 @@ class CompiledLinnetModule(LinnetModule):
     ) -> dict[str, str]:
         """Every generic the export needs: the root's, then the entry's from
         `given` and the input shapes, by name."""
-        env = self.root.env.copy()
-        ir.bind_named(env, function.generics, given)
-        for param, value in zip(function.params, inputs, strict=True):
-            bind_input(env, param, value)
-        ir.require_bound(env, function)
+        env = ir.bind_entry(self.root.env, function, inputs, spec, given)
         root = {name: str(value) for name, value in self._generic_arguments.items()}
         return {**root, **ir.bind_names(env, function.generics)}
 
@@ -674,7 +669,6 @@ class CompiledLinnetModule(LinnetModule):
             list(getattr(module, "PREPARED", [])),
             list(getattr(module, "PREPARE_INPUTS", [])),
             getattr(module, "prepare", None),
-            list(module.PARAMETERS),
             list(getattr(module, "CONSTANTS", [])),
             captured,
             [list(group) for group in getattr(module, "FUSED", [])],
@@ -821,7 +815,6 @@ class _Generated:
     prepared_keys: list[str] = field(default_factory=list[str])  # `PREPARED`
     prepare_inputs: list[str] = field(default_factory=list[str])  # `PREPARE_INPUTS`
     prepare: Callable[..., tuple[PreparedValue, ...]] | None = None
-    all_parameters: list[str] = field(default_factory=list[str])  # `PARAMETERS`
     constant_names: list[str] = field(default_factory=list[str])  # `CONSTANTS`
     captured: bool = False  # replayed as a CUDA graph captured by hand
     fused: list[list[str]] = field(default_factory=list[list[str]])  # `FUSED`

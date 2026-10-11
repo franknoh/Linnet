@@ -514,7 +514,7 @@ def export(
 
     program = ir.load_program(source, root=root, std_root=std_root)
     root_values = {g.name: values[g.name] for g in program.root.generics if g.name in values}
-    bound = ir.bind_generics(program.root.generics, root_values)
+    bound = ir.bind_root(program, root_values)
     resolved = {
         g.name: (
             bound.dtypes[g.id]

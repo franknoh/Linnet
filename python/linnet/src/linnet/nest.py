@@ -269,7 +269,7 @@ def check(
         problems.append(f"the source does not compile: {error}")
         return problems
     try:
-        bindings = ir.bind_generics(program.root.generics, card.generics)
+        bindings = ir.bind_root(program, card.generics)
     except LinnetError as error:
         problems.append(f"[generics]: {error}")
         return problems

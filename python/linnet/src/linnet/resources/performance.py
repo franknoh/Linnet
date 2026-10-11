@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
+from ..blockwise import SPLIT_LOSSES, block_rows
 from ..quant import FEW_ROWS, TILED_ROWS
 from . import expr as ex
 from .graph import Category, TensorGraph
@@ -421,17 +422,11 @@ _ROUNDED = ("torch._scaled_mm", "torch._scaled_mm(blocks)", "linnet.int8_linear(
 _WRITES = ("torch.Tensor.index_copy", "torch.Tensor.index_put", "torch.Tensor.index_put(tokens)")
 _COLLECTIVES = ("torch.distributed.all_reduce", "torch.distributed.all_gather")
 _LOSSES = ("linnet.linear_cross_entropy", "linnet.linear_token_log_probs")
-# A vocabulary split across processes: each runs the loss over its part.
-_SPLIT_LOSSES = {
-    "linnet.split_cross_entropy": "linnet.linear_cross_entropy",
-    "linnet.split_token_log_probs": "linnet.linear_token_log_probs",
-}
 # The chunked loss's passes over its f32 logits, bytes per logit: making
 # them (bf16, then f32) and their log-sum-exp; with gradients also the
 # softmax, its scaling and its cast back.
 _LOSS_BYTES = 16
 _LOSS_GRAD_BYTES = 46
-_LOSS_BLOCK_BYTES = 1 << 30  # f32 logits per block, as `linnet.torch.loss`
 
 
 @dataclass(slots=True)
@@ -571,21 +566,20 @@ def _costs(
         rate: float,
         nbytes: float,
         issued: float,
-        kernels: int = 1,
         read_rate: float = 0.0,
     ) -> _Op:
         compute = flops / rate
         moved = nbytes / (read_rate or device.bandwidth)
-        floor = kernels * (device.kernel - device.gap)
+        floor = device.kernel - device.gap
         if compute >= moved:
-            return _Op(issued, max(compute, floor), "compute", kernels)
-        return _Op(issued, max(moved, floor), "memory", kernels)
+            return _Op(issued, max(compute, floor), "compute")
+        return _Op(issued, max(moved, floor), "memory")
 
     for step in graph.steps:
         if step.index in hoisted or step.index in joined:
             continue
         implementation = (step.implementation or "").split("(")[0]
-        implementation = _SPLIT_LOSSES.get(implementation, implementation)
+        implementation = SPLIT_LOSSES.get(implementation, implementation)
         full = step.implementation or ""
         owned = [o for o in step.outputs if graph.objects[o].owns_storage]
         read = sum(_bytes(graph, i, env) for i in dict.fromkeys(step.inputs))
@@ -719,7 +713,7 @@ def _costs(
             # A block of rows at a time: its products, then passes over its
             # f32 logits, one kernel after another; with gradients the
             # weight's gradient is summed in f32 every block as well.
-            blocks = -(-rows // max(1, _LOSS_BLOCK_BYTES // (4 * weight[0])))
+            blocks = -(-rows // block_rows(weight[0]))
             calls = (3 if gradients else 1) * host("product") + (11 if gradients else 5) * host(
                 "elementwise"
             )

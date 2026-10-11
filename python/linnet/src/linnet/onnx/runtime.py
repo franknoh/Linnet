@@ -229,7 +229,7 @@ class OnnxModel:
         self._signatures = {f.short_name: f for f in program.entries()}
         self.entries = list(self._signatures)
         self.generics = dict(options["generics"])
-        self._root = ir.bind_generics(program.root.generics, self.generics)
+        self._root = ir.bind_root(program, self.generics)
         self._sessions: dict[_SessionKey, _Session] = {}
         self._weights: dict[str, _OrtValue] = {}  # path -> OrtValue on the device
         self._host: dict[str, tuple[_Array, _OrtValue]] = {}  # path -> (bytes, CPU OrtValue)
@@ -661,17 +661,19 @@ class OnnxModel:
 
     def _bindings(self, name: str, inputs: Sequence[_Array | _OrtValue]) -> dict[str, int | str]:
         """The entry's own generics, from the shapes of its inputs."""
-        arguments = self._signatures[name].params
-        if len(arguments) != len(inputs):
-            raise LinnetError(f"entry `{name}` takes {len(arguments)} inputs, got {len(inputs)}")
+        signature = self._signatures[name]
+
+        def shape(param: ir.Value, value: _Array | _OrtValue) -> ir.InputSpec:
+            found = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
+            return ir.shape_only(param, [int(d) for d in found])
+
         # The root's generics are bound already: inputs are checked against
         # them, and only the entry's own are returned.
-        env = self._root.copy()
-        for argument, value in zip(arguments, inputs, strict=True):
-            if isinstance(argument.type, ir.TensorType):
-                shape = value.shape() if isinstance(value, self._ort.OrtValue) else value.shape
-                ir.bind_input(env, argument, [int(d) for d in shape], None)
-        return dict(ir.bind_names(env, self._signatures[name].generics))
+        given = {
+            g.name: self.generics[g.name] for g in signature.generics if g.name in self.generics
+        }
+        env = ir.bind_entry(self._root, signature, inputs, shape, given)
+        return dict(ir.bind_names(env, signature.generics))
 
 
 class _Session:

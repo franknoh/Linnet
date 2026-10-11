@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from .. import ir
-from ..dtypes import BY_SAFETENSORS, DTYPES
+from ..dtypes import DTYPES
 
 TORCH_DTYPES: dict[str, torch.dtype] = {
     name: getattr(torch, info.torch) for name, info in DTYPES.items()
@@ -14,12 +14,9 @@ TORCH_DTYPES: dict[str, torch.dtype] = {
 # PyTorch dtypes back to Linnet names, for binding a dtype generic from an input.
 LINNET_DTYPES: dict[torch.dtype, str] = {dtype: name for name, dtype in TORCH_DTYPES.items()}
 
-# PyTorch dtypes as SafeTensors names them, and back.
+# PyTorch dtypes as SafeTensors names them.
 SAFETENSORS_NAMES: dict[torch.dtype, str] = {
     TORCH_DTYPES[name]: info.safetensors for name, info in DTYPES.items()
-}
-FROM_SAFETENSORS: dict[str, torch.dtype] = {
-    code: TORCH_DTYPES[info.name] for code, info in BY_SAFETENSORS.items()
 }
 
 

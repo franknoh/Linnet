@@ -206,22 +206,6 @@ def evaluate(expr: Expr, env: Mapping[str, int]) -> int:
     return lhs % rhs
 
 
-def substitute(expr: Expr, env: Mapping[str, Expr]) -> Expr:
-    """The expression with the symbols `env` names replaced, folded again."""
-    if isinstance(expr, Const):
-        return expr
-    if isinstance(expr, Sym):
-        return env.get(expr.name, expr)
-    if isinstance(expr, Nary):
-        return _nary(expr.op, (substitute(a, env) for a in expr.args))
-    lhs, rhs = substitute(expr.lhs, env), substitute(expr.rhs, env)
-    if expr.op == "floordiv":
-        return floordiv(lhs, rhs)
-    if expr.op == "ceildiv":
-        return ceildiv(lhs, rhs)
-    return mod(lhs, rhs)
-
-
 def symbols(expr: Expr) -> frozenset[str]:
     if isinstance(expr, Const):
         return frozenset()

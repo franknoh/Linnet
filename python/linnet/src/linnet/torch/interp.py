@@ -392,11 +392,7 @@ class Interpreter:
                     )
                 # An optional argument left out is `None`, which only the
                 # implementations that take one see (`native.OptionalArgs`).
-                return [
-                    NATIVE[selected](
-                        cast(list[torch.Tensor], operands), result_dtype() if result_type else None
-                    )
-                ]
+                return [NATIVE[selected](cast(list[torch.Tensor | None], operands))]
             callee = self.program.functions[cast(str, attrs["callee"])]
             callee_env = self._callee_env(callee, self._substitution(op), env, operands)
             if callee.gradient is not None:

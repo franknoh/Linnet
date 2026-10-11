@@ -28,7 +28,7 @@ from ..plan import PlanError, compile_plan
 from ..results import Result
 from .dtypes import torch_dtype
 from .interp import Interpreter
-from .module import bind_input
+from .module import spec
 
 if TYPE_CHECKING:
     from typing import TypeAlias
@@ -80,19 +80,12 @@ class Function:
         determine; `compile` overrides `load_function`'s for this call. A
         single result is returned as it is, several as a tuple."""
         params = self.function.params
-        if len(params) != len(inputs):
-            raise PlanError(f"`{self.name}` takes {len(params)} inputs, got {len(inputs)}")
         device = next(
             (value.device for value in inputs if isinstance(value, torch.Tensor)),
             torch.device("cpu"),
         )
-        env = ir.Bindings()
-        ir.bind_named(env, self.function.generics, generics or {})
-        # Tensors first: they bind the dtype generics a number's type may name.
-        for param, value in zip(params, inputs, strict=True):
-            if isinstance(value, torch.Tensor):
-                bind_input(env, param, value)
-        ir.require_bound(env, self.function)
+        # Tensors bind the generics, dtypes a number's type may name included.
+        env = ir.bind_entry(ir.Bindings(), self.function, inputs, spec, generics)
         values = [
             value if isinstance(value, torch.Tensor) else self._number(param, value, env, device)
             for param, value in zip(params, inputs, strict=True)

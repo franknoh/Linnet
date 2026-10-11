@@ -79,7 +79,7 @@ class LinnetFunction:
         self.cast_dtype = cast_dtype
         self.program = program
         self.generics = dict(generics)
-        self._root = ir.bind_generics(program.root.generics, self.generics)
+        self._root = ir.bind_root(program, self.generics)
         self.weights = weights
         self._weights = self.weights
         self._std_root = std_root
@@ -166,16 +166,18 @@ class LinnetFunction:
     # ---- entry generics from input shapes
 
     def _bindings_for(self, inputs: Sequence[ArrayLike]) -> dict[str, int | str]:
-        arguments = self._signature.params
-        if len(arguments) != len(inputs):
-            raise LinnetError(
-                f"entry `{self.entry}` takes {len(arguments)} inputs, got {len(inputs)}"
-            )
-        env = self._root.copy()
-        for argument, value in zip(arguments, inputs, strict=True):
-            if isinstance(argument.type, ir.TensorType):
-                ir.bind_input(env, argument, [int(d) for d in np.shape(value)], None)
-        return {**self.generics, **ir.bind_names(env, self._signature.generics)}
+        signature = self._signature
+        given = {
+            g.name: self.generics[g.name] for g in signature.generics if g.name in self.generics
+        }
+        env = ir.bind_entry(
+            self._root,
+            signature,
+            inputs,
+            lambda param, value: ir.shape_only(param, [int(d) for d in np.shape(value)]),
+            given,
+        )
+        return {**self.generics, **ir.bind_names(env, signature.generics)}
 
     def _compile(self, bindings: Mapping[str, int | str]) -> CompiledEntry:
         text = self._export("stablehlo", bindings)

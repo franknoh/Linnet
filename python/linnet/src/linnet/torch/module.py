@@ -25,7 +25,6 @@ from ..weights import check_problems, read_bindings, safetensors_index, tensor_p
 from .dtypes import (
     LINNET_DTYPES,
     SAFETENSORS_NAMES,
-    TORCH_DTYPES,
     torch_dtype,
 )
 from .interp import BlockInstance, Interpreter
@@ -210,43 +209,7 @@ class LinnetModule(nn.Module):
         # (`bind_weights(shard=...)`): the axis and the part's extent.
         self.shard_parts: dict[str, tuple[int, int]] = {}
         root = program.root
-        env = ir.Bindings()
-        for generic in root.generics:
-            if generic.name not in generics:
-                default = generic.default
-                if default is None:
-                    raise PlanError(
-                        f"generic parameter `{generic.name}` of `{root.name}` needs a value"
-                    )
-                if isinstance(default, ir.DimArg):
-                    env.dims[generic.id] = env.dim(default.dim)
-                elif isinstance(default, ir.DTypeArg):
-                    env.dtypes[generic.id] = env.dtype(default.dtype)
-                continue
-            value = generics[generic.name]
-            if generic.kind == "dim":
-                if not isinstance(value, int):
-                    raise PlanError(f"`{generic.name}` is a dimension; give an integer")
-                env.dims[generic.id] = value
-            elif generic.kind == "dtype":
-                if not isinstance(value, str) or value not in TORCH_DTYPES:
-                    raise PlanError(
-                        f"`{generic.name}` is a dtype; give one of {sorted(TORCH_DTYPES)}"
-                    )
-                env.dtypes[generic.id] = value
-            else:
-                raise PlanError("shape-pack generics on a root block are not supported")
-        for name in generics:
-            if all(generic.name != name for generic in root.generics):
-                raise PlanError(f"`{root.name}` has no generic parameter `{name}`")
-        # The block's `where` clause under the values given: the checker
-        # proves it at every call inside the program, not for the caller's.
-        for constraint in root.constraints:
-            if not env.holds(constraint):
-                raise PlanError(
-                    f"the generics given to `{root.name}` break its `where` clause "
-                    f"({constraint.relation} does not hold)"
-                )
+        env = ir.bind_root(program, generics)
         self.root = BlockModule(program, root.name, env, device)
         self.interpreter = Interpreter(program, device)
         self.entries = {function.short_name: function for function in program.entries()}
@@ -308,14 +271,7 @@ class LinnetModule(nn.Module):
         # does for prompts) gets the same entry.
         del compile
         function = self.entries[name]
-        params = function.params  # after `self`
-        if len(params) != len(inputs):
-            raise PlanError(f"entry `{name}` takes {len(params)} inputs, got {len(inputs)}")
-        env = self.root.env.copy()
-        ir.bind_named(env, function.generics, generics or {})
-        for param, value in zip(params, inputs, strict=True):
-            bind_input(env, param, value)
-        ir.require_bound(env, function)
+        env = ir.bind_entry(self.root.env, function, inputs, spec, generics)
         # An entry returns tensors, never the interpreter's other values
         # (blocks, indices, strings).
         return self.interpreter.call(function, env, [self.root.instance(), *inputs])
@@ -505,10 +461,13 @@ def _bytes_of(tensor: torch.Tensor, dtype: torch.dtype) -> Callable[[], bytes]:
     return read
 
 
-def bind_input(env: ir.Bindings, param: ir.Value, value: torch.Tensor) -> None:
-    """`ir.bind_input` for a tensor."""
-    dtype = LINNET_DTYPES.get(value.dtype, str(value.dtype))
-    ir.bind_input(env, param, list(value.shape), dtype)
+def spec(param: ir.Value, value: object) -> ir.InputSpec:
+    """An input as `ir.bind_entry` sees it: a tensor's shape and dtype; a
+    Python number binds nothing."""
+    del param
+    if not isinstance(value, torch.Tensor):
+        return None
+    return list(value.shape), LINNET_DTYPES.get(value.dtype, str(value.dtype))
 
 
 # ------------------------------------------------------------------ weights

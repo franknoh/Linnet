@@ -40,6 +40,19 @@ if TYPE_CHECKING:
     _Compiled: TypeAlias = Callable[..., Sequence[jax.Array]]
 
 
+def _spec(param: ir.Value, value: Input) -> ir.InputSpec:
+    """An input as `ir.bind_entry` sees it: an array's shape and dtype, or
+    None for a Python number (for a scalar input only)."""
+    if isinstance(value, bool | int | float):
+        if not isinstance(param.type, ir.ScalarType):
+            raise LinnetError(f"input `{param.name}` is a tensor; pass an array")
+        return None
+    found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
+    return [int(size) for size in np.shape(value)], str(
+        value.dtype
+    ) if found is None else found.name
+
+
 class Function:
     """A module-level entry as a function of JAX arrays (see `load_function`)."""
 
@@ -75,19 +88,7 @@ class Function:
         `generics` binds by name what the inputs do not determine. A single
         result is returned as it is, several as a tuple."""
         params = self.function.params
-        if len(params) != len(inputs):
-            raise LinnetError(f"`{self.name}` takes {len(params)} inputs, got {len(inputs)}")
-        env = ir.Bindings()
-        ir.bind_named(env, self.function.generics, generics or {})
-        for param, value in zip(params, inputs, strict=True):
-            if isinstance(value, bool | int | float):
-                if not isinstance(param.type, ir.ScalarType):
-                    raise LinnetError(f"input `{param.name}` is a tensor; pass an array")
-                continue
-            found = BY_NUMPY.get(jnp.dtype(value.dtype).name)
-            dtype = str(value.dtype) if found is None else found.name
-            ir.bind_input(env, param, [int(size) for size in np.shape(value)], dtype)
-        ir.require_bound(env, self.function)
+        env = ir.bind_entry(ir.Bindings(), self.function, inputs, _spec, generics)
         bindings = ir.bind_names(env, self.function.generics)
         values = [
             self._number(param, value, env) if isinstance(value, bool | int | float) else value

@@ -28,6 +28,9 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 
+# `BLOCK_BYTES` is this module's own, to set for its losses alone.
+from ..blockwise import BLOCK_BYTES, block_rows
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -41,12 +44,8 @@ if TYPE_CHECKING:
     ]
 
 
-# The f32 logits of one block of rows.
-BLOCK_BYTES = 1 << 30
-
-
 def _rows(vocab: int) -> int:
-    return max(1, BLOCK_BYTES // (4 * vocab))
+    return block_rows(vocab, BLOCK_BYTES)
 
 
 def _block_logits(hidden: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
