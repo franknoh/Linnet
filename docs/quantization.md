@@ -30,7 +30,7 @@ nibble.
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `dequantize_int8_groups<Out, Groups, Group, T>(q, scale)` | symmetric int8, a scale per `Group` inputs |
 | `linear_int8(x, weight, scale, bias)`, `linear_int8_groups<Group>(...)` | linear layers over int8 weights |
-| `unpack_int4<R, H>(packed)` | signed nibbles, `-8..7` |
+| `unpack_uint4<R, H>(packed)`, `unpack_int4<R, H>(packed)` | the nibbles of each byte, `0..15` or signed, `-8..7` |
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |

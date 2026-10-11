@@ -47,15 +47,21 @@ where
     Hk > 0,
     H % Hk == 0
 {
-    let keys = reshape(
-        broadcast_to(reshape(key, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
-        [B, H, K, D],
-    )
-    let values = reshape(
-        broadcast_to(reshape(value, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
-        [B, H, K, D],
-    )
+    let keys = repeat_heads<B, H, Hk, K, D, T>(key)
+    let values = repeat_heads<B, H, Hk, K, D, T>(value)
     return attention(query, keys, values, scale, mask)
+}
+
+// Each of `Hk` key or value heads repeated for the `H / Hk` query heads
+// that share it.
+fn repeat_heads<B: Dim, H: Dim, Hk: Dim, K: Dim, D: Dim, T: Float>(
+    x: Tensor[B, Hk, K, D; T],
+) -> Tensor[B, H, K, D; T]
+where
+    Hk > 0,
+    H % Hk == 0
+{
+    return reshape(broadcast_to(reshape(x, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]), [B, H, K, D])
 }
 
 // Attention with a mask per sequence: `mask[b]` says which keys the queries
@@ -88,14 +94,8 @@ where
     Hk > 0,
     H % Hk == 0
 {
-    let keys = reshape(
-        broadcast_to(reshape(key, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
-        [B, H, K, D],
-    )
-    let values = reshape(
-        broadcast_to(reshape(value, [B, Hk, 1, K, D]), [B, Hk, H / Hk, K, D]),
-        [B, H, K, D],
-    )
+    let keys = repeat_heads<B, H, Hk, K, D, T>(key)
+    let values = repeat_heads<B, H, Hk, K, D, T>(value)
     return attention_rows(query, keys, values, scale, mask)
 }
 
