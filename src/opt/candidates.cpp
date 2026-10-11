@@ -37,13 +37,48 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.decode_fp8",
          Legality::Exact,
          {"no byte is the NaN pattern, which the body reads as 480"}},
-        // The input rounded to FP8 a row at a time and multiplied in FP8
-        // (`torch._scaled_mm`): the body multiplies it unrounded.
+        // 8-bit weights multiplied as they are (`linnet.torch.quantized`):
+        // Linnet's kernels widen them in registers, one row on CUDA cores,
+        // more on tensor cores in the input's dtype, so the products round
+        // apart from the body's dequantized weight.
+        {"std.quant::linear_fp8",
+         "linnet.fp8_linear",
+         equivalent,
+         {"CUDA (compute capability 8.9 or later), bf16 or f16, In a multiple of 128; otherwise "
+          "the weight is decoded and multiplied"}},
+        {"std.quant::linear_fp8_blocks",
+         "linnet.fp8_block_linear",
+         equivalent,
+         {"CUDA (compute capability 8.9 or later), bf16 or f16, In a multiple of 128; otherwise "
+          "the weight is decoded and multiplied"}},
+        {"std.quant::linear_int8",
+         "linnet.int8_linear",
+         equivalent,
+         {"CUDA, bf16 or f16, In a multiple of 128; otherwise the weight is dequantized and "
+          "multiplied"}},
+        {"std.quant::linear_int8_groups",
+         "linnet.int8_group_linear",
+         equivalent,
+         {"CUDA, bf16 or f16, In a multiple of 128 and the group of 16; otherwise the weight is "
+          "dequantized and multiplied"}},
+        // A call of more than one row also rounds its input to 8 bits and
+        // multiplies in 8 bits: FP8 a row at a time (`torch._scaled_mm`), or
+        // 128 inputs at a time against block weights, and int8 a row at a
+        // time in Linnet's kernel. The body multiplies the input unrounded.
         {"std.quant::linear_fp8",
          "torch._scaled_mm",
          fast,
-         {"CUDA (compute capability 9 or later), bf16, both widths multiples of 16; otherwise the "
-          "weight is decoded and multiplied"}},
+         {"CUDA (compute capability 9 or later) for more than one row; otherwise as "
+          "linnet.fp8_linear"}},
+        {"std.quant::linear_fp8_blocks",
+         "torch._scaled_mm(blocks)",
+         fast,
+         {"CUDA (compute capability 9 or later), blocks of 128, for more than one row; otherwise "
+          "as linnet.fp8_block_linear"}},
+        {"std.quant::linear_int8",
+         "linnet.int8_linear(w8a8)",
+         fast,
+         {"CUDA, for more than one row; otherwise as linnet.int8_linear"}},
         // A grouped matrix product over rows sorted by expert, reading each
         // chosen expert's weight where it lies; it accumulates in f32 and
         // rounds once to bf16, as the body's cast does.

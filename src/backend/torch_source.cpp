@@ -23,6 +23,100 @@ using sema::ScalarKind;
 
 namespace {
 
+// `std.quant`'s 8-bit linear layers by implementation: the kind of weight
+// and scales (`linnet.torch.quantized`'s `fp8`, `fp8_block`, `int8`,
+// `int8_group`), and whether the input may be rounded to 8 bits too.
+struct EightBit {
+    std::string name;
+    bool rounded = false;
+};
+
+std::optional<EightBit> eight_bit(const std::string& implementation) {
+    static const std::map<std::string, EightBit, std::less<>> kinds{
+        {"linnet.fp8_linear", {"fp8", false}},
+        {"torch._scaled_mm", {"fp8", true}},
+        {"linnet.fp8_block_linear", {"fp8_block", false}},
+        {"torch._scaled_mm(blocks)", {"fp8_block", true}},
+        {"linnet.int8_linear", {"int8", false}},
+        {"linnet.int8_linear(w8a8)", {"int8", true}},
+        {"linnet.int8_group_linear", {"int8_group", false}},
+    };
+    const auto found = kinds.find(implementation);
+    return found == kinds.end() ? std::nullopt : std::optional(found->second);
+}
+
+// The kind an 8-bit layer's helper names (`_fp8_block_linear` -> `fp8_block`),
+// if `call` is one.
+std::optional<std::string> eight_bit_call(std::string_view call) {
+    static const std::set<std::string, std::less<>> kinds{"fp8", "fp8_block", "int8", "int8_group"};
+    constexpr std::string_view suffix = "_linear";
+    if (!call.starts_with('_') || !call.ends_with(suffix)) {
+        return std::nullopt;
+    }
+    const std::string_view kind = call.substr(1, call.size() - 1 - suffix.size());
+    return kinds.contains(kind) ? std::optional(std::string(kind)) : std::nullopt;
+}
+
+// A generated call's arguments, `a, b, c`, split at their commas (the
+// arguments are names and literals).
+std::vector<std::string> call_arguments(std::string_view arguments) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    for (std::size_t comma = arguments.find(", "); comma != std::string_view::npos;
+         comma = arguments.find(", ", start)) {
+        parts.emplace_back(arguments.substr(start, comma - start));
+        start = comma + 2;
+    }
+    parts.emplace_back(arguments.substr(start));
+    return parts;
+}
+
+// Each 8-bit layer's call `    vN = _K_linear(x, W, S, B, R)` as two: its
+// operands, `    vM = _K_operands(W, S, R)` (int8 groups take no `R`), which
+// read only weights, so `prepare` computes them once; and
+// `    vN = _K_linear(x, vM, B)`. Calls on the same weights share operands.
+std::string split_eight_bit_operands(const std::string& body) {
+    std::size_t highest = 0;
+    for (const std::string& name : value_names(body)) {
+        highest = std::max(highest, static_cast<std::size_t>(std::stoul(name.substr(1))));
+    }
+    const std::string prefix = "    ";
+    std::map<std::string, std::string> shared; // operands -> their name
+    std::string out;
+    out.reserve(body.size());
+    std::size_t start = 0;
+    while (start < body.size()) {
+        std::size_t end = body.find('\n', start);
+        end = end == std::string::npos ? body.size() : end;
+        const std::string line = body.substr(start, end - start);
+        start = end + 1;
+        const std::size_t equals = line.find(" = ");
+        const std::size_t open = line.find('(', equals == std::string::npos ? 0 : equals);
+        const std::optional<std::string> kind =
+            equals == std::string::npos || open == std::string::npos
+                ? std::nullopt
+                : eight_bit_call(std::string_view(line).substr(equals + 3, open - equals - 3));
+        std::vector<std::string> parts;
+        if (kind && line.starts_with(prefix) && line[prefix.size()] != ' ' && line.ends_with(")")) {
+            parts = call_arguments(std::string_view(line).substr(open + 1, line.size() - open - 2));
+        }
+        if (parts.size() != 5) {
+            out += line + "\n";
+            continue;
+        }
+        std::string operands = "_" + *kind + "_operands(" + parts[1] + ", " + parts[2];
+        operands += *kind == "int8_group" ? ")" : ", " + parts[4] + ")";
+        auto found = shared.find(operands);
+        if (found == shared.end()) {
+            const std::string name = "v" + std::to_string(++highest);
+            out += prefix + name + " = " + operands + "\n";
+            found = shared.emplace(operands, name).first;
+        }
+        out += line.substr(0, open + 1) + parts[0] + ", " + found->second + ", " + parts[3] + ")\n";
+    }
+    return out;
+}
+
 // The generated module: straight-line PyTorch over static shapes.
 class TorchTarget : public PythonTarget {
 public:
@@ -371,11 +465,16 @@ public:
         if (implementation_base == "linnet.decode_fp8" && at.size() == 1 && at[0] != nullptr) {
             return define(name(0) + ".view(torch.float8_e4m3fn).float()");
         }
-        if (implementation_base == "torch._scaled_mm" && operands.size() == 4 && at[0] != nullptr &&
-            at[1] != nullptr && at[2] != nullptr) {
-            fp8_helper_ = true;
-            return define("_fp8_linear(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
-                          name(3) + ")");
+        if (const std::optional<EightBit> kind = eight_bit(implementation_base);
+            kind && operands.size() == 4 && at[0] != nullptr && at[1] != nullptr &&
+            at[2] != nullptr) {
+            // `std.quant`'s 8-bit linear layers (`linnet.torch.quantized`):
+            // one call here, the input, weight, scales, bias, and whether the
+            // input may be rounded to 8 bits; `finish` splits its weight-only
+            // operands into a call `prepare` runs once.
+            eight_bit_.insert(kind->name);
+            return define("_" + kind->name + "_linear(" + name(0) + ", " + name(1) + ", " +
+                          name(2) + ", " + name(3) + ", " + (kind->rounded ? "1" : "0") + ")");
         }
         if (implementation_base == "torch._grouped_mm" && operands.size() == 3 && operands[0] &&
             operands[1] && operands[2]) {
@@ -714,8 +813,14 @@ public:
         if (experts_helper_) {
             out += experts_helper();
         }
-        if (fp8_helper_) {
-            out += fp8_helper();
+        for (const std::string& kind : eight_bit_) {
+            out +=
+                "from linnet.torch.quantized import " + kind + "_linear as _" + kind + "_linear\n";
+            out += "from linnet.torch.quantized import " + kind + "_operands as _" + kind +
+                   "_operands\n";
+        }
+        if (!eight_bit_.empty()) {
+            out += "\n";
         }
         if (flex_helpers_) {
             out += flex_helpers();
@@ -774,7 +879,10 @@ public:
         // weight is prepared once, not rebuilt every call.
         std::vector<std::vector<std::string>> fused;
         if (prepare_ && fuse_ && !placed_) {
-            hoisted.body = fuse_linears(hoisted.body, fused);
+            hoisted.body = prune_python_assignments(fuse_linears(hoisted.body, fused), tail);
+        }
+        if (!eight_bit_.empty()) {
+            hoisted.body = split_eight_bit_operands(hoisted.body);
         }
         if (!fused.empty()) {
             out += adjacent_helper();
@@ -1315,8 +1423,13 @@ private:
             std::string input;
             std::size_t weight;
             std::optional<std::size_t> bias;
-            // `_fp8_linear`'s per-row scales (a parameter of shape [Out, 1]).
+            // An 8-bit layer's helper (`_fp8_linear`, ...), its scales (a
+            // parameter, read whole or reshaped to one a row), and whether
+            // it may round its input.
+            std::string call;
             std::optional<std::size_t> scale;
+            bool reshaped = false;
+            std::string rounded;
         };
         std::vector<std::string> lines;
         std::size_t highest = 0;
@@ -1343,8 +1456,8 @@ private:
         };
         std::vector<Linear> linears;
         const std::string prefix = "    ";
-        // `    vS = pK.reshape((N,))`: an FP8 layer's scales as `_fp8_linear`
-        // takes them.
+        // `    vS = pK.reshape((N,))`: an 8-bit layer's scales of shape
+        // [Out, 1] as its helper takes them.
         std::map<std::string, std::size_t> scales;
         for (std::size_t i = 0; i < lines.size(); ++i) {
             const std::string& line = lines[i];
@@ -1360,36 +1473,42 @@ private:
                     scales[name] = *index;
                 }
             }
-            // `    vN = F.linear(x, pW, pB | None)` or `    vN = _fp8_linear(x,
-            // pW, vS, pB | None)`, at the top level.
-            const bool fp8 = line.find(" = _fp8_linear(") != std::string::npos;
-            const std::string call = fp8 ? " = _fp8_linear(" : " = F.linear(";
-            const std::size_t equals = line.find(call);
+            // `    vN = F.linear(x, pW, pB | None)`, or an 8-bit layer's
+            // `    vN = _K_linear(x, pW, S, pB | None, R)` with S its scales, at
+            // the top level.
+            const std::size_t equals = line.find(" = ");
+            const std::size_t open =
+                equals == std::string::npos ? std::string::npos : line.find('(', equals);
             if (!line.starts_with(prefix) || line[prefix.size()] == ' ' ||
-                equals == std::string::npos || !line.ends_with(")")) {
+                open == std::string::npos || !line.ends_with(")")) {
+                continue;
+            }
+            const std::string call = line.substr(equals + 3, open - equals - 3);
+            const bool eight = eight_bit_call(call).has_value();
+            if (call != "F.linear" && !eight) {
                 continue;
             }
             const std::string out = line.substr(prefix.size(), equals - prefix.size());
-            const std::string arguments =
-                line.substr(equals + call.size(), line.size() - equals - call.size() - 1);
-            std::vector<std::string> parts;
-            std::size_t start = 0;
-            for (std::size_t comma = arguments.find(", "); comma != std::string::npos;
-                 comma = arguments.find(", ", start)) {
-                parts.push_back(arguments.substr(start, comma - start));
-                start = comma + 2;
-            }
-            parts.push_back(arguments.substr(start));
-            if (parts.size() != (fp8 ? 4U : 3U) || out.find_first_of(" ,") != std::string::npos) {
+            std::vector<std::string> parts =
+                call_arguments(std::string_view(line).substr(open + 1, line.size() - open - 2));
+            if (parts.size() != (eight ? 5U : 3U) || out.find_first_of(" ,") != std::string::npos) {
                 continue;
             }
             std::optional<std::size_t> scale;
-            if (fp8) {
-                const auto found = scales.find(parts[2]);
-                if (found == scales.end()) {
+            bool reshaped = false;
+            std::string rounded;
+            if (eight) {
+                rounded = parts[4];
+                if (const auto found = scales.find(parts[2]); found != scales.end()) {
+                    scale = found->second;
+                    reshaped = true;
+                } else {
+                    scale = parameter_index(parts[2]);
+                }
+                if (!scale) {
                     continue;
                 }
-                scale = found->second;
+                parts.pop_back();
                 parts.erase(parts.begin() + 2);
             }
             const auto weight = parameter_index(parts[1]);
@@ -1401,17 +1520,26 @@ private:
             if (shape.size() != 2) {
                 continue;
             }
-            linears.push_back({i, out, parts[0], *weight, bias, scale});
+            linears.push_back(
+                {i, out, parts[0], *weight, bias, eight ? call : "", scale, reshaped, rounded});
         }
-        // Groups: one input, all biased or none, the same input width and
-        // dtype, distinct weights.
+        // Groups: one input, all biased or none, the same kind of layer,
+        // input width, dtype and scales but for their rows, distinct weights.
         std::map<std::string, std::vector<std::size_t>> groups;
         for (std::size_t i = 0; i < linears.size(); ++i) {
             const Linear& linear = linears[i];
             const auto& [shape, dtype] = parameter_types_[linear.weight];
-            const std::string key = linear.input + "|" + (linear.bias ? "b" : "-") + "|" +
-                                    (linear.scale ? "fp8" : "") + "|" + std::to_string(shape[1]) +
-                                    "|" + std::to_string(static_cast<int>(dtype));
+            std::string key = linear.input + "|" + (linear.bias ? "b" : "-") + "|" + linear.call +
+                              linear.rounded + (linear.reshaped ? "r" : "") + "|" +
+                              std::to_string(shape[1]) + "|" +
+                              std::to_string(static_cast<int>(dtype));
+            if (linear.scale) {
+                const auto& [scale_shape, scale_dtype] = parameter_types_[*linear.scale];
+                for (std::size_t axis = 1; axis < scale_shape.size(); ++axis) {
+                    key += "|" + std::to_string(scale_shape[axis]);
+                }
+                key += "|" + std::to_string(static_cast<int>(scale_dtype));
+            }
             auto& members = groups[key];
             const bool repeated = std::any_of(members.begin(), members.end(), [&](std::size_t j) {
                 return linears[j].weight == linear.weight;
@@ -1460,21 +1588,26 @@ private:
             }
             std::string scale;
             if (!row_scales.empty()) {
-                const std::string joined = "v" + std::to_string(++highest);
-                text += prefix + joined + " = _adjacent(" + join(row_scales) + ")\n";
                 scale = "v" + std::to_string(++highest);
-                text += prefix;
-                text += scale;
-                text += " = ";
-                text += joined;
-                text += ".reshape((";
-                text += std::to_string(total);
-                text += ",))\n";
+                text += prefix + scale + " = _adjacent(" + join(row_scales) + ")\n";
+                if (first.reshaped) {
+                    const std::string joined = scale;
+                    scale = "v" + std::to_string(++highest);
+                    text += prefix;
+                    text += scale;
+                    text += " = ";
+                    text += joined;
+                    text += ".reshape((";
+                    text += std::to_string(total);
+                    text += ",))\n";
+                }
             }
             const std::string product = "v" + std::to_string(++highest);
             text += prefix;
             text += product;
-            text += scale.empty() ? " = F.linear(" : " = _fp8_linear(";
+            text += " = ";
+            text += first.call.empty() ? "F.linear" : first.call;
+            text += "(";
             text += first.input;
             text += ", ";
             text += weight;
@@ -1484,6 +1617,10 @@ private:
                 text += ", ";
             }
             text += bias;
+            if (!first.call.empty()) {
+                text += ", ";
+                text += first.rounded;
+            }
             text += ")\n";
             std::int64_t offset = 0;
             for (const std::size_t i : members) {
@@ -1531,61 +1668,6 @@ private:
                "        offset += part.numel()\n"
                "    rows = sum(part.shape[0] for part in parts)\n"
                "    return first.as_strided((rows, *first.shape[1:]), first.stride())\n\n\n";
-    }
-
-    // `std.quant::linear_fp8` natively, on a GPU with FP8 products. One row
-    // (a decoding step of one sequence) multiplies the weight widened inside
-    // Linnet's kernel, reading its bytes once. More rows are each rounded to
-    // FP8 with a scale of their own (the largest magnitude over 448, FP8's
-    // largest value), and `torch._scaled_mm` multiplies the two in FP8 and
-    // applies both scales. Elsewhere the weight is decoded for the call. The
-    // GPU is asked once, when the module loads, so compiled code sees a
-    // constant.
-    static std::string fp8_helper() {
-        return "try:\n"
-               "    from linnet.torch.kernels import fp8_gemv as _fp8_gemv\n"
-               "    from linnet.torch.kernels import fp8_rows as _fp8_rows\n"
-               "except ImportError:  # no Triton: FP8 products for every row count\n"
-               "    _fp8_gemv = _fp8_rows = None\n"
-               "\n"
-               "_FP8_PRODUCTS = torch.cuda.is_available() and "
-               "torch.cuda.get_device_capability() >= (9, 0)\n"
-               "\n\n"
-               "def _fp8_linear(x, weight, scale, bias):\n"
-               "    flat = x.reshape(-1, x.shape[-1])\n"
-               "    out_features, in_features = weight.shape\n"
-               "    if (\n"
-               "        _FP8_PRODUCTS\n"
-               "        and flat.is_cuda\n"
-               "        and flat.dtype == torch.bfloat16\n"
-               "        and in_features % 16 == 0\n"
-               "        and out_features % 16 == 0\n"
-               "    ):\n"
-               "        if flat.shape[0] == 1 and in_features % 512 == 0 and _fp8_gemv is not "
-               "None:\n"
-               "            y = _fp8_gemv(flat, weight, scale)\n"
-               "        else:\n"
-               "            if _fp8_rows is not None:\n"
-               "                q, rows = _fp8_rows(flat)\n"
-               "            else:\n"
-               "                top = flat.abs().amax(dim=-1, keepdim=True).float()\n"
-               "                rows = top.clamp(min=1e-12) / 448.0\n"
-               "                q = (flat.float() / rows).clamp(-448.0, 448.0)\n"
-               "                q = q.to(torch.float8_e4m3fn)\n"
-               "            y = torch._scaled_mm(\n"
-               "                q,\n"
-               "                weight.view(torch.float8_e4m3fn).t(),\n"
-               "                scale_a=rows,\n"
-               "                scale_b=scale.float().reshape(1, -1),\n"
-               "                out_dtype=flat.dtype,\n"
-               "            )\n"
-               "    else:\n"
-               "        decoded = weight.view(torch.float8_e4m3fn).float() * scale.float()[:, "
-               "None]\n"
-               "        y = F.linear(flat, decoded.to(flat.dtype))\n"
-               "    y = y.reshape(*x.shape[:-1], out_features)\n"
-               "    return y if bias is None else y + bias\n"
-               "\n\n";
     }
 
     static std::string int4_helpers() {
@@ -2079,7 +2161,7 @@ private:
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
     bool experts_helper_ = false;                     // `_linear_experts` is used
-    bool fp8_helper_ = false;                         // `_fp8_linear` is used
+    std::set<std::string> eight_bit_;                 // 8-bit layers' kinds used (`fp8`, ...)
     bool multiply_ = false;                           // `_multiply` (a tile `prod`) is written
     bool flex_helpers_ = false;                       // `_flex_blocks` and `_attend` are used
     bool sink_helper_ = false;                        // `_sink_attend` is used

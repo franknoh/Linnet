@@ -39,14 +39,71 @@ pub op dequantize_int4<R: Dim, H: Dim, T: Float>(
     return dequantize_int8<[R], 2 * H, T>(unpack_int4(packed), scale)
 }
 
-// A linear layer whose weight is stored as per-row int8.
+// A linear layer over per-row int8 weights. Its body dequantizes the weight
+// and multiplies in `T`. PyTorch on CUDA multiplies the int8 weight as it
+// is; under `numerics="fast"`, a call of more than one row also rounds each
+// row of `x` to int8 with a scale of its own (the largest magnitude over
+// 127) and multiplies the two in int8.
+pub op linear_int8<*S: Shape, In: Dim, Out: Dim, T: Float>(
+    x: Tensor[*S, In; T],
+    weight: Tensor[Out, In; i8],
+    scale: Tensor[Out; T],
+    bias: Tensor[Out; T]?,
+) -> Tensor[*S, Out; T] {
+    return linear(x, dequantize_int8<[Out], In, T>(weight, cast<f32>(scale)), bias)
+}
+
+// A linear layer whose weight is stored as per-row int8, as
+// `compressed-tensors` checkpoints store it (`weight`, and `weight_scale` of
+// shape `[Out, 1]` in the model's dtype).
 pub block Int8Linear<In: Dim, Out: Dim, T: Float = bf16> {
     param weight: Tensor[Out, In; i8]
-    param scale: Tensor[Out; f32]
+    param scale: Tensor[Out, 1; T]
     param bias: Tensor[Out; T]? = none
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
-        return linear(x, dequantize_int8<[Out], In, T>(weight, scale), bias)
+        return linear_int8(x, weight, reshape(scale, [Out]), bias)
+    }
+}
+
+// Symmetric int8 in groups of `Group` consecutive inputs:
+// `weight[o, i] = q[o, i] * scale[o, i / Group]`.
+pub op dequantize_int8_groups<Out: Dim, Groups: Dim, Group: Dim, T: Float>(
+    q: Tensor[Out, Groups * Group; i8],
+    scale: Tensor[Out, Groups; T],
+) -> Tensor[Out, Groups * Group; T] {
+    let grouped = reshape(cast<f32>(q), [Out, Groups, Group])
+    let scaled[o, g, j] = grouped[o, g, j] * cast<f32>(scale[o, g])
+    return cast<T>(reshape(scaled, [Out, Groups * Group]))
+}
+
+// A linear layer over group-wise int8 weights. Its body dequantizes and
+// multiplies; PyTorch on CUDA multiplies the int8 weight as it is, scaling
+// each group as it reads it.
+pub op linear_int8_groups<Group: Dim, *S: Shape, Out: Dim, Groups: Dim, T: Float>(
+    x: Tensor[*S, Groups * Group; T],
+    weight: Tensor[Out, Groups * Group; i8],
+    scale: Tensor[Out, Groups; T],
+    bias: Tensor[Out; T]?,
+) -> Tensor[*S, Out; T] {
+    return linear(x, dequantize_int8_groups<Out, Groups, Group, T>(weight, scale), bias)
+}
+
+// A linear layer whose weight is stored as symmetric int8 with one scale
+// for each `Group` consecutive inputs of a row (`compressed-tensors`'
+// `int-quantized` group strategy: `weight` and `weight_scale` of shape
+// `[Out, In / Group]`).
+pub block Int8GroupLinear<In: Dim, Out: Dim, Group: Dim = 128, T: Float = bf16>
+where
+    Group > 0,
+    In % Group == 0
+{
+    param weight: Tensor[Out, In; i8]
+    param scale: Tensor[Out, In / Group; T]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear_int8_groups<Group>(x, weight, scale, bias)
     }
 }
 
@@ -184,6 +241,51 @@ pub block Fp8Linear<In: Dim, Out: Dim, T: Float = bf16> {
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
         return linear_fp8(x, weight, reshape(scale, [Out]), bias)
+    }
+}
+
+// FP8 E4M3 in square blocks of `Block` rows by `Block` inputs, one scale a
+// block: `weight[o, i] = decode_fp8(q[o, i]) * scale[o / Block, i / Block]`.
+pub op dequantize_fp8_blocks<RowBlocks: Dim, ColBlocks: Dim, Block: Dim, T: Float>(
+    q: Tensor[RowBlocks * Block, ColBlocks * Block; u8],
+    scale: Tensor[RowBlocks, ColBlocks; T],
+) -> Tensor[RowBlocks * Block, ColBlocks * Block; T] {
+    let decoded = reshape(decode_fp8(q), [RowBlocks, Block, ColBlocks, Block])
+    let scaled[r, i, c, j] = decoded[r, i, c, j] * cast<f32>(scale[r, c])
+    return cast<T>(reshape(scaled, [RowBlocks * Block, ColBlocks * Block]))
+}
+
+// A linear layer over block-scaled FP8 E4M3 weights. Its body decodes the
+// weight and multiplies in `T`. PyTorch on a GPU with FP8 products
+// multiplies the FP8 weight as it is; under `numerics="fast"`, in bf16, a
+// call of more than one row also rounds each `Block` inputs of a row of `x`
+// to FP8 with a scale of their own, and multiplies the two in FP8.
+pub op linear_fp8_blocks<Block: Dim, *S: Shape, RowBlocks: Dim, ColBlocks: Dim, T: Float>(
+    x: Tensor[*S, ColBlocks * Block; T],
+    weight: Tensor[RowBlocks * Block, ColBlocks * Block; u8],
+    scale: Tensor[RowBlocks, ColBlocks; T],
+    bias: Tensor[RowBlocks * Block; T]?,
+) -> Tensor[*S, RowBlocks * Block; T] {
+    let decoded = dequantize_fp8_blocks<RowBlocks, ColBlocks, Block, T>(weight, scale)
+    return linear(x, decoded, bias)
+}
+
+// A linear layer whose weight is stored as FP8 E4M3 with one scale for
+// each `Block` by `Block` block, as DeepSeek-V3 and Qwen3's FP8 checkpoints
+// store it (`weight`, and `weight_scale_inv` of shape
+// `[Out / 128, In / 128]`, a multiplier despite its name).
+pub block Fp8BlockLinear<In: Dim, Out: Dim, Block: Dim = 128, T: Float = bf16>
+where
+    Block > 0,
+    In % Block == 0,
+    Out % Block == 0
+{
+    param weight: Tensor[Out, In; u8]
+    param scale: Tensor[Out / Block, In / Block; T]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear_fp8_blocks<Block>(x, weight, scale, bias)
     }
 }
 

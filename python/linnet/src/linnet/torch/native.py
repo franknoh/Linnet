@@ -379,15 +379,54 @@ def _decode_fp8(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor
     return bits.view(torch.float8_e4m3fn).float()
 
 
-def _fp8_linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
-    """`std.quant::linear_fp8`: the weight decoded and scaled, then
-    `F.linear`; the generated code multiplies in FP8 where it can."""
-    x, weight, scale, bias = cast(
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None], args
-    )
-    decoded = weight.view(torch.float8_e4m3fn).float() * scale.float()[:, None]
-    y = functional.linear(x, decoded.to(x.dtype))
-    return y if bias is None else y + bias
+# x, weight, scales, bias
+_EightBit = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]
+
+
+def _fp8_linear(rounded: int) -> Native:
+    """`std.quant::linear_fp8` as the generated code runs it
+    (`linnet.torch.quantized`); `rounded` rounds a call's input to FP8 too."""
+
+    def run(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+        from . import quantized  # imports Triton where there is one
+
+        x, weight, scale, bias = cast(_EightBit, args)
+        return quantized.fp8_linear(x, quantized.fp8_operands(weight, scale, rounded), bias)
+
+    return run
+
+
+def _fp8_block_linear(rounded: int) -> Native:
+    """`std.quant::linear_fp8_blocks`, as `_fp8_linear`."""
+
+    def run(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+        from . import quantized
+
+        x, weight, scale, bias = cast(_EightBit, args)
+        operands = quantized.fp8_block_operands(weight, scale, rounded)
+        return quantized.fp8_block_linear(x, operands, bias)
+
+    return run
+
+
+def _int8_linear(rounded: int) -> Native:
+    """`std.quant::linear_int8`, as `_fp8_linear`."""
+
+    def run(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+        from . import quantized
+
+        x, weight, scale, bias = cast(_EightBit, args)
+        return quantized.int8_linear(x, quantized.int8_operands(weight, scale, rounded), bias)
+
+    return run
+
+
+def _int8_group_linear(args: OptionalArgs, _result: torch.dtype | None) -> torch.Tensor:
+    """`std.quant::linear_int8_groups`, as `_fp8_linear`."""
+    from . import quantized
+
+    x, weight, scale, bias = cast(_EightBit, args)
+    return quantized.int8_group_linear(x, quantized.int8_group_operands(weight, scale), bias)
 
 
 def _grouped(x: torch.Tensor, weight: torch.Tensor) -> bool:
@@ -454,7 +493,13 @@ def _combine_experts(args: Args, _result: torch.dtype | None) -> torch.Tensor:
 NATIVE: dict[str, Native] = {
     "torch.ops.aten._weight_int4pack_mm": _int4_groups_linear,
     "linnet.decode_fp8": _decode_fp8,
-    "torch._scaled_mm": _fp8_linear,
+    "linnet.fp8_linear": _fp8_linear(0),
+    "torch._scaled_mm": _fp8_linear(1),
+    "linnet.fp8_block_linear": _fp8_block_linear(0),
+    "torch._scaled_mm(blocks)": _fp8_block_linear(1),
+    "linnet.int8_linear": _int8_linear(0),
+    "linnet.int8_linear(w8a8)": _int8_linear(1),
+    "linnet.int8_group_linear": _int8_group_linear,
     "torch._grouped_mm": _linear_experts,
     "torch._grouped_mm(shared)": _linear_experts_shared,
     "torch._grouped_mm(combined)": _combine_experts,

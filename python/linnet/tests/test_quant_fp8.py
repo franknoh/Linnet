@@ -280,5 +280,5 @@ def test_siblings_run_as_one_product(tmp_path: Path) -> None:
     np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-4)
     assert isinstance(model, CompiledLinnetModule)
     generated = model.generated_source("forward")
-    assert generated.count("_fp8_linear(") == 2  # the helper and one call
+    assert generated.count("_fp8_linear(") == 1  # one call for both
     assert "_adjacent(" in generated
