@@ -215,8 +215,10 @@ the analysis refuses, says why. `--batch` or `--seq-len` fixes the size.
 Each operation of the step is costed at rates measured on the device:
 
 - matrix products at the rate measured for their weight's shape and dtype,
-  or reading their operands (a few rows read the weight at their own rate),
-  index-notation contractions (`sum[k] a[i, k] * b[k, j]`) among them;
+  or reading their operands: a few rows (a decoding step's) read the weight
+  at the rate measured for its shape, in the kernels cuBLAS launches for
+  it (a split-K product adds its reduction). Index-notation contractions
+  (`sum[k] a[i, k] * b[k, j]`) count among them;
 - fused attention at its kernel's rate: causal, under a mask, by head width
   and dtype; one query under a mask as the generated code runs it;
 - other kernels at the bandwidth an elementwise kernel reaches, about half
@@ -373,7 +375,7 @@ when fitting.
 Under `torchrun`, each process measures its own device:
 
 ```bash
-torchrun --numa-binding node --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
+torchrun --nproc-per-node 2 -m linnet.resources.validate llama-3.1-8b-instruct \
     --entry decode_rows --batch 16 --cache-len 8192 --tensor-parallel 2
 ```
 

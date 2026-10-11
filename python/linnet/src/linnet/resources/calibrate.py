@@ -266,6 +266,56 @@ def _products(
     return peaks, sizes, skinny
 
 
+def _skinny_products(device: torch.device) -> list[list[float]]:
+    """For a product of 16 rows (a decoding step's) by an `n` by `k` bf16
+    weight, `[n, k, bytes/s, kernels]`: the bytes per second it reads the
+    weight at -- cold, copies of it rotated past L2, the calls queued behind
+    long products so that the host is ahead -- and the kernels one call
+    launches (cuBLAS adds a split-K product's reduction, and a memset)."""
+    import torch
+    from torch.nn import functional
+    from torch.profiler import ProfilerActivity, profile
+
+    big = torch.randn(8192, 8192, device=device, dtype=torch.bfloat16)
+    product = torch.empty_like(big)
+
+    def fill() -> None:
+        for _ in range(24):
+            torch.matmul(big, big, out=product)
+
+    found: list[list[float]] = []
+    for n in (1024, 4096, 16384, 65536):
+        for k in (1024, 4096, 16384):
+            nbytes = n * k * 2
+            copies = max(2, -(-(160 << 20) // nbytes))
+            weights = [
+                torch.randn(n, k, device=device, dtype=torch.bfloat16) for _ in range(copies)
+            ]
+            x = torch.randn(16, k, device=device, dtype=torch.bfloat16)
+            turn = itertools.count()
+
+            def run(
+                x: torch.Tensor = x,
+                weights: list[torch.Tensor] = weights,
+                turn: itertools.count[int] = turn,
+            ) -> None:
+                functional.linear(x, weights[next(turn) % len(weights)])
+
+            seconds = _time(run, before=fill)
+            kernels = 1
+            try:
+                with profile(activities=[ProfilerActivity.CUDA]) as recorded:
+                    run()
+                    torch.cuda.synchronize(device)
+                events = cast("list[_Recorded]", recorded.events())
+                kernels = max(1, sum(str(e.device_type).endswith("CUDA") for e in events))
+            except RuntimeError:
+                pass  # no profiler here: one kernel a call
+            found.append([float(n), float(k), nbytes / seconds, float(kernels)])
+            del weights
+    return found
+
+
 def _bandwidth(device: torch.device) -> float:
     import torch
 
@@ -514,6 +564,7 @@ def measure(name: str, *, collectives: bool = True) -> Profile:
         "flops": peaks,
         "products": sizes,
         "skinny": skinny,
+        "skinny_products": _skinny_products(device),
         "bandwidth": _bandwidth(device),
         "elementwise": same,
         "broadcast": broadcast,

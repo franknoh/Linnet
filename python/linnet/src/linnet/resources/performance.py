@@ -65,6 +65,7 @@ class Profile(TypedDict):
     broadcast: NotRequired[float]
     products: NotRequired[dict[str, list[list[float]]]]  # [n, k, FLOP/s] each
     skinny: NotRequired[float]
+    skinny_products: NotRequired[list[list[float]]]  # [n, k, bytes/s, kernels] each
     host: NotRequired[dict[str, float]]
     dispatch: NotRequired[float]
     kernel: NotRequired[float]
@@ -72,6 +73,37 @@ class Profile(TypedDict):
     gap: NotRequired[float]
     reduce: NotRequired[float | None]
     source: NotRequired[str]
+
+
+def _on_grid(
+    table: Mapping[tuple[float, float], float], outputs: float, width: float, missing: float
+) -> tuple[float, float]:
+    """The value at (`outputs`, `width`) of a table over a grid of shapes:
+    between the grid's points on a log scale, the nearest edge past them;
+    and the share of the smallest shape below them, for a rate that falls
+    in proportion there (`missing` stands in for an absent point)."""
+
+    def axis(values: list[float], x: float) -> tuple[float, float, float, float]:
+        if x <= values[0]:
+            return values[0], values[0], 0.0, x / values[0]
+        for low, high in itertools.pairwise(values):
+            if x <= high:
+                return low, high, math.log(x / low) / math.log(high / low), 1.0
+        return values[-1], values[-1], 0.0, 1.0
+
+    n0, n1, tn, sn = axis(sorted({n for n, _ in table}), outputs)
+    k0, k1, tk, sk = axis(sorted({k for _, k in table}), width)
+
+    def at(n: float, k: float) -> float:
+        return table.get((n, k), missing)
+
+    value = (
+        (1 - tn) * (1 - tk) * at(n0, k0)
+        + tn * (1 - tk) * at(n1, k0)
+        + (1 - tn) * tk * at(n0, k1)
+        + tn * tk * at(n1, k1)
+    )
+    return value, sn * sk
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +114,9 @@ class DeviceSpec:
     - `flops`: matrix products' FLOP/s by compute dtype; `products`: the
       same by the weight's shape (`(n, k, FLOP/s)` for 8192 rows times an
       `n` by `k` weight); `skinny`: the bytes per second a product of a few
-      rows (a decoding step's) reads its weight at.
+      rows (a decoding step's) reads its weight at; `skinny_products`: the
+      same by the weight's shape, with the kernels one such call launches
+      (`(n, k, bytes/s, kernels)`).
     - `bandwidth`: a large copy's bytes read plus written per second;
       `elementwise` and `broadcast`: the same for an operation on two
       same-shape tensors and for one with a broadcast operand.
@@ -117,6 +151,7 @@ class DeviceSpec:
         default_factory=dict[str, tuple[tuple[float, float, float], ...]]
     )
     skinny: float = 0.0
+    skinny_products: tuple[tuple[float, float, float, float], ...] = ()
     host: Mapping[str, float] = field(default_factory=dict[str, float])
     dispatch: float = 0.0
     kernel: float = 0.0
@@ -136,31 +171,28 @@ class DeviceSpec:
         measured = self.products.get("bf16" if dtype == "f16" else dtype, ())
         if not measured:
             return peak
-        table = {(n, k): rate for n, k, rate in measured}
+        rate, below = _on_grid({(n, k): rate for n, k, rate in measured}, outputs, width, peak)
+        return min(rate * below, peak)
 
-        def axis(values: list[float], x: float) -> tuple[float, float, float, float]:
-            """The grid points around `x`, its share of the way between
-            them, and the scale below the grid."""
-            if x <= values[0]:
-                return values[0], values[0], 0.0, x / values[0]
-            for low, high in itertools.pairwise(values):
-                if x <= high:
-                    return low, high, math.log(x / low) / math.log(high / low), 1.0
-            return values[-1], values[-1], 0.0, 1.0
+    def skinny_rate(self, outputs: int, width: int) -> float:
+        """The bytes per second a product of a few rows reads a weight of
+        `outputs` rows of `width` at: between the measured shapes on a log
+        scale, the nearest edge past them."""
+        if not self.skinny_products:
+            return self.skinny
+        table = {(n, k): rate for n, k, rate, _ in self.skinny_products}
+        return _on_grid(table, outputs, width, self.skinny)[0]
 
-        n0, n1, tn, sn = axis(sorted({n for n, _, _ in measured}), outputs)
-        k0, k1, tk, sk = axis(sorted({k for _, k, _ in measured}), width)
-
-        def at(n: float, k: float) -> float:
-            return table.get((n, k), peak)
-
-        rate = (
-            (1 - tn) * (1 - tk) * at(n0, k0)
-            + tn * (1 - tk) * at(n1, k0)
-            + (1 - tn) * tk * at(n0, k1)
-            + tn * tk * at(n1, k1)
+    def skinny_kernels(self, outputs: int, width: int) -> int:
+        """The kernels such a product launches: the nearest measured
+        shape's, on a log scale."""
+        if not self.skinny_products:
+            return 1
+        nearest = min(
+            self.skinny_products,
+            key=lambda p: abs(math.log(p[0] / outputs)) + abs(math.log(p[1] / width)),
         )
-        return min(rate * sn * sk, peak)
+        return round(nearest[3])
 
     def host_of(self, *kinds: str) -> float:
         """The host's seconds for eager calls of these kinds."""
@@ -200,6 +232,10 @@ class DeviceSpec:
                 for dtype, points in data.get("products", {}).items()
             },
             skinny=float(data.get("skinny", 0.0)),
+            skinny_products=tuple(
+                (float(n), float(k), float(r), float(c))
+                for n, k, r, c in data.get("skinny_products", [])
+            ),
             host={k: float(v) for k, v in data.get("host", {}).items()},
             dispatch=float(data.get("dispatch", 0.0)),
             kernel=float(data.get("kernel", 0.0)),
@@ -329,6 +365,7 @@ def _from_sheet(
             for dtype, points in _H100.products.items()
         },
         skinny=_H100.skinny * memory_ratio,
+        skinny_products=tuple((n, k, r * memory_ratio, c) for n, k, r, c in _H100.skinny_products),
         host=_H100.host,
         dispatch=_H100.dispatch,
         kernel=_H100.kernel,
@@ -573,13 +610,14 @@ def _costs(
         nbytes: float,
         issued: float,
         read_rate: float = 0.0,
+        kernels: int = 1,
     ) -> _Op:
         compute = flops / rate
         moved = nbytes / (read_rate or device.bandwidth)
-        floor = device.kernel - device.gap
+        floor = kernels * (device.kernel - device.gap)
         if compute >= moved:
-            return _Op(issued, max(compute, floor), "compute")
-        return _Op(issued, max(moved, floor), "memory")
+            return _Op(issued, max(compute, floor), "compute", kernels)
+        return _Op(issued, max(moved, floor), "memory", kernels)
 
     for step in graph.steps:
         if step.index in hoisted or step.index in joined:
@@ -627,14 +665,17 @@ def _costs(
                 read += stored  # the dequantized weight, at twice its bytes
             if len(members) > 1:
                 issued += host(*["view"] * len(members))
-            # A few rows (a decoding step's) read the weight at its own rate.
-            skinny = device.skinny if rows <= 64 else 0.0
+            # A few rows (a decoding step's) read the weight at its own rate,
+            # by its shape, in the kernels cuBLAS launches for it (a split-K
+            # product adds its reduction, and some a memset).
+            few = rows <= 64
             op = bounded(
                 flops,
                 device.product(dtype, outputs, width),
                 read + written,
                 issued,
-                read_rate=skinny,
+                read_rate=device.skinny_rate(outputs, width) if few else 0.0,
+                kernels=device.skinny_kernels(outputs, width) if few and not eight_bit else 1,
             )
             forward.append(op)
             backward.append(_Op(host("product_backward"), 2 * op.seconds, op.by, 2))

@@ -47,6 +47,7 @@ from .. import lora
 from ..parallel import units as parallel_units
 from ..plan import PlanError
 from .module import BlockModule, LinnetModule, owner_of
+from .parallel import bind_cpus
 
 if TYPE_CHECKING:
     from torch.distributed import ProcessGroup, Work
@@ -97,6 +98,7 @@ def fully_shard(
         mesh = init_device_mesh(model.interpreter.device.type, (dist.get_world_size(),))
     if mesh.ndim != 1:
         raise PlanError("sharding takes a one-dimensional mesh")
+    bind_cpus(model.interpreter.device)
 
     chosen = [
         p for p, _ in model.root.named_parameters(remove_duplicate=False) if only is None or only(p)

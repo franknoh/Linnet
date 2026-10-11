@@ -51,6 +51,7 @@ from ..weights import paths_by_tensor
 from .compiled import CompiledLinnetModule
 from .fsdp import Held, sharded
 from .module import BlockModule, argument, bind_weights, owner_of, tie_parameters
+from .parallel import bind_cpus
 from .placement import units_of
 from .stages import Split, Stage, split
 
@@ -529,6 +530,7 @@ def pipeline(
             else torch.device("cpu")
         )
     device = torch.device(device)
+    bind_cpus(device)
     plan = compile_plan(source, root=root, std_root=std_root, numerics=numerics)
     shard: tuple[int, int] | None = None
     if tensor_parallel is not None:
