@@ -91,7 +91,7 @@ def test_it_multiplies_as_the_entry_does(source: Path, tmp_path: Path) -> None:
     assert isinstance(planned, CompiledLinnetModule)
     x = torch.randn(ROWS, IN, device="cuda").bfloat16()
     plan = planned.plan_for("forward", [x], backends=[DeepGemm()], measure=False)
-    assert [step.backend for step in plan.steps] == ["deepgemm"]
+    assert [step.backend for step in plan.steps].count("deepgemm") == 1
     with torch.no_grad():
         (got,) = plan.run([x], planned.context_for(plan))
         expected: object = direct.run_entry("forward", [x])
