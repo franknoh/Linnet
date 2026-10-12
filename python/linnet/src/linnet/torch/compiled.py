@@ -12,6 +12,9 @@ work unchanged.
 from __future__ import annotations
 
 import fnmatch
+import functools
+import hashlib
+import json
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -22,9 +25,16 @@ import numpy as np
 import torch
 
 from .. import ir, lora
-from ..backends import Backend, Graph, Plan, Planner
-from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
+from ..backends import Backend, Graph, Plan, Planner, Region
+from ..compiler import (
+    bind_arguments,
+    lora_arguments,
+    run_compiler,
+    std_arguments,
+    write_atomically,
+)
 from ..generated import generated_directory, import_generated, write_generated
+from ..home import home
 from ..plan import PlanError
 from .module import (
     BlockModule,
@@ -448,7 +458,9 @@ class CompiledLinnetModule(LinnetModule):
         key = (name, tuple(sorted(bindings.items())), self._absent_optionals(), backend, trains)
         if key not in self._compiled:
             self._compiled[key] = self._compile(name, bindings, backend, trains)
-        generated = self._compiled[key]
+        return self._prepared_for(self._compiled[key])
+
+    def _prepared_for(self, generated: _Generated) -> _Prepared:
         return _Prepared(
             generated,
             [owner_of(self, path) for path in generated.parameters],
@@ -589,8 +601,56 @@ class CompiledLinnetModule(LinnetModule):
 
         bindings = self.bindings_for(entry, inputs, generics or {})
         graph = self.graph_for(entry, bindings, trains=self.trains())
-        fallback = TorchSource(self, entry, generics or {}, compile)
+        fallback = TorchSource(self, entry, bindings, generics or {}, compile)
         return Planner(backends, fallback).plan(graph, target_of(self.interpreter.device))
+
+    def slices(
+        self, entry: str, bindings: Mapping[str, str], regions: Sequence[Region]
+    ) -> list[Callable[[Sequence[torch.Tensor]], list[torch.Tensor]]]:
+        """Each of `regions` of `entry`'s graph under `bindings` as a function
+        of the region's inputs that returns its outputs, reading this
+        module's parameters and states by path and writing the states it
+        assigns back (`linnet graph --slices`)."""
+        listed = [
+            {
+                "name": f"{entry}_{region.start}_{region.stop}",
+                "start": region.start,
+                "stop": region.stop,
+                "inputs": list(region.inputs),
+                "outputs": list(region.outputs),
+                "states": [[path, value] for path, value in region.next_states],
+            }
+            for region in regions
+        ]
+        text = json.dumps(listed, sort_keys=True)
+        # Named by what it holds, so that the compiler's output cache, which
+        # keys on the arguments, keys on it too.
+        path = home() / "compiled" / "slices" / f"{hashlib.sha256(text.encode()).hexdigest()}.json"
+        if not path.exists():
+            write_atomically(path, text)
+        document = json.loads(
+            self._export(
+                "graph",
+                entry,
+                bindings,
+                trains=self.trains(),
+                prepare=True,
+                extra=("--slices", str(path)),
+            )
+        )
+        sources = cast("list[str]", document["sources"])
+        functions: list[Callable[[Sequence[torch.Tensor]], list[torch.Tensor]]] = []
+        for slice_, source in zip(listed, sources, strict=True):
+            name = f"{slice_['name']}_{len(self._compiled)}"
+            prepared = self._prepared_for(self._compile_source(name, source, None, self.trains()))
+            functions.append(functools.partial(self._run_slice, prepared))
+        return functions
+
+    def _run_slice(self, prepared: _Prepared, inputs: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+        result: object = self._call(prepared, list(inputs), cuda_graphs=False)
+        if isinstance(result, tuple):
+            return list(cast("tuple[torch.Tensor, ...]", result))
+        return [cast("torch.Tensor", result)]
 
     def _export(
         self,
@@ -600,8 +660,9 @@ class CompiledLinnetModule(LinnetModule):
         *,
         trains: bool,
         prepare: bool,
+        extra: Sequence[str] = (),
     ) -> str:
-        command = [command_name, "--root", self.program.root.name, "--entry", entry]
+        command = [command_name, *extra, "--root", self.program.root.name, "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
         command += ["--absent-file", "-"]
@@ -631,6 +692,11 @@ class CompiledLinnetModule(LinnetModule):
         self, entry: str, bindings: dict[str, str], backend: str | None, trains: bool
     ) -> _Generated:
         source = self.source_for(entry, bindings, trains=trains)
+        return self._compile_source(f"{entry}_{len(self._compiled)}", source, backend, trains)
+
+    def _compile_source(
+        self, name: str, source: str, backend: str | None, trains: bool
+    ) -> _Generated:
         # CUDA graphs are captured by hand around the whole step, unless the
         # model is spread over devices by placement or trains: replaying one
         # graph costs a copy per input, where `torch.compile`'s own checks
@@ -659,7 +725,6 @@ class CompiledLinnetModule(LinnetModule):
             and not self.fully_sharded
             else None
         )
-        name = f"{entry}_{len(self._compiled)}"
         if regions is None:
             module = self.import_source(source, name)
             path: Path = module.__linnet_path__

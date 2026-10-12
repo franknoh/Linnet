@@ -67,6 +67,8 @@ class Region:
     outputs: tuple[int, ...]
     parameters: tuple[str, ...]
     states: tuple[str, ...]
+    # The states it assigns: each one's value after the call, by path.
+    next_states: tuple[tuple[str, int], ...] = ()
     call: int | None = None  # the call whose range it is, if any
 
     @property
@@ -81,9 +83,11 @@ class Region:
     def of(cls, graph: Graph, start: int, stop: int, call: int | None = None) -> Region:
         """The range's region: its inputs are the values its steps read that
         steps before it made, in order of first use; its outputs the values
-        it makes that later steps read, or that the entry returns."""
+        it makes that later steps read, or that the entry returns. A
+        constant crosses no boundary: each region that reads one makes it."""
         persistent = {value: path for path, value in graph.parameters.items()}
         state = {value: path for path, value in graph.states.items()}
+        constants = {value for step in graph.find("constant") for value in step.results}
         made: set[int] = set()
         inputs: dict[int, None] = {}
         parameters: dict[str, None] = {}
@@ -94,7 +98,7 @@ class Region:
             if step.op not in STRUCTURE:
                 for operand in step.operands:
                     value = operand.value
-                    if value is None or value in made:
+                    if value is None or value in made or value in constants:
                         continue
                     if value in persistent:
                         parameters[persistent[value]] = None
@@ -113,13 +117,16 @@ class Region:
         outputs = tuple(
             value
             for step in graph.steps[start:stop]
-            if step.op not in SOURCES
+            if step.op not in SOURCES and step.op != "constant"
             for value in step.results
             if value in read_after
         )
         if start == 0 and stop == len(graph.steps):
             inputs = dict.fromkeys(graph.inputs)
             outputs = graph.outputs
+        next_states = tuple(
+            (path, value) for path, value in graph.next_states.items() if value in made
+        )
         return cls(
             graph,
             start,
@@ -128,6 +135,7 @@ class Region:
             outputs,
             tuple(parameters),
             tuple(states),
+            next_states,
             call,
         )
 
