@@ -18,7 +18,8 @@ Kind = Literal["bool", "int", "uint", "float"]
 class DType:
     """A scalar type: its Linnet name, width, kind, and its name in
     SafeTensors, ONNX (`TensorProto` element type), MLIR, NumPy (`bfloat16`
-    from `ml_dtypes`) and PyTorch (`torch.<name>`)."""
+    and the FP8 formats from `ml_dtypes`) and PyTorch (`torch.<name>`). A
+    storage format (`std.dtypes`) is cast to and from but computes nothing."""
 
     name: str
     bits: int
@@ -28,6 +29,7 @@ class DType:
     mlir: str
     numpy: str
     torch: str
+    storage: bool = False
 
     @property
     def element_bytes(self) -> int:
@@ -35,7 +37,8 @@ class DType:
 
     @property
     def is_float(self) -> bool:
-        return self.kind == "float"
+        """Whether it is a float that computes."""
+        return self.kind == "float" and not self.storage
 
 
 DTYPES: dict[str, DType] = {
@@ -54,22 +57,28 @@ DTYPES: dict[str, DType] = {
         DType("bf16", 16, "float", "BF16", 16, "bf16", "bfloat16", "bfloat16"),
         DType("f32", 32, "float", "F32", 1, "f32", "float32", "float32"),
         DType("f64", 64, "float", "F64", 11, "f64", "float64", "float64"),
+        DType(
+            "f8e4m3", 8, "float", "F8_E4M3", 17, "f8E4M3FN", "float8_e4m3fn", "float8_e4m3fn", True
+        ),
+        DType("f8e5m2", 8, "float", "F8_E5M2", 19, "f8E5M2", "float8_e5m2", "float8_e5m2", True),
     )
 }
 
-FLOATS = frozenset(d.name for d in DTYPES.values() if d.kind == "float")
+FLOATS = frozenset(d.name for d in DTYPES.values() if d.is_float)
 INTEGERS = frozenset(d.name for d in DTYPES.values() if d.kind in ("int", "uint"))
+STORAGE = frozenset(d.name for d in DTYPES.values() if d.storage)
 # The dtypes each class of dtype generic admits (`T: Float`).
 CLASSES: dict[str, frozenset[str]] = {
     "float": FLOATS,
     "integer": INTEGERS,
     "numeric": FLOATS | INTEGERS,
-    "any": FLOATS | INTEGERS | {"bool"},
+    "any": FLOATS | INTEGERS | STORAGE | {"bool"},
 }
 
 BY_SAFETENSORS: dict[str, DType] = {d.safetensors: d for d in DTYPES.values()}
-# FP8 E4M3 bytes are read as their bits, which `std.quant::decode_fp8` decodes.
-BY_SAFETENSORS["F8_E4M3"] = DTYPES["u8"]
+# Checkpoint dtypes whose bytes a `u8` parameter may also hold, as bits:
+# FP8 that `std.quant::decode_fp8` decodes.
+AS_BITS = frozenset(("F8_E4M3", "F8_E5M2"))
 BY_ONNX: dict[int, DType] = {d.onnx: d for d in DTYPES.values()}
 BY_MLIR: dict[str, DType] = {d.mlir: d for d in DTYPES.values()}
 BY_NUMPY: dict[str, DType] = {d.numpy: d for d in DTYPES.values()}
@@ -90,6 +99,7 @@ def dtype(name: str) -> DType:
 
 
 __all__ = [
+    "AS_BITS",
     "BY_MLIR",
     "BY_NUMPY",
     "BY_ONNX",
@@ -98,6 +108,7 @@ __all__ = [
     "DTYPES",
     "FLOATS",
     "INTEGERS",
+    "STORAGE",
     "DType",
     "Kind",
     "dtype",

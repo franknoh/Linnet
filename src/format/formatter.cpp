@@ -809,7 +809,8 @@ private:
     static bool is_compact(const Item& item) {
         return std::holds_alternative<ConstDecl>(item.data) ||
                std::holds_alternative<MemberDecl>(item.data) ||
-               std::holds_alternative<TypeAliasDecl>(item.data);
+               std::holds_alternative<TypeAliasDecl>(item.data) ||
+               std::holds_alternative<DTypeDecl>(item.data);
     }
 
     // Declarations with bodies are always set apart by blank lines; runs of
@@ -846,6 +847,23 @@ private:
                                                   b_.text(" =")});
                     return b_.group(
                         b_.concat({head, b_.indent(b_.concat({b_.line(), type(decl.type)}))}));
+                },
+                [&](const DTypeDecl& decl) {
+                    std::vector<DocId> parts{b_.text("dtype "),
+                                             name(decl.name),
+                                             b_.text(" = "),
+                                             name(decl.family),
+                                             b_.text("(")};
+                    for (std::size_t i = 0; i < decl.args.size(); ++i) {
+                        if (i != 0) {
+                            parts.push_back(b_.text(", "));
+                        }
+                        parts.push_back(name(decl.args[i].name));
+                        parts.push_back(b_.text(": "));
+                        parts.push_back(expr(decl.args[i].value));
+                    }
+                    parts.push_back(b_.text(")"));
+                    return b_.concat(std::move(parts));
                 },
                 [&](const StructDecl& decl) {
                     const DocId head = b_.concat({b_.text("struct "),

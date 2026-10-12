@@ -1,0 +1,7 @@
+module m
+
+dtype fp8 = float(exponent: 4, mantissa: 3, inf: false)
+
+fn one() -> fp8 {
+    return 1.0
+}

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <functional>
+#include <map>
 #include <utility>
 
 namespace linnet::sema {
@@ -60,7 +61,7 @@ std::optional<shape::Relation> relation_of(ast::BinaryOp op) {
 } // namespace
 
 bool is_prelude_name(std::string_view name) {
-    return scalar_from_name(name).has_value() ||
+    return builtin_scalar(name).has_value() ||
            std::find(prelude.begin(), prelude.end(), name) != prelude.end();
 }
 
@@ -232,6 +233,10 @@ void Checker::collect_module(std::uint32_t module) {
                            },
                            [&](const ast::TypeAliasDecl& decl) {
                                entity.kind = EntityKind::TypeAlias;
+                               name = &decl.name;
+                           },
+                           [&](const ast::DTypeDecl& decl) {
+                               entity.kind = EntityKind::DType;
                                name = &decl.name;
                            },
                            [&](const ast::StructDecl& decl) {
@@ -433,6 +438,9 @@ void Checker::resolve(EntityId entity) {
         break;
     case EntityKind::TypeAlias:
         resolve_alias(entity);
+        break;
+    case EntityKind::DType:
+        resolve_dtype(entity);
         break;
     case EntityKind::Const:
         resolve_const(entity);
@@ -722,6 +730,105 @@ void Checker::resolve_alias(EntityId entity) {
     resolve_generics(decl.generics, info);
     info.scope = env.scopes.front();
     info.aliased = decl.type == ast::no_id ? types_.error() : eval_type(decl.type);
+}
+
+void Checker::resolve_dtype(EntityId entity) {
+    const Entity& target = entities_[entity];
+    const auto& decl = std::get<ast::DTypeDecl>(modules_[target.module]->item(target.item).data);
+    Env env = make_env(entity);
+    const EnvGuard guard(*this, env);
+    DeclInfo& info = decls_[entity];
+    info.aliased = types_.error();
+    const bool is_float = decl.family.text == "float";
+    if (!is_float && decl.family.text != "int") {
+        error(codes::invalid_dtype,
+              decl.family.span,
+              "unknown dtype family `" + std::string(decl.family.text) + "`")
+            .note("a dtype is an `int(bits: N, signed: B)` or a "
+                  "`float(exponent: E, mantissa: M, inf: B, nan: B)`");
+        return;
+    }
+    // The family's parameters, and whether each is a width (else a flag).
+    const std::vector<std::pair<std::string_view, bool>> known =
+        is_float
+            ? std::vector<std::pair<std::string_view, bool>>{{"exponent", true},
+                                                             {"mantissa", true},
+                                                             {"inf", false},
+                                                             {"nan", false}}
+            : std::vector<std::pair<std::string_view, bool>>{{"bits", true}, {"signed", false}};
+    std::map<std::string_view, std::int64_t> values;
+    for (const ast::DTypeArg& arg : decl.args) {
+        const auto found =
+            std::ranges::find(known, arg.name.text, &std::pair<std::string_view, bool>::first);
+        if (found == known.end()) {
+            error(codes::invalid_dtype,
+                  arg.name.span,
+                  "`" + std::string(decl.family.text) + "` has no parameter `" +
+                      std::string(arg.name.text) + "`");
+            return;
+        }
+        if (values.contains(arg.name.text)) {
+            error(codes::invalid_dtype,
+                  arg.name.span,
+                  "parameter `" + std::string(arg.name.text) + "` is given twice");
+            return;
+        }
+        const ast::Expr& value = ast().expr(arg.value);
+        const auto* literal = std::get_if<ast::LiteralExpr>(&value.data);
+        std::optional<std::int64_t> number;
+        if (literal != nullptr && found->second && literal->kind == ast::LiteralKind::Integer) {
+            number = eval_dim(arg.value).constant();
+        } else if (literal != nullptr && !found->second &&
+                   (literal->kind == ast::LiteralKind::True ||
+                    literal->kind == ast::LiteralKind::False)) {
+            number = literal->kind == ast::LiteralKind::True ? 1 : 0;
+        }
+        if (!number || *number < 0) {
+            error(codes::invalid_dtype,
+                  value.span,
+                  found->second ? "a width is a non-negative integer literal"
+                                : "a flag is `true` or `false`");
+            return;
+        }
+        values.emplace(arg.name.text, *number);
+    }
+    const auto value_of = [&](std::string_view name, std::int64_t otherwise) {
+        const auto found = values.find(name);
+        return found == values.end() ? otherwise : found->second;
+    };
+    DTypeFormat format;
+    if (is_float) {
+        if (!values.contains("exponent") || !values.contains("mantissa")) {
+            error(codes::invalid_dtype,
+                  decl.args_span,
+                  "a `float` needs its `exponent` and `mantissa` widths");
+            return;
+        }
+        format.family = DTypeFormat::Family::Float;
+        format.exponent = static_cast<std::uint32_t>(value_of("exponent", 0));
+        format.mantissa = static_cast<std::uint32_t>(value_of("mantissa", 0));
+        format.bits = 1 + format.exponent + format.mantissa;
+        format.inf = value_of("inf", 1) != 0;
+        format.nan = value_of("nan", 1) != 0;
+    } else {
+        if (!values.contains("bits")) {
+            error(codes::invalid_dtype, decl.args_span, "an `int` needs its width, `bits`");
+            return;
+        }
+        format.family = DTypeFormat::Family::Int;
+        format.bits = static_cast<std::uint32_t>(value_of("bits", 0));
+        format.is_signed = value_of("signed", 1) != 0;
+        format.inf = false;
+        format.nan = false;
+    }
+    const auto scalar = scalar_of(format);
+    if (!scalar) {
+        error(codes::invalid_dtype, decl.name.span, "no target stores this format")
+            .note("Linnet stores `bool`, `int` of 8, 16, 32 and 64 bits, IEEE floats of 16, 32 "
+                  "and 64 bits, `bf16`, and the FP8 formats E4M3 (`inf: false`) and E5M2");
+        return;
+    }
+    info.aliased = types_.scalar(*scalar);
 }
 
 void Checker::resolve_const(EntityId entity) {
@@ -1189,7 +1296,7 @@ Checker::eval_generic_arg(const ast::GenericArg& arg, const GenericInfo& param, 
     switch (param.kind) {
     case GenericKind::Dim:
         value.kind = GenericValue::Kind::Dim;
-        if (bare_name != nullptr && !scalar_from_name(bare_name->path.front().text)) {
+        if (bare_name != nullptr && !builtin_scalar(bare_name->path.front().text)) {
             const ast::Name& name = bare_name->path.front();
             const EntityId entity = lookup(name);
             if (entity == no_entity) {
@@ -1307,7 +1414,7 @@ TypeId Checker::eval_named_type(const ast::NamedType& named, SourceSpan span) {
     EntityId entity = no_entity;
     const ast::Name& last = named.path.back();
     if (named.path.size() == 1) {
-        if (const auto scalar = scalar_from_name(last.text)) {
+        if (const auto scalar = builtin_scalar(last.text)) {
             if (!named.args.empty()) {
                 error(codes::bad_generic_arguments, span, "scalar types take no arguments");
             }
@@ -1341,6 +1448,11 @@ TypeId Checker::eval_named_type(const ast::NamedType& named, SourceSpan span) {
     switch (target.kind) {
     case EntityKind::GenericDType:
         return types_.scalar(DType::variable(target.dtype_var));
+    case EntityKind::DType:
+        if (!named.args.empty()) {
+            error(codes::bad_generic_arguments, span, "dtypes take no arguments");
+        }
+        return decls_[entity].aliased == no_type ? types_.error() : decls_[entity].aliased;
     case EntityKind::TypeAlias: {
         const DeclInfo& info = decls_[entity];
         const auto substitution = bind_generic_args(info, named.args, span, nullptr);

@@ -381,3 +381,27 @@ code = "E2210"
 file = "invalid/151_cumsum_without_axis.linnet"
 expect = "error"
 code = "E2102"
+
+[[case]]
+file = "valid/034_dtypes.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/152_dtype_arithmetic.linnet"
+expect = "error"
+code = "E2104"
+
+[[case]]
+file = "invalid/153_dtype_format.linnet"
+expect = "error"
+code = "E2128"
+
+[[case]]
+file = "invalid/154_dtype_family.linnet"
+expect = "error"
+code = "E2128"
+
+[[case]]
+file = "invalid/155_dtype_literal.linnet"
+expect = "error"
+code = "E2101"

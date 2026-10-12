@@ -558,6 +558,12 @@ private:
             }
             break;
         default:
+            // `dtype` is a keyword only at the start of an item followed by a
+            // name; elsewhere it is an identifier.
+            if (at(K::Identifier) && text(peek()) == "dtype" && peek(1).kind == K::Identifier) {
+                data = parse_dtype();
+                break;
+            }
             error_expected(in_block ? "a block member" : "an item");
             break;
         }
@@ -586,6 +592,29 @@ private:
         decl.generics = parse_generic_params(decl.generics_span);
         expect(K::Equal);
         decl.type = parse_type();
+        return decl;
+    }
+
+    DTypeDecl parse_dtype() {
+        advance();
+        DTypeDecl decl{expect_identifier("dtype name"), {}, {}};
+        expect(K::Equal);
+        decl.family = expect_identifier("dtype family (`int` or `float`)");
+        const std::uint32_t open = here();
+        if (!expect(K::LParen)) {
+            return decl;
+        }
+        while (!at(K::RParen) && !at(K::Eof)) {
+            DTypeArg arg{expect_identifier("parameter name"), no_id};
+            expect(K::Colon);
+            arg.value = parse_expr();
+            decl.args.push_back(arg);
+            if (!accept(K::Comma)) {
+                break;
+            }
+        }
+        expect(K::RParen);
+        decl.args_span = span_from(open);
         return decl;
     }
 

@@ -15,7 +15,24 @@ u8 u16 u32 u64
 f16 bf16 f32 f64
 ```
 
-Types such as `i4`, `u4`, `f8e4m3`, and `f8e5m2` are reserved for future versions.
+These names are built in. Each is a member of a family:
+
+| Family | Members |
+| --- | --- |
+| `bool` | `bool` |
+| `int(bits: N, signed: B)` | `i8` to `i64` (`signed: true`, the default), `u8` to `u64` |
+| `float(exponent: E, mantissa: M, inf: B, nan: B)` | `f16` (5, 10), `bf16` (8, 7), `f32` (8, 23), `f64` (11, 52); `inf` and `nan` default to `true` |
+
+A `dtype` declaration names a member of a family:
+
+```text
+pub dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)
+dtype word = int(bits: 32)
+```
+
+`dtype` is a keyword only at the start of an item followed by a name. Each parameter is a non-negative integer literal (a width) or `true`/`false` (a flag). A format no target stores is an error (E2128): implementations store the built-in formats and the FP8 formats E4M3 without infinities (`float(exponent: 4, mantissa: 3, inf: false)`) and E5M2 (`float(exponent: 5, mantissa: 2)`). `std.dtypes` declares these two as `f8e4m3` and `f8e5m2`.
+
+A format that is not built in is a storage format: a tensor of it is cast to and from, reshaped, permuted, sliced, concatenated and indexed, but no operator or function computes in it (E2104), no literal has its type, and it belongs only to the class `DType` (§3.4). `cast` rounds to the nearest representable value, ties to even. A value beyond the format's range becomes infinity where the format has one, else NaN.
 
 ## 3.2 Tensor type syntax
 

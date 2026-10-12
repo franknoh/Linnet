@@ -1,0 +1,7 @@
+module m
+
+dtype fp6 = float(exponent: 3, mantissa: 2)
+
+fn widen(x: Tensor[4; fp6]) -> Tensor[4; f32] {
+    return cast<f32>(x)
+}

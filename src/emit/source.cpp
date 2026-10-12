@@ -117,6 +117,14 @@ public:
             }
             body += "\n" + *text;
         }
+        // A storage dtype the body names comes from its declaration in
+        // `std.dtypes`, as the source imports it.
+        for (const auto kind : {ScalarKind::F8E4M3, ScalarKind::F8E5M2}) {
+            const std::string name(sema::scalar_name(kind));
+            if (names_word(body, name) && module_path() != "std.dtypes") {
+                imports_["std.dtypes"].insert(name);
+            }
+        }
         std::string out = "module " + module_path() + "\n" + (imports_.empty() ? "" : "\n");
         for (const auto& [path, names] : imports_) {
             out += "use " + import_path(path) + "::{";
@@ -147,6 +155,23 @@ private:
             return "crate" + path.substr(root.size());
         }
         return path;
+    }
+
+    // Whether `text` has `word` as a whole word.
+    static bool names_word(const std::string& text, const std::string& word) {
+        const auto is_word = [](char c) {
+            return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9');
+        };
+        for (std::size_t at = text.find(word); at != std::string::npos;
+             at = text.find(word, at + 1)) {
+            const std::size_t end = at + word.size();
+            if ((at == 0 || !is_word(text[at - 1])) &&
+                (end == text.size() || !is_word(text[end]))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Records a `use` for a declaration of another module.

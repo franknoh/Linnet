@@ -395,112 +395,119 @@ private:
     void item(ItemId id) {
         const Item& node = ast_.item(id);
         const std::string visibility = node.is_pub ? "pub " : "";
-        std::visit(Overloaded{
-                       [&](const ErrorItem&) { line(visibility + "error"); },
-                       [&](const ConstDecl& decl) {
-                           nested(annotation(visibility + "const " + name(decl.name),
-                                             type(decl.type),
-                                             decl.type),
-                                  [&] { expr(decl.value); });
-                       },
-                       [&](const TypeAliasDecl& decl) {
-                           nested(visibility + "type " + name(decl.name), [&] {
-                               generics(decl.generics);
-                               line("= " + type(decl.type));
-                           });
-                       },
-                       [&](const StructDecl& decl) {
-                           nested(visibility + "struct " + name(decl.name), [&] {
-                               generics(decl.generics);
-                               for (const FieldDecl& field : decl.fields) {
-                                   line("field " + name(field.name) + ": " + type(field.type));
+        std::visit(
+            Overloaded{
+                [&](const ErrorItem&) { line(visibility + "error"); },
+                [&](const ConstDecl& decl) {
+                    nested(annotation(
+                               visibility + "const " + name(decl.name), type(decl.type), decl.type),
+                           [&] { expr(decl.value); });
+                },
+                [&](const TypeAliasDecl& decl) {
+                    nested(visibility + "type " + name(decl.name), [&] {
+                        generics(decl.generics);
+                        line("= " + type(decl.type));
+                    });
+                },
+                [&](const DTypeDecl& decl) {
+                    nested(visibility + "dtype " + name(decl.name) + " = " + name(decl.family),
+                           [&] {
+                               for (const DTypeArg& arg : decl.args) {
+                                   nested(name(arg.name), [&] { expr(arg.value); });
                                }
                            });
-                       },
-                       [&](const EnumDecl& decl) {
-                           nested(visibility + "enum " + name(decl.name), [&] {
-                               generics(decl.generics);
-                               for (const Name& variant : decl.variants) {
-                                   line("variant " + name(variant));
-                               }
-                           });
-                       },
-                       [&](const FunctionDecl& decl) {
-                           const std::string_view keyword = decl.kind == FunctionKind::Fn   ? "fn "
-                                                            : decl.kind == FunctionKind::Op ? "op "
-                                                            : decl.kind == FunctionKind::Kernel
-                                                                ? "kernel "
-                                                                : "entry ";
-                           nested(visibility + std::string(keyword) + name(decl.name), [&] {
-                               generics(decl.generics);
-                               for (const Parameter& param : decl.parameters) {
-                                   const std::string header =
-                                       "param " + name(param.name) + ": " + type(param.type);
-                                   if (param.default_value == no_id) {
-                                       line(header);
-                                   } else {
-                                       nested(header + " =", [&] { expr(param.default_value); });
-                                   }
-                               }
-                               if (decl.return_type != no_id) {
-                                   line("returns " + type(decl.return_type));
-                               }
-                               for (const Parameter& result : decl.results) {
-                                   line("result " + name(result.name) + ": " + type(result.type));
-                               }
-                               if (!decl.grid.empty()) {
-                                   nested("grid", [&] {
-                                       for (const ExprId dim : decl.grid) {
-                                           expr(dim);
-                                       }
-                                   });
-                               }
-                               if (decl.warps != no_id) {
-                                   nested("warps", [&] { expr(decl.warps); });
-                               }
-                               if (decl.stages != no_id) {
-                                   nested("stages", [&] { expr(decl.stages); });
-                               }
-                               if (decl.kernel) {
-                                   line("kernel " + name(decl.kernel->name) +
-                                        (decl.kernel->generic_args.empty()
-                                             ? ""
-                                             : " " + generic_args(decl.kernel->generic_args)));
-                               }
-                               for (const ExprId constraint : decl.constraints) {
-                                   nested("where", [&] { expr(constraint); });
-                               }
-                               body(decl.body);
-                               if (decl.gradient) {
-                                   nested("grad " + name(decl.gradient->result) + ", " +
-                                              name(decl.gradient->grad),
-                                          [&] { body(decl.gradient->body); });
-                               }
-                           });
-                       },
-                       [&](const BlockDecl& decl) {
-                           nested(visibility + "block " + name(decl.name), [&] {
-                               generics(decl.generics);
-                               for (const ExprId constraint : decl.constraints) {
-                                   nested("where", [&] { expr(constraint); });
-                               }
-                               for (const ItemId member : decl.members) {
-                                   item(member);
-                               }
-                           });
-                       },
-                       [&](const MemberDecl& decl) {
-                           const std::string keyword = std::string(member_keyword(decl.kind)) + " ";
-                           const std::string header = visibility + std::string(keyword) +
-                                                      name(decl.name) + ": " + type(decl.type);
-                           if (decl.default_value == no_id) {
-                               line(header);
-                           } else {
-                               nested(header + " =", [&] { expr(decl.default_value); });
-                           }
-                       },
-                   },
-                   node.data);
+                },
+                [&](const StructDecl& decl) {
+                    nested(visibility + "struct " + name(decl.name), [&] {
+                        generics(decl.generics);
+                        for (const FieldDecl& field : decl.fields) {
+                            line("field " + name(field.name) + ": " + type(field.type));
+                        }
+                    });
+                },
+                [&](const EnumDecl& decl) {
+                    nested(visibility + "enum " + name(decl.name), [&] {
+                        generics(decl.generics);
+                        for (const Name& variant : decl.variants) {
+                            line("variant " + name(variant));
+                        }
+                    });
+                },
+                [&](const FunctionDecl& decl) {
+                    const std::string_view keyword = decl.kind == FunctionKind::Fn       ? "fn "
+                                                     : decl.kind == FunctionKind::Op     ? "op "
+                                                     : decl.kind == FunctionKind::Kernel ? "kernel "
+                                                                                         : "entry ";
+                    nested(visibility + std::string(keyword) + name(decl.name), [&] {
+                        generics(decl.generics);
+                        for (const Parameter& param : decl.parameters) {
+                            const std::string header =
+                                "param " + name(param.name) + ": " + type(param.type);
+                            if (param.default_value == no_id) {
+                                line(header);
+                            } else {
+                                nested(header + " =", [&] { expr(param.default_value); });
+                            }
+                        }
+                        if (decl.return_type != no_id) {
+                            line("returns " + type(decl.return_type));
+                        }
+                        for (const Parameter& result : decl.results) {
+                            line("result " + name(result.name) + ": " + type(result.type));
+                        }
+                        if (!decl.grid.empty()) {
+                            nested("grid", [&] {
+                                for (const ExprId dim : decl.grid) {
+                                    expr(dim);
+                                }
+                            });
+                        }
+                        if (decl.warps != no_id) {
+                            nested("warps", [&] { expr(decl.warps); });
+                        }
+                        if (decl.stages != no_id) {
+                            nested("stages", [&] { expr(decl.stages); });
+                        }
+                        if (decl.kernel) {
+                            line("kernel " + name(decl.kernel->name) +
+                                 (decl.kernel->generic_args.empty()
+                                      ? ""
+                                      : " " + generic_args(decl.kernel->generic_args)));
+                        }
+                        for (const ExprId constraint : decl.constraints) {
+                            nested("where", [&] { expr(constraint); });
+                        }
+                        body(decl.body);
+                        if (decl.gradient) {
+                            nested("grad " + name(decl.gradient->result) + ", " +
+                                       name(decl.gradient->grad),
+                                   [&] { body(decl.gradient->body); });
+                        }
+                    });
+                },
+                [&](const BlockDecl& decl) {
+                    nested(visibility + "block " + name(decl.name), [&] {
+                        generics(decl.generics);
+                        for (const ExprId constraint : decl.constraints) {
+                            nested("where", [&] { expr(constraint); });
+                        }
+                        for (const ItemId member : decl.members) {
+                            item(member);
+                        }
+                    });
+                },
+                [&](const MemberDecl& decl) {
+                    const std::string keyword = std::string(member_keyword(decl.kind)) + " ";
+                    const std::string header = visibility + std::string(keyword) + name(decl.name) +
+                                               ": " + type(decl.type);
+                    if (decl.default_value == no_id) {
+                        line(header);
+                    } else {
+                        nested(header + " =", [&] { expr(decl.default_value); });
+                    }
+                },
+            },
+            node.data);
     }
 
     const Ast& ast_;

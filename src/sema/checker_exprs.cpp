@@ -120,6 +120,11 @@ bool Checker::literal_fits(const TypeData& literal, DType dtype, SourceSpan span
     const DTypeClass target = types_.class_of(dtype);
     const bool is_bool = !dtype.is_var && dtype.scalar == ScalarKind::Bool;
     const std::string name = types_.to_string(dtype);
+    if (!dtype.is_var && is_storage(dtype.scalar)) {
+        error(codes::invalid_operand, span, "a literal cannot be `" + name + "`")
+            .note("`" + name + "` is a storage format: `cast` a value to it");
+        return false;
+    }
     if (literal.kind == TypeKind::CompileInt) {
         if (is_bool || (dtype.is_var && target == DTypeClass::Any)) {
             error(codes::invalid_operand, span, "an integer cannot be used as `" + name + "`")
@@ -408,6 +413,14 @@ TypeId Checker::elementwise(
     }
     const bool may_be_bool =
         dtype.is_var ? types_.class_of(dtype) == DTypeClass::Any : dtype.scalar == ScalarKind::Bool;
+    if (!dtype.is_var && is_storage(dtype.scalar)) {
+        error(codes::invalid_operand,
+              span,
+              "`" + types_.to_string(dtype) +
+                  "` is a storage format, which no operator computes in")
+            .help("`cast` its values to a dtype that computes, such as `f32`");
+        return types_.error();
+    }
     if (needs_numeric && may_be_bool) {
         error(codes::invalid_operand,
               span,

@@ -2728,7 +2728,7 @@ bool literal_arguments(const std::string& arguments) {
     static const std::set<std::string, std::less<>> argument_words = [] {
         std::set<std::string, std::less<>> words{"torch", "jnp", "bool_", "None", "dtype"};
         for (auto kind = static_cast<int>(sema::ScalarKind::Bool);
-             kind <= static_cast<int>(sema::ScalarKind::F64);
+             kind <= static_cast<int>(sema::ScalarKind::F8E5M2);
              ++kind) {
             words.emplace(dtype_names(static_cast<sema::ScalarKind>(kind)).numpy);
         }
@@ -3152,7 +3152,7 @@ std::string python_tuple(const Dims& dims) {
 
 const DTypeNames& dtype_names(sema::ScalarKind dtype) {
     // In `ScalarKind` order.
-    static constexpr std::array<DTypeNames, 13> names{{
+    static constexpr std::array<DTypeNames, 15> names{{
         {"i1", "bool", 9, "bool"},
         {"i8", "int8", 3, "int8"},
         {"i16", "int16", 5, "int16"},
@@ -3166,6 +3166,8 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
         {"bf16", "bfloat16", 16, "bfloat16"},
         {"f32", "float", 1, "float32"},
         {"f64", "double", 11, "float64"},
+        {"f8E4M3FN", "float8e4m3fn", 17, "float8_e4m3fn"},
+        {"f8E5M2", "float8e5m2", 19, "float8_e5m2"},
     }};
     return names[static_cast<std::size_t>(dtype)];
 }

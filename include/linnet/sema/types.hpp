@@ -32,9 +32,34 @@ enum class ScalarKind : std::uint8_t {
     F16,
     BF16,
     F32,
-    F64
+    F64,
+    // Storage formats: cast to and from, moved and gathered, but computed
+    // with only after a cast (spec §3.1).
+    F8E4M3, // float(exponent: 4, mantissa: 3, inf: false): FP8 E4M3FN
+    F8E5M2  // float(exponent: 5, mantissa: 2): FP8 E5M2
 };
 
+// What a dtype is, as a `dtype` declaration spells it (spec §3.1): its
+// family, and for an integer its width and sign, for a float its exponent
+// and mantissa widths and whether it has infinities and NaNs.
+struct DTypeFormat {
+    enum class Family : std::uint8_t { Bool, Int, Float };
+    Family family = Family::Bool;
+    std::uint32_t bits = 8;
+    bool is_signed = true;
+    std::uint32_t exponent = 0;
+    std::uint32_t mantissa = 0;
+    bool inf = true;
+    bool nan = true;
+    friend bool operator==(const DTypeFormat&, const DTypeFormat&) = default;
+};
+
+DTypeFormat format_of(ScalarKind kind);
+// The scalar kind with `format`, if the compiler knows one.
+std::optional<ScalarKind> scalar_of(const DTypeFormat& format);
+
+// Every scalar kind's canonical name, as plans, bindings and generated code
+// spell it; and back.
 std::string_view scalar_name(ScalarKind kind);
 
 // The smallest and largest value of an integer dtype, the largest unsigned so
@@ -45,8 +70,14 @@ struct IntegerLimits {
 };
 IntegerLimits integer_limits(ScalarKind kind);
 std::optional<ScalarKind> scalar_from_name(std::string_view name);
+// The names source can use without declaring them: `bool`, `i8` to `i64`,
+// `u8` to `u64`, `f16`, `bf16`, `f32`, `f64`. Others come from `dtype`
+// declarations (`std.dtypes`).
+std::optional<ScalarKind> builtin_scalar(std::string_view name);
+// Floats and integers that compute; a storage format is neither.
 bool is_float(ScalarKind kind);
 bool is_integer(ScalarKind kind);
+bool is_storage(ScalarKind kind);
 
 // The generic constraints that classify element types.
 enum class DTypeClass : std::uint8_t { Any, Numeric, Integer, Float };

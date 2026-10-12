@@ -347,6 +347,18 @@ struct TypeAliasDecl {
     TypeId type;
     SourceSpan generics_span{}; // `<` through `>`; empty when absent
 };
+// `dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)`: a name for
+// an element format of a family, `int` or `float` (spec §3.1).
+struct DTypeArg {
+    Name name;
+    ExprId value;
+};
+struct DTypeDecl {
+    Name name;
+    Name family;
+    std::vector<DTypeArg> args;
+    SourceSpan args_span{}; // `(` through `)`
+};
 struct FieldDecl {
     SourceSpan span;
     Name name;
@@ -436,6 +448,7 @@ struct MemberDecl {
 using ItemData = std::variant<ErrorItem,
                               ConstDecl,
                               TypeAliasDecl,
+                              DTypeDecl,
                               StructDecl,
                               EnumDecl,
                               FunctionDecl,

@@ -418,6 +418,11 @@ struct Server::State {
                                selection = decl.name.span;
                                kind = 26;
                            },
+                           [&](const ast::DTypeDecl& decl) {
+                               name = decl.name.text;
+                               selection = decl.name.span;
+                               kind = 26;
+                           },
                            [&](const ast::StructDecl& decl) {
                                name = decl.name.text;
                                selection = decl.name.span;
