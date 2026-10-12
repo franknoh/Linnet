@@ -3,6 +3,7 @@
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <limits>
 #include <map>
@@ -16,24 +17,27 @@ namespace {
 
 using sema::ScalarKind;
 
-// ONNX casts the 4-bit types from opset 21 and 23; Linnet writes 20.
-void refuse_packed(ScalarKind dtype) {
-    if (sema::is_packed(dtype)) {
-        throw ExportError("ONNX export does not take the 4-bit dtypes (`" +
-                          std::string(sema::scalar_name(dtype)) +
-                          "`) yet: ONNX casts them from opset 21 and 23, and Linnet writes "
-                          "opset 20");
+// A 4-bit tensor as ONNX holds it: its bytes (ONNX has 4-bit types from
+// opset 21 and 23; Linnet writes 20), two elements a byte along the last
+// axis, as a checkpoint stores them.
+Dims stored(const Dims& shape, ScalarKind dtype) {
+    if (!sema::is_packed(dtype) || shape.empty()) {
+        return shape;
     }
+    Dims bytes = shape;
+    bytes.back() /= 2;
+    return bytes;
 }
 
 std::string tensor_type(const Dims& shape, ScalarKind dtype) {
-    refuse_packed(dtype);
-    std::string text(dtype_names(dtype).onnx);
-    if (shape.empty()) {
+    const bool packed = sema::is_packed(dtype);
+    std::string text(packed ? dtype_names(ScalarKind::U8).onnx : dtype_names(dtype).onnx);
+    const Dims bytes = stored(shape, dtype);
+    if (bytes.empty()) {
         return text;
     }
     text += "[";
-    text += join(shape, ",", [&](const auto& item) { return std::to_string(item); });
+    text += join(bytes, ",", [&](const auto& item) { return std::to_string(item); });
     return text + "]";
 }
 
@@ -684,8 +688,13 @@ public:
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
-        refuse_packed(value.dtype);
-        refuse_packed(dtype);
+        if (sema::is_packed(value.dtype)) {
+            const TensorInfo wide = unpack(value);
+            return wide.dtype == dtype ? wide.name : convert(wide, dtype);
+        }
+        if (sema::is_packed(dtype)) {
+            return pack(value, dtype);
+        }
         return node("Cast",
                     {value},
                     "to = " + std::to_string(dtype_names(dtype).onnx_code),
@@ -694,7 +703,8 @@ public:
     }
 
     std::string reshape(const TensorInfo& value, const Dims& shape) override {
-        const TensorInfo target = int64_vector(shape.empty() ? Dims{} : shape);
+        const Dims bytes = stored(shape, value.dtype);
+        const TensorInfo target = int64_vector(bytes.empty() ? Dims{} : bytes);
         return node("Reshape", {value, target}, "", shape, value.dtype);
     }
 
@@ -728,7 +738,8 @@ public:
         if (placed.shape == shape) {
             return placed.name;
         }
-        return node("Expand", {placed, int64_vector(shape)}, "", shape, value.dtype);
+        return node(
+            "Expand", {placed, int64_vector(stored(shape, value.dtype))}, "", shape, value.dtype);
     }
 
     std::string slice(const TensorInfo& value,
@@ -1119,6 +1130,174 @@ private:
             ScalarKind::I64};
         return node("ScatterND", {cache, indices, value}, "", shape, dtype);
     }
+
+    // A 4-bit tensor's elements, widened: `u4` to `u8`, `i4` to `i32`, FP4
+    // E2M1 to `f32` (from a table of its sixteen values).
+    TensorInfo unpack(const TensorInfo& value) {
+        const Dims& shape = value.shape;
+        const Dims bytes = stored(shape, value.dtype);
+        const TensorInfo wide{node("Cast",
+                                   {value},
+                                   "to = " + std::to_string(dtype_names(ScalarKind::I32).onnx_code),
+                                   bytes,
+                                   ScalarKind::I32),
+                              bytes,
+                              ScalarKind::I32};
+        const TensorInfo sixteen = scalar_constant(Literal::of_integer(16), ScalarKind::I32);
+        const TensorInfo high{
+            node("Div", {wide, sixteen}, "", bytes, ScalarKind::I32), bytes, ScalarKind::I32};
+        const TensorInfo shifted{
+            node("Mul", {high, sixteen}, "", bytes, ScalarKind::I32), bytes, ScalarKind::I32};
+        const TensorInfo low{
+            node("Sub", {wide, shifted}, "", bytes, ScalarKind::I32), bytes, ScalarKind::I32};
+        Dims pair = bytes;
+        pair.push_back(1);
+        const TensorInfo first{reshape(low, pair), pair, ScalarKind::I32};
+        const TensorInfo second{reshape(high, pair), pair, ScalarKind::I32};
+        pair.back() = 2;
+        const TensorInfo pairs{concat({first, second}, -1, pair), pair, ScalarKind::I32};
+        const TensorInfo codes{reshape(pairs, shape), shape, ScalarKind::I32};
+        if (value.dtype == ScalarKind::U4) {
+            return {convert(codes, ScalarKind::U8), shape, ScalarKind::U8};
+        }
+        if (value.dtype == ScalarKind::I4) {
+            const TensorInfo eight = scalar_constant(Literal::of_integer(8), ScalarKind::I32);
+            const TensorInfo negative{
+                node("GreaterOrEqual", {codes, eight}, "", shape, ScalarKind::Bool),
+                shape,
+                ScalarKind::Bool};
+            const TensorInfo below{
+                node("Sub", {codes, sixteen}, "", shape, ScalarKind::I32), shape, ScalarKind::I32};
+            return {node("Where", {negative, below, codes}, "", shape, ScalarKind::I32),
+                    shape,
+                    ScalarKind::I32};
+        }
+        std::string values;
+        for (const double magnitude : e2m1_magnitudes) {
+            values += (values.empty() ? "" : ", ") + float_text(magnitude);
+        }
+        for (const double magnitude : e2m1_magnitudes) {
+            values += ", " + float_text(-magnitude);
+        }
+        const TensorInfo table{constant_text(values, {16}, ScalarKind::F32), {16}, ScalarKind::F32};
+        const TensorInfo index = cast_to(codes, ScalarKind::I64);
+        return {node("Gather", {table, index}, "axis = 0", shape, ScalarKind::F32),
+                shape,
+                ScalarKind::F32};
+    }
+
+    // `value` narrowed to 4-bit format `dtype`, as its bytes (spec §3.1):
+    // an integer format wraps, a float rounding toward zero first; FP4 E2M1
+    // rounds to the nearest value, ties to even, saturates at 6 and takes
+    // NaN to zero.
+    std::string pack(const TensorInfo& value, ScalarKind dtype) {
+        const Dims& shape = value.shape;
+        const auto i64 = [](std::int64_t n) { return Literal::of_integer(n); };
+        TensorInfo codes;
+        if (dtype == ScalarKind::F4E2M1) {
+            const TensorInfo x =
+                value.dtype == ScalarKind::F32 ? value : cast_to(value, ScalarKind::F32);
+            const TensorInfo zero = scalar_constant(Literal::of_real(0.0), ScalarKind::F32);
+            const TensorInfo nan{
+                node("IsNaN", {x}, "", shape, ScalarKind::Bool), shape, ScalarKind::Bool};
+            const TensorInfo absolute{
+                node("Abs", {x}, "", shape, ScalarKind::F32), shape, ScalarKind::F32};
+            const TensorInfo magnitude{
+                node("Where", {nan, zero, absolute}, "", shape, ScalarKind::F32),
+                shape,
+                ScalarKind::F32};
+            // The code of a magnitude counts the midpoints below it; at a
+            // midpoint it goes to the even code (mantissa bit 0).
+            codes = scalar_constant(i64(0), ScalarKind::I64);
+            for (std::size_t k = 0; k + 1 < e2m1_magnitudes.size(); ++k) {
+                const double midpoint = (e2m1_magnitudes[k] + e2m1_magnitudes[k + 1]) / 2;
+                const TensorInfo bound =
+                    scalar_constant(Literal::of_real(midpoint), ScalarKind::F32);
+                const bool up_is_even = (k + 1) % 2 == 0;
+                const TensorInfo above{node(up_is_even ? "GreaterOrEqual" : "Greater",
+                                            {magnitude, bound},
+                                            "",
+                                            shape,
+                                            ScalarKind::Bool),
+                                       shape,
+                                       ScalarKind::Bool};
+                codes = {node("Add",
+                              {codes, cast_to(above, ScalarKind::I64)},
+                              "",
+                              shape,
+                              ScalarKind::I64),
+                         shape,
+                         ScalarKind::I64};
+            }
+            // The sign bit: `x < 0`, or `1 / x < 0` for -0.
+            const TensorInfo one = scalar_constant(Literal::of_real(1.0), ScalarKind::F32);
+            const TensorInfo inverse{
+                node("Div", {one, x}, "", shape, ScalarKind::F32), shape, ScalarKind::F32};
+            const TensorInfo below{
+                node("Less", {x, zero}, "", shape, ScalarKind::Bool), shape, ScalarKind::Bool};
+            const TensorInfo negative_zero{
+                node("Less", {inverse, zero}, "", shape, ScalarKind::Bool),
+                shape,
+                ScalarKind::Bool};
+            const TensorInfo sign{node("Or", {below, negative_zero}, "", shape, ScalarKind::Bool),
+                                  shape,
+                                  ScalarKind::Bool};
+            const TensorInfo signed_codes{node("Add",
+                                               {codes, scalar_constant(i64(8), ScalarKind::I64)},
+                                               "",
+                                               shape,
+                                               ScalarKind::I64),
+                                          shape,
+                                          ScalarKind::I64};
+            codes = {node("Where", {sign, signed_codes, codes}, "", shape, ScalarKind::I64),
+                     shape,
+                     ScalarKind::I64};
+        } else {
+            const TensorInfo whole = cast_to(value, ScalarKind::I64);
+            codes = {node("Mod",
+                          {whole, scalar_constant(i64(16), ScalarKind::I64)},
+                          "",
+                          shape,
+                          ScalarKind::I64),
+                     shape,
+                     ScalarKind::I64};
+        }
+        // Element `2k` in the low four bits, `2k + 1` in the high four.
+        Dims pair = stored(shape, dtype);
+        const Dims bytes = pair;
+        pair.push_back(2);
+        const TensorInfo pairs{reshape(codes, pair), pair, ScalarKind::I64};
+        const auto half = [&](std::int64_t j) {
+            Dims starts(pair.size(), 0);
+            Dims limits = pair;
+            const Dims strides(pair.size(), 1);
+            starts.back() = j;
+            limits.back() = j + 1;
+            Dims sliced = bytes;
+            sliced.push_back(1);
+            const TensorInfo part{
+                slice(pairs, starts, limits, strides, sliced), sliced, ScalarKind::I64};
+            return TensorInfo{reshape(part, bytes), bytes, ScalarKind::I64};
+        };
+        const TensorInfo high{node("Mul",
+                                   {half(1), scalar_constant(i64(16), ScalarKind::I64)},
+                                   "",
+                                   bytes,
+                                   ScalarKind::I64),
+                              bytes,
+                              ScalarKind::I64};
+        const TensorInfo both{
+            node("Add", {half(0), high}, "", bytes, ScalarKind::I64), bytes, ScalarKind::I64};
+        return node("Cast",
+                    {both},
+                    "to = " + std::to_string(dtype_names(ScalarKind::U8).onnx_code),
+                    shape,
+                    dtype);
+    }
+
+    // FP4 E2M1's magnitudes by code: two exponent bits biased by 1 and one
+    // mantissa bit.
+    static constexpr std::array<double, 8> e2m1_magnitudes{0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0};
 
     TensorInfo int64_vector(const Dims& values) {
         const Dims shape{static_cast<std::int64_t>(values.size())};
