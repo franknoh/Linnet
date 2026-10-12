@@ -106,7 +106,8 @@ in speed.
 
 Four blocks cover the 8-bit checkpoints in use. Bind `scale` to the
 checkpoint's scale tensor; an `F8_E4M3` tensor binds to a `u8` parameter as
-its bytes.
+its bytes, or as itself to an `f8e4m3` one (`std.dtypes`), which
+`cast<bf16>(w)` decodes.
 
 | Block | Checkpoints | `scale` binds to |
 | --- | --- | --- |

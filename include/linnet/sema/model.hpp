@@ -36,6 +36,7 @@ enum class EntityKind : std::uint8_t {
     Module, // a module imported as a namespace
     Const,
     TypeAlias,
+    DType, // a `dtype` declaration
     Struct,
     Enum,
     Function, // fn, op, entry
@@ -121,7 +122,7 @@ struct DeclInfo {
     std::vector<EntityId> kernel_results;
     EntityId kernel = no_entity;
     std::vector<GenericValue> kernel_args;
-    // Structs, enums, aliases
+    // Structs, enums, aliases; a `dtype` declaration's scalar type
     std::vector<FieldInfo> fields;
     std::vector<std::string_view> variants;
     TypeId aliased = no_type;

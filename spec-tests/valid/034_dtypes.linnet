@@ -1,0 +1,22 @@
+module m
+
+// Names for element formats: two storage formats, and built-in ones again.
+dtype fp8 = float(exponent: 4, mantissa: 3, inf: false)
+pub dtype wide = float(exponent: 5, mantissa: 2)
+dtype word = int(bits: 32)
+dtype byte = int(bits: 8, signed: false)
+
+// A storage format holds values; computing takes a cast.
+pub fn round_trip<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] {
+    let stored = cast<fp8>(x)
+    let moved = reshape(stored, [N])
+    return cast<f32>(moved) * 2.0
+}
+
+pub fn aliases(x: Tensor[3; word], y: Tensor[3; byte]) -> Tensor[3; i32] {
+    return x + cast<i32>(y)
+}
+
+pub fn pick<N: Dim>(x: Tensor[N, 4; wide], at: i64) -> Tensor[4; f32] {
+    return cast<f32>(x[at])
+}

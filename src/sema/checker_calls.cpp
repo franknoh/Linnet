@@ -269,7 +269,7 @@ TypeId Checker::check_call(const ast::Expr& node, const ast::CallExpr& call) {
         if (entity != no_entity) {
             return call_entity(entity, callee.span, {});
         }
-        if (is_prelude_name(name->name.text) && !scalar_from_name(name->name.text)) {
+        if (is_prelude_name(name->name.text) && !builtin_scalar(name->name.text)) {
             facts(self).builtin = std::string(name->name.text);
             return check_builtin_call(node, call, name->name.text);
         }

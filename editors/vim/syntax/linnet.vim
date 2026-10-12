@@ -8,6 +8,8 @@ syn keyword linnetStatement return where yield
 syn match linnetStatement "\(}\s*\)\@<=\<grad\>"
 syn keyword linnetRepeat static for in while
 syn keyword linnetStructure module use const type struct enum fn op kernel block entry param buffer state sub let var
+" `dtype` is a keyword only where an item starts: `pub dtype f8e4m3 = float(...)`
+syn match linnetStructure "\<dtype\>\ze\s\+\h\w*\s*="
 syn keyword linnetModifier pub as
 syn keyword linnetSelf crate self super
 syn keyword linnetBoolean true false

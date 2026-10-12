@@ -103,6 +103,7 @@ private:
     void resolve_struct(EntityId entity);
     void resolve_enum(EntityId entity);
     void resolve_alias(EntityId entity);
+    void resolve_dtype(EntityId entity);
     void resolve_const(EntityId entity);
     Env make_env(EntityId entity);
     void check_function_body(EntityId entity);

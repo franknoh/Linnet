@@ -12,6 +12,7 @@ import_name        = identifier, [ "as", identifier ] ;
 
 item               = [ "pub" ], ( const_decl
                                   | type_alias
+                                  | dtype_decl
                                   | struct_decl
                                   | enum_decl
                                   | fn_decl
@@ -22,6 +23,10 @@ item               = [ "pub" ], ( const_decl
 
 const_decl         = "const", identifier, [ ":", type ], "=", expr ;
 type_alias         = "type", identifier, [ generic_params ], "=", type ;
+(* `dtype` is contextual: a keyword only at an item's start before a name. *)
+dtype_decl         = "dtype", identifier, "=", identifier,
+                     "(", [ dtype_arg, { ",", dtype_arg }, [ "," ] ], ")" ;
+dtype_arg          = identifier, ":", expr ;
 
 struct_decl        = "struct", identifier, [ generic_params ], "{", { field_decl }, "}" ;
 field_decl         = identifier, ":", type ;

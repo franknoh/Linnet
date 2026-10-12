@@ -15,7 +15,7 @@ import numpy as np
 
 from . import ir
 from .compiler import LinnetError
-from .dtypes import BY_SAFETENSORS, DTYPES
+from .dtypes import AS_BITS, BY_SAFETENSORS, DTYPES
 
 if TYPE_CHECKING:
     from jax.typing import ArrayLike as JaxArrayLike
@@ -145,7 +145,7 @@ def tensor_problem(
     if tuple(shape) != tuple(wanted_shape):
         return f"`{source}` has shape {list(shape)}, `{path}` needs {list(wanted_shape)}"
     found = BY_SAFETENSORS.get(code)
-    if found is not None and found.name == wanted:
+    if (found is not None and found.name == wanted) or (code in AS_BITS and wanted == "u8"):
         return None
     needed = DTYPES.get(wanted)
     if (

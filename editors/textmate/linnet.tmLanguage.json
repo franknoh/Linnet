@@ -138,6 +138,15 @@
                     }
                 },
                 {
+                    "comment": "`dtype` is a keyword only where an item starts: `pub dtype f8e4m3 = float(...)`",
+                    "match": "\\b(dtype)\\b(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\s*=)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.linnet"
+                        }
+                    }
+                },
+                {
                     "name": "storage.type.linnet",
                     "match": "\\b(?:module|use|const|type|struct|enum|fn|op|kernel|block|entry|param|buffer|state|sub|let|var)\\b"
                 },

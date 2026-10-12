@@ -1,0 +1,10 @@
+// Element formats beyond the built-in ones. Each is a storage format: a
+// tensor of one is cast to and from, moved, sliced and gathered, and cast
+// to a computing dtype (`bf16`, `f32`) to compute with (spec §3.1).
+module std.dtypes
+
+// FP8 E4M3 with no infinities and one NaN (`float8_e4m3fn`): range ±448.
+pub dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)
+
+// FP8 E5M2, IEEE-like with infinities and NaNs: range ±57344.
+pub dtype f8e5m2 = float(exponent: 5, mantissa: 2)

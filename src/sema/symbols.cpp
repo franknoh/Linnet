@@ -89,6 +89,8 @@ std::string Checker::describe(EntityId id) {
         return "const " + name + ": " + type_text(entity.type);
     case EntityKind::TypeAlias:
         return "type " + name + generics_text(decls_[id]) + " = " + type_text(decls_[id].aliased);
+    case EntityKind::DType:
+        return "dtype " + name + " = " + type_text(decls_[id].aliased);
     case EntityKind::Struct:
         return "struct " + name + generics_text(decls_[id]);
     case EntityKind::Enum:
@@ -154,6 +156,7 @@ void Checker::collect_symbols() {
             symbol.kind = SymbolKind::Const;
             break;
         case EntityKind::TypeAlias:
+        case EntityKind::DType:
             symbol.kind = SymbolKind::TypeAlias;
             break;
         case EntityKind::Struct:

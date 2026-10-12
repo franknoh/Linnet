@@ -9,8 +9,43 @@ namespace linnet::sema {
 
 namespace {
 
-constexpr auto scalar_names = std::to_array<std::string_view>(
-    {"bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "bf16", "f32", "f64"});
+constexpr auto scalar_names = std::to_array<std::string_view>({"bool",
+                                                               "i8",
+                                                               "i16",
+                                                               "i32",
+                                                               "i64",
+                                                               "u8",
+                                                               "u16",
+                                                               "u32",
+                                                               "u64",
+                                                               "f16",
+                                                               "bf16",
+                                                               "f32",
+                                                               "f64",
+                                                               "f8e4m3",
+                                                               "f8e5m2"});
+
+using Family = DTypeFormat::Family;
+
+// In `ScalarKind` order.
+constexpr auto formats = std::to_array<DTypeFormat>({
+    {Family::Bool, 8, false, 0, 0, false, false},
+    {Family::Int, 8, true, 0, 0, false, false},
+    {Family::Int, 16, true, 0, 0, false, false},
+    {Family::Int, 32, true, 0, 0, false, false},
+    {Family::Int, 64, true, 0, 0, false, false},
+    {Family::Int, 8, false, 0, 0, false, false},
+    {Family::Int, 16, false, 0, 0, false, false},
+    {Family::Int, 32, false, 0, 0, false, false},
+    {Family::Int, 64, false, 0, 0, false, false},
+    {Family::Float, 16, true, 5, 10, true, true},
+    {Family::Float, 16, true, 8, 7, true, true},
+    {Family::Float, 32, true, 8, 23, true, true},
+    {Family::Float, 64, true, 11, 52, true, true},
+    {Family::Float, 8, true, 4, 3, false, true},
+    {Family::Float, 8, true, 5, 2, true, true},
+});
+static_assert(formats.size() == scalar_names.size());
 
 // In `DTypeClass` order.
 constexpr auto class_names =
@@ -79,8 +114,30 @@ std::optional<ScalarKind> scalar_from_name(std::string_view name) {
     return std::nullopt;
 }
 
+std::optional<ScalarKind> builtin_scalar(std::string_view name) {
+    const auto found = scalar_from_name(name);
+    return found && !is_storage(*found) ? found : std::nullopt;
+}
+
+DTypeFormat format_of(ScalarKind kind) {
+    return formats[static_cast<std::size_t>(kind)];
+}
+
+std::optional<ScalarKind> scalar_of(const DTypeFormat& format) {
+    for (std::size_t i = 0; i < formats.size(); ++i) {
+        if (formats[i] == format) {
+            return static_cast<ScalarKind>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+bool is_storage(ScalarKind kind) {
+    return kind == ScalarKind::F8E4M3 || kind == ScalarKind::F8E5M2;
+}
+
 bool is_float(ScalarKind kind) {
-    return kind >= ScalarKind::F16;
+    return kind >= ScalarKind::F16 && kind <= ScalarKind::F64;
 }
 
 bool is_integer(ScalarKind kind) {
@@ -92,7 +149,7 @@ bool class_contains(DTypeClass outer, ScalarKind kind) {
     case DTypeClass::Any:
         return true;
     case DTypeClass::Numeric:
-        return kind != ScalarKind::Bool;
+        return kind != ScalarKind::Bool && !is_storage(kind);
     case DTypeClass::Integer:
         return is_integer(kind);
     case DTypeClass::Float:

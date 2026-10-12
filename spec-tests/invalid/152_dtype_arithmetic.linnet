@@ -1,0 +1,7 @@
+module m
+
+dtype fp8 = float(exponent: 4, mantissa: 3, inf: false)
+
+fn sum_bits(x: Tensor[4; fp8]) -> Tensor[4; fp8] {
+    return x + x
+}
