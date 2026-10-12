@@ -505,7 +505,7 @@ std::optional<std::vector<std::string>> RecordingTarget::launch_kernel(const Ker
         dtypes.push_back(dtype_attr(each.dtype));
         names.push_back(each.name);
     }
-    node.attrs = {{"op", launch.op},
+    node.attrs = {{"callee", launch.op},
                   {"name", launch.name},
                   {"program", launch.program},
                   {"grid", launch.grid},
@@ -672,7 +672,7 @@ std::string RecordingTarget::finish(const std::vector<TensorInfo>& results_info,
     node.attrs = {{"module", module_path},
                   {"block", block_name},
                   {"entry", entry_name},
-                  {"results", static_cast<std::int64_t>(results_info.size())},
+                  {"returns", static_cast<std::int64_t>(results_info.size())},
                   {"states", paths}};
     return inner_.finish(results_info, states, module_path, block_name, entry_name);
 }
@@ -967,7 +967,7 @@ private:
         } else if (op == "end_counted") {
             bind(node, target_.end_counted(infos(node)));
         } else if (op == "finish") {
-            const auto count = static_cast<std::size_t>(integer(node, "results"));
+            const auto count = static_cast<std::size_t>(integer(node, "returns"));
             const auto& paths = attr<std::vector<std::string>>(node, "states");
             std::vector<std::pair<std::string, TensorInfo>> states;
             states.reserve(paths.size());
@@ -996,7 +996,7 @@ private:
 
     void replay_launch(const RecordedNode& node) {
         KernelLaunch launch;
-        launch.op = text(node, "op");
+        launch.op = text(node, "callee");
         launch.name = text(node, "name");
         launch.program = attr<KernelProgram>(node, "program");
         launch.grid = dims(node, "grid");

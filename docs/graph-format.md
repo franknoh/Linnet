@@ -65,8 +65,8 @@ A call of a function, op or block method is
 | `begin_while`, `while_condition`, `end_while` | a runtime loop; `while_initial_condition`, `while_trailing_condition` where the target checks there |
 | `begin_counted`, `end_counted` | a loop of known length: `start`, `stop` |
 | `begin_custom_gradient`, `end_custom_gradient` | an op with a `grad`; `arguments` counts its tensor arguments |
-| `launch_kernel` | `op`, `name`, `program`, `grid`, `result_shapes`, `result_dtypes`, `warps`, `stages` |
-| `finish` | `module`, `block`, `entry`; `results` counts the entry's results, `states` names the rest |
+| `launch_kernel` | `callee` (the op), `name`, `program`, `grid`, `result_shapes`, `result_dtypes`, `warps`, `stages` |
+| `finish` | `module`, `block`, `entry`; `returns` counts the entry's results, `states` names the rest |
 
 `"declined": true` marks a call the target declined (`contract`,
 `native_call`, `update_row`, `scatter_add`, `launch_kernel`); the exporter's
