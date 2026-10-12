@@ -18,9 +18,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..compiler import bind_arguments, run_compiler, std_arguments
-from ..dtypes import AS_BITS, BY_ONNX, BY_SAFETENSORS, DTYPES
+from ..dtypes import BY_ONNX, BY_SAFETENSORS
 from ..weights import (
     RawTensor,
+    as_bits,
     check_problems,
     decode_floats,
     encode_floats,
@@ -280,7 +281,8 @@ def _take(
     info = declared[input_name].type.tensor_type
     data = tensor.data
     stored = BY_SAFETENSORS.get(tensor.dtype)
-    bits = tensor.dtype in AS_BITS and info.elem_type == DTYPES["u8"].onnx
+    wanted = BY_ONNX.get(info.elem_type)
+    bits = wanted is not None and as_bits(tensor.dtype, wanted.name)
     if not bits and (stored is None or stored.onnx != info.elem_type):
         data = encode_floats(decode_floats(tensor.dtype, data), BY_ONNX[info.elem_type].safetensors)
     initializer = onnx.TensorProto()

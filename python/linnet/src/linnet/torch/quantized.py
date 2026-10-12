@@ -111,10 +111,10 @@ def _finish(x: torch.Tensor, y: torch.Tensor, bias: torch.Tensor | None) -> torc
 
 
 def fp8_operands(weight: torch.Tensor, scale: torch.Tensor, rounded: int) -> Fp8Operands:
-    """`weight` [Out, In] FP8 E4M3 bytes (`u8`), `scale` [Out]: the bytes,
-    the same read as FP8 and transposed (`torch._scaled_mm`'s operand), the
-    scales as f32 [1, Out]."""
-    weight = weight.contiguous()
+    """`weight` [Out, In] FP8 E4M3 (or its bytes, `u8`), `scale` [Out]: the
+    bytes, which Linnet's kernels read, the same read as FP8 and transposed
+    (`torch._scaled_mm`'s operand), the scales as f32 [1, Out]."""
+    weight = weight.contiguous().view(torch.uint8)
     transposed = weight.view(torch.float8_e4m3fn).t()
     row = scale.float().reshape(1, -1).contiguous()
     return weight, transposed, row, rounded, _fp8_kernels(weight)
@@ -136,9 +136,9 @@ def fp8_linear(x: torch.Tensor, operands: Fp8Operands, bias: torch.Tensor | None
 
 
 def fp8_block_operands(weight: torch.Tensor, scale: torch.Tensor, rounded: int) -> Fp8BlockOperands:
-    """`weight` [Out, In] FP8 E4M3 bytes, `scale` [Out / B, In / B]: the
-    bytes, the same as FP8 transposed, the scales as f32, and B."""
-    weight = weight.contiguous()
+    """`weight` [Out, In] FP8 E4M3 (or its bytes), `scale` [Out / B, In / B]:
+    the bytes, the same as FP8 transposed, the scales as f32, and B."""
+    weight = weight.contiguous().view(torch.uint8)
     transposed = weight.view(torch.float8_e4m3fn).t()
     block = weight.shape[0] // scale.shape[0]
     fast = _fp8_kernels(weight) if weight.shape[1] == block * scale.shape[1] else 0

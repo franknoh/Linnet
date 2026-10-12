@@ -1,5 +1,6 @@
 module std.quant
 
+use std.dtypes::{f8e4m3}
 use std.nn.linear::{linear}
 use std.nn.moe::{combine_experts, linear_experts, linear_experts_shared}
 
@@ -193,13 +194,14 @@ where
     }
 }
 
-// FP8 E4M3 (`float8_e4m3fn`), one byte a value: a sign bit, four exponent
-// bits biased by 7, and three mantissa bits, with no infinities. A
-// checkpoint's `F8_E4M3` tensor binds to a `u8` parameter as its bytes. A
-// normal value is `(8 + m) * 2 ** (e - 10)` and a subnormal one (`e == 0`)
-// `m * 2 ** -9`; the powers of two come from integer shifts, so every value
-// is exact in `f32`. The one NaN byte pattern (`e == 15`, `m == 7`) reads as
-// 480; checkpoints never hold it.
+// FP8 E4M3 (`float8_e4m3fn`, `std.dtypes::f8e4m3`), one byte a value: a
+// sign bit, four exponent bits biased by 7, and three mantissa bits, with no
+// infinities. The layers below take `f8e4m3` weights and cast them. A
+// checkpoint's `F8_E4M3` tensor also binds to a `u8` parameter as its bytes,
+// which `decode_fp8` decodes: a normal value is `(8 + m) * 2 ** (e - 10)`
+// and a subnormal one (`e == 0`) `m * 2 ** -9`; the powers of two come from
+// integer shifts, so every value is exact in `f32`. The one NaN byte pattern
+// (`e == 15`, `m == 7`) reads as 480; checkpoints never hold it.
 pub op decode_fp8<*S: Shape>(bits: Tensor[*S; u8]) -> Tensor[*S; f32] {
     let wide = cast<i32>(bits)
     let exponent = shr(wide, 3) & 15
@@ -210,12 +212,12 @@ pub op decode_fp8<*S: Shape>(bits: Tensor[*S; u8]) -> Tensor[*S; f32] {
     return select((wide & 128) == 0, value, -value)
 }
 
-// Per-row FP8 E4M3: `weight[o, i] = decode_fp8(q[o, i]) * scale[o]`.
+// Per-row FP8 E4M3: `weight[o, i] = q[o, i] * scale[o]`.
 pub op dequantize_fp8<*S: Shape, N: Dim, T: Float>(
-    q: Tensor[*S, N; u8],
+    q: Tensor[*S, N; f8e4m3],
     scale: Tensor[*S; f32],
 ) -> Tensor[*S, N; T] {
-    let decoded = decode_fp8(q)
+    let decoded = cast<f32>(q)
     let scaled[*s, n] = decoded[*s, n] * scale[*s]
     return cast<T>(scaled)
 }
@@ -228,7 +230,7 @@ pub op dequantize_fp8<*S: Shape, N: Dim, T: Float>(
 // the two in FP8.
 pub op linear_fp8<*S: Shape, In: Dim, Out: Dim, T: Float>(
     x: Tensor[*S, In; T],
-    weight: Tensor[Out, In; u8],
+    weight: Tensor[Out, In; f8e4m3],
     scale: Tensor[Out; T],
     bias: Tensor[Out; T]?,
 ) -> Tensor[*S, Out; T] {
@@ -239,7 +241,7 @@ pub op linear_fp8<*S: Shape, In: Dim, Out: Dim, T: Float>(
 // as `compressed-tensors` checkpoints store it (`weight`, and `weight_scale`
 // of shape `[Out, 1]` in the model's dtype).
 pub block Fp8Linear<In: Dim, Out: Dim, T: Float = bf16> {
-    param weight: Tensor[Out, In; u8]
+    param weight: Tensor[Out, In; f8e4m3]
     param scale: Tensor[Out, 1; T]
     param bias: Tensor[Out; T]? = none
 
@@ -249,12 +251,12 @@ pub block Fp8Linear<In: Dim, Out: Dim, T: Float = bf16> {
 }
 
 // FP8 E4M3 in square blocks of `Block` rows by `Block` inputs, one scale a
-// block: `weight[o, i] = decode_fp8(q[o, i]) * scale[o / Block, i / Block]`.
+// block: `weight[o, i] = q[o, i] * scale[o / Block, i / Block]`.
 pub op dequantize_fp8_blocks<RowBlocks: Dim, ColBlocks: Dim, Block: Dim, T: Float>(
-    q: Tensor[RowBlocks * Block, ColBlocks * Block; u8],
+    q: Tensor[RowBlocks * Block, ColBlocks * Block; f8e4m3],
     scale: Tensor[RowBlocks, ColBlocks; T],
 ) -> Tensor[RowBlocks * Block, ColBlocks * Block; T] {
-    let decoded = reshape(decode_fp8(q), [RowBlocks, Block, ColBlocks, Block])
+    let decoded = reshape(cast<f32>(q), [RowBlocks, Block, ColBlocks, Block])
     let scaled[r, i, c, j] = decoded[r, i, c, j] * cast<f32>(scale[r, c])
     return cast<T>(reshape(scaled, [RowBlocks * Block, ColBlocks * Block]))
 }
@@ -266,7 +268,7 @@ pub op dequantize_fp8_blocks<RowBlocks: Dim, ColBlocks: Dim, Block: Dim, T: Floa
 // to FP8 with a scale of their own, and multiplies the two in FP8.
 pub op linear_fp8_blocks<Block: Dim, *S: Shape, RowBlocks: Dim, ColBlocks: Dim, T: Float>(
     x: Tensor[*S, ColBlocks * Block; T],
-    weight: Tensor[RowBlocks * Block, ColBlocks * Block; u8],
+    weight: Tensor[RowBlocks * Block, ColBlocks * Block; f8e4m3],
     scale: Tensor[RowBlocks, ColBlocks; T],
     bias: Tensor[RowBlocks * Block; T]?,
 ) -> Tensor[*S, RowBlocks * Block; T] {
@@ -284,7 +286,7 @@ where
     In % Block == 0,
     Out % Block == 0
 {
-    param weight: Tensor[Out, In; u8]
+    param weight: Tensor[Out, In; f8e4m3]
     param scale: Tensor[Out / Block, In / Block; T]
     param bias: Tensor[Out; T]? = none
 
