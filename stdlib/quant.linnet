@@ -1,13 +1,14 @@
 module std.quant
 
-use std.dtypes::{f8e4m3}
+use std.dtypes::{f4e2m1, f8e4m3, i4, u4}
 use std.nn.linear::{linear}
 use std.nn.moe::{combine_experts, linear_experts, linear_experts_shared}
 
-// Weight quantization as ordinary source: a quantized parameter is an
-// integer tensor plus its scales, and dequantization is arithmetic the
-// checker sees like any other. Nothing here asks a backend for a special
-// kernel; a backend that has one may select it as a candidate.
+// Weight quantization as ordinary source: a quantized parameter is a tensor
+// of a narrow format (`i8`, or one of `std.dtypes`) plus its scales, and
+// dequantization is a cast and arithmetic the checker sees like any other.
+// Nothing here asks a backend for a special kernel; a backend that has one
+// may select it as a candidate.
 
 // Symmetric per-row int8: `weight[o, i] = q[o, i] * scale[o]`.
 pub op dequantize_int8<*S: Shape, N: Dim, T: Float>(
@@ -18,32 +19,13 @@ pub op dequantize_int8<*S: Shape, N: Dim, T: Float>(
     return cast<T>(scaled)
 }
 
-// Two 4-bit values per byte of a `[Rows, Half]` matrix: the low nibble is
-// element `2k` of the row, the high nibble element `2k + 1`, both in
-// `0..15`.
-pub op unpack_uint4<R: Dim, H: Dim, I: Integer>(packed: Tensor[R, H; I]) -> Tensor[R, 2 * H; u8] {
-    let wide = cast<i32>(packed)
-    let pairs = concat(
-        reshape(wide & 15, [R, H, 1]),
-        reshape(shr(wide, 4) & 15, [R, H, 1]),
-        axis = -1,
-    )
-    return cast<u8>(reshape(pairs, [R, 2 * H]))
-}
-
-// `unpack_uint4` with each value signed, in `-8..7`.
-pub op unpack_int4<R: Dim, H: Dim>(packed: Tensor[R, H; i8]) -> Tensor[R, 2 * H; i8] {
-    let nibbles = cast<i32>(unpack_uint4(packed))
-    return cast<i8>(select(nibbles >= 8, nibbles - 16, nibbles))
-}
-
-// Symmetric per-row int4 packed two per byte: `Half` bytes hold `2 * Half`
-// weights of each row.
-pub op dequantize_int4<R: Dim, H: Dim, T: Float>(
-    packed: Tensor[R, H; i8],
+// Symmetric per-row int4 (`std.dtypes::i4`, two values a byte):
+// `weight[r, n] = q[r, n] * scale[r]`.
+pub op dequantize_int4<R: Dim, N: Dim, T: Float>(
+    q: Tensor[R, N; i4],
     scale: Tensor[R; f32],
-) -> Tensor[R, 2 * H; T] {
-    return dequantize_int8<[R], 2 * H, T>(unpack_int4(packed), scale)
+) -> Tensor[R, N; T] {
+    return dequantize_int8<[R], N, T>(cast<i8>(q), scale)
 }
 
 // A linear layer over per-row int8 weights. Its body dequantizes the weight
@@ -114,49 +96,47 @@ where
     }
 }
 
-// A linear layer whose weight is stored as per-row int4, two per byte, with
-// one scale a row as the 8-bit layers store theirs (`[Out, 1]` in `T`).
+// A linear layer whose weight is stored as per-row int4, with one scale a
+// row as the 8-bit layers store theirs (`[Out, 1]` in `T`).
 pub block Int4Linear<In: Dim, Out: Dim, T: Float = bf16>
 where In % 2 == 0 {
-    param weight: Tensor[Out, In / 2; i8]
+    param weight: Tensor[Out, In; i4]
     param scale: Tensor[Out, 1; T]
     param bias: Tensor[Out; T]? = none
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
         let rows = cast<f32>(reshape(scale, [Out]))
-        return linear(x, dequantize_int4<Out, In / 2, T>(weight, rows), bias)
+        return linear(x, dequantize_int4<Out, In, T>(weight, rows), bias)
     }
 }
 
-// Asymmetric 4-bit weights in groups of `2 * Half` consecutive inputs,
-// stored as `[Out, Groups, Half]` bytes: each byte holds two weights of its
-// group, the low nibble first, in `0..15`, and
+// Asymmetric 4-bit weights (`std.dtypes::u4`, in `0..15`) in groups of
+// `Group` consecutive inputs, stored `[Out, Groups, Group]`:
 // `weight[o, i] = (q[o, i] - zero[o, g]) * scale[o, g]` with `g` the group of
-// input `i`. ONNX Runtime's `MatMulNBits` reads this layout as it is;
-// GPTQ- and AWQ-style checkpoints repack into it.
-pub op dequantize_int4_groups<Out: Dim, Groups: Dim, Half: Dim, T: Float>(
-    packed: Tensor[Out, Groups, Half; u8],
+// input `i`. Its bytes are ONNX Runtime's `MatMulNBits` layout; GPTQ- and
+// AWQ-style checkpoints repack into it.
+pub op dequantize_int4_groups<Out: Dim, Groups: Dim, Group: Dim, T: Float>(
+    q: Tensor[Out, Groups, Group; u4],
     scale: Tensor[Out, Groups; T],
     zero: Tensor[Out, Groups; u8],
-) -> Tensor[Out, Groups * (2 * Half); T] {
-    let nibbles = unpack_uint4(reshape(packed, [Out * Groups, Half]))
-    let q = reshape(cast<f32>(nibbles), [Out, Groups, 2 * Half])
-    let weight[o, g, j] = (q[o, g, j] - cast<f32>(zero[o, g])) * cast<f32>(scale[o, g])
-    return cast<T>(reshape(weight, [Out, Groups * (2 * Half)]))
+) -> Tensor[Out, Groups * Group; T] {
+    let wide = cast<f32>(q)
+    let weight[o, g, j] = (wide[o, g, j] - cast<f32>(zero[o, g])) * cast<f32>(scale[o, g])
+    return cast<T>(reshape(weight, [Out, Groups * Group]))
 }
 
 // A linear layer over group-wise 4-bit weights. Its body dequantizes and
 // multiplies; a backend with a fused 4-bit matrix product (PyTorch's on
 // CUDA, ONNX Runtime's `MatMulNBits`) runs that instead, reading the packed
 // weights as they are.
-pub op linear_int4_groups<*S: Shape, Out: Dim, Groups: Dim, Half: Dim, T: Float>(
-    x: Tensor[*S, Groups * (2 * Half); T],
-    packed: Tensor[Out, Groups, Half; u8],
+pub op linear_int4_groups<*S: Shape, Out: Dim, Groups: Dim, Group: Dim, T: Float>(
+    x: Tensor[*S, Groups * Group; T],
+    q: Tensor[Out, Groups, Group; u4],
     scale: Tensor[Out, Groups; T],
     zero: Tensor[Out, Groups; u8],
     bias: Tensor[Out; T]?,
 ) -> Tensor[*S, Out; T] {
-    return linear(x, dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero), bias)
+    return linear(x, dequantize_int4_groups<Out, Groups, Group, T>(q, scale, zero), bias)
 }
 
 // `x`'s last axis in `order`: element `k` of the result is input `order[k]`.
@@ -179,7 +159,7 @@ where
     Group % 2 == 0,
     In % Group == 0
 {
-    param weight: Tensor[Out, In / Group, Group / 2; u8]
+    param weight: Tensor[Out, In / Group, Group; u4]
     param scale: Tensor[Out, In / Group; T]
     param zero: Tensor[Out, In / Group; u8]
     param order: Tensor[In; i32]? = none
@@ -296,21 +276,12 @@ where
 }
 
 // MXFP4, the format OpenAI's gpt-oss checkpoints publish their expert
-// weights in. A row of `N` weights is cut into blocks of 32. Each block is 16
-// bytes, two four-bit values per byte, plus one byte of scale: `4 + 8/32 =
-// 4.25` bits per weight. The checkpoint stores the two parts as separate
-// tensors, `..._blocks` of shape `[Experts, Rows, N / 32, 16]` and
-// `..._scales` of shape `[Experts, Rows, N / 32]`, both `u8`; the arithmetic
-// below is what turns them into weights.
-//
-// One `u8` block byte holds two FP4 (E2M1) values: the low nibble is element
-// `2k` of the block, the high nibble element `2k + 1`. A nibble is a sign
-// bit, two exponent bits, and one mantissa bit, which spells out sixteen
-// values: `0, 0.5, 1, 1.5, 2, 3, 4, 6` and their negatives. The reference
-// implementation reads them from a lookup table; the language has no tensor
-// data in source, so they are computed instead. Twice each value is an
-// integer in `0..12`, so `doubled` stays in one byte and the only float
-// arithmetic is the final scaling.
+// weights in. A row of `N` weights is cut into blocks of 32 FP4 E2M1 values
+// (`std.dtypes::f4e2m1`, two a byte: 16 bytes a block), plus one byte of
+// scale: `4 + 8/32 = 4.25` bits per weight. The checkpoint stores the two
+// parts as separate tensors, `..._blocks` of bytes `[Experts, Rows, N / 32,
+// 16]` (here `[Experts, Rows, N / 32, 32; f4e2m1]`) and `..._scales` of
+// shape `[Experts, Rows, N / 32]`, `u8`.
 //
 // One `u8` scale byte per block is an E8M0 exponent, biased by 127: the
 // block's weights are its FP4 values times `2 ** (scale - 127)`. That power
@@ -326,32 +297,17 @@ where
 // reference transposes the last two axes to suit its own parameter;
 // `mxfp4_experts` and the ops after it read this layout as it stands.
 pub op dequantize_mxfp4<Experts: Dim, Rows: Dim, G: Dim, T: Float>(
-    blocks: Tensor[Experts, Rows, G, 16; u8],
+    blocks: Tensor[Experts, Rows, G, 32; f4e2m1],
     scales: Tensor[Experts, Rows, G; u8],
 ) -> Tensor[Experts, Rows, G * 32; T] {
-    let low = blocks & 15
-    let high = shr(blocks, 4) & 15
-    let interleaved = concat(
-        reshape(low, [Experts, Rows, G, 16, 1]),
-        reshape(high, [Experts, Rows, G, 16, 1]),
-        axis = -1,
-    )
-    let nibbles = reshape(interleaved, [Experts, Rows, G, 32])
-    let exponent = shr(nibbles, 1) & 3
-    let mantissa = nibbles & 1
-    let doubled = select(
-        exponent == 0,
-        mantissa,
-        shl(1, exponent) + shl(mantissa, max(exponent - 1, 0)),
-    )
-    let signed = select((nibbles & 8) == 0, cast<i8>(doubled), -cast<i8>(doubled))
+    let values = cast<f32>(blocks)
     let biased = cast<i32>(scales) - 127
     let up = cast<f32>(shl(cast<i64>(1), cast<i64>(min(max(biased, 0), 62))))
     let down = cast<f32>(shl(cast<i64>(1), cast<i64>(min(max(-biased, 0), 62))))
-    // The 0.5 undoes the doubling `doubled` carries; both factors are powers
-    // of two, so `T` holds the product exactly for every FP4 value.
-    let factor = cast<T>(up / down * 0.5)
-    let value[e, r, g, b] = cast<T>(signed[e, r, g, b]) * factor[e, r, g]
+    // Both factors are powers of two, so `f32` holds the product exactly and
+    // `T` holds every FP4 value scaled by it.
+    let factor = up / down
+    let value[e, r, g, b] = cast<T>(values[e, r, g, b] * factor[e, r, g])
     return reshape(value, [Experts, Rows, G * 32])
 }
 
@@ -364,7 +320,7 @@ pub op dequantize_mxfp4<Experts: Dim, Rows: Dim, G: Dim, T: Float>(
 // bytes of 16-bit weights, and unpacks them in registers.
 pub op mxfp4_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
     x: Tensor[R, K, G * 32; T],
-    blocks: Tensor[E, Out, G, 16; u8],
+    blocks: Tensor[E, Out, G, 32; f4e2m1],
     scales: Tensor[E, Out, G; u8],
     experts: Tensor[R, K; i64],
 ) -> Tensor[R, K, Out; T] {
@@ -379,7 +335,7 @@ pub op mxfp4_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
 // chosen experts.
 pub op mxfp4_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
     x: Tensor[R, 1, G * 32; T],
-    blocks: Tensor[E, Out, G, 16; u8],
+    blocks: Tensor[E, Out, G, 32; f4e2m1],
     scales: Tensor[E, Out, G; u8],
     experts: Tensor[R, K; i64],
 ) -> Tensor[R, K, Out; T] {
@@ -398,7 +354,7 @@ pub op mxfp4_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
 // chose it, unpacking its four-bit blocks in registers.
 pub op mxfp4_linear_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
     x: Tensor[R, G * 32; T],
-    blocks: Tensor[E, Out, G, 16; u8],
+    blocks: Tensor[E, Out, G, 32; f4e2m1],
     scales: Tensor[E, Out, G; u8],
     experts: Tensor[R, K; i64],
 ) -> Tensor[R, K, Out; T] {
@@ -411,7 +367,7 @@ pub op mxfp4_linear_experts_shared<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: 
 // as `mxfp4_linear_experts_shared` is to `linear_experts_shared`.
 pub op mxfp4_combine_experts<R: Dim, K: Dim, E: Dim, Out: Dim, G: Dim, T: Float>(
     x: Tensor[R, K, G * 32; T],
-    blocks: Tensor[E, Out, G, 16; u8],
+    blocks: Tensor[E, Out, G, 32; f4e2m1],
     scales: Tensor[E, Out, G; u8],
     experts: Tensor[R, K; i64],
     weights: Tensor[R, K; T],
