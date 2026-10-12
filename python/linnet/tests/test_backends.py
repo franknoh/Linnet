@@ -378,7 +378,8 @@ class _TimedCall(_Executable):
 
 class _Timed(_Backend):
     """Takes every call of `callee` and runs each in `seconds`, keeping
-    `holds` bytes; without a callee, runs any region in `seconds` a step."""
+    `holds` bytes; without a callee, runs any region in `seconds` a step
+    and `overhead` more (what a region it is cut into costs it)."""
 
     def __init__(
         self,
@@ -387,14 +388,18 @@ class _Timed(_Backend):
         callee: str | None = None,
         seconds: float = 1.0,
         holds: int = 0,
+        overhead: float = 0.0,
     ) -> None:
         super().__init__(name, callee)
         self._clock = clock
         self._each = seconds
         self._holds = holds
+        self._overhead = overhead
 
     def compile(self, region: Region, target: Target, options: Options) -> _TimedCall:
         seconds = self._each if self._callee else self._each * len(region.indices)
+        if not self._callee:
+            seconds += self._overhead
         return _TimedCall(region, self._clock, seconds, self._holds)
 
 
@@ -429,12 +434,12 @@ def test_each_kind_of_region_is_timed_once_and_kept(tmp_path: Path) -> None:
     Planner([fast], fallback, cost_model=_measured(clock, Benchmarks(kept))).plan(
         graph, Target("cpu")
     )
-    # Fifteen calls, five kinds whatever the layer: q and o, k and v, gate
-    # and up, down, the head. Each timed on `fast` and on the fallback.
-    assert clock.calls == 2 * 5
-    clock.calls = 0
+    # Each key timed once and kept: the five kinds of linear call (q and o,
+    # k and v, gate and up, down, the head) on `fast` and on the fallback,
+    # and the stretches around them that `confirm` prices.
     benchmarks = Benchmarks(kept)
-    assert len(benchmarks) == 2 * 5
+    assert clock.calls == len(benchmarks) > 2 * 5
+    clock.calls = 0
     plan = Planner([fast], fallback, cost_model=_measured(clock, benchmarks)).plan(
         graph, Target("cpu")
     )
@@ -484,7 +489,7 @@ def test_a_measured_plan_gives_the_entry_results(tmp_path: Path) -> None:
         benchmarks=benchmarks,
     )
     # Each kind timed on both; whichever was faster runs it.
-    assert len(Benchmarks(tmp_path / "benchmarks.json")) == 2 * 5
+    assert len(Benchmarks(tmp_path / "benchmarks.json")) > 2 * 5
     with torch.no_grad():
         for pos in range(2):
             step = torch.tensor(pos, dtype=torch.int32)
@@ -532,3 +537,20 @@ def test_the_context_joins_parameters_without_a_copy(tmp_path: Path) -> None:
         expected: object = direct.run_entry("decode", [token, step])
         assert isinstance(expected, torch.Tensor)
         torch.testing.assert_close(logits, expected)
+
+
+def test_a_region_that_pays_alone_but_not_in_place_is_dropped() -> None:
+    graph = _decode()
+    clock = _Clock()
+    fast = _Timed("fast", clock, LINEAR, seconds=0.5)
+    # Every region the fallback runs costs it 5 more: each linear call cut
+    # out of its code adds a region, which costs more than the call saves.
+    fallback = _Timed("fallback", clock, overhead=5.0)
+    plan = Planner([fast], fallback, cost_model=_measured(clock)).plan(graph, Target("cpu"))
+    assert {step.backend for step in plan.steps} == {"fallback"}
+    # Without that cost, each call saves its half second in place too.
+    fallback = _Timed("fallback", clock)
+    plan = Planner([fast], fallback, cost_model=_measured(clock)).plan(graph, Target("cpu"))
+    taken = [step for step in plan.steps if step.backend == "fast"]
+    assert len(taken) == 2 * 7 + 1
+    assert all(step.saving == pytest.approx(0.5) for step in taken)
