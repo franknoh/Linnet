@@ -264,3 +264,10 @@ def test_the_generated_source_runs_what_another_backend_leaves(tmp_path: Path) -
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected)
+
+
+def test_the_region_with_the_entrys_finish_hands_on_its_results() -> None:
+    graph = _decode()
+    head = list(graph.semantic_calls("std.nn.linear::linear"))[-1]
+    region = Region.of(graph, head.start, len(graph.steps))
+    assert set(graph.outputs) <= set(region.outputs)

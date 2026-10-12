@@ -13,9 +13,9 @@ speed, models keep running as generated PyTorch or JAX source.
 | Frontends | Linnet source; `torch.export`, StableHLO and ONNX importers | done |
 | Core IR | the checked program: functions, generics, blocks, state; shapes symbolic | done (`include/linnet/ir`) |
 | Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `linnet graph` records it as a target sees it (M0), and `linnet.resources` traces its own |
-| Planner | partition, backend selection, memory and stream plan | partly: `linnet.resources` costs and buffer plans |
-| Execution plan | executables, buffers, streams, capture segments | none |
-| Runtime | runs a plan: allocation, launches, CUDA graphs | PyTorch plays it |
+| Planner | partition, backend selection, memory and stream plan | partly: `linnet.backends` (greedy partition, fallback), `linnet.resources` costs |
+| Execution plan | executables, buffers, streams, capture segments | partly: `Plan`, run in order or captured whole (`linnet.torch.planned`) |
+| Runtime | runs a plan: allocation, launches, CUDA graphs | partly: `liblinnet_runtime` (native kernels, cuBLASLt, capture); PyTorch's allocator and streams |
 
 Five rules hold at every layer:
 
