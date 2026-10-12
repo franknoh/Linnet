@@ -170,6 +170,12 @@ public:
         return value.name;
     }
     virtual void release(const std::vector<std::string>& names) { (void)names; }
+    // Where the calls that follow belong in the code a target writes, as a
+    // replay of the entry's graph decides: in the call itself, or among its
+    // constants, computed once per shape. A target without such sections
+    // writes everything into the call.
+    enum class Section : std::uint8_t { Call, Constants };
+    virtual void begin_section(Section section) { (void)section; }
     // Fully sharded parameters (see `GraphExportOptions::fully_shard`): a
     // target that supports them gathers a parameter's parts into the whole.
     virtual bool supports_fully_shard() const { return false; }
