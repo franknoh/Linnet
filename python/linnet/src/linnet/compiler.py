@@ -60,7 +60,7 @@ def installed_compiler() -> Path | None:
 # Commands whose output depends only on their arguments, their standard
 # input, the compiler, and the source files they read: kept in
 # `$LINNET_HOME/compiled/outputs` (`run_compiler`).
-_CACHED = frozenset(("plan", "torch", "jax", "stablehlo", "onnx"))
+_CACHED = frozenset(("plan", "torch", "jax", "stablehlo", "onnx", "graph"))
 
 
 def run_compiler(
