@@ -6,9 +6,11 @@ mask that reaches a prefix of the cache, as
 length from the mask on the device, so a CUDA graph replays it for any
 position.
 
-The cache `[rows, kv heads, length, head width]` is FlashInfer's paged cache
-in `HND` layout with one page a row, as long as the cache: the block table
-gives row `b` page `b`, and nothing is copied.
+The cache `[rows, kv heads, length, head width]` is read as FlashInfer's
+paged cache in `HND` layout without a copy: pages of 128 positions (its
+kernels take 16 to 128) are a strided view of it, a page apart every
+`128 * width` elements and a head apart every `length * width`, and the
+block table lists each row's pages.
 """
 
 from __future__ import annotations
@@ -95,6 +97,7 @@ class FlashInfer:
                 or key.dtype != query.dtype
                 or value.dtype != query.dtype
                 or call.generics.get("D") not in (64, 128, 256)
+                or _page(call.generics.get("K", 0)) is None
                 or scale.value is None
                 or mask.value is None
                 or _scalar(made, scale.value) is None
@@ -188,6 +191,12 @@ def _prefix(made: dict[int, Step], value: int) -> bool:
     return _from_iota(made, keys.value) and not _from_iota(made, limit.value)
 
 
+def _page(length: int) -> int | None:
+    """The page size, of those FlashInfer's decode kernels take, a cache of
+    `length` positions splits into: the largest."""
+    return next((size for size in (128, 64, 32, 16) if length % size == 0), None)
+
+
 _workspaces: dict[int, torch.Tensor] = {}
 
 
@@ -225,15 +234,23 @@ class _Attention:
     ) -> Sequence[torch.Tensor]:
         query, key, value, _, mask = (inputs[i] for i in self._order)
         rows, heads, _, width = query.shape
-        length = key.shape[2]
+        kv_heads, length = key.shape[1], key.shape[2]
+        page = _page(length)
+        assert page is not None
+        per_row = length // page
+        # Page p of the view starts p * page positions into the cache; row b's
+        # pages are b * kv_heads * per_row onwards, each head a cache apart.
+        pages = (rows - 1) * kv_heads * per_row + per_row
+        size = (pages, kv_heads, page, width)
+        strides = (page * width, length * width, width, 1)
         if self._blocks is None:
-            # Row b's cache is page b.
-            self._blocks = torch.arange(rows, dtype=torch.int32, device=query.device)[:, None]
+            first = torch.arange(rows, device=query.device)[:, None] * kv_heads * per_row
+            self._blocks = (first + torch.arange(per_row, device=query.device)).int()
         # Each row's length: how many keys its mask reaches (a prefix).
         lengths = mask.reshape(-1, length).sum(-1, dtype=torch.int32).expand(rows)
         out = self._decode(
             query.reshape(rows, heads, width),
-            (key, value),
+            (torch.as_strided(key, size, strides), torch.as_strided(value, size, strides)),
             _workspace(query.device),
             self._blocks,
             lengths.contiguous().view(torch.uint32),
