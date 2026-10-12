@@ -174,6 +174,29 @@ def library() -> ctypes.CDLL:
                 ctypes.POINTER(pointer),
             ],
         ),
+        "ln_cublaslt_linear_create": (
+            status,
+            [
+                pointer,
+                ctypes.c_int64,
+                ctypes.c_int64,
+                ctypes.c_int64,
+                _DataType,
+                ctypes.POINTER(pointer),
+            ],
+        ),
+        "ln_executable_prepare": (status, [pointer, ctypes.POINTER(_Context)]),
+        "ln_executable_execute": (
+            status,
+            [
+                pointer,
+                ctypes.POINTER(_Tensor),
+                ctypes.c_size_t,
+                ctypes.POINTER(_Tensor),
+                ctypes.c_size_t,
+                ctypes.POINTER(_Context),
+            ],
+        ),
         "ln_executable_destroy": (None, [pointer]),
     }
     for name, (result, arguments) in signatures.items():
@@ -266,10 +289,50 @@ class Executable:
         self._keep = list(keep)
         self.failure: BaseException | None = None
 
+    def prepare(self, device: tuple[str, int], stream: int = 0) -> None:
+        """Runs the executable's `prepare` on `stream`."""
+        context = _context(device, stream, 0, 0)
+        _check(library().ln_executable_prepare(self.handle, ctypes.byref(context)), "prepare")
+
+    def execute(
+        self,
+        inputs: Sequence[TensorRef],
+        outputs: Sequence[TensorRef],
+        stream: int = 0,
+        workspace: tuple[int, int] = (0, 0),
+    ) -> None:
+        """Enqueues one call on `stream` (0: the CPU, or CUDA's default),
+        outside any plan."""
+        keep: list[object] = []
+        native_in = (_Tensor * len(inputs))(*(_native(t, keep) for t in inputs))
+        native_out = (_Tensor * len(outputs))(*(_native(t, keep) for t in outputs))
+        device = (inputs or outputs)[0].device if (inputs or outputs) else ("cpu", 0)
+        context = _context(device, stream, *workspace)
+        code = library().ln_executable_execute(
+            self.handle, native_in, len(inputs), native_out, len(outputs), ctypes.byref(context)
+        )
+        failure, self.failure = self.failure, None
+        if failure is not None:
+            raise NativeError("execute: a callback raised") from failure
+        _check(code, "execute")
+
     def close(self) -> None:
         if self.handle:
             library().ln_executable_destroy(self.handle)
             self.handle = 0
+
+
+def _context(
+    device: tuple[str, int], stream: int, workspace: int, workspace_bytes: int
+) -> _Context:
+    context = _Context()
+    context.abi_version = 1
+    context.device = _Device(_KINDS[device[0]], device[1])
+    context.stream = stream or None
+    context.workspace = workspace or None
+    context.workspace_bytes = workspace_bytes
+    context.capturing = 0
+    return context
 
 
 def callback(function: Callback) -> Executable:
@@ -378,6 +441,19 @@ class Runtime:
                 ctypes.byref(handle),
             ),
             f"kernel {function}",
+        )
+        return Executable(handle.value or 0)
+
+    def cublaslt_linear(self, rows: int, n: int, k: int, dtype: str) -> Executable:
+        """A linear layer's product by cuBLASLt: its output ([rows, n]) is its
+        input ([rows, k]) times its weight ([n, k]) transposed."""
+        code, bits = DTYPES[dtype]
+        handle = ctypes.c_void_p()
+        _check(
+            library().ln_cublaslt_linear_create(
+                self.handle, rows, n, k, _DataType(code, bits, 1), ctypes.byref(handle)
+            ),
+            f"cuBLASLt product of {rows}x{k} by {n}x{k}",
         )
         return Executable(handle.value or 0)
 

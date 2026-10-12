@@ -169,6 +169,23 @@ LN_API LnStatus ln_kernel_create(LnRuntime* runtime,
                                  size_t argument_count,
                                  LnExecutable** out);
 
+/* A linear layer's product by cuBLASLt: outputs[0] ([rows, n]) is
+ * inputs[0] ([rows, k]) times inputs[1] ([n, k], a weight) transposed, all
+ * of `dtype` (f16, bf16 or f32, row-major), summed in f32. The library is
+ * loaded when first asked for. */
+LN_API LnStatus ln_cublaslt_linear_create(
+    LnRuntime* runtime, int64_t rows, int64_t n, int64_t k, LnDataType dtype, LnExecutable** out);
+
+/* Runs one executable outside a plan, on the context's stream: its
+ * `prepare` once (`ln_executable_prepare`), then each `execute`. */
+LN_API LnStatus ln_executable_prepare(LnExecutable* executable, LnContext* context);
+LN_API LnStatus ln_executable_execute(LnExecutable* executable,
+                                      const LnTensor* inputs,
+                                      size_t input_count,
+                                      LnTensor* outputs,
+                                      size_t output_count,
+                                      LnContext* context);
+
 /* Destroys an executable the runtime made. */
 LN_API void ln_executable_destroy(LnExecutable* executable);
 

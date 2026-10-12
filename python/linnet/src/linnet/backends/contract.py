@@ -107,13 +107,16 @@ class Region:
                     else:
                         inputs[value] = None
             made.update(step.results)
+        # What later steps read, and what the entry returns wherever its
+        # `finish` falls.
         read_after: set[int] = {
             operand.value
             for step in graph.steps[stop:]
-            if step.op not in STRUCTURE or step.op == "finish"
+            if step.op not in STRUCTURE
             for operand in step.operands
             if operand.value is not None
         }
+        read_after.update(graph.outputs)
         outputs = tuple(
             value
             for step in graph.steps[start:stop]

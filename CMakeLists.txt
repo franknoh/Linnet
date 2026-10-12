@@ -103,7 +103,8 @@ target_link_libraries(linnet_core PRIVATE linnet_build_options)
 
 # The runtime that runs execution plans: a C library with no CUDA
 # dependency at build time (src/runtime/driver.cpp loads the driver).
-add_library(linnet_runtime SHARED src/runtime/runtime.cpp src/runtime/driver.cpp)
+add_library(linnet_runtime SHARED
+    src/runtime/runtime.cpp src/runtime/driver.cpp src/runtime/cublaslt.cpp)
 target_include_directories(linnet_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(linnet_runtime PRIVATE linnet_build_options ${CMAKE_DL_LIBS})
 target_compile_definitions(linnet_runtime PRIVATE LINNET_RUNTIME_BUILD)
