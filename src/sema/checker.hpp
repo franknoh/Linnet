@@ -111,6 +111,7 @@ private:
     void resolve_enum(EntityId entity);
     void resolve_alias(EntityId entity);
     void resolve_dtype(EntityId entity);
+    void resolve_codebook(const ast::DTypeDecl& decl, DeclInfo& info);
     void resolve_const(EntityId entity);
     Env make_env(EntityId entity);
     void check_function_body(EntityId entity);

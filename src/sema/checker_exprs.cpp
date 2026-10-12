@@ -120,7 +120,7 @@ bool Checker::literal_fits(const TypeData& literal, DType dtype, SourceSpan span
     const DTypeClass target = types_.class_of(dtype);
     const bool is_bool = !dtype.is_var && dtype.scalar == ScalarKind::Bool;
     const std::string name = types_.to_string(dtype);
-    if (!dtype.is_var && is_storage(dtype.scalar)) {
+    if (dtype.stores_only()) {
         error(codes::invalid_operand, span, "a literal cannot be `" + name + "`")
             .note("`" + name + "` is a storage format: `cast` a value to it");
         return false;
@@ -413,7 +413,7 @@ TypeId Checker::elementwise(
     }
     const bool may_be_bool =
         dtype.is_var ? types_.class_of(dtype) == DTypeClass::Any : dtype.scalar == ScalarKind::Bool;
-    if (!dtype.is_var && is_storage(dtype.scalar)) {
+    if (dtype.stores_only()) {
         error(codes::invalid_operand,
               span,
               "`" + types_.to_string(dtype) +

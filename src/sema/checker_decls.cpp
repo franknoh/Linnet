@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <utility>
@@ -766,13 +768,18 @@ void Checker::resolve_dtype(EntityId entity) {
     const EnvGuard guard(*this, env);
     DeclInfo& info = decls_[entity];
     info.aliased = types_.error();
+    if (decl.family.text == "codebook") {
+        resolve_codebook(decl, info);
+        return;
+    }
     const bool is_float = decl.family.text == "float";
     if (!is_float && decl.family.text != "int") {
         error(codes::invalid_dtype,
               decl.family.span,
               "unknown dtype family `" + std::string(decl.family.text) + "`")
-            .note("a dtype is an `int(bits: N, signed: B)` or a "
-                  "`float(exponent: E, mantissa: M, inf: B, nan: B)`");
+            .note("a dtype is an `int(bits: N, signed: B)`, a "
+                  "`float(exponent: E, mantissa: M, inf: B, nan: B)`, or a "
+                  "`codebook(carrier: u4, values: [...])`");
         return;
     }
     // The family's parameters, and whether each is a width (else a flag).
@@ -838,6 +845,99 @@ void Checker::resolve_dtype(EntityId entity) {
         return;
     }
     info.aliased = types_.scalar(*scalar);
+}
+
+// `codebook(carrier: u4, values: [v0, v1, ...])`: a code of the carrier (an
+// unsigned integer format) for each of the values, which increase.
+void Checker::resolve_codebook(const ast::DTypeDecl& decl, DeclInfo& info) {
+    const ast::DTypeArg* carrier_arg = nullptr;
+    const ast::DTypeArg* values_arg = nullptr;
+    for (const ast::DTypeArg& arg : decl.args) {
+        const bool known = arg.name.text == "carrier" || arg.name.text == "values";
+        const ast::DTypeArg*& slot = arg.name.text == "carrier" ? carrier_arg : values_arg;
+        if (!known || slot != nullptr) {
+            error(codes::invalid_dtype,
+                  arg.name.span,
+                  known ? "parameter `" + std::string(arg.name.text) + "` is given twice"
+                        : "`codebook` has no parameter `" + std::string(arg.name.text) + "`")
+                .note("a codebook is a `codebook(carrier: u4, values: [...])`");
+            return;
+        }
+        slot = &arg;
+    }
+    if (carrier_arg == nullptr || values_arg == nullptr) {
+        error(
+            codes::invalid_dtype, decl.args_span, "a `codebook` needs its `carrier` and `values`");
+        return;
+    }
+    // The carrier: an unsigned integer format, built in or declared.
+    std::optional<DType> carrier;
+    const ast::Expr& carrier_expr = ast().expr(carrier_arg->value);
+    if (const auto* name = std::get_if<ast::NameExpr>(&carrier_expr.data)) {
+        if (const auto scalar = builtin_scalar(name->name.text)) {
+            carrier = DType::of(*scalar);
+        } else if (const EntityId found = lookup(name->name);
+                   found != no_entity && entities_[found].kind == EntityKind::DType) {
+            resolve(found);
+            const TypeId aliased = decls_[found].aliased;
+            if (aliased != no_type && types_.kind(aliased) == TypeKind::Scalar) {
+                carrier = types_.get(aliased).dtype;
+            }
+        }
+    }
+    const DTypeFormat format =
+        carrier ? format_of(carrier->scalar) : DTypeFormat{DTypeFormat::Family::Float};
+    if (!carrier || carrier->codebook != 0 || format.family != DTypeFormat::Family::Int ||
+        format.is_signed || format.bits > 8) {
+        error(codes::invalid_dtype,
+              carrier_expr.span,
+              "a codebook's carrier is an unsigned integer format of 8 bits or fewer")
+            .help("for example `u4` (`std.dtypes`) or `u8`");
+        return;
+    }
+    // The values: number literals, one per code, increasing.
+    const ast::Expr& values_expr = ast().expr(values_arg->value);
+    const auto* list = std::get_if<ast::ShapeExpr>(&values_expr.data);
+    std::vector<double> values;
+    for (std::size_t i = 0; list != nullptr && i < list->dims.size(); ++i) {
+        const ast::Expr& item = ast().expr(list->dims[i]);
+        bool negative = false;
+        const ast::Expr* number = &item;
+        if (const auto* unary = std::get_if<ast::UnaryExpr>(&item.data);
+            unary != nullptr && unary->op == ast::UnaryOp::Negate) {
+            negative = true;
+            number = &ast().expr(unary->operand);
+        }
+        const auto* literal = std::get_if<ast::LiteralExpr>(&number->data);
+        if (literal == nullptr || (literal->kind != ast::LiteralKind::Integer &&
+                                   literal->kind != ast::LiteralKind::Float)) {
+            error(codes::invalid_dtype, item.span, "a codebook value is a number literal");
+            return;
+        }
+        std::string digits(text(number->span));
+        std::erase(digits, '_');
+        const double value = std::strtod(digits.c_str(), nullptr);
+        values.push_back(negative ? -value : value);
+    }
+    const std::size_t codes = std::size_t{1} << format.bits;
+    if (list == nullptr || values.size() != codes) {
+        error(codes::invalid_dtype,
+              values_expr.span,
+              "a codebook of `" + std::string(scalar_name(carrier->scalar)) + "` has " +
+                  std::to_string(codes) + " values, one per code")
+            .note("write them as a list: `values: [-1.0, ..., 1.0]`");
+        return;
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (!std::isfinite(values[i]) || (i > 0 && values[i] <= values[i - 1])) {
+            error(codes::invalid_dtype,
+                  ast().expr(list->dims[i]).span,
+                  "a codebook's values are finite and increase, code by code");
+            return;
+        }
+    }
+    info.aliased = types_.scalar(
+        types_.add_codebook({std::string(decl.name.text), carrier->scalar, std::move(values)}));
 }
 
 void Checker::resolve_const(EntityId entity) {
@@ -1365,8 +1465,7 @@ Checker::eval_generic_arg(const ast::GenericArg& arg, const GenericInfo& param, 
         if (!dtype) {
             return std::nullopt;
         }
-        if (!class_contains(param.constraint, types_.class_of(*dtype)) &&
-            !(!dtype->is_var && class_contains(param.constraint, dtype->scalar))) {
+        if (!class_contains(param.constraint, types_.class_of(*dtype))) {
             error(codes::dtype_constraint,
                   ast().type(arg.type).span,
                   "`" + types_.to_string(*dtype) + "` does not satisfy the constraint on `" +

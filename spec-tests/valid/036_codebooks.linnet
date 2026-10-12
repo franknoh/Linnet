@@ -1,0 +1,41 @@
+module m
+
+// A codebook names a value for each code of its carrier: here 16 levels
+// for a four-bit code, packed two a byte like the carrier.
+dtype nibble = int(bits: 4, signed: false)
+dtype levels = codebook(carrier: nibble, values: [
+    -8.0,
+    -4.0,
+    -2.0,
+    -1.5,
+    -1,
+    -0.75,
+    -0.5,
+    -0.25,
+    0,
+    0.25,
+    0.5,
+    1,
+    2,
+    4,
+    6,
+    8,
+])
+
+pub fn dequantize<R: Dim, N: Dim>(
+    q: Tensor[R, N; levels],
+    scale: Tensor[R; f32],
+) -> Tensor[R, N; f32] {
+    let w = cast<f32>(q)
+    let out[r, n] = w[r, n] * scale[r]
+    return out
+}
+
+pub fn quantize<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; levels] {
+    return cast<levels>(x)
+}
+
+// Moved like its carrier: leading axes freely, the last axis whole.
+pub fn regroup<R: Dim>(q: Tensor[R, 2, 16; levels]) -> Tensor[2, R, 16; levels] {
+    return permute(q, [1, 0, 2])
+}

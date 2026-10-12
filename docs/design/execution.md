@@ -235,8 +235,9 @@ pub dtype u8     = int(bits: 8, signed: false)
 - `bool`, `int(bits, signed)` and `float(exponent, mantissa, specials)`
   give the compiler all it checks: size, constant folding, which operators
   apply, literal types, cast rounding.
-- A format outside the families, such as NF4 or a codebook, declares a
-  carrier dtype and the ops that widen to it and narrow from it.
+- A format outside the families, such as NF4, is a
+  `codebook(carrier: u4, values: [...])`: the carrier's codes, each with a
+  value. A cast looks the value up, or rounds to the nearest one's code.
 - Formats whose elements share a scale (MXFP4, block-scaled FP8) stay
   structs with ops. A dtype describes one element.
 - Backends match dtypes by format. A backend without a format stores it in
@@ -251,8 +252,9 @@ as storage formats (cast to and from, no operators); `std.quant`'s FP8
 layers on `f8e4m3`; and the prelude, `stdlib/prelude.linnet`, compiled
 into the checker, which declares `i8` to `f64`; the packed 4-bit formats
 (`i4`, `u4`, `f4e2m1`, two elements a byte along the last axis, which
-PyTorch holds as bytes and JAX and StableHLO as their own types). To do:
-the widening and narrowing ops for formats like NF4.
+PyTorch holds as bytes and JAX and StableHLO as their own types); and
+codebook formats such as NF4 (`std.dtypes::nf4`), held as their carrier's
+codes, whose casts lower to compares and selects every target runs.
 
 ## Training and distribution
 
