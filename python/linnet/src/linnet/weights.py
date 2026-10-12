@@ -49,7 +49,8 @@ def read_arrays(weights: str | Path | Mapping[str, ArrayLike]) -> dict[str, np.n
 
     `weights` is a mapping (returned as arrays), a `.safetensors` file, or a
     directory of them. `BF16` tensors come back as `ml_dtypes.bfloat16`
-    arrays (installed with JAX).
+    arrays (installed with JAX), FP8 ones as their bits (`uint8`), which a
+    `u8` parameter holds.
     """
     if isinstance(weights, Mapping):
         return {str(name): np.asarray(value) for name, value in weights.items()}
@@ -61,7 +62,9 @@ def numpy_array(tensor: RawTensor) -> np.ndarray:
     found = BY_SAFETENSORS.get(tensor.dtype)
     if found is None:
         raise LinnetError(f"`{tensor.name}` has dtype {tensor.dtype}, which Linnet does not read")
-    if found.name == "bf16":
+    if tensor.dtype in AS_BITS:
+        dtype = np.dtype(np.uint8)
+    elif found.name == "bf16":
         import ml_dtypes
 
         dtype = np.dtype(ml_dtypes.bfloat16)
