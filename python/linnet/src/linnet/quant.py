@@ -162,10 +162,10 @@ def quantize_checkpoint(
         for path in paths_of.get(tensor.name, [tensor.name]):
             if path.endswith(".weight") and any(fnmatch.fnmatchcase(path, p) for p in chosen):
                 values = decode_floats(tensor.dtype, tensor.data).reshape(tensor.shape)
-                prefix = path.removesuffix(".weight")
+                prefix = _prefix(path)
                 if bits == 8:
                     q, scale = quantize_int8_groups(values, group, dtype)
-                    out.append((prefix + ".weight", "I8", tuple(q.shape), q.tobytes()))
+                    out.append((prefix + "weight", "I8", tuple(q.shape), q.tobytes()))
                     out.append(_scale_tensor(prefix, scale, dtype))
                 else:
                     packed, scale, zero = quantize_int4_groups(values, group)
@@ -192,11 +192,19 @@ def _paths_of(bindings: str | Path | Mapping[str, str] | None) -> dict[str, list
     return paths_by_tensor(mapping)
 
 
+def _prefix(path: str) -> str:
+    """What names a weight's siblings: `proj.` for `proj.weight`, nothing
+    for a root block's own `weight`."""
+    if path == "weight":
+        return ""
+    return path.removesuffix("weight") if path.endswith(".weight") else path + "."
+
+
 def _scale_tensor(
     prefix: str, scale: np.ndarray, dtype: str
 ) -> tuple[str, str, tuple[int, ...], bytes]:
     scale_dtype = DTYPES[dtype].safetensors
-    return (prefix + ".scale", scale_dtype, tuple(scale.shape), encode_floats(scale, scale_dtype))
+    return (prefix + "scale", scale_dtype, tuple(scale.shape), encode_floats(scale, scale_dtype))
 
 
 def _int4_tensors(
@@ -205,9 +213,9 @@ def _int4_tensors(
     if dtype not in ("bf16", "f16", "f32"):
         raise LinnetError(f"scales are stored as bf16, f16, or f32, not {dtype}")
     return [
-        (prefix + ".weight", "U8", tuple(packed.shape), packed.tobytes()),
+        (prefix + "weight", "U8", tuple(packed.shape), packed.tobytes()),
         _scale_tensor(prefix, scale, dtype),
-        (prefix + ".zero", "U8", tuple(zero.shape), zero.tobytes()),
+        (prefix + "zero", "U8", tuple(zero.shape), zero.tobytes()),
     ]
 
 
@@ -326,7 +334,7 @@ def import_quantized(
         packed = pack_int4_groups(np.ascontiguousarray(q.T), size)
         weight_name = layer + ".weight"
         for path in paths_of.get(weight_name, [weight_name]):
-            prefix = path.removesuffix(".weight")
+            prefix = _prefix(path)
             out += _int4_tensors(
                 prefix,
                 packed,
@@ -335,7 +343,7 @@ def import_quantized(
                 dtype,
             )
             if order is not None:
-                out.append((prefix + ".order", "I32", (in_features,), order.tobytes()))
+                out.append((prefix + "order", "I32", (in_features,), order.tobytes()))
             quantized.append(path)
     if not quantized:
         raise LinnetError(f"no {method.upper()} layer (`.qweight`) in {weights}")
@@ -478,9 +486,9 @@ def _import_bitsandbytes(
         codes, absmax = _bnb_nf4(weight, _bnb_state(tensors[name]), tensors)
         taken |= {name, weight, *(weight + part for part in _BNB_PARTS)}
         for path in paths_of.get(weight, [weight]):
-            prefix = path.removesuffix(".weight")
-            out.append((prefix + ".weight", "U8", tuple(codes.shape), codes.tobytes()))
-            out.append((prefix + ".absmax", "F32", tuple(absmax.shape), absmax.tobytes()))
+            prefix = _prefix(path)
+            out.append((prefix + "weight", "U8", tuple(codes.shape), codes.tobytes()))
+            out.append((prefix + "absmax", "F32", tuple(absmax.shape), absmax.tobytes()))
             quantized.append(path)
     if not quantized:
         raise LinnetError(f"no bitsandbytes 4-bit layer (`{_BNB_STATE}nf4`) in {weights}")

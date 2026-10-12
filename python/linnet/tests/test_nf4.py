@@ -151,6 +151,19 @@ def test_the_checkpoint_matches_the_manifest(
     ]
 
 
+def test_a_root_weight_keeps_its_siblings_unprefixed(tmp_path: Path) -> None:
+    _checkpoint(tmp_path / "bnb.safetensors", nested=True)
+    quantized = import_quantized(
+        tmp_path / "bnb.safetensors",
+        tmp_path / "nf4.safetensors",
+        bindings={"weight": "model.proj.weight", "bias": "model.proj.bias"},
+        config=CONFIG,
+    )
+    assert quantized == ["weight"]
+    names = set(header_tensors(read_header(tmp_path / "nf4.safetensors")))
+    assert {"weight", "absmax", "bias"} <= names
+
+
 def test_other_types_do_not_import(tmp_path: Path) -> None:
     _checkpoint(tmp_path / "bnb.safetensors", nested=False)
     with pytest.raises(LinnetError, match="fp4"):
