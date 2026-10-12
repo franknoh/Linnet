@@ -37,7 +37,13 @@ def test_a_plan_with_cublaslt_replays_as_one_graph(tmp_path: Path) -> None:
     generics = {**TINY_LLAMA, "T": "bf16"}
     planned, direct = (
         load(
-            LLAMA, generics=generics, std_root=STDLIB, weights=weights, compile=True, device="cuda"
+            LLAMA,
+            generics=generics,
+            std_root=STDLIB,
+            weights=weights,
+            compile=True,
+            device="cuda",
+            cast_dtype=True,
         )
         for _ in range(2)
     )
