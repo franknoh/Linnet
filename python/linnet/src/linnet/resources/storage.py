@@ -1,8 +1,8 @@
 """How many bytes a tensor of a dtype occupies.
 
 Every dtype's width is in `linnet.dtypes`. Quantized weights in Linnet are
-ordinary tensors: an int4 layer is a `u8` tensor of packed pairs beside its
-`f32` or `bf16` scales and zero points, each declared as a `param`. Their
+ordinary tensors: an int4 layer is a `u4` tensor, two values a byte, beside
+its `f32` or `bf16` scales and zero points, each declared as a `param`. Their
 storage is therefore exact from the manifest, metadata included, rather than
 a logical bit width times an element count.
 """

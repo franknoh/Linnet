@@ -1,6 +1,6 @@
-"""`std.quant`: packed int4 weights unpack to the codes packed, and the int8
-and int4 linear layers agree with a float linear over the codes times their
-scales."""
+"""`std.quant`: packed int4 weights (`std.dtypes::i4`) widen to the codes
+packed, and the int8 and int4 linear layers agree with a float linear over
+the codes times their scales."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from tests.helpers import STDLIB
 SOURCE = """\
 module quant_check
 
-use std.quant::{Int4Linear, Int8Linear, unpack_int4}
+use std.dtypes::{i4}
+use std.quant::{Int4Linear, Int8Linear}
 
 pub block Model<In: Dim, Out: Dim>
 where In % 2 == 0 {
@@ -32,8 +33,8 @@ where In % 2 == 0 {
         return four.forward(x)
     }
 
-    pub entry unpack(packed: Tensor[Out, In / 2; i8]) -> Tensor[Out, In; i8] {
-        return unpack_int4(packed)
+    pub entry widen(q: Tensor[Out, In; i4]) -> Tensor[Out, In; i8] {
+        return cast<i8>(q)
     }
 }
 """
@@ -48,7 +49,7 @@ def _pack_int4(values: np.ndarray) -> np.ndarray:
     """Two signed nibbles per byte: element 2k low, 2k + 1 high."""
     low = values[:, 0::2].astype(np.int32) & 15
     high = values[:, 1::2].astype(np.int32) & 15
-    return ((high << 4) | low).astype(np.uint8).view(np.int8)
+    return ((high << 4) | low).astype(np.uint8)
 
 
 def test_quantized_linears_match_dequantized_float(tmp_path: Path) -> None:
@@ -79,8 +80,8 @@ def test_quantized_linears_match_dequantized_float(tmp_path: Path) -> None:
         assert isinstance(block, BlockModule)
         block.absent_params.discard("bias")  # the biases above are present
 
-    # Packing round-trips through `unpack_int4`.
-    unpacked: torch.Tensor = model.run_entry("unpack", [torch.tensor(_pack_int4(q4))])
+    # The packed bytes widen to the codes.
+    unpacked: torch.Tensor = model.run_entry("widen", [torch.tensor(_pack_int4(q4))])
     np.testing.assert_array_equal(unpacked.numpy(), q4)
 
     x = torch.randn(3, inputs)

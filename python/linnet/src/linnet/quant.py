@@ -5,9 +5,11 @@ ones for `std.quant::Int8GroupLinear`.
 levels per group of `group` consecutive inputs (asymmetric: a scale and a
 zero point per group), in the layout the block declares:
 
-    weight  [Out, In / group, group / 2]  u8, two values a byte, low nibble first
+    weight  [Out, In / group, group]      u4, two values a byte, low nibble first
     scale   [Out, In / group]             the model's float dtype
     zero    [Out, In / group]             u8, in 0..15
+
+(A checkpoint holds a `u4` tensor as its bytes: `U8`, the last axis halved.)
 
 `quantize_int8_groups` rounds one to symmetric int8 instead, a scale per
 group:
@@ -224,8 +226,9 @@ def _nibbles(words: np.ndarray, axis: int) -> np.ndarray:
 
 
 def pack_int4_groups(q: np.ndarray, group: int) -> np.ndarray:
-    """`[Out, In]` values in `0..15` as `Int4GroupLinear`'s `[Out, In /
-    group, group / 2]` bytes, low nibble first."""
+    """`[Out, In]` values in `0..15` as the bytes of `Int4GroupLinear`'s
+    `[Out, In / group, group]` `u4` weight: `[Out, In / group, group / 2]`,
+    low nibble first."""
     out_features, in_features = q.shape
     grouped = q.reshape(out_features, in_features // group, group).astype(np.uint8)
     return (grouped[..., 0::2] | (grouped[..., 1::2] << 4)).astype(np.uint8)

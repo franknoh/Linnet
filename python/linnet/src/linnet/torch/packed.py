@@ -33,8 +33,15 @@ def unpack4(packed: torch.Tensor, kind: str) -> torch.Tensor:
         return codes
     if kind == "i4":
         return (codes.to(torch.int8) ^ 8) - 8
-    table = torch.tensor((*_E2M1, *(-v for v in _E2M1)), dtype=torch.float32, device=packed.device)
-    return table[codes.long()]
+    # From the bits, with no table to copy to the device each call: a
+    # mantissa bit `m` over exponent bits `e` is `m / 2` when `e` is 0, else
+    # `(2 + m) * 2 ** (e - 2)`.
+    wide = codes.to(torch.int32)
+    exponent = (wide >> 1) & 3
+    mantissa = (wide & 1).to(torch.float32)
+    normal = (mantissa + 2) * torch.exp2((exponent - 2).to(torch.float32))
+    magnitude = torch.where(exponent == 0, mantissa * 0.5, normal)
+    return torch.where((wide & 8) != 0, -magnitude, magnitude)
 
 
 def _round_e2m1(x: torch.Tensor) -> torch.Tensor:

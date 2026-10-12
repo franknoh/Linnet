@@ -53,10 +53,10 @@ def test_the_fallback_multiplies_each_group_by_its_expert() -> None:
 
 
 def test_mxfp4_weight_reads_every_code() -> None:
-    codes = np.arange(256, dtype=np.uint8).reshape(1, 1, 1, 16, 16)[0, 0]  # [1, 16, 16]
-    blocks = jnp.asarray(codes.reshape(1, 16, 1, 16))
+    ml_dtypes = pytest.importorskip("ml_dtypes")
+    codes = (np.arange(512).reshape(1, 16, 1, 32) % 16).astype(np.uint8)
+    blocks = jnp.asarray(codes.view(ml_dtypes.float4_e2m1fn))
     scales = jnp.full((1, 16, 1), 128, dtype=jnp.uint8)
     got = np.asarray(moe.mxfp4_weight(blocks, scales, jnp.float32))
     fp4 = np.array([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6])
-    pairs = np.stack([fp4[codes & 15], fp4[codes >> 4]], axis=-1).reshape(1, 16, 32)
-    np.testing.assert_array_equal(got, pairs * 2.0)
+    np.testing.assert_array_equal(got, fp4[codes].reshape(1, 16, 32) * 2.0)
