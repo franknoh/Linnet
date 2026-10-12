@@ -185,20 +185,6 @@ bool is_integer(ScalarKind kind) {
     return kind >= ScalarKind::I8 && kind <= ScalarKind::U64;
 }
 
-bool class_contains(DTypeClass outer, ScalarKind kind) {
-    switch (outer) {
-    case DTypeClass::Any:
-        return true;
-    case DTypeClass::Numeric:
-        return kind != ScalarKind::Bool && !is_storage(kind);
-    case DTypeClass::Integer:
-        return is_integer(kind);
-    case DTypeClass::Float:
-        return is_float(kind);
-    }
-    return false;
-}
-
 bool class_contains(DTypeClass outer, DTypeClass inner) {
     if (outer == DTypeClass::Any || outer == inner) {
         return true;
@@ -296,9 +282,22 @@ DTypeVarId TypeStore::add_dtype_var(std::string name, DTypeClass constraint) {
     return static_cast<DTypeVarId>(dtype_vars_.size() - 1);
 }
 
+DType TypeStore::add_codebook(Codebook codebook) {
+    const ScalarKind carrier = codebook.carrier;
+    codebooks_.push_back(std::move(codebook));
+    return {false, carrier, 0, static_cast<std::uint32_t>(codebooks_.size())};
+}
+
+const Codebook* TypeStore::codebook_of(DType dtype) const {
+    return dtype.is_var || dtype.codebook == 0 ? nullptr : &codebooks_[dtype.codebook - 1];
+}
+
 DTypeClass TypeStore::class_of(DType dtype) const {
     if (dtype.is_var) {
         return dtype_vars_[dtype.var].constraint;
+    }
+    if (dtype.codebook != 0) {
+        return DTypeClass::Any;
     }
     if (is_float(dtype.scalar)) {
         return DTypeClass::Float;
@@ -488,6 +487,9 @@ bool TypeStore::equal(TypeId a, TypeId b, shape::Solver& solver) {
 // ------------------------------------------------------------------ rendering
 
 std::string TypeStore::to_string(DType dtype) const {
+    if (const Codebook* codebook = codebook_of(dtype)) {
+        return codebook->name;
+    }
     return dtype.is_var ? dtype_vars_[dtype.var].name : std::string(scalar_name(dtype.scalar));
 }
 

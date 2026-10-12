@@ -434,3 +434,27 @@ code = "E2129"
 file = "invalid/160_packed_element.linnet"
 expect = "error"
 code = "E2129"
+
+[[case]]
+file = "valid/036_codebooks.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/161_codebook_carrier.linnet"
+expect = "error"
+code = "E2128"
+
+[[case]]
+file = "invalid/162_codebook_count.linnet"
+expect = "error"
+code = "E2128"
+
+[[case]]
+file = "invalid/163_codebook_order.linnet"
+expect = "error"
+code = "E2128"
+
+[[case]]
+file = "invalid/164_codebook_arithmetic.linnet"
+expect = "error"
+code = "E2104"

@@ -190,7 +190,10 @@ shared = { path = "../shared" }
 `i4`, `u4` and `f4e2m1`. They are storage formats: a tensor of one is cast,
 moved, sliced and indexed, but computes only after a `cast` to a built-in
 dtype. A 4-bit tensor packs two elements a byte along its last axis, which
-operations keep whole.
+operations keep whole. A codebook format gives each code of a small unsigned
+format a value, `dtype nf4 = codebook(carrier: u4, values: [...])`: a cast
+from it looks each code up, a cast to it takes the nearest value's code.
+`std.dtypes` declares `nf4`.
 
 Generic kinds: `N: Dim` (one dimension), `*S: Shape` (any number of
 dimensions, possibly none), `T: DType` (any element type), `T: Numeric`,

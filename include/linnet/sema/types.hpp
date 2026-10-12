@@ -95,7 +95,6 @@ bool is_packed(ScalarKind kind);
 // The generic constraints that classify element types.
 enum class DTypeClass : std::uint8_t { Any, Numeric, Integer, Float };
 
-bool class_contains(DTypeClass outer, ScalarKind kind);
 bool class_contains(DTypeClass outer, DTypeClass inner);
 // A dtype class as source bounds a generic with it (`DType`, `Float`), as
 // plans spell it (`any`, `float`), and back from a plan.
@@ -106,14 +105,29 @@ std::optional<DTypeClass> parse_dtype_class_key(std::string_view key);
 using DTypeVarId = std::uint32_t;
 
 // An element type: a concrete scalar kind or a generic `T: Float` variable.
+// A codebook format (`codebook`, from 1; spec §3.1) is stored as codes of
+// its carrier, `scalar`, but is a type of its own.
 struct DType {
     bool is_var = false;
     ScalarKind scalar = ScalarKind::F32;
     DTypeVarId var = 0;
+    std::uint32_t codebook = 0;
 
-    static DType of(ScalarKind kind) { return {false, kind, 0}; }
-    static DType variable(DTypeVarId id) { return {true, ScalarKind::F32, id}; }
+    static DType of(ScalarKind kind) { return {false, kind, 0, 0}; }
+    static DType variable(DTypeVarId id) { return {true, ScalarKind::F32, id, 0}; }
+    // Held as it is but computed with only after a cast: a storage format
+    // or a codebook.
+    bool stores_only() const { return !is_var && (codebook != 0 || is_storage(scalar)); }
     friend bool operator==(const DType&, const DType&) = default;
+};
+
+// A codebook format, `dtype nf4 = codebook(carrier: u4, values: [...])`: each
+// code of its carrier (an unsigned integer format) stands for one of
+// `values`, which increase.
+struct Codebook {
+    std::string name;
+    ScalarKind carrier = ScalarKind::U8;
+    std::vector<double> values;
 };
 
 // One unit of a shape: a dimension, or a whole shape pack such as `*S`.
@@ -213,6 +227,9 @@ public:
     DTypeVarId add_dtype_var(std::string name, DTypeClass constraint);
     const DTypeVar& dtype_var(DTypeVarId id) const { return dtype_vars_[id]; }
     DTypeClass class_of(DType dtype) const;
+    // A codebook format's dtype, and the codebook a dtype is (or null).
+    DType add_codebook(Codebook codebook);
+    const Codebook* codebook_of(DType dtype) const;
 
     // Element count of a shape; packs contribute their symbolic size.
     shape::Poly element_count(const Shape& shape);
@@ -244,6 +261,7 @@ private:
     shape::DimContext* dims_;
     std::deque<TypeData> types_; // deque: references stay valid as types are added
     std::vector<DTypeVar> dtype_vars_;
+    std::vector<Codebook> codebooks_;
     std::function<std::string(EntityId)> entity_namer_;
 };
 

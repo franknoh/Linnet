@@ -30,7 +30,10 @@ void Checker::collect_manifests() {
                 entry.repeat.push_back(dims_.to_string(length));
             }
             entry.is_optional = found.is_optional;
-            entry.dtype = types_.to_string(found.tensor->dtype);
+            // Stored as it is: a codebook format as its carrier's codes.
+            const DType dtype = found.tensor->dtype;
+            entry.dtype =
+                dtype.is_var ? types_.to_string(dtype) : std::string(scalar_name(dtype.scalar));
             for (const ShapeElem& unit : found.tensor->shape) {
                 entry.shape.push_back(unit.is_pack ? "*" + std::string(dims_.symbol_name(unit.pack))
                                                    : dims_.to_string(unit.dim));

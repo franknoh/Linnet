@@ -16,13 +16,18 @@ namespace {
 
 using sema::ScalarKind;
 
-std::string tensor_type(const Dims& shape, ScalarKind dtype) {
+// ONNX casts the 4-bit types from opset 21 and 23; Linnet writes 20.
+void refuse_packed(ScalarKind dtype) {
     if (sema::is_packed(dtype)) {
         throw ExportError("ONNX export does not take the 4-bit dtypes (`" +
                           std::string(sema::scalar_name(dtype)) +
                           "`) yet: ONNX casts them from opset 21 and 23, and Linnet writes "
                           "opset 20");
     }
+}
+
+std::string tensor_type(const Dims& shape, ScalarKind dtype) {
+    refuse_packed(dtype);
     std::string text(dtype_names(dtype).onnx);
     if (shape.empty()) {
         return text;
@@ -679,6 +684,8 @@ public:
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
+        refuse_packed(value.dtype);
+        refuse_packed(dtype);
         return node("Cast",
                     {value},
                     "to = " + std::to_string(dtype_names(dtype).onnx_code),

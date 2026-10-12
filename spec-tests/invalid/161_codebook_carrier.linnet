@@ -1,0 +1,22 @@
+module m
+
+// A signed carrier has no code 0 to 15 for each value.
+dtype nibble = int(bits: 4)
+dtype levels = codebook(carrier: nibble, values: [
+    -8.0,
+    -4.0,
+    -2.0,
+    -1.5,
+    -1,
+    -0.75,
+    -0.5,
+    -0.25,
+    0,
+    0.25,
+    0.5,
+    1,
+    2,
+    4,
+    6,
+    8,
+])

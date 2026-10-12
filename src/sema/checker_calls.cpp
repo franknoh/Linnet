@@ -497,9 +497,7 @@ bool Checker::finish_inference(const ast::Expr& node,
             continue;
         }
         const DType bound = inference.bound.dtypes[generic.dtype_var];
-        const bool is_satisfied = bound.is_var
-                                      ? class_contains(generic.constraint, types_.class_of(bound))
-                                      : class_contains(generic.constraint, bound.scalar);
+        const bool is_satisfied = class_contains(generic.constraint, types_.class_of(bound));
         if (!is_satisfied) {
             error(codes::dtype_constraint,
                   node.span,
@@ -793,9 +791,7 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
         }
         const auto dtype = numeric_dtype(args[0]);
         const DTypeClass needed = is_float_function ? DTypeClass::Float : DTypeClass::Numeric;
-        const bool is_accepted =
-            dtype && (dtype->is_var ? class_contains(needed, types_.class_of(*dtype))
-                                    : class_contains(needed, dtype->scalar));
+        const bool is_accepted = dtype && class_contains(needed, types_.class_of(*dtype));
         if (!is_accepted) {
             error(codes::invalid_operand,
                   arg_span(0),
@@ -1047,9 +1043,7 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
         }
         check_dimension(count.value, arg_span(0));
         const DType element = dtype.value_or(DType::of(ScalarKind::I64));
-        if (dtype &&
-            !(element.is_var ? class_contains(DTypeClass::Numeric, types_.class_of(element))
-                             : class_contains(DTypeClass::Numeric, element.scalar))) {
+        if (dtype && !class_contains(DTypeClass::Numeric, types_.class_of(element))) {
             error(codes::dtype_constraint, node.span, "`iota` needs a numeric dtype");
             return types_.error();
         }

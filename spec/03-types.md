@@ -30,11 +30,19 @@ pub dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)
 dtype word = int(bits: 32)
 ```
 
-`dtype` is a keyword only at the start of an item followed by a name. Each parameter is a non-negative integer literal (a width) or `true`/`false` (a flag). A format no target stores is an error (E2128): implementations store the built-in formats, the FP8 formats E4M3 without infinities (`float(exponent: 4, mantissa: 3, inf: false)`) and E5M2 (`float(exponent: 5, mantissa: 2)`), which `std.dtypes` declares as `f8e4m3` and `f8e5m2`, and the 4-bit formats below.
+`dtype` is a keyword only at the start of an item followed by a name. Each parameter of `int` and `float` is a non-negative integer literal (a width) or `true`/`false` (a flag). A format no target stores is an error (E2128): implementations store the built-in formats, the FP8 formats E4M3 without infinities (`float(exponent: 4, mantissa: 3, inf: false)`) and E5M2 (`float(exponent: 5, mantissa: 2)`), which `std.dtypes` declares as `f8e4m3` and `f8e5m2`, and the 4-bit formats below.
 
 A format the prelude does not declare is a storage format: a tensor of it is cast to and from, reshaped, permuted, sliced, concatenated and indexed, but no operator or function computes in it (E2104), no literal has its type, and it belongs only to the class `DType` (§3.4). `cast` rounds to the nearest representable value, ties to even. A value beyond the format's range becomes infinity where the format has one, else NaN, else the largest value of its sign; NaN becomes zero in a format without it. A cast to an integer format wraps at its width, rounding a float toward zero first.
 
 A format of fewer than 8 bits is packed: a tensor of it stores two elements a byte along its last axis, element `2k` in the low four bits and `2k + 1` in the high four, so the last axis has an even length. An operation keeps that axis whole (E2129): `reshape` and `broadcast_to` keep its length, `permute` keeps it last, `concat` does not join along it, slicing takes all of it, and index notation does not read its elements. `std.dtypes` declares `i4 = int(bits: 4)`, `u4 = int(bits: 4, signed: false)` and `f4e2m1 = float(exponent: 2, mantissa: 1, inf: false, nan: false)` (FP4 E2M1: 0, 0.5, 1, 1.5, 2, 3, 4, 6 and their negatives). A checkpoint stores such a tensor as its bytes, `U8` with the last axis halved.
+
+A codebook format gives each code of an unsigned integer format a value:
+
+```text
+pub dtype nf4 = codebook(carrier: u4, values: [-1.0, -0.6961928009986877, ..., 0.7229568362236023, 1.0])
+```
+
+(`...` stands for the twelve values between.) The carrier is an unsigned `int` format of at most 8 bits, `values` one finite number per code in strictly increasing order; another carrier, count or order is an error (E2128). A tensor of a codebook format stores its codes as the carrier does, packed when the carrier is. Each declaration is a storage format of its own, apart from its carrier and from other codebooks. `cast` from one takes each code to its value as `f32`, then casts that; `cast` to one takes each value to the code of the nearest, a tie to the lower code and NaN to code 0. `std.dtypes` declares `nf4`, QLoRA's 4-bit NormalFloat over `u4`.
 
 ## 3.2 Tensor type syntax
 
