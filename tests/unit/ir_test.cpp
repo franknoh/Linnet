@@ -1,3 +1,4 @@
+#include "linnet/ir/codebooks.hpp"
 #include "linnet/ir/ir.hpp"
 
 #include "lowered.hpp"
@@ -141,6 +142,29 @@ TEST("ir: if, enums, tuples, defaults, and builtins") {
         }
     }
     CHECK(text.find("VERIFY") == std::string::npos);
+}
+
+TEST("ir: codebook casts lower to casts of their codes") {
+    const std::string source = "module m\n"
+                               "dtype two = int(bits: 4, signed: false)\n"
+                               "dtype levels = codebook(carrier: two, values: [\n"
+                               "    -8.0, -4.0, -2.0, -1.5, -1, -0.75, -0.5, -0.25,\n"
+                               "    0, 0.25, 0.5, 1, 2, 4, 6, 8,\n"
+                               "])\n"
+                               "fn round(x: Tensor[4; f32]) -> Tensor[4; f32] {\n"
+                               "    return cast<f32>(cast<levels>(x))\n"
+                               "}\n";
+    test::with_lowered(source, [](ir::Module& module) {
+        // Lowered, the casts stand as source wrote them.
+        CHECK_EQ(test::count(ir::print(module), "select"), std::size_t{0});
+        ir::expand_codebook_casts(module);
+        const std::string text = ir::print(module);
+        // Widening selects each code's value; narrowing counts midpoints.
+        CHECK_EQ(test::count(text, "select"), std::size_t{15});
+        CHECK_EQ(test::count(text, "compare gt"), std::size_t{15});
+        CHECK(ir::verify(module).empty());
+        return 0;
+    });
 }
 
 TEST("ir: verifier rejects malformed modules") {
