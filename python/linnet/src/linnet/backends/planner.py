@@ -9,9 +9,9 @@ executables in order, each on the values the ones before it made.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar, cast
 
 from ..compiler import PlanError
 from .contract import Backend, Context, Executable, Options, Region, Target
@@ -27,6 +27,30 @@ _SPANS = {
     "begin_custom_gradient": "end_custom_gradient",
     "begin_remat": "end_remat",
 }
+
+
+def _depths(graph: Graph) -> list[int]:
+    """How many loops, ops with a `grad` and recomputed blocks are open at
+    each step."""
+    depth = 0
+    out: list[int] = []
+    for step in graph.steps:
+        if step.op in _SPANS.values():
+            depth -= 1
+        out.append(depth)
+        if step.op in _SPANS:
+            depth += 1
+    return out
+
+
+def runs_apart(graph: Graph, region: Region) -> bool:
+    """Whether `region` can run on its own: a range `splittable` says so of,
+    or steps none of which lies inside a loop, an op's `grad` or a
+    recomputed block."""
+    if not region.members:
+        return splittable(graph, region.start, region.stop)
+    depths = _depths(graph)
+    return all(depths[i] == 0 and graph.steps[i].op not in _SPANS for i in region.members)
 
 
 def splittable(graph: Graph, start: int, stop: int) -> bool:
@@ -81,13 +105,13 @@ class Greedy(Generic[T]):
 
     def partition(self, graph: Graph, proposals: Sequence[Proposal[T]]) -> list[Proposal[T]]:
         taken: list[Proposal[T]] = []
-        ordered = sorted(
-            proposals, key=lambda p: (-(p.region.stop - p.region.start), p.cost, p.region.start)
-        )
+        ordered = sorted(proposals, key=lambda p: (-len(p.region.indices), p.cost, p.region.start))
+        used: set[int] = set()
         for proposal in ordered:
-            region = proposal.region
-            if all(region.stop <= t.region.start or t.region.stop <= region.start for t in taken):
+            steps = set(proposal.region.indices)
+            if not steps & used:
                 taken.append(proposal)
+                used |= steps
         return sorted(taken, key=lambda p: p.region.start)
 
 
@@ -122,6 +146,20 @@ class Plan(Generic[T]):
         return [values[value] for value in self.graph.outputs]
 
 
+def _check_order(graph: Graph, regions: Sequence[Region]) -> None:
+    """Each region, in the order they run, reads only what the entry takes
+    or an earlier region made."""
+    made = set(graph.inputs)
+    for region in regions:
+        missing = set(region.inputs) - made
+        if missing:
+            raise PlanError(
+                f"the region of steps {region.start} to {region.stop} reads values "
+                f"{sorted(missing)} that no earlier region makes"
+            )
+        made.update(region.outputs)
+
+
 class Planner(Generic[T]):
     """Plans a graph over `backends`, with `fallback` running whatever no
     region took. A backend whose `probe` declines the target is skipped."""
@@ -144,7 +182,7 @@ class Planner(Generic[T]):
             if backend.probe(target) is None:
                 continue
             for region in backend.match(graph, target):
-                if splittable(graph, region.start, region.stop):
+                if runs_apart(graph, region):
                     found.append(
                         Proposal(backend, region, self.cost_model.cost(backend, region, target))
                     )
@@ -155,16 +193,37 @@ class Planner(Generic[T]):
             raise PlanError(f"the fallback backend `{self.fallback.name}` does not run on {target}")
         options = options or Options()
         taken = self.partitioner.partition(graph, self.proposals(graph, target))
-        regions: list[tuple[Backend[T], Region]] = []
-        at = 0
-        for proposal in taken:
-            regions += self._fill(graph, at, proposal.region.start)
-            regions.append((proposal.backend, proposal.region))
-            at = proposal.region.stop
-        regions += self._fill(graph, at, len(graph.steps))
+        regions: list[tuple[Backend[T], Region]] = [(p.backend, p.region) for p in taken]
+        # The fallback runs each run of steps no region took.
+        used = {i for p in taken for i in p.region.indices}
+        start = 0
+        for i in range(len(graph.steps) + 1):
+            if i == len(graph.steps) or i in used:
+                regions += self._fill(graph, start, i)
+                start = i + 1
+        regions.sort(key=lambda pair: pair[1].start)
+        _check_order(graph, [region for _, region in regions])
+        # A backend that compiles several regions at once (`compile_regions`)
+        # gets all of its own together.
+        compiled: dict[int, Executable[T]] = {}
+        mine: dict[int, list[int]] = {}
+        for i, (backend, _) in enumerate(regions):
+            mine.setdefault(id(backend), []).append(i)
+        for indices in mine.values():
+            backend = regions[indices[0]][0]
+            together = cast(
+                "Callable[[list[Region], Target, Options], Sequence[Executable[T]]] | None",
+                getattr(backend, "compile_regions", None),
+            )
+            if together is not None and len(indices) > 1:
+                made = together([regions[i][1] for i in indices], target, options)
+                compiled.update(zip(indices, made, strict=True))
+                continue
+            for i in indices:
+                compiled[i] = backend.compile(regions[i][1], target, options)
         steps = tuple(
-            PlanStep(backend.name, region, backend.compile(region, target, options))
-            for backend, region in regions
+            PlanStep(backend.name, region, compiled[i])
+            for i, (backend, region) in enumerate(regions)
         )
         return Plan(graph, target, steps)
 
