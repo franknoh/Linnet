@@ -6,10 +6,12 @@
 #include "linnet/ir/ir.hpp"
 #include "linnet/support/text.hpp"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -20,6 +22,10 @@ namespace linnet::backend {
 using sema::ScalarKind;
 
 namespace {
+
+// The most elements a value computed from constants alone may have for a
+// slice to make it again rather than take it (`constant_steps`).
+constexpr std::int64_t max_constant_elements = 64;
 
 constexpr std::array<std::pair<Elementwise, std::string_view>, 24> elementwise_spellings = {{
     {Elementwise::Add, "add"},       {Elementwise::Sub, "sub"},     {Elementwise::Mul, "mul"},
@@ -727,8 +733,9 @@ public:
             names_[slice.inputs[i]] =
                 target_.input("x" + std::to_string(i), input.shape, input.dtype);
         }
-        // The parameters and states it reads, and the constants it reads that
-        // a step before it made, in the graph's order.
+        // The parameters and states it reads, and the constants (and small
+        // values computed from constants alone) it reads that a step before
+        // it made, in the graph's order.
         std::set<std::uint32_t> read;
         for (std::size_t i = slice.start; i < slice.stop; ++i) {
             for (const RecordedOperand& operand : steps[i]->operands) {
@@ -743,11 +750,27 @@ public:
             steps.begin() + static_cast<std::ptrdiff_t>(slice.start),
             steps.begin() + static_cast<std::ptrdiff_t>(slice.stop));
         const std::set<std::uint32_t> given(slice.inputs.begin(), slice.inputs.end());
+        const std::map<std::uint32_t, const RecordedNode*> constant = constant_steps(graph, steps);
+        // What the constant steps before it that it reads read in turn.
+        std::set<const RecordedNode*> remade;
+        std::vector<std::uint32_t> wanted(read.begin(), read.end());
+        while (!wanted.empty()) {
+            const std::uint32_t id = wanted.back();
+            wanted.pop_back();
+            const auto found = constant.find(id);
+            if (found == constant.end() || inside.contains(found->second) || given.contains(id) ||
+                !remade.insert(found->second).second) {
+                continue;
+            }
+            for (const RecordedOperand& operand : found->second->operands) {
+                wanted.push_back(operand.value);
+            }
+        }
         for (const RecordedNode* node : steps) {
-            const bool persistent = node->op == "parameter" || node->op == "state";
-            const bool constant = node->op == "constant" && !inside.contains(node);
-            if ((persistent || constant) && node->results.size() == 1 &&
-                read.contains(node->results[0]) && !given.contains(node->results[0])) {
+            const bool persistent = (node->op == "parameter" || node->op == "state") &&
+                                    node->results.size() == 1 && read.contains(node->results[0]) &&
+                                    !given.contains(node->results[0]);
+            if (persistent || remade.contains(node)) {
                 replay(*node);
             }
         }
@@ -773,6 +796,44 @@ public:
     }
 
 private:
+    // The steps whose values a slice makes again rather than takes: each
+    // `constant`, and each `elementwise`, `convert`, `reshape` or
+    // `broadcast` of such values alone that makes at most
+    // `max_constant_elements` elements (a scale computed from a width, say).
+    static std::map<std::uint32_t, const RecordedNode*>
+    constant_steps(const RecordedGraph& graph, const std::vector<const RecordedNode*>& steps) {
+        static constexpr std::array<std::string_view, 4> computing = {
+            "elementwise", "convert", "reshape", "broadcast"};
+        std::map<std::uint32_t, const RecordedNode*> found;
+        const auto known = [&](const RecordedOperand& operand) {
+            return found.contains(operand.value);
+        };
+        const auto small = [&](std::uint32_t id) {
+            return id < graph.values.size() &&
+                   element_count(graph.values[id].shape) <= max_constant_elements;
+        };
+        for (const RecordedNode* node : steps) {
+            const bool computed = std::ranges::find(computing, node->op) != computing.end() &&
+                                  !node->operands.empty() && node->regions.empty() &&
+                                  std::ranges::all_of(node->operands, known) &&
+                                  std::ranges::all_of(node->results, small);
+            if (node->op == "constant" || computed) {
+                for (const std::uint32_t id : node->results) {
+                    found.emplace(id, node);
+                }
+            }
+        }
+        return found;
+    }
+
+    static std::int64_t element_count(const Dims& shape) {
+        std::int64_t count = 1;
+        for (const std::int64_t dim : shape) {
+            count *= dim;
+        }
+        return count;
+    }
+
     template <typename T>
     const T& attr(const RecordedNode& node, std::string_view key) const {
         const RecordedAttr* found = node.attr(key);

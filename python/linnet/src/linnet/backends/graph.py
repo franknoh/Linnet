@@ -9,8 +9,9 @@ it and comes back, so any range can run on a backend of its own.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from ..compiler import PlanError
@@ -34,6 +35,12 @@ STRUCTURE = frozenset(
         "finish",
     )
 )
+
+# Steps that compute from their operands alone: a value they make from
+# constants alone is made again by each region that reads it, as a
+# constant is, when it has at most `_MAX_CONSTANT_ELEMENTS` elements.
+_COMPUTING = frozenset(("elementwise", "convert", "reshape", "broadcast"))
+_MAX_CONSTANT_ELEMENTS = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,10 @@ class Graph:
     values: tuple[Value, ...]
     steps: tuple[Step, ...]
     calls: tuple[Call, ...]
+    # What the properties below computed once.
+    _memo: dict[str, Mapping[int, Step]] = field(
+        default_factory=dict[str, Mapping[int, Step]], compare=False, repr=False
+    )
 
     @classmethod
     def parse(cls, text: str) -> Graph:
@@ -125,6 +136,29 @@ class Graph:
         reader = _Reader(values)
         reader.nodes(_list(document["nodes"]), ())
         return cls(str(document["target"]), values, tuple(reader.steps), tuple(reader.calls))
+
+    @property
+    def constants(self) -> Mapping[int, Step]:
+        """The values no region takes from another but makes again, by the
+        step that makes each: constants, and small values computed from
+        constants alone (a scale computed from a width, say)."""
+        if "constants" not in self._memo:
+            found: dict[int, Step] = {}
+            for step in self.steps:
+                constant = step.op == "constant" or (
+                    step.op in _COMPUTING
+                    and bool(step.operands)
+                    and not step.callbacks
+                    and all(o.value is not None and o.value in found for o in step.operands)
+                    and all(
+                        math.prod(self.values[v].shape) <= _MAX_CONSTANT_ELEMENTS
+                        for v in step.results
+                    )
+                )
+                if constant:
+                    found.update(dict.fromkeys(step.results, step))
+            self._memo["constants"] = MappingProxyType(found)
+        return self._memo["constants"]
 
     def find(self, op: str) -> Iterator[Step]:
         """The steps of kind `op`, in order."""

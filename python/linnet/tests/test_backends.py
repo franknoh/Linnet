@@ -492,3 +492,14 @@ def test_a_measured_plan_gives_the_entry_results(tmp_path: Path) -> None:
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected)
+
+
+def test_a_region_makes_again_what_it_computes_from_constants() -> None:
+    graph = _decode()
+    attention = next(graph.semantic_calls("std.nn.attention::grouped_attention"))
+    region = Region.of(graph, attention.start, attention.stop, attention.index)
+    query, key, value, scale, mask = attention.arguments
+    # The scale, computed from the head width, is no input: the region
+    # makes it again.
+    assert scale.value in graph.constants
+    assert region.inputs == (query.value, key.value, value.value, mask.value)

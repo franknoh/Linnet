@@ -104,7 +104,7 @@ class Region:
         local: dict[int, int] = {}
         persistent = {value: path for path, value in self.graph.parameters.items()}
         state = {value: path for path, value in self.graph.states.items()}
-        constants = {v: step for step in self.graph.find("constant") for v in step.results}
+        constants = self.graph.constants
         values = self.graph.values
 
         def source(value: int | None) -> JsonValue:
@@ -119,7 +119,9 @@ class Region:
             if value in state:
                 return ["state", self.states.index(state[value])]
             if value in constants:
-                return ["constant", dict(constants[value].attrs)]
+                step = constants[value]
+                made = [source(o.value) for o in step.operands]
+                return ["constant", step.op, dict(step.attrs), made, step.results.index(value)]
             return "outside"  # what a marker step names, which crosses nothing
 
         steps: list[JsonValue] = []
@@ -151,7 +153,9 @@ class Region:
         """The range's region: its inputs are the values its steps read that
         steps before it made, in order of first use; its outputs the values
         it makes that later steps read, or that the entry returns. A
-        constant crosses no boundary: each region that reads one makes it."""
+        constant crosses no boundary, nor a small value computed from
+        constants alone (`Graph.constants`): each region that reads one
+        makes it."""
         return cls.of_steps(graph, range(start, stop), call)
 
     @classmethod
@@ -162,7 +166,7 @@ class Region:
         start, stop = members[0], members[-1] + 1
         persistent = {value: path for path, value in graph.parameters.items()}
         state = {value: path for path, value in graph.states.items()}
-        constants = {value for step in graph.find("constant") for value in step.results}
+        constants = graph.constants
         made: set[int] = set()
         inputs: dict[int, None] = {}
         parameters: dict[str, None] = {}
@@ -196,9 +200,9 @@ class Region:
         outputs = tuple(
             value
             for step in (graph.steps[i] for i in members)
-            if step.op not in SOURCES and step.op != "constant"
+            if step.op not in SOURCES
             for value in step.results
-            if value in read_after
+            if value in read_after and value not in constants
         )
         contiguous = len(members) == stop - start
         if contiguous and start == 0 and stop == len(graph.steps):
