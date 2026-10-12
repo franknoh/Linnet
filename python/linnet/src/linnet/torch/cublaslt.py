@@ -26,6 +26,7 @@ from ..compiler import LinnetError, PlanError
 from ..runtime import Executable, Runtime, TensorRef
 
 _DTYPES = {torch.float32: "f32", torch.float16: "f16", torch.bfloat16: "bf16"}
+_BYTES = {"f32": 4, "f16": 2, "bf16": 2}
 _runtimes: dict[int, Runtime] = {}
 
 
@@ -160,10 +161,14 @@ class _Product:
         # Which part of the output each of the region's outputs is.
         self._parts = [made.index(value) for value in region.outputs]
         self._joined: torch.Tensor | None = None
+        # The joined weights are a copy of the model's.
+        k = region.graph.values[region.inputs[0]].shape[-1]
+        size = _BYTES[region.graph.values[region.inputs[0]].dtype]
         self._meta = ExecutableMeta(
             tuple(TensorSpec(values[v].shape, values[v].dtype) for v in region.inputs),
             tuple(TensorSpec(values[v].shape, values[v].dtype) for v in region.outputs),
             host="native",
+            holds=sum(widths) * k * size if len(weights) > 1 else 0,
         )
 
     @property

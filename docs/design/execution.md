@@ -90,8 +90,8 @@ class Backend(Protocol):
 - `match` proposes the regions it can run: a semantic call by identity, a
   scope, or any set of nodes.
 - `compile` returns an executable for one region.
-- `estimate_cost` returns seconds and bytes. Without it, the planner
-  benchmarks the region or asks `linnet.resources`.
+- `estimate_cost` returns seconds and the bytes the executable keeps beyond
+  the model's own. Without it, the planner benchmarks the region.
 
 Operator libraries (cuBLASLt, FlashInfer, DeepGEMM), fusing compilers
 (Triton, Inductor) and whole-graph compilers (XLA, TensorRT) implement the
@@ -173,8 +173,14 @@ first partitioner is greedy with a benchmark cache; a global solver can
 replace it without touching backends.
 
 A region's cost comes from the benchmark cache (keyed by device, backend
-version and region), else the backend's `estimate_cost`, else
-`linnet.resources`.
+version and the region's kind, the same for each layer), else from timing
+it (`Measured`: the graph run once by the fallback, cut at every region's
+boundary, gives each region real inputs), else from the backend's
+`estimate_cost`. The fallback is priced on the same steps (steps apart, as
+their ranges). A region is taken when it saves at least `Options.margin`
+of the fallback's time, the largest saving first, within `Options.memory`
+bytes kept beyond the model's own. Conversion costs between regions are
+not counted yet.
 
 ## Execution plan
 

@@ -113,7 +113,7 @@ def test_a_package_adds_a_backend_through_its_entry_point() -> None:
 def test_plans_use_the_installed_backends(tmp_path: Path) -> None:
     model = _model(tmp_path)
     token = torch.tensor([[3]], dtype=torch.int32)
-    plan = model.plan_for("decode", [token, torch.tensor(0, dtype=torch.int32)])
+    plan = model.plan_for("decode", [token, torch.tensor(0, dtype=torch.int32)], measure=False)
     assert [step.backend for step in plan.steps].count("plugin-linear") == 2 * 7 + 1
     with torch.no_grad():
         (logits,) = plan.run([token, torch.tensor(0, dtype=torch.int32)], model.context_for(plan))

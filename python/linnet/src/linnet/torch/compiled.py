@@ -27,7 +27,20 @@ import numpy as np
 import torch
 
 from .. import ir, lora
-from ..backends import Backend, Context, Graph, Plan, Planner, Region, available
+from ..backends import (
+    Backend,
+    Benchmarks,
+    Context,
+    CostModel,
+    Graph,
+    Measured,
+    Options,
+    Plan,
+    Planner,
+    Region,
+    Target,
+    available,
+)
 from ..backends.conformance import Finding
 from ..compiler import (
     bind_arguments,
@@ -597,29 +610,57 @@ class CompiledLinnetModule(LinnetModule):
         *,
         backends: Sequence[Backend[torch.Tensor]] | None = None,
         compile: bool | str | None = None,
+        measure: bool = True,
+        memory: int | None = None,
+        benchmarks: Benchmarks | None = None,
     ) -> Plan[torch.Tensor]:
         """`entry`'s execution plan for inputs like `inputs`: each of
         `backends` (every one `linnet.backends.available` lists, by default)
-        takes the regions it matches, and the generated source runs the
+        proposes the regions it matches, and the generated source runs the
         rest (docs/design/execution.md). Run it with
-        `plan.run(inputs, module.context_for(plan))`."""
+        `plan.run(inputs, module.context_for(plan))`.
+
+        With `measure`, a backend takes a region only where it runs it
+        faster than the generated source, as timed on `inputs` (once per
+        kind of region and device: `benchmarks`, by default the ones kept
+        in `$LINNET_HOME`, keeps the times), and its regions together keep
+        at most `memory` bytes beyond the model's own. Without, each takes
+        what it matches, the largest regions first."""
         from .backend import TorchSource, target_of
+        from .timing import timer_for
 
         if backends is None:
             backends = cast("list[Backend[torch.Tensor]]", available())
         bindings = self.bindings_for(entry, inputs, generics or {})
         graph = self.graph_for(entry, bindings, trains=self.trains())
+        target = target_of(self.interpreter.device)
         fallback = TorchSource(self, entry, bindings, generics or {}, compile)
-        return Planner(backends, fallback).plan(graph, target_of(self.interpreter.device))
+        costs: CostModel[torch.Tensor] | None = None
+        if measure:
+            reference = TorchSource(self, entry, bindings, generics or {}, None)
+            costs = Measured(
+                inputs,
+                self._context(target),
+                reference,
+                timer_for(self.interpreter.device),
+                benchmarks if benchmarks is not None else Benchmarks.default(),
+            )
+        with torch.no_grad():
+            return Planner(backends, fallback, cost_model=costs).plan(
+                graph, target, Options(memory=memory)
+            )
 
     def context_for(self, plan: Plan[torch.Tensor]) -> Context[torch.Tensor]:
         """What `plan`'s executables run with: this module's parameters, by
         path."""
+        return self._context(plan.target)
+
+    def _context(self, target: Target) -> Context[torch.Tensor]:
         parameters = {
             name.removeprefix("root."): parameter.detach()
             for name, parameter in self.named_parameters()
         }
-        return Context(plan.target, parameters)
+        return Context(target, parameters)
 
     def conform(
         self,
@@ -640,10 +681,6 @@ class CompiledLinnetModule(LinnetModule):
         graph = self.graph_for(entry, bindings, trains=self.trains())
         target = target_of(self.interpreter.device)
         fallback = TorchSource(self, entry, bindings, generics or {}, None)
-        parameters = {
-            name.removeprefix("root."): parameter.detach()
-            for name, parameter in self.named_parameters()
-        }
 
         def difference(got: torch.Tensor, expected: torch.Tensor) -> float:
             if got.shape != expected.shape:
@@ -659,7 +696,7 @@ class CompiledLinnetModule(LinnetModule):
                 backend,
                 fallback,
                 inputs,
-                Context(target, parameters),
+                self._context(target),
                 difference,
                 tolerance,
             )

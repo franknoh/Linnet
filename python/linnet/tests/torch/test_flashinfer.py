@@ -64,7 +64,9 @@ def test_flashinfer_attends_as_the_entry_does(weights: Path) -> None:
     def positions(step: int) -> torch.Tensor:
         return torch.tensor(step, dtype=torch.int32, device="cuda")
 
-    plan = planned.plan_for("decode", [tokens, positions(0)], backends=[FlashInfer(), CublasLt()])
+    plan = planned.plan_for(
+        "decode", [tokens, positions(0)], backends=[FlashInfer(), CublasLt()], measure=False
+    )
     assert [step.backend for step in plan.steps].count("flashinfer") == 2
     parameters = {
         name.removeprefix("root."): parameter.detach()
