@@ -2,6 +2,7 @@
 
 #include "linnet/backend/kernel.hpp"
 #include "linnet/backend/python_target.hpp"
+#include "linnet/backend/recorded_graph.hpp"
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
@@ -2137,7 +2138,11 @@ std::expected<std::string, std::string> export_torch_source(ir::Module& module,
         return std::unexpected(*conflict);
     }
     TorchTarget target(options);
-    return export_graph(module, options, target);
+    if (options.gradient) {
+        return export_graph(module, options, target);
+    }
+    TorchTarget recorded(options);
+    return export_through_graph(module, options, recorded, "torch", target);
 }
 
 } // namespace linnet::backend

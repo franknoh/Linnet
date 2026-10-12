@@ -1180,6 +1180,18 @@ private:
 
 } // namespace
 
+std::expected<std::string, std::string> export_through_graph(ir::Module& module,
+                                                             const GraphExportOptions& options,
+                                                             GraphTarget& recorded,
+                                                             std::string_view format,
+                                                             GraphTarget& target) {
+    RecordingTarget recorder(recorded, std::string(format));
+    if (auto text = export_graph(module, options, recorder); !text) {
+        return text;
+    }
+    return replay_graph(recorder.graph(), target);
+}
+
 std::expected<std::string, std::string> replay_graph(const RecordedGraph& graph,
                                                      GraphTarget& target) {
     try {

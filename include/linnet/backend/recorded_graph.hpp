@@ -211,6 +211,16 @@ private:
 std::expected<std::string, std::string> replay_graph(const RecordedGraph& graph,
                                                      GraphTarget& target);
 
+// `module`'s entry exported through its graph: the calls `export_graph`
+// makes to `recorded`, kept as a graph, then made again on `target`, a fresh
+// target of the same kind, whose `finish` it returns. Graph passes run
+// between the two.
+std::expected<std::string, std::string> export_through_graph(ir::Module& module,
+                                                             const GraphExportOptions& options,
+                                                             GraphTarget& recorded,
+                                                             std::string_view format,
+                                                             GraphTarget& target);
+
 // A range of a recorded graph's steps to print as an entry of its own: the
 // steps are its nodes but `begin_call` and `end_call`, numbered in order, as
 // `linnet.backends.graph` numbers them. `inputs` become the entry's inputs,
