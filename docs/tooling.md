@@ -10,6 +10,7 @@ and writes text, and runs no model.
 | `inspect` | parameter manifest, tokens, AST, Core IR, emitted source |
 | `plan` | JSON plan for a materializer |
 | `stablehlo`, `onnx`, `torch`, `jax` | export one entry with bound shapes |
+| `graph` | the calls an export makes to its target, as JSON ([Graph format](graph-format.md)) |
 | `emit` | Linnet source from a plan |
 | `explain` | which implementation each library operation gets |
 | `init` | create a package ([Modules and packages](modules-and-packages.md)) |

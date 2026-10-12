@@ -3,6 +3,7 @@
 #include "linnet/backend/graph_export.hpp"
 
 #include <expected>
+#include <memory>
 #include <string>
 
 namespace linnet::backend {
@@ -19,5 +20,10 @@ using TorchSourceOptions = GraphExportOptions;
 
 std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                                             const TorchSourceOptions& options);
+
+// The target `export_torch_source` prints with, for a caller that drives it itself
+// (`RecordingTarget`, `replay_graph`).
+std::expected<std::unique_ptr<GraphTarget>, std::string>
+make_torch_target(const TorchSourceOptions& options);
 
 } // namespace linnet::backend

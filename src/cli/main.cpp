@@ -3,6 +3,7 @@
 #include "linnet/backend/onnx.hpp"
 #include "linnet/backend/plan.hpp"
 #include "linnet/backend/plan_reader.hpp"
+#include "linnet/backend/recorded_graph.hpp"
 #include "linnet/backend/stablehlo.hpp"
 #include "linnet/backend/torch_source.hpp"
 #include "linnet/diagnostic/diagnostic.hpp"
@@ -129,6 +130,11 @@ void print_usage(std::FILE* out) {
         "                                       compute a block's calls again instead\n"
         "                                       of keeping their values; --lora as for\n"
         "                                       torch\n"
+        "  graph [--target torch|jax] [--replay] [options of the target] <file>\n"
+        "                                       Print an entry's graph (JSON) as the\n"
+        "                                       target sees it: every call the export\n"
+        "                                       makes, nested by call; --replay prints\n"
+        "                                       the target's source rebuilt from it\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent|fast] <file>\n"
@@ -543,12 +549,57 @@ int run_explain(std::span<const std::string_view> args,
     return report(checked.sources, checked.sink, options);
 }
 
+// What `run_graph_export` prints: the format's own document, the graph the
+// format's target saw (`linnet graph`), or its source rebuilt from that
+// graph (`linnet graph --replay`).
+enum class GraphMode : std::uint8_t { Source, Graph, Replay };
+
+// `linnet graph`: the calls `export_graph` makes to `format`'s target, as
+// JSON, or with `GraphMode::Replay` made again on a fresh target, whose
+// source it prints. False, with the reason printed, when either fails.
+bool print_graph(ir::Module& core,
+                 const backend::GraphExportOptions& export_options,
+                 std::string_view format,
+                 GraphMode mode) {
+    if (export_options.gradient) {
+        std::fputs("linnet: graph does not take --grad\n", stderr);
+        return false;
+    }
+    const auto make = [&] {
+        return format == "jax" ? backend::make_jax_target(export_options)
+                               : backend::make_torch_target(export_options);
+    };
+    auto inner = make();
+    if (!inner) {
+        std::fprintf(stderr, "linnet: %s\n", inner.error().c_str());
+        return false;
+    }
+    backend::RecordingTarget recorder(**inner, std::string(format));
+    if (const auto text = backend::export_graph(core, export_options, recorder); !text) {
+        std::fprintf(stderr, "linnet: cannot record the graph: %s\n", text.error().c_str());
+        return false;
+    }
+    if (mode == GraphMode::Graph) {
+        std::fputs(backend::recorded_graph_json(recorder.graph()).c_str(), stdout);
+        return true;
+    }
+    auto fresh = make();
+    const auto replayed = backend::replay_graph(recorder.graph(), **fresh);
+    if (!replayed) {
+        std::fprintf(stderr, "linnet: %s\n", replayed.error().c_str());
+        return false;
+    }
+    std::fputs(replayed->c_str(), stdout);
+    return true;
+}
+
 // `linnet stablehlo` and `linnet onnx`: one entry of a root block as a
 // static-shape graph in the named format.
 int run_graph_export(std::span<const std::string_view> args,
                      const Options& options,
                      const char* program,
-                     std::string_view format) {
+                     std::string_view format,
+                     GraphMode mode = GraphMode::Source) {
     backend::GraphExportOptions export_options;
     std::string std_option;
     std::string numerics = "equivalent";
@@ -696,6 +747,11 @@ int run_graph_export(std::span<const std::string_view> args,
     opt::select_candidates(core, opt::torch_candidates(), *allowed);
     export_options.full_precision = *allowed != opt::Legality::Approximate;
     export_options.kernels = *allowed != opt::Legality::Exact;
+    if (mode != GraphMode::Source) {
+        return print_graph(core, export_options, format, mode)
+                   ? report(checked.sources, checked.sink, options)
+                   : exit_failure;
+    }
     const auto text = format == "onnx"    ? backend::export_onnx(core, export_options)
                       : format == "torch" ? backend::export_torch_source(core, export_options)
                       : format == "jax"   ? backend::export_jax_source(core, export_options)
@@ -1297,6 +1353,24 @@ int main(int argc, char** argv) {
     }
     if (command == "stablehlo" || command == "onnx" || command == "torch" || command == "jax") {
         return run_graph_export(rest, options, argv[0], command);
+    }
+    if (command == "graph") {
+        std::string_view target = "torch";
+        GraphMode mode = GraphMode::Graph;
+        std::vector<std::string_view> forwarded;
+        for (std::size_t i = 0; i < rest.size(); ++i) {
+            if (rest[i] == "--replay") {
+                mode = GraphMode::Replay;
+            } else if (rest[i] == "--target" && i + 1 < rest.size()) {
+                target = rest[++i];
+            } else {
+                forwarded.push_back(rest[i]);
+            }
+        }
+        if (target != "torch" && target != "jax") {
+            return usage_error("--target must be `torch` or `jax`");
+        }
+        return run_graph_export(forwarded, options, argv[0], target, mode);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

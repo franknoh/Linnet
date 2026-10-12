@@ -208,6 +208,22 @@ public:
         const auto found = call_generics_.find(name);
         return found == call_generics_.end() ? std::nullopt : std::optional(found->second);
     }
+    const std::map<std::string, std::int64_t>& call_generics() const { return call_generics_; }
+
+    // A call's boundary, for a target that keeps the program's structure
+    // (`RecordingTarget`): `begin_call` before the call's operations,
+    // `end_call` after them with its tensor results. Only a target whose
+    // `wants_calls` says so is told.
+    struct CallInfo {
+        std::string callee;    // semantic identity: `std.nn.linear::linear`, `m::Mlp.forward`
+        bool semantic = false; // an `op`
+        std::string path;      // a method's block path (`layers.3.mlp`), else empty
+        std::map<std::string, std::int64_t> generics;     // its dimension generics, by name
+        std::vector<std::optional<TensorInfo>> arguments; // nothing for a non-tensor argument
+    };
+    virtual bool wants_calls() const { return false; }
+    virtual void begin_call(const CallInfo& call) { (void)call; }
+    virtual void end_call(const std::vector<TensorInfo>& results) { (void)results; }
 
     // A convolution's window geometry, from the call's own generics: one
     // stride and one padding per spatial axis. `conv1d` and the square

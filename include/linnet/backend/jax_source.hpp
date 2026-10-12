@@ -3,6 +3,7 @@
 #include "linnet/backend/graph_export.hpp"
 
 #include <expected>
+#include <memory>
 #include <string>
 
 namespace linnet::backend {
@@ -17,5 +18,10 @@ using JaxSourceOptions = GraphExportOptions;
 
 std::expected<std::string, std::string> export_jax_source(ir::Module& module,
                                                           const JaxSourceOptions& options);
+
+// The target `export_jax_source` prints with, for a caller that drives it itself
+// (`RecordingTarget`, `replay_graph`).
+std::expected<std::unique_ptr<GraphTarget>, std::string>
+make_jax_target(const JaxSourceOptions& options);
 
 } // namespace linnet::backend
