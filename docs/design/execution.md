@@ -265,7 +265,7 @@ against the entry as the bench runs it (Inductor, one CUDA graph):
 | | entry | cuBLASLt + Inductor slices | + FlashInfer attention |
 | --- | ---: | ---: | ---: |
 | `decode`, 1 row, positions 0-128 | 160 tok/s | 159 tok/s | 151 tok/s |
-| `decode_rows`, 16 rows, positions 1,000-3,370 | 1,772 tok/s | 1,825 tok/s | 1,904 tok/s |
+| `decode_rows`, 16 rows, positions 1,000-3,377 | 1,772 tok/s | 1,825 tok/s | 1,904 tok/s |
 
 FlashInfer pays at long caches and costs at short ones, which is the cost
 model's choice (P3).
