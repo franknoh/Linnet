@@ -1,8 +1,8 @@
 """The 4-bit formats (`std.dtypes`: `i4`, `u4`, `f4e2m1`), two elements a
-byte along the last axis: PyTorch holds their bytes and casts as
+byte along the last axis: PyTorch and ONNX hold their bytes and cast as
 `ml_dtypes` does; a checkpoint's packed `U8` bytes bind to a parameter of
-one on PyTorch (compiled and interpreted) and JAX alike; StableHLO casts
-them natively; ONNX export refuses them."""
+one on PyTorch (compiled and interpreted), JAX and ONNX alike; StableHLO
+casts them natively."""
 
 # pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
@@ -18,7 +18,7 @@ import torch
 from numpy.typing import NDArray
 from safetensors.torch import save_file
 
-from linnet.compiler import LinnetError, find_compiler
+from linnet.compiler import find_compiler
 from linnet.torch import load
 from linnet.torch.packed import pack4, unpack4
 from tests.helpers import STDLIB
@@ -169,12 +169,16 @@ def test_stablehlo_casts_natively(model: tuple[Path, Path, NDArray[np.float32]])
     assert np.array_equal(np.asarray(got), expected)
 
 
-def test_onnx_refuses_four_bits(model: tuple[Path, Path, NDArray[np.float32]]) -> None:
-    pytest.importorskip("onnx")
-    from linnet.onnx import export_model
+def test_onnx_holds_the_bytes(model: tuple[Path, Path, NDArray[np.float32]]) -> None:
+    pytest.importorskip("onnxruntime")
+    from linnet.onnx import load_model
 
-    source, weights, _ = model
-    with pytest.raises(LinnetError, match="4-bit"):
-        export_model(
-            source, generics={"R": R, "N": N}, weights=weights, std_root=STDLIB, entry="forward"
-        )
+    source, weights, wide = model
+    loaded = load_model(source, generics={"R": R, "N": N}, weights=weights, std_root=STDLIB)
+    got = np.asarray(loaded.run_entry("forward", [_input()]))
+    np.testing.assert_allclose(got, wide + _input(), rtol=1e-6, atol=1e-6)
+    rows = VALUES.reshape(2, N)
+    rounded = np.asarray(loaded.run_entry("round", [rows]))
+    expected = rows.astype(ml_dtypes.float4_e2m1fn).astype(np.float32)
+    assert np.array_equal(rounded, expected)
+    assert np.array_equal(np.signbit(rounded), np.signbit(expected))

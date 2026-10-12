@@ -1,8 +1,8 @@
 """Codebook formats (`std.dtypes::nf4`): a tensor holds its carrier's codes
 (`u4`, two a byte), a cast widens each code to its value and narrows each
 value to the nearest code (a tie to the lower). The same on PyTorch,
-compiled and interpreted, JAX and StableHLO, from a checkpoint's packed
-bytes."""
+compiled and interpreted, JAX, ONNX and StableHLO, from a checkpoint's
+packed bytes."""
 
 # pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
@@ -155,6 +155,18 @@ def test_jax_widens(model: tuple[Path, Path, NDArray[np.float32]]) -> None:
         )
         got = np.asarray(function(_input()))
         np.testing.assert_allclose(got, wide + _input(), rtol=1e-6, atol=1e-6)
+
+
+def test_onnx_widens_and_narrows(model: tuple[Path, Path, NDArray[np.float32]]) -> None:
+    pytest.importorskip("onnxruntime")
+    from linnet.onnx import load_model
+
+    source, weights, wide = model
+    loaded = load_model(source, generics={"R": R, "N": N}, weights=weights, std_root=STDLIB)
+    got = np.asarray(loaded.run_entry("dequantize", [_input()]))
+    np.testing.assert_allclose(got, wide + _input(), rtol=1e-6, atol=1e-6)
+    rows = VALUES.reshape(2, N)
+    assert np.array_equal(np.asarray(loaded.run_entry("round", [rows])), _nearest(rows))
 
 
 def test_stablehlo_narrows(model: tuple[Path, Path, NDArray[np.float32]]) -> None:

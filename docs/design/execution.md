@@ -252,7 +252,7 @@ as storage formats (cast to and from, no operators); `std.quant`'s FP8
 layers on `f8e4m3`; and the prelude, `stdlib/prelude.linnet`, compiled
 into the checker, which declares `i8` to `f64`; the packed 4-bit formats
 (`i4`, `u4`, `f4e2m1`, two elements a byte along the last axis, which
-PyTorch holds as bytes and JAX and StableHLO as their own types); and
+PyTorch and ONNX hold as bytes and JAX and StableHLO as their own types); and
 codebook formats such as NF4 (`std.dtypes::nf4`), held as their carrier's
 codes, whose casts lower to compares and selects every target runs.
 
