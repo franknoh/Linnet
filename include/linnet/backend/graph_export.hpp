@@ -179,6 +179,22 @@ public:
     // The states whose value before the call the next call alone reads, as
     // a replay of the graph knows: a write into one may happen in place.
     virtual void sole_readers_of(const std::vector<std::string>& states) { (void)states; }
+    // Sibling native calls a replay of the graph found: one implementation,
+    // one input (`operands[0]`), each its own weights (`operands[1]`, a
+    // parameter), and its other operands parameters, or absent. `reshaped`
+    // names, for an operand made by reshaping a parameter, that parameter. A
+    // target that runs them as one product returns each one's result in
+    // order; otherwise nothing, and each is called on its own.
+    struct Sibling {
+        std::vector<std::optional<TensorInfo>> operands;
+        std::vector<std::optional<TensorInfo>> reshaped;
+    };
+    virtual std::optional<std::vector<std::string>>
+    join_siblings(const std::string& implementation, const std::vector<Sibling>& siblings) {
+        (void)implementation;
+        (void)siblings;
+        return std::nullopt;
+    }
     // Fully sharded parameters (see `GraphExportOptions::fully_shard`): a
     // target that supports them gathers a parameter's parts into the whole.
     virtual bool supports_fully_shard() const { return false; }

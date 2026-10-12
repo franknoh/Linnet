@@ -691,7 +691,7 @@ namespace {
 class Replayer {
 public:
     // Tells the target the next call's section, where it changes.
-    void enter(bool constant) {
+    void enter_section(bool constant) {
         const auto section =
             constant ? GraphTarget::Section::Constants : GraphTarget::Section::Call;
         if (section != section_) {
@@ -700,7 +700,7 @@ public:
         }
     }
 
-    Replayer(const RecordedGraph& graph, GraphTarget& target) : target_(target) {
+    Replayer(const RecordedGraph& graph, GraphTarget& target) : graph_(graph), target_(target) {
         names_.reserve(graph.values.size());
         for (const RecordedValue& value : graph.values) {
             names_.push_back(value.name);
@@ -722,8 +722,13 @@ public:
         const std::set<const RecordedNode*> constants = constant_nodes(graph);
         sole_ = sole_state_readers(graph);
         std::string out;
+        std::vector<const RecordedNode*> top;
         for (const RecordedNode& node : graph.nodes) {
-            enter(constants.contains(&node));
+            top.push_back(&node);
+        }
+        find_siblings(graph, top);
+        for (const RecordedNode& node : graph.nodes) {
+            enter_section(constants.contains(&node));
             if (auto text = replay_top(node)) {
                 out = std::move(*text);
             }
@@ -731,8 +736,18 @@ public:
         return out;
     }
 
-    // A top-level call, the target told which states it alone reads.
+    // A top-level call, the target told which states it alone reads; the
+    // first of a group of siblings runs them all where the target can.
     std::optional<std::string> replay_top(const RecordedNode& node) {
+        if (joined_.contains(&node)) {
+            return std::nullopt;
+        }
+        if (const auto group = siblings_.find(&node); group != siblings_.end()) {
+            join(group->second);
+            if (joined_.contains(&node)) {
+                return std::nullopt;
+            }
+        }
         const auto found = sole_.find(&node);
         if (found == sole_.end()) {
             return replay(node);
@@ -825,11 +840,12 @@ public:
         }
         const std::set<const RecordedNode*> constants = constants_among(order);
         sole_ = sole_state_readers(graph);
+        find_siblings(graph, order);
         for (const RecordedNode* node : order) {
-            enter(constants.contains(node));
+            enter_section(constants.contains(node));
             replay_top(*node);
         }
-        enter(false);
+        enter_section(false);
         std::vector<TensorInfo> results;
         results.reserve(slice.outputs.size());
         for (const std::uint32_t id : slice.outputs) {
@@ -918,6 +934,10 @@ private:
 
     TensorInfo info(const RecordedOperand& operand) const {
         return {names_.at(operand.value), operand.shape, operand.dtype};
+    }
+
+    TensorInfo info_of(std::uint32_t id) const {
+        return {names_.at(id), graph_.values.at(id).shape, graph_.values.at(id).dtype};
     }
 
     TensorInfo info(const RecordedNode& node, std::size_t i) const {
@@ -1223,10 +1243,124 @@ private:
         }
     }
 
+    const RecordedGraph& graph_;
     GraphTarget& target_;
     std::vector<std::string> names_;
     GraphTarget::Section section_ = GraphTarget::Section::Call;
     std::map<const RecordedNode*, std::vector<std::uint32_t>> sole_;
+    // Each group of sibling calls, by its first member; the members a
+    // joined product has run already.
+    std::map<const RecordedNode*, std::vector<const RecordedNode*>> siblings_;
+    std::set<const RecordedNode*> joined_;
+
+    // The groups of sibling native calls among `nodes` (top-level steps in
+    // the order they run): one implementation and input, each its own
+    // weights, its other operands parameters (or reshaped parameters) of
+    // the same width and dtype, or absent alike.
+    void find_siblings(const RecordedGraph& graph, const std::vector<const RecordedNode*>& nodes) {
+        siblings_.clear();
+        joined_.clear();
+        std::set<std::uint32_t> parameters;
+        std::map<std::uint32_t, std::uint32_t> reshaped; // value -> the parameter it reshapes
+        for (const RecordedNode* node : nodes) {
+            if (node->op == "parameter") {
+                parameters.insert(node->results.begin(), node->results.end());
+            } else if (node->op == "reshape" && node->operands.size() == 1 &&
+                       parameters.contains(node->operands[0].value)) {
+                reshaped[node->results[0]] = node->operands[0].value;
+            }
+        }
+        const auto shape_key = [&](std::uint32_t id, std::size_t from) {
+            const RecordedValue& value = graph.values.at(id);
+            std::string key = std::to_string(static_cast<int>(value.dtype));
+            for (std::size_t axis = from; axis < value.shape.size(); ++axis) {
+                key += "x" + std::to_string(value.shape[axis]);
+            }
+            return key;
+        };
+        std::map<std::string, std::vector<const RecordedNode*>> groups;
+        std::vector<std::string> order;
+        int depth = 0;
+        for (const RecordedNode* node : nodes) {
+            if (node->op.starts_with("end_") && node->op != "end_call") {
+                --depth;
+            } else if (node->op.starts_with("begin_") && node->op != "begin_call") {
+                ++depth;
+            }
+            if (depth != 0 || node->op != "native_call" || node->declined ||
+                node->results.size() != 1 || node->operands.size() < 2 ||
+                node->operands[0].value == no_value ||
+                !parameters.contains(node->operands[1].value) ||
+                graph.values.at(node->operands[1].value).shape.size() != 2) {
+                continue;
+            }
+            std::string key = text(*node, "implementation") + "|" +
+                              std::to_string(node->operands[0].value) + "|" +
+                              shape_key(node->operands[1].value, 1);
+            bool joinable = true;
+            for (std::size_t i = 2; i < node->operands.size(); ++i) {
+                const std::uint32_t id = node->operands[i].value;
+                if (id == no_value) {
+                    key += "|-";
+                } else if (parameters.contains(id)) {
+                    key += "|p" + shape_key(id, 1);
+                } else if (const auto found = reshaped.find(id); found != reshaped.end()) {
+                    key += "|r" + shape_key(found->second, 1);
+                } else {
+                    joinable = false;
+                }
+            }
+            if (!joinable) {
+                continue;
+            }
+            auto& members = groups[key];
+            if (members.empty()) {
+                order.push_back(key);
+            }
+            const bool repeated = std::ranges::any_of(members, [&](const RecordedNode* member) {
+                return member->operands[1].value == node->operands[1].value;
+            });
+            if (!repeated) {
+                members.push_back(node);
+            }
+        }
+        for (const std::string& key : order) {
+            std::vector<const RecordedNode*>& members = groups[key];
+            if (members.size() > 1) {
+                siblings_[members.front()] = std::move(members);
+            }
+        }
+        reshaped_ = std::move(reshaped);
+    }
+
+    // `members` run as one product where the target can: their results bound
+    // to the target's names, and the later ones not called again.
+    void join(const std::vector<const RecordedNode*>& members) {
+        std::vector<GraphTarget::Sibling> siblings;
+        siblings.reserve(members.size());
+        for (const RecordedNode* member : members) {
+            GraphTarget::Sibling sibling{optional_infos(*member), {}};
+            for (const RecordedOperand& operand : member->operands) {
+                const auto found = reshaped_.find(operand.value);
+                sibling.reshaped.push_back(found == reshaped_.end()
+                                               ? std::nullopt
+                                               : std::optional(info_of(found->second)));
+            }
+            siblings.push_back(std::move(sibling));
+        }
+        const RecordedNode& first = *members.front();
+        target_.set_call_generics(attr<std::map<std::string, std::int64_t>>(first, "generics"));
+        const auto names = target_.join_siblings(text(first, "implementation"), siblings);
+        if (!names || names->size() != members.size()) {
+            return;
+        }
+        for (std::size_t i = 0; i < members.size(); ++i) {
+            bind(*members[i], (*names)[i]);
+            joined_.insert(members[i]);
+        }
+    }
+
+    std::map<std::uint32_t, std::uint32_t> reshaped_;
 };
 
 } // namespace
