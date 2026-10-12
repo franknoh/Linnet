@@ -201,7 +201,12 @@ bool Checker::check_not_prelude(std::string_view name, SourceSpan span) {
 
 void Checker::declare(Scope& scope, EntityId entity, const char* duplicate_code) {
     const Entity& declared = entities_[entity];
-    if (declared.name.empty() || !check_not_prelude(declared.name, declared.span)) {
+    // `std.prelude` declares the dtype names every module sees.
+    const std::vector<ast::Name>& path = modules_[declared.module]->module_path;
+    const bool in_prelude = declared.kind == EntityKind::DType && path.size() == 2 &&
+                            path[0].text == "std" && path[1].text == "prelude";
+    if (declared.name.empty() ||
+        (!in_prelude && !check_not_prelude(declared.name, declared.span))) {
         return;
     }
     const auto [existing, inserted] = scope.emplace(declared.name, entity);
@@ -792,35 +797,17 @@ void Checker::resolve_dtype(EntityId entity) {
         }
         values.emplace(arg.name.text, *number);
     }
-    const auto value_of = [&](std::string_view name, std::int64_t otherwise) {
-        const auto found = values.find(name);
-        return found == values.end() ? otherwise : found->second;
-    };
-    DTypeFormat format;
-    if (is_float) {
-        if (!values.contains("exponent") || !values.contains("mantissa")) {
-            error(codes::invalid_dtype,
-                  decl.args_span,
-                  "a `float` needs its `exponent` and `mantissa` widths");
-            return;
-        }
-        format.family = DTypeFormat::Family::Float;
-        format.exponent = static_cast<std::uint32_t>(value_of("exponent", 0));
-        format.mantissa = static_cast<std::uint32_t>(value_of("mantissa", 0));
-        format.bits = 1 + format.exponent + format.mantissa;
-        format.inf = value_of("inf", 1) != 0;
-        format.nan = value_of("nan", 1) != 0;
-    } else {
-        if (!values.contains("bits")) {
-            error(codes::invalid_dtype, decl.args_span, "an `int` needs its width, `bits`");
-            return;
-        }
-        format.family = DTypeFormat::Family::Int;
-        format.bits = static_cast<std::uint32_t>(value_of("bits", 0));
-        format.is_signed = value_of("signed", 1) != 0;
-        format.inf = false;
-        format.nan = false;
+    if (is_float && (!values.contains("exponent") || !values.contains("mantissa"))) {
+        error(codes::invalid_dtype,
+              decl.args_span,
+              "a `float` needs its `exponent` and `mantissa` widths");
+        return;
     }
+    if (!is_float && !values.contains("bits")) {
+        error(codes::invalid_dtype, decl.args_span, "an `int` needs its width, `bits`");
+        return;
+    }
+    const DTypeFormat format = dtype_format(is_float, values);
     const auto scalar = scalar_of(format);
     if (!scalar) {
         error(codes::invalid_dtype, decl.name.span, "no target stores this format")

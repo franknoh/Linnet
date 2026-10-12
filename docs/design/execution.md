@@ -244,9 +244,10 @@ The spec fixes cast rounding and what overflow does in a format without
 infinities.
 
 Done: `dtype` declarations, with the FP8 formats declared in `std.dtypes`
-as storage formats (cast to and from, no operators), and `std.quant`'s FP8
-layers on `f8e4m3`. To do: the built-in names in a prelude file, 4-bit
-formats, and the widening and narrowing ops for formats like NF4.
+as storage formats (cast to and from, no operators); `std.quant`'s FP8
+layers on `f8e4m3`; and the prelude, `stdlib/prelude.linnet`, compiled
+into the checker, which declares `i8` to `f64`. To do: 4-bit formats, and
+the widening and narrowing ops for formats like NF4.
 
 ## Training and distribution
 

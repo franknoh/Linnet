@@ -57,6 +57,9 @@ struct DTypeFormat {
 DTypeFormat format_of(ScalarKind kind);
 // The scalar kind with `format`, if the compiler knows one.
 std::optional<ScalarKind> scalar_of(const DTypeFormat& format);
+// The format a `dtype` declaration describes: a `float` (else an `int`) with
+// its parameters by name, those left out at their defaults.
+DTypeFormat dtype_format(bool is_float, const std::map<std::string_view, std::int64_t>& values);
 
 // Every scalar kind's canonical name, as plans, bindings and generated code
 // spell it; and back.
@@ -70,10 +73,13 @@ struct IntegerLimits {
 };
 IntegerLimits integer_limits(ScalarKind kind);
 std::optional<ScalarKind> scalar_from_name(std::string_view name);
-// The names source can use without declaring them: `bool`, `i8` to `i64`,
+// The names source can use without declaring them: `bool`, and those the
+// prelude (`stdlib/prelude.linnet`, compiled in) declares: `i8` to `i64`,
 // `u8` to `u64`, `f16`, `bf16`, `f32`, `f64`. Others come from `dtype`
 // declarations (`std.dtypes`).
 std::optional<ScalarKind> builtin_scalar(std::string_view name);
+// The dtypes the prelude declares, by name.
+const std::map<std::string, ScalarKind, std::less<>>& prelude_dtypes();
 // Floats and integers that compute; a storage format is neither.
 bool is_float(ScalarKind kind);
 bool is_integer(ScalarKind kind);

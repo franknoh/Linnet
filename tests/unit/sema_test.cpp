@@ -1,4 +1,5 @@
 #include "linnet/sema/analysis.hpp"
+#include "linnet/sema/types.hpp"
 #include "linnet/syntax/parser.hpp"
 
 #include "test.hpp"
@@ -92,6 +93,25 @@ std::string binding_type(const std::string& statements, std::string_view name) {
 }
 
 } // namespace
+
+TEST("sema: the prelude declares every built-in dtype but bool") {
+    const auto& declared = sema::prelude_dtypes();
+    CHECK_EQ(declared.size(), std::size_t{12});
+    for (int i = static_cast<int>(sema::ScalarKind::I8);
+         i <= static_cast<int>(sema::ScalarKind::F64);
+         ++i) {
+        const auto kind = static_cast<sema::ScalarKind>(i);
+        CHECK(sema::builtin_scalar(sema::scalar_name(kind)) == kind);
+    }
+    CHECK(sema::builtin_scalar("bool") == sema::ScalarKind::Bool);
+    CHECK(!sema::builtin_scalar("f8e4m3"));
+    // The prelude may declare its names; another module may not.
+    CHECK_EQ(
+        Checked({"module std.prelude\npub dtype f32 = float(exponent: 8, mantissa: 23)\n"}).codes(),
+        "");
+    CHECK_EQ(Checked({"module m\npub dtype f32 = float(exponent: 8, mantissa: 23)\n"}).codes(),
+             "E1207");
+}
 
 TEST("sema: literals adopt the dtype of their context") {
     CHECK_EQ(binding_type("let a = 1", "a"), "i64");
