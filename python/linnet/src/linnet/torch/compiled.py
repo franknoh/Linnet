@@ -27,7 +27,8 @@ import numpy as np
 import torch
 
 from .. import ir, lora
-from ..backends import Backend, Graph, Plan, Planner, Region
+from ..backends import Backend, Context, Graph, Plan, Planner, Region, available
+from ..backends.conformance import Finding
 from ..compiler import (
     bind_arguments,
     lora_arguments,
@@ -594,19 +595,74 @@ class CompiledLinnetModule(LinnetModule):
         inputs: list[torch.Tensor],
         generics: Mapping[str, int | str] | None = None,
         *,
-        backends: Sequence[Backend[torch.Tensor]] = (),
+        backends: Sequence[Backend[torch.Tensor]] | None = None,
         compile: bool | str | None = None,
     ) -> Plan[torch.Tensor]:
         """`entry`'s execution plan for inputs like `inputs`: each of
-        `backends` takes the regions it matches, and the generated source
-        runs the rest (docs/design/execution.md). Run it with
-        `plan.run(inputs, Context(plan.target))`."""
+        `backends` (every one `linnet.backends.available` lists, by default)
+        takes the regions it matches, and the generated source runs the
+        rest (docs/design/execution.md). Run it with
+        `plan.run(inputs, module.context_for(plan))`."""
         from .backend import TorchSource, target_of
 
+        if backends is None:
+            backends = cast("list[Backend[torch.Tensor]]", available())
         bindings = self.bindings_for(entry, inputs, generics or {})
         graph = self.graph_for(entry, bindings, trains=self.trains())
         fallback = TorchSource(self, entry, bindings, generics or {}, compile)
         return Planner(backends, fallback).plan(graph, target_of(self.interpreter.device))
+
+    def context_for(self, plan: Plan[torch.Tensor]) -> Context[torch.Tensor]:
+        """What `plan`'s executables run with: this module's parameters, by
+        path."""
+        parameters = {
+            name.removeprefix("root."): parameter.detach()
+            for name, parameter in self.named_parameters()
+        }
+        return Context(plan.target, parameters)
+
+    def conform(
+        self,
+        entry: str,
+        inputs: list[torch.Tensor],
+        backend: Backend[torch.Tensor],
+        generics: Mapping[str, int | str] | None = None,
+        *,
+        tolerance: float = 1e-2,
+    ) -> list[Finding[torch.Tensor]]:
+        """Each region of `entry` that `backend` takes, run by it and by the
+        generated source on the same inputs: how far apart their outputs
+        are, at most `tolerance` to pass (`linnet.backends.conformance`)."""
+        from ..backends.conformance import conform
+        from .backend import TorchSource, target_of
+
+        bindings = self.bindings_for(entry, inputs, generics or {})
+        graph = self.graph_for(entry, bindings, trains=self.trains())
+        target = target_of(self.interpreter.device)
+        fallback = TorchSource(self, entry, bindings, generics or {}, None)
+        parameters = {
+            name.removeprefix("root."): parameter.detach()
+            for name, parameter in self.named_parameters()
+        }
+
+        def difference(got: torch.Tensor, expected: torch.Tensor) -> float:
+            if got.shape != expected.shape:
+                return float("inf")
+            if got.numel() == 0:
+                return 0.0
+            return float((got.float() - expected.float()).abs().max().item())
+
+        with torch.no_grad():
+            return conform(
+                graph,
+                target,
+                backend,
+                fallback,
+                inputs,
+                Context(target, parameters),
+                difference,
+                tolerance,
+            )
 
     def slices(
         self,

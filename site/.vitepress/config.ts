@@ -61,6 +61,7 @@ function guideSidebar() {
         { text: "ONNX", link: "/docs/onnx" },
         { text: "Nest", link: "/docs/nest" },
         { text: "Serving and tools", link: "/docs/integrations" },
+        { text: "Backends", link: "/docs/backends" },
         { text: "Compatibility", link: "/compatibility" },
         { text: "Benchmarks", link: "/benchmarks" },
       ],
