@@ -5,13 +5,16 @@ Partitioning and costing sit behind separate interfaces. A cost model
 prices each region a backend proposes, and the same steps on the fallback;
 a region that saves too little of the fallback's time is dropped. `Greedy`
 takes the regions that save the most first, then, where the costs are not
-known, the largest; the fallback backend runs every step no region took. A
+known, the largest; the fallback backend runs every step no region took.
+`Planner.confirm` then prices each kind of region taken in its place: cut
+out of the fallback's code around it, which no longer fuses across it. A
 plan runs its executables in order, each on the values the ones before it
 made.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -22,6 +25,10 @@ from .contract import Backend, Context, Cost, Executable, Options, Region, Targe
 from .graph import Graph
 
 T = TypeVar("T")
+
+# How many times `Planner.confirm` prices the kinds taken again after
+# dropping some.
+_CONFIRMATIONS = 3
 
 # Steps that open a span whose inside cannot run apart from its outside,
 # and the step that closes each.
@@ -191,6 +198,11 @@ class Plan(Generic[T]):
         return [values[value] for value in self.graph.outputs]
 
 
+def _kind_of(proposal: Proposal[T]) -> str:
+    """The backend and the kind of region a proposal is."""
+    return f"{proposal.backend.name} {proposal.region.kind}"
+
+
 def _check_order(graph: Graph, regions: Sequence[Region]) -> None:
     """Each region, in the order they run, reads only what the entry takes
     or an earlier region made."""
@@ -272,16 +284,9 @@ class Planner(Generic[T]):
         taken = self.partitioner.partition(
             graph, self.proposals(graph, target, options), options.memory
         )
-        regions: list[tuple[Backend[T], Region]] = [(p.backend, p.region) for p in taken]
+        taken = self.confirm(graph, target, options, taken)
+        regions = self._layout(graph, taken)
         savings = {id(p.region): p.saving for p in taken}
-        # The fallback runs each run of steps no region took.
-        used = {i for p in taken for i in p.region.indices}
-        start = 0
-        for i in range(len(graph.steps) + 1):
-            if i == len(graph.steps) or i in used:
-                regions += self._fill(graph, start, i)
-                start = i + 1
-        regions.sort(key=lambda pair: pair[1].start)
         _check_order(graph, [region for _, region in regions])
         # A backend that compiles several regions at once (`compile_regions`)
         # gets all of its own together.
@@ -306,6 +311,106 @@ class Planner(Generic[T]):
             for i, (backend, region) in enumerate(regions)
         )
         return Plan(graph, target, steps)
+
+    def confirm(
+        self, graph: Graph, target: Target, options: Options, taken: Sequence[Proposal[T]]
+    ) -> list[Proposal[T]]:
+        """`taken` less each kind of region (`Region.kind`, on one backend)
+        that does not pay where the plan puts it. For one region of each
+        kind, the stretch the fallback would run were the region left to it
+        (the region and the fallback's regions either side and between its
+        steps) is priced on the fallback whole, against the pieces the plan
+        runs there: those regions on the fallback, and the region on its
+        backend. Its saving is the difference, kept if more than
+        `options.margin` of what the region alone costs the fallback.
+        Repeated while it drops a kind, since the stretches around the
+        others change."""
+        kept = list(taken)
+        for _ in range(_CONFIRMATIONS):
+            layout = self._layout(graph, kept)
+            mine = {id(p.region): p for p in kept}
+            checks: dict[str, tuple[Proposal[T], Region, list[Region]]] = {}
+            for i, (_, region) in enumerate(layout):
+                proposal = mine.get(id(region))
+                if proposal is None or proposal.saving is None or proposal.cost is None:
+                    continue
+                kind = _kind_of(proposal)
+                if kind in checks:
+                    continue
+                stretch = self._stretch(graph, layout, i)
+                if stretch is not None:
+                    checks[kind] = (proposal, *stretch)
+            if not checks:
+                break
+            asked: list[tuple[Backend[T], Region]] = []
+            for _, whole, pieces in checks.values():
+                asked += [(self.fallback, whole), *((self.fallback, p) for p in pieces)]
+            priced = iter(self.cost_model.costs(asked, target, options))
+            dropped: set[str] = set()
+            saved: dict[str, float] = {}
+            for kind, (proposal, _, pieces) in checks.items():
+                whole_cost, *piece_costs = (next(priced) for _ in range(1 + len(pieces)))
+                assert proposal.cost is not None and proposal.saving is not None
+                if whole_cost is None or any(c is None for c in piece_costs):
+                    continue
+                cut = proposal.cost.seconds + sum(c.seconds for c in piece_costs if c is not None)
+                saving = whole_cost.seconds - cut
+                if not math.isfinite(saving):
+                    continue
+                alone = proposal.cost.seconds + proposal.saving
+                if saving > options.margin * alone:
+                    saved[kind] = saving
+                else:
+                    dropped.add(kind)
+            kept = [
+                dataclasses.replace(p, saving=saved.get(kind, p.saving))
+                for p, kind in ((p, _kind_of(p)) for p in kept)
+                if kind not in dropped
+            ]
+            if not dropped:
+                break
+        return kept
+
+    def _layout(
+        self, graph: Graph, taken: Sequence[Proposal[T]]
+    ) -> list[tuple[Backend[T], Region]]:
+        """The taken regions, and the fallback's over each run of steps none
+        took, in step order."""
+        regions: list[tuple[Backend[T], Region]] = [(p.backend, p.region) for p in taken]
+        used = {i for p in taken for i in p.region.indices}
+        start = 0
+        for i in range(len(graph.steps) + 1):
+            if i == len(graph.steps) or i in used:
+                regions += self._fill(graph, start, i)
+                start = i + 1
+        regions.sort(key=lambda pair: pair[1].start)
+        return regions
+
+    def _stretch(
+        self, graph: Graph, layout: Sequence[tuple[Backend[T], Region]], at: int
+    ) -> tuple[Region, list[Region]] | None:
+        """The steps the fallback would run in one region were `layout[at]`
+        left to it, as one region, and the fallback's regions among them;
+        None where the fallback runs none of its neighbours (alone, it was
+        priced already) or another backend's region lies among them."""
+        region = layout[at][1]
+        pieces: list[Region] = []
+        start, stop = region.start, region.stop
+        if at > 0 and layout[at - 1][0] is self.fallback:
+            pieces.append(layout[at - 1][1])
+            start = layout[at - 1][1].start
+        following = at + 1
+        while following < len(layout) and layout[following][1].start < region.stop:
+            if layout[following][0] is not self.fallback:
+                return None
+            pieces.append(layout[following][1])
+            following += 1
+        if following < len(layout) and layout[following][0] is self.fallback:
+            pieces.append(layout[following][1])
+            stop = layout[following][1].stop
+        if not pieces or not splittable(graph, start, stop):
+            return None
+        return Region.of(graph, start, stop), pieces
 
     def _fill(self, graph: Graph, start: int, stop: int) -> Iterable[tuple[Backend[T], Region]]:
         """The fallback's region over the steps `[start, stop)`, if they

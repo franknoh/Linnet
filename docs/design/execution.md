@@ -179,8 +179,11 @@ boundary, gives each region real inputs), else from the backend's
 `estimate_cost`. The fallback is priced on the same steps (steps apart, as
 their ranges). A region is taken when it saves at least `Options.margin`
 of the fallback's time, the largest saving first, within `Options.memory`
-bytes kept beyond the model's own. Conversion costs between regions are
-not counted yet.
+bytes kept beyond the model's own. `Planner.confirm` then prices each kind
+taken in place: the fallback's regions around one region of the kind and
+the region itself, run whole by the fallback, against those pieces as the
+plan runs them; a kind that does not pay there is dropped, and the rest
+priced again. Layout conversions between regions are not counted yet.
 
 ## Execution plan
 
@@ -290,8 +293,8 @@ to measured costs. On another H100 host, with both backends offered:
 Measuring takes about 10 s on the first plan; with the times kept, planning
 takes about 1 s. Timed alone, a region misses what its neighbours do: at
 16 rows FlashInfer's attention saves 5 us a layer timed alone, while the
-plan that uses it runs about 25 us a layer faster than the entry. Counting
-those effects is part of the conversion costs still to do.
+plan that uses it runs about 25 us a layer faster than the entry. Hence
+`Planner.confirm`, which times each kind taken in place.
 
 P4 so far: DeepGEMM takes block-scaled FP8 projections under
 `numerics="fast"`. Qwen3 8B FP8 on an H100:

@@ -52,7 +52,9 @@ def _on_cuda(run: Callable[[], object], meta: ExecutableMeta) -> float:
     for _ in range(_WARMUP):
         run()
     torch.cuda.synchronize()
-    graph = _captured(run) if meta.capturable and meta.effects == "pure" else None
+    # Recorded as a captured plan records it, state writes and all: a
+    # region timed one way and its neighbours another would not compare.
+    graph = _captured(run) if meta.capturable else None
     if graph is not None:
         replay = graph.replay
         return statistics.median(_elapsed(replay, _REPLAYS) for _ in range(_TRIALS)) / _CALLS
