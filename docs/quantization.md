@@ -1,10 +1,11 @@
 # Quantization
 
 Run 8-bit (int8 and FP8, scaled per row, per group or per block), int4,
-group-wise 4-bit (GPTQ, AWQ) and MXFP4 weights on every backend. A quantized
-weight is an ordinary parameter, a tensor of a narrow format (`i8`, or
-`std.dtypes`' `f8e4m3`, `i4`, `u4`, `f4e2m1`) plus scales, that `std.quant`
-casts and scales. The arithmetic dtype `T` is separate from the storage.
+group-wise 4-bit (GPTQ, AWQ), NF4 (bitsandbytes) and MXFP4 weights on every
+backend. A quantized weight is an ordinary parameter, a tensor of a narrow
+format (`i8`, or `std.dtypes`' `f8e4m3`, `i4`, `u4`, `f4e2m1`, `nf4`) plus
+scales, that `std.quant` casts and scales. The arithmetic dtype `T` is
+separate from the storage.
 
 ```linnet
 use std.quant::{Int4Linear, Int8Linear}
@@ -29,6 +30,7 @@ the last axis halved).
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group; u4]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
 | `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; f8e4m3]`, `scale: Tensor[Out, 1; T]`, optional bias |
 | `Fp8BlockLinear<In, Out, Block = 128, T>` | `weight: Tensor[Out, In; f8e4m3]`, `scale: Tensor[Out / Block, In / Block; T]`, optional bias |
+| `Nf4Linear<In, Out, Block = 64, T>` | `weight: Tensor[Out, In; nf4]`, `absmax: Tensor[Out, In / Block; f32]`, optional bias |
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `dequantize_int8_groups<Out, Groups, Group, T>(q, scale)` | symmetric int8, a scale per `Group` inputs |
 | `linear_int8(x, weight, scale, bias)`, `linear_int8_groups<Group>(...)` | linear layers over int8 weights |
@@ -39,6 +41,7 @@ the last axis halved).
 | `dequantize_fp8<*S, N, T>(q, scale)` | per-row FP8: `cast<f32>(q) * scale`, cast to `T` |
 | `dequantize_fp8_blocks<RowBlocks, ColBlocks, Block, T>(q, scale)` | FP8, a scale per `Block` by `Block` block |
 | `linear_fp8(x, weight, scale, bias)`, `linear_fp8_blocks<Block>(...)` | linear layers over FP8 weights |
+| `dequantize_nf4<Out, Blocks, Block, T>(q, absmax)` | NF4 codes, a scale per `Block` inputs: `cast<f32>(q) * absmax` |
 | `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: `f4e2m1` values in blocks of 32 (`[E, Out, G, 32]`), one E8M0 scale byte a block |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
@@ -102,6 +105,16 @@ import_quantized("Meta-Llama-3.1-8B-Instruct-GPTQ-INT4/", "model-int4.safetensor
 GPTQ checkpoints in activation order (`desc_act`) import without rounding
 again: the layer gets an `order` and gathers its inputs first, at some cost
 in speed.
+
+### Importing bitsandbytes NF4
+
+The same call imports a bitsandbytes 4-bit checkpoint (QLoRA's, and the
+`bnb-4bit` models on the Hub) whose `bnb_4bit_quant_type` is `nf4`. Each
+layer becomes `.weight` (NF4 codes, `std.dtypes::nf4`) and `.absmax` (`f32`,
+one per block of 64 inputs) for `Nf4Linear`. Nested absmax codes
+(`bnb_4bit_use_double_quant`) are decoded at import. bitsandbytes' `fp4`
+type and its 8-bit layers do not import. `Nf4Linear` widens the weight and
+multiplies in `T` on every backend.
 
 ## 8-bit weights
 

@@ -40,6 +40,12 @@ order than their own:
 
     import_quantized("Llama-3.1-8B-Instruct-GPTQ-INT4/", "model-int4.safetensors",
                      bindings="bindings.json")
+
+A bitsandbytes NF4 checkpoint (QLoRA's) imports the same way, for
+`std.quant::Nf4Linear`:
+
+    weight  [Out, In]           nf4, two codes a byte, low nibble first
+    absmax  [Out, In / Block]   f32, each block's scale
 """
 
 from __future__ import annotations
@@ -48,7 +54,7 @@ import fnmatch
 import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import SupportsInt
+from typing import SupportsInt, cast
 
 import numpy as np
 
@@ -158,10 +164,10 @@ def quantize_checkpoint(
         for path in paths_of.get(tensor.name, [tensor.name]):
             if path.endswith(".weight") and any(fnmatch.fnmatchcase(path, p) for p in chosen):
                 values = decode_floats(tensor.dtype, tensor.data).reshape(tensor.shape)
-                prefix = path.removesuffix(".weight")
+                prefix = _prefix(path)
                 if bits == 8:
                     q, scale = quantize_int8_groups(values, group, dtype)
-                    out.append((prefix + ".weight", "I8", tuple(q.shape), q.tobytes()))
+                    out.append((prefix + "weight", "I8", tuple(q.shape), q.tobytes()))
                     out.append(_scale_tensor(prefix, scale, dtype))
                 else:
                     packed, scale, zero = quantize_int4_groups(values, group)
@@ -188,11 +194,19 @@ def _paths_of(bindings: str | Path | Mapping[str, str] | None) -> dict[str, list
     return paths_by_tensor(mapping)
 
 
+def _prefix(path: str) -> str:
+    """What names a weight's siblings: `proj.` for `proj.weight`, nothing
+    for a root block's own `weight`."""
+    if path == "weight":
+        return ""
+    return path.removesuffix("weight") if path.endswith(".weight") else path + "."
+
+
 def _scale_tensor(
     prefix: str, scale: np.ndarray, dtype: str
 ) -> tuple[str, str, tuple[int, ...], bytes]:
     scale_dtype = DTYPES[dtype].safetensors
-    return (prefix + ".scale", scale_dtype, tuple(scale.shape), encode_floats(scale, scale_dtype))
+    return (prefix + "scale", scale_dtype, tuple(scale.shape), encode_floats(scale, scale_dtype))
 
 
 def _int4_tensors(
@@ -201,9 +215,9 @@ def _int4_tensors(
     if dtype not in ("bf16", "f16", "f32"):
         raise LinnetError(f"scales are stored as bf16, f16, or f32, not {dtype}")
     return [
-        (prefix + ".weight", "U8", tuple(packed.shape), packed.tobytes()),
+        (prefix + "weight", "U8", tuple(packed.shape), packed.tobytes()),
         _scale_tensor(prefix, scale, dtype),
-        (prefix + ".zero", "U8", tuple(zero.shape), zero.tobytes()),
+        (prefix + "zero", "U8", tuple(zero.shape), zero.tobytes()),
     ]
 
 
@@ -253,7 +267,8 @@ def import_quantized(
     """Writes `output` with a 4-bit GPTQ or AWQ checkpoint's quantized linear
     layers repacked for `Int4GroupLinear` (`.weight`, `.scale` in `dtype`,
     `.zero`, and `.order` when a GPTQ layer's groups follow activation
-    order) and every other tensor as it is, all under Linnet paths.
+    order), or a bitsandbytes NF4 checkpoint's for `Nf4Linear` (`.weight`,
+    `.absmax`), and every other tensor as it is, all under Linnet paths.
     `config` is the checkpoint's `quantization_config`; by default it is
     read from the `config.json` beside `weights`. Returns the quantized
     paths, as `.weight`."""
@@ -268,8 +283,10 @@ def import_quantized(
         if not isinstance(config, Mapping):
             raise LinnetError(f"{directory / 'config.json'} has no quantization_config")
     method = str(config.get("quant_method", "")).lower()
+    if method == "bitsandbytes":
+        return _import_bitsandbytes(weights, output, config, _paths_of(bindings))
     if method not in ("gptq", "awq"):
-        raise LinnetError(f"a {method or 'unnamed'} checkpoint is not GPTQ or AWQ")
+        raise LinnetError(f"a {method or 'unnamed'} checkpoint is not GPTQ, AWQ or bitsandbytes")
     if _setting(config, "bits", "w_bit", 4) != 4:
         raise LinnetError("only 4-bit GPTQ and AWQ checkpoints repack into Int4GroupLinear")
     if method == "awq" and str(config.get("version", "gemm")).lower() != "gemm":
@@ -320,7 +337,7 @@ def import_quantized(
         packed = pack_int4_groups(np.ascontiguousarray(q.T), size)
         weight_name = layer + ".weight"
         for path in paths_of.get(weight_name, [weight_name]):
-            prefix = path.removesuffix(".weight")
+            prefix = _prefix(path)
             out += _int4_tensors(
                 prefix,
                 packed,
@@ -329,21 +346,162 @@ def import_quantized(
                 dtype,
             )
             if order is not None:
-                out.append((prefix + ".order", "I32", (in_features,), order.tobytes()))
+                out.append((prefix + "order", "I32", (in_features,), order.tobytes()))
             quantized.append(path)
+    if not quantized:
+        raise LinnetError(f"no {method.upper()} layer (`.qweight`) in {weights}")
+    _write_with_the_rest(output, out, tensors, taken, paths_of)
+    return quantized
+
+
+def _write_with_the_rest(
+    output: str | Path,
+    out: list[tuple[str, str, tuple[int, ...], bytes]],
+    tensors: Mapping[str, RawTensor],
+    taken: set[str],
+    paths_of: Mapping[str, list[str]],
+) -> None:
+    """Writes `out` and every tensor not `taken`, as it is, under its paths."""
     for name, tensor in tensors.items():
         if name in taken:
             continue
         for path in paths_of.get(name, [name]):
             out.append((path, tensor.dtype, tensor.shape, tensor.data))
-    if not quantized:
-        raise LinnetError(f"no {method.upper()} layer (`.qweight`) in {weights}")
     write_safetensors(output, out, metadata={"format": "pt"})
+
+
+# NF4's values by code, as bitsandbytes stores them (`std.dtypes::nf4`).
+NF4 = np.array(
+    [
+        -1.0,
+        -0.6961928009986877,
+        -0.5250730514526367,
+        -0.39491748809814453,
+        -0.28444138169288635,
+        -0.18477343022823334,
+        -0.09105003625154495,
+        0.0,
+        0.07958029955625534,
+        0.16093020141124725,
+        0.2461123019456863,
+        0.33791524171829224,
+        0.44070982933044434,
+        0.5626170039176941,
+        0.7229568362236023,
+        1.0,
+    ],
+    dtype=np.float32,
+)
+
+# A bitsandbytes 4-bit layer's tensors beside `.weight`; the state names the
+# quantization type.
+_BNB_PARTS = (".absmax", ".quant_map", ".nested_absmax", ".nested_quant_map")
+_BNB_STATE = ".quant_state.bitsandbytes__"
+
+
+def _floats(tensor: RawTensor) -> np.ndarray:
+    return decode_floats(tensor.dtype, tensor.data).reshape(tensor.shape).astype(np.float32)
+
+
+def _bnb_state(tensor: RawTensor) -> dict[str, object]:
+    """A layer's quantization state: JSON, its bytes held in a `U8` tensor."""
+    state: object = json.loads(bytes(tensor.data).decode("utf-8"))
+    if not isinstance(state, dict):
+        raise LinnetError(f"`{tensor.name}` holds no quantization state")
+    return {str(key): value for key, value in cast("dict[object, object]", state).items()}
+
+
+def _bnb_nf4(
+    weight: str, state: Mapping[str, object], tensors: Mapping[str, RawTensor]
+) -> tuple[np.ndarray, np.ndarray]:
+    """bitsandbytes NF4 layer `weight` as `Nf4Linear` holds it: codes
+    `[Out, In / 2]`, low nibble first, and absmax `[Out, In / Block]`.
+
+    bitsandbytes quantizes the weight flattened, in blocks of `blocksize`,
+    and packs the first code of each pair in the high nibble. With nested
+    (double) quantization each block's absmax is itself an 8-bit code:
+    `nested_quant_map[code] * nested_absmax[block / nested_blocksize] +
+    nested_offset`, in `f32` as bitsandbytes computes it."""
+    shape = state.get("shape")
+    block = state.get("blocksize")
+    dims = (
+        [d for d in cast("list[object]", shape) if isinstance(d, int)]
+        if isinstance(shape, list)
+        else []
+    )
+    if len(dims) != 2 or not isinstance(block, int):
+        raise LinnetError(f"{weight}: its quantization state has no 2-d shape and block size")
+    out_features, in_features = dims
+    if in_features % block != 0 or block % 2 != 0:
+        raise LinnetError(f"{weight}: {in_features} inputs do not make blocks of {block}")
+    quant_map = _floats(tensors[weight + ".quant_map"])
+    if quant_map.shape != (16,) or not np.allclose(quant_map, NF4, rtol=0, atol=1e-6):
+        raise LinnetError(f"{weight}: its quantization map is not NF4's")
+    absmax = tensors[weight + ".absmax"]
+    if weight + ".nested_absmax" in tensors:
+        codes = np.frombuffer(absmax.data, dtype=np.uint8)
+        nested = _floats(tensors[weight + ".nested_absmax"]).reshape(-1)
+        nested_map = _floats(tensors[weight + ".nested_quant_map"]).reshape(-1)
+        nested_block = state.get("nested_blocksize")
+        offset = state.get("nested_offset")
+        if not isinstance(nested_block, int) or not isinstance(offset, int | float):
+            raise LinnetError(f"{weight}: its nested quantization state is incomplete")
+        scale = nested_map[codes] * nested[np.arange(codes.size) // nested_block]
+        scale = (scale + np.float32(offset)).astype(np.float32)
+    else:
+        scale = _floats(absmax).reshape(-1)
+    if scale.size != out_features * in_features // block:
+        raise LinnetError(f"{weight}: {scale.size} scales for blocks of {block}")
+    packed = np.frombuffer(tensors[weight].data, dtype=np.uint8)
+    if packed.size * 2 != out_features * in_features:
+        raise LinnetError(
+            f"{weight}: {packed.size} bytes for a [{out_features}, {in_features}] weight"
+        )
+    swapped = ((packed >> 4) | (packed << 4)).astype(np.uint8)
+    return (
+        swapped.reshape(out_features, in_features // 2),
+        scale.reshape(out_features, in_features // block),
+    )
+
+
+def _import_bitsandbytes(
+    weights: str | Path,
+    output: str | Path,
+    config: Mapping[str, object],
+    paths_of: Mapping[str, list[str]],
+) -> list[str]:
+    """`import_quantized` for a bitsandbytes 4-bit NF4 checkpoint."""
+    four_bit = config.get("load_in_4bit", config.get("_load_in_4bit", False))
+    kind = str(config.get("bnb_4bit_quant_type", "fp4")).lower()
+    if not four_bit:
+        raise LinnetError("only 4-bit bitsandbytes checkpoints import (`load_in_4bit`)")
+    if kind != "nf4":
+        raise LinnetError(f"bitsandbytes' {kind} type does not import; NF4 does")
+    tensors: dict[str, RawTensor] = {tensor.name: tensor for tensor in iter_safetensors(weights)}
+    states = sorted(name for name in tensors if _BNB_STATE in name)
+    out: list[tuple[str, str, tuple[int, ...], bytes]] = []
+    taken: set[str] = set()
+    quantized: list[str] = []
+    for name in states:
+        weight, kind = name.split(_BNB_STATE)
+        if kind != "nf4":
+            raise LinnetError(f"{weight}: bitsandbytes' {kind} type does not import; NF4 does")
+        codes, absmax = _bnb_nf4(weight, _bnb_state(tensors[name]), tensors)
+        taken |= {name, weight, *(weight + part for part in _BNB_PARTS)}
+        for path in paths_of.get(weight, [weight]):
+            prefix = _prefix(path)
+            out.append((prefix + "weight", "U8", tuple(codes.shape), codes.tobytes()))
+            out.append((prefix + "absmax", "F32", tuple(absmax.shape), absmax.tobytes()))
+            quantized.append(path)
+    if not quantized:
+        raise LinnetError(f"no bitsandbytes 4-bit layer (`{_BNB_STATE}nf4`) in {weights}")
+    _write_with_the_rest(output, out, tensors, taken, paths_of)
     return quantized
 
 
 __all__ = [
     "FEW_ROWS",
+    "NF4",
     "TILED_ROWS",
     "dequantize_int4_groups",
     "dequantize_int8_groups",

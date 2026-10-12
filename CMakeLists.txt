@@ -82,6 +82,7 @@ add_library(linnet_core STATIC
     src/emit/source.cpp
     src/format/doc.cpp
     src/format/formatter.cpp
+    src/ir/codebooks.cpp
     src/ir/ir.cpp
     src/ir/lower.cpp
     src/lsp/json.cpp

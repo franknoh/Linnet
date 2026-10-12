@@ -136,7 +136,8 @@ if(NOT WIN32)
     list(APPEND linnet_round_trip_sources ${PROJECT_SOURCE_DIR}/spec-tests/valid/020_state.linnet
         ${PROJECT_SOURCE_DIR}/spec-tests/valid/021_static_range.linnet
         ${PROJECT_SOURCE_DIR}/spec-tests/valid/022_bitwise.linnet
-        ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
+        ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet
+        ${PROJECT_SOURCE_DIR}/spec-tests/valid/036_codebooks.linnet)
     add_test(NAME cli_graph_replay
         COMMAND ${CMAKE_COMMAND} -E env LINNET_BIN=$<TARGET_FILE:linnet>
                 bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/graph_replay.sh

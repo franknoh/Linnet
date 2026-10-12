@@ -117,6 +117,35 @@ public:
             }
             body += "\n" + *text;
         }
+        // A codebook dtype the body names: imported from the module that
+        // declares it, or declared again here.
+        std::string declared;
+        for (EntityId id = 0; id < model_.entities.size(); ++id) {
+            const Entity& entity = model_.entities[id];
+            const auto decl = model_.decls.find(id);
+            if (entity.kind != EntityKind::DType || decl == model_.decls.end() ||
+                decl->second.aliased == no_type) {
+                continue;
+            }
+            const DType dtype = model_.types.get(decl->second.aliased).dtype;
+            const sema::Codebook* codebook = model_.types.codebook_of(dtype);
+            if (codebook == nullptr || !names_word(body, codebook->name)) {
+                continue;
+            }
+            if (entity.module != emitted) {
+                import_entity(id);
+                continue;
+            }
+            declared +=
+                std::string(entity.is_pub ? "pub " : "") + "dtype " + codebook->name +
+                " = codebook(carrier: " + std::string(sema::scalar_name(codebook->carrier)) +
+                ", values: [" +
+                join(codebook->values, ", ", [](double value) { return decimal_float(value); }) +
+                "])\n";
+        }
+        if (!declared.empty()) {
+            body = "\n" + declared + body;
+        }
         // A storage dtype the body names comes from its declaration in
         // `std.dtypes`, as the source imports it.
         for (const auto kind : {ScalarKind::F8E4M3,
@@ -534,6 +563,17 @@ private:
                kind == ir::OpKind::ArrayGet;
     }
 
+    // Whether a value is a number literal, which takes its dtype from
+    // context.
+    bool is_number(ir::ValueId id) const {
+        const ir::OpId producer = module_.value(id).producer;
+        if (producer == ir::no_id) {
+            return false;
+        }
+        const ir::OpKind kind = module_.op(producer).kind;
+        return kind == ir::OpKind::ConstInt || kind == ir::OpKind::ConstFloat;
+    }
+
     static bool is_constant(ir::OpKind kind) {
         return kind == ir::OpKind::ConstInt || kind == ir::OpKind::ConstFloat ||
                kind == ir::OpKind::ConstBool || kind == ir::OpKind::ConstDim ||
@@ -928,6 +968,12 @@ private:
         case ir::OpKind::Cast:
             return "cast<" + dtype_of(result) + ">(" + expr(op.operands[0]) + ")";
         case ir::OpKind::Select:
+            if (is_number(op.operands[1]) && is_number(op.operands[2])) {
+                // Two literals take no dtype from each other: the second
+                // is cast to the result's.
+                return "select(" + expr(op.operands[0]) + ", " + expr(op.operands[1]) + ", cast<" +
+                       dtype_of(result) + ">(" + expr(op.operands[2]) + "))";
+            }
             return call("select");
         case ir::OpKind::Reshape:
             return "reshape(" + expr(op.operands[0]) + ", " + shape_list(a.shape) + ")";
