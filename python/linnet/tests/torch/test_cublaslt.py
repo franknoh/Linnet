@@ -93,13 +93,12 @@ def test_a_measured_plan_takes_what_cublaslt_runs_faster(tmp_path: Path) -> None
         "decode",
         [token, torch.tensor(0, dtype=torch.int32, device="cuda")],
         backends=[CublasLt()],
-        memory=0,  # no joined copies of the weights
+        memory=0,  # joined weights are views, which keep nothing
         benchmarks=benchmarks,
     )
     assert len(benchmarks) > 0
     taken = [step for step in plan.steps if step.backend == "cublaslt"]
     assert all(step.saving is not None and step.saving > 0 for step in taken)
-    assert not any(step.region.members for step in taken)
     # Whatever it took (on so small a model, maybe nothing).
     with torch.no_grad():
         for pos in range(3):
@@ -108,3 +107,4 @@ def test_a_measured_plan_takes_what_cublaslt_runs_faster(tmp_path: Path) -> None
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected, rtol=2e-2, atol=2e-2)
+    assert all(step.executable.meta.holds == 0 for step in taken)
