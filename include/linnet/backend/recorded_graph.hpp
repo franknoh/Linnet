@@ -4,8 +4,8 @@
 #include "linnet/sema/types.hpp"
 
 #include <cstdint>
-#include <deque>
 #include <expected>
+#include <list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -57,7 +57,7 @@ struct RecordedNode;
 struct RecordedRegion {
     std::string role; // `pullback`, or `body` for a kernel's fallback
     std::vector<std::uint32_t> arguments;
-    std::deque<RecordedNode> nodes;
+    std::list<RecordedNode> nodes;
     std::vector<std::uint32_t> results;
 };
 
@@ -67,7 +67,7 @@ struct RecordedNode {
     std::vector<RecordedOperand> operands;
     std::vector<std::uint32_t> results;
     bool declined = false; // a call that may decline did
-    std::deque<RecordedRegion> regions;
+    std::list<RecordedRegion> regions;
 
     const RecordedAttr* attr(std::string_view key) const;
 };
@@ -75,7 +75,7 @@ struct RecordedNode {
 struct RecordedGraph {
     std::string target; // `torch`, `jax`
     std::vector<RecordedValue> values;
-    std::deque<RecordedNode> nodes;
+    std::list<RecordedNode> nodes;
 };
 
 // A target that records every call it gets and passes it on to `inner`.
@@ -201,7 +201,7 @@ private:
     GraphTarget& inner_;
     RecordedGraph graph_;
     std::map<std::string, std::uint32_t> ids_;
-    std::vector<std::deque<RecordedNode>*> open_;
+    std::vector<std::list<RecordedNode>*> open_;
     std::vector<std::vector<TensorInfo>> loops_; // each open `while` loop's values
 };
 

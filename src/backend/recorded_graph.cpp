@@ -690,7 +690,7 @@ public:
         }
     }
 
-    std::string run(const std::deque<RecordedNode>& nodes) {
+    std::string run(const std::list<RecordedNode>& nodes) {
         std::string out;
         for (const RecordedNode& node : nodes) {
             if (auto text = replay(node)) {
@@ -1138,9 +1138,7 @@ public:
                    ",\"shape\":" + dims_json(value.shape) +
                    ",\"dtype\":" + json_string(sema::scalar_name(value.dtype)) + "}";
         }
-        out += "],\"nodes\":";
-        std::size_t at = 0;
-        out += nodes(graph_.nodes, at);
+        out += "],\"nodes\":" + nodes(graph_.nodes);
         return out + "}\n";
     }
 
@@ -1173,25 +1171,31 @@ private:
                "]";
     }
 
+    using Nodes = std::list<RecordedNode>;
+
     // The nodes from `at` to the end of `list`, or to the `end_call` that
     // closes the call open around them, which `at` is left on.
-    std::string nodes(const std::deque<RecordedNode>& list, std::size_t& at) const {
+    std::string nodes(const Nodes& list, Nodes::const_iterator& at) const {
         std::string out = "[";
         bool first = true;
-        for (; at < list.size(); ++at) {
-            const RecordedNode& node = list[at];
-            if (node.op == "end_call") {
+        for (; at != list.end(); ++at) {
+            if (at->op == "end_call") {
                 break;
             }
             out += first ? "" : ",";
             first = false;
-            out += this->node(list, at);
+            out += node(list, at);
         }
         return out + "]";
     }
 
-    std::string node(const std::deque<RecordedNode>& list, std::size_t& at) const {
-        const RecordedNode& node = list[at];
+    std::string nodes(const Nodes& list) const {
+        auto at = list.begin();
+        return nodes(list, at);
+    }
+
+    std::string node(const Nodes& list, Nodes::const_iterator& at) const {
+        const RecordedNode& node = *at;
         if (node.op == "begin_call") {
             std::string out = "{\"op\":\"call\"";
             for (const auto& [key, value] : node.attrs) {
@@ -1201,7 +1205,10 @@ private:
             ++at;
             out += ",\"body\":" + nodes(list, at);
             const std::vector<RecordedOperand> none;
-            out += ",\"results\":" + operands(at < list.size() ? list[at].operands : none);
+            out += ",\"results\":" + operands(at != list.end() ? at->operands : none);
+            if (at == list.end()) {
+                --at; // the outer loop steps past the last node
+            }
             return out + "}";
         }
         std::string out = "{\"op\":" + json_string(node.op);
@@ -1218,11 +1225,10 @@ private:
             for (const RecordedRegion& region : node.regions) {
                 out += first ? "" : ",";
                 first = false;
-                std::size_t inner = 0;
                 out += "{\"role\":" + json_string(region.role) +
                        ",\"arguments\":" + ids(region.arguments) +
-                       ",\"nodes\":" + nodes(region.nodes, inner) +
-                       ",\"results\":" + ids(region.results) + "}";
+                       ",\"nodes\":" + nodes(region.nodes) + ",\"results\":" + ids(region.results) +
+                       "}";
             }
             out += "]";
         }
