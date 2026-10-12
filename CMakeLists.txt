@@ -101,11 +101,25 @@ target_include_directories(linnet_core PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(linnet_core PRIVATE linnet_build_options)
 
+# The runtime that runs execution plans: a C library with no CUDA
+# dependency at build time (src/runtime/driver.cpp loads the driver).
+add_library(linnet_runtime SHARED src/runtime/runtime.cpp src/runtime/driver.cpp)
+target_include_directories(linnet_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(linnet_runtime PRIVATE linnet_build_options ${CMAKE_DL_LIBS})
+target_compile_definitions(linnet_runtime PRIVATE LINNET_RUNTIME_BUILD)
+set_target_properties(linnet_runtime PROPERTIES
+    C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 add_executable(linnet src/cli/main.cpp)
 target_link_libraries(linnet PRIVATE linnet::core linnet_build_options)
 
 include(GNUInstallDirs)
 install(TARGETS linnet RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# Beside the standard library, where the Python package's wheel carries
+# share/linnet and `linnet.runtime` looks for it.
+install(TARGETS linnet_runtime
+        LIBRARY DESTINATION ${CMAKE_INSTALL_DATADIR}/linnet/lib
+        RUNTIME DESTINATION ${CMAKE_INSTALL_DATADIR}/linnet/lib)
 # The executable looks for the standard library at share/linnet/stdlib
 # relative to its own location.
 install(DIRECTORY stdlib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/linnet/stdlib
