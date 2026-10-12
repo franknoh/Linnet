@@ -12,6 +12,7 @@
 #include "linnet/emit/source.hpp"
 #include "linnet/format/formatter.hpp"
 #include "linnet/ir/lower.hpp"
+#include "linnet/lsp/json.hpp"
 #include "linnet/lsp/server.hpp"
 #include "linnet/module/loader.hpp"
 #include "linnet/opt/candidates.hpp"
@@ -130,11 +131,13 @@ void print_usage(std::FILE* out) {
         "                                       compute a block's calls again instead\n"
         "                                       of keeping their values; --lora as for\n"
         "                                       torch\n"
-        "  graph [--target torch|jax] [--replay] [options of the target] <file>\n"
+        "  graph [--target torch|jax] [--replay | --slices <file>] [options of the target] <file>\n"
         "                                       Print an entry's graph (JSON) as the\n"
         "                                       target sees it: every call the export\n"
         "                                       makes, nested by call; --replay prints\n"
-        "                                       the target's source rebuilt from it\n"
+        "                                       the target's source rebuilt from it,\n"
+        "                                       --slices the source of each range of\n"
+        "                                       steps the file lists, as JSON\n"
         "  emit <plan.json>                     Print the Linnet source of a plan document;\n"
         "                                       `-` reads standard input\n"
         "  explain [--std <dir>] [--numerics exact|equivalent|fast] <file>\n"
@@ -552,15 +555,55 @@ int run_explain(std::span<const std::string_view> args,
 // What `run_graph_export` prints: the format's own document, the graph the
 // format's target saw (`linnet graph`), or its source rebuilt from that
 // graph (`linnet graph --replay`).
-enum class GraphMode : std::uint8_t { Source, Graph, Replay };
+enum class GraphMode : std::uint8_t { Source, Graph, Replay, Slices };
 
 // `linnet graph`: the calls `export_graph` makes to `format`'s target, as
 // JSON, or with `GraphMode::Replay` made again on a fresh target, whose
 // source it prints. False, with the reason printed, when either fails.
+// The slices `--slices` names in its JSON file:
+// `[{"name", "start", "stop", "inputs": [id], "outputs": [id], "states": [[path, id]]}]`.
+std::expected<std::vector<backend::GraphSlice>, std::string> read_slices(const std::string& path) {
+    const auto text = read_file(std::filesystem::path(path));
+    if (!text) {
+        return std::unexpected("cannot read --slices " + path);
+    }
+    const auto document = lsp::parse_json(*text);
+    if (!document || !document->is_array()) {
+        return std::unexpected("--slices " + path + " holds no JSON list");
+    }
+    const auto ids = [](const lsp::Json& list) {
+        std::vector<std::uint32_t> out;
+        for (const lsp::Json& id : list.as_array()) {
+            out.push_back(static_cast<std::uint32_t>(id.as_int()));
+        }
+        return out;
+    };
+    std::vector<backend::GraphSlice> slices;
+    for (const lsp::Json& entry : document->as_array()) {
+        backend::GraphSlice slice;
+        slice.name = entry["name"].as_string();
+        slice.start = static_cast<std::size_t>(entry["start"].as_int());
+        slice.stop = static_cast<std::size_t>(entry["stop"].as_int());
+        slice.inputs = ids(entry["inputs"]);
+        slice.outputs = ids(entry["outputs"]);
+        for (const lsp::Json& state : entry["states"].as_array()) {
+            const auto& pair = state.as_array();
+            if (pair.size() != 2) {
+                return std::unexpected("--slices: a state is [path, id]");
+            }
+            slice.states.emplace_back(pair[0].as_string(),
+                                      static_cast<std::uint32_t>(pair[1].as_int()));
+        }
+        slices.push_back(std::move(slice));
+    }
+    return slices;
+}
+
 bool print_graph(ir::Module& core,
                  const backend::GraphExportOptions& export_options,
                  std::string_view format,
-                 GraphMode mode) {
+                 GraphMode mode,
+                 const std::string& slices_path) {
     if (export_options.gradient) {
         std::fputs("linnet: graph does not take --grad\n", stderr);
         return false;
@@ -583,6 +626,25 @@ bool print_graph(ir::Module& core,
         std::fputs(backend::recorded_graph_json(recorder.graph()).c_str(), stdout);
         return true;
     }
+    if (mode == GraphMode::Slices) {
+        const auto slices = read_slices(slices_path);
+        if (!slices) {
+            std::fprintf(stderr, "linnet: %s\n", slices.error().c_str());
+            return false;
+        }
+        std::string out = "{\"sources\":[";
+        for (std::size_t i = 0; i < slices->size(); ++i) {
+            auto fresh = make();
+            const auto source = backend::replay_slice(recorder.graph(), (*slices)[i], **fresh);
+            if (!source) {
+                std::fprintf(stderr, "linnet: %s\n", source.error().c_str());
+                return false;
+            }
+            out += (i == 0 ? "" : ",") + json_string(*source);
+        }
+        std::fputs((out + "]}\n").c_str(), stdout);
+        return true;
+    }
     auto fresh = make();
     const auto replayed = backend::replay_graph(recorder.graph(), **fresh);
     if (!replayed) {
@@ -599,7 +661,8 @@ int run_graph_export(std::span<const std::string_view> args,
                      const Options& options,
                      const char* program,
                      std::string_view format,
-                     GraphMode mode = GraphMode::Source) {
+                     GraphMode mode = GraphMode::Source,
+                     const std::string& slices_path = {}) {
     backend::GraphExportOptions export_options;
     std::string std_option;
     std::string numerics = "equivalent";
@@ -748,7 +811,7 @@ int run_graph_export(std::span<const std::string_view> args,
     export_options.full_precision = *allowed != opt::Legality::Approximate;
     export_options.kernels = *allowed != opt::Legality::Exact;
     if (mode != GraphMode::Source) {
-        return print_graph(core, export_options, format, mode)
+        return print_graph(core, export_options, format, mode, slices_path)
                    ? report(checked.sources, checked.sink, options)
                    : exit_failure;
     }
@@ -1357,10 +1420,14 @@ int main(int argc, char** argv) {
     if (command == "graph") {
         std::string_view target = "torch";
         GraphMode mode = GraphMode::Graph;
+        std::string slices;
         std::vector<std::string_view> forwarded;
         for (std::size_t i = 0; i < rest.size(); ++i) {
             if (rest[i] == "--replay") {
                 mode = GraphMode::Replay;
+            } else if (rest[i] == "--slices" && i + 1 < rest.size()) {
+                mode = GraphMode::Slices;
+                slices = std::string(rest[++i]);
             } else if (rest[i] == "--target" && i + 1 < rest.size()) {
                 target = rest[++i];
             } else {
@@ -1370,7 +1437,7 @@ int main(int argc, char** argv) {
         if (target != "torch" && target != "jax") {
             return usage_error("--target must be `torch` or `jax`");
         }
-        return run_graph_export(forwarded, options, argv[0], target, mode);
+        return run_graph_export(forwarded, options, argv[0], target, mode, slices);
     }
     if (command == "spec-test") {
         return run_spec_test(rest, options, argv[0]);

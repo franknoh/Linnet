@@ -1,12 +1,12 @@
 """The generated PyTorch source as a backend (docs/design/execution.md): the
-fallback that runs every region no other backend takes. So far it runs a
-whole graph, as one call of the model's entry; a smaller region needs source
-of its own, which comes with partitioning.
+fallback that runs every region no other backend takes. A whole graph runs
+as one call of the model's entry; a smaller region as the source
+`linnet graph --slices` prints for it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 import torch
@@ -22,7 +22,6 @@ from ..backends import (
     Target,
     TensorSpec,
 )
-from ..compiler import PlanError
 
 if TYPE_CHECKING:
     from .compiled import CompiledLinnetModule
@@ -52,11 +51,13 @@ class TorchSource:
         self,
         module: CompiledLinnetModule,
         entry: str,
+        bindings: Mapping[str, str],
         generics: Mapping[str, int | str],
         compile: bool | str | None,
     ) -> None:
         self._module = module
         self._entry = entry
+        self._bindings = dict(bindings)
         self._generics = dict(generics)
         self._compile = compile
 
@@ -76,10 +77,11 @@ class TorchSource:
     def match(self, graph: Graph, target: Target) -> Iterable[Region]:
         return [Region.of(graph, 0, len(graph.steps))]
 
-    def compile(self, region: Region, target: Target, options: Options) -> _Entry:
-        if not region.whole:
-            raise PlanError("the PyTorch source backend runs only a whole graph so far")
-        return _Entry(self, region)
+    def compile(self, region: Region, target: Target, options: Options) -> _Entry | _Slice:
+        if region.whole:
+            return _Entry(self, region)
+        (function,) = self._module.slices(self._entry, self._bindings, [region])
+        return _Slice(region, function)
 
     def estimate_cost(self, region: Region, target: Target) -> Cost | None:
         return None
@@ -124,3 +126,41 @@ class _Entry:
         context: Context[torch.Tensor],
     ) -> Sequence[torch.Tensor]:
         return self._backend.run(inputs)
+
+
+def _specs(region: Region) -> tuple[tuple[TensorSpec, ...], tuple[TensorSpec, ...]]:
+    values = region.graph.values
+
+    def spec(value: int) -> TensorSpec:
+        return TensorSpec(values[value].shape, values[value].dtype)
+
+    return tuple(spec(v) for v in region.inputs), tuple(spec(v) for v in region.outputs)
+
+
+class _Slice:
+    """A region as a module of its own, over the model's parameters and
+    states by path."""
+
+    def __init__(
+        self,
+        region: Region,
+        function: Callable[[Sequence[torch.Tensor]], list[torch.Tensor]],
+    ) -> None:
+        self._function = function
+        inputs, outputs = _specs(region)
+        self._meta = ExecutableMeta(inputs, outputs, effects="state" if region.states else "pure")
+
+    @property
+    def meta(self) -> ExecutableMeta:
+        return self._meta
+
+    def prepare(self, context: Context[torch.Tensor]) -> None:
+        return None
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        return self._function(inputs)

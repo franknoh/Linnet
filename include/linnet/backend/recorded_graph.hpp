@@ -211,6 +211,26 @@ private:
 std::expected<std::string, std::string> replay_graph(const RecordedGraph& graph,
                                                      GraphTarget& target);
 
+// A range of a recorded graph's steps to print as an entry of its own: the
+// steps are its nodes but `begin_call` and `end_call`, numbered in order, as
+// `linnet.backends.graph` numbers them. `inputs` become the entry's inputs,
+// the parameters and states its steps read become its own, a constant it
+// reads is made again, and `outputs` and `states` (each state's value after
+// the call, by path) are its results.
+struct GraphSlice {
+    std::string name;
+    std::size_t start = 0;
+    std::size_t stop = 0;
+    std::vector<std::uint32_t> inputs;
+    std::vector<std::uint32_t> outputs;
+    std::vector<std::pair<std::string, std::uint32_t>> states;
+};
+
+// `slice` of `graph` made on `target`, a fresh target of the kind that
+// recorded it: what its `finish` returns.
+std::expected<std::string, std::string>
+replay_slice(const RecordedGraph& graph, const GraphSlice& slice, GraphTarget& target);
+
 // `graph` as JSON (`linnet graph`, docs/graph-format.md).
 std::string recorded_graph_json(const RecordedGraph& graph);
 

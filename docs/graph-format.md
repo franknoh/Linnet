@@ -16,6 +16,20 @@ it takes. Every other option is the target's own (`linnet torch`,
 `linnet jax`). `--replay` makes the same calls on a fresh target and prints
 its source, which is what `linnet torch` or `linnet jax` prints.
 
+`--slices <file>` prints the source of ranges of the graph's steps, each
+an entry of its own, as `{"sources": [source]}`. The file lists them:
+
+```text
+[ { "name", "start", "stop", "inputs": [id], "outputs": [id], "states": [[path, id]] } ]
+```
+
+A range's steps are the graph's nodes but `call`, numbered in order. Its
+`inputs` become the entry's inputs, and the parameters and states its steps
+read become its own. A constant it reads is made again. `outputs` and
+`states` (each state's value after the call, by path) are its results. The
+planner gives the generated PyTorch source the ranges no other backend
+takes this way.
+
 Version 1 follows the exporter's target interface and changes with it.
 
 ## Document

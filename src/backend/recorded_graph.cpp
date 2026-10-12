@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 
@@ -700,6 +701,77 @@ public:
         return out;
     }
 
+    std::string run_slice(const RecordedGraph& graph, const GraphSlice& slice) {
+        std::vector<const RecordedNode*> steps;
+        const RecordedNode* finish = nullptr;
+        for (const RecordedNode& node : graph.nodes) {
+            if (node.op != "begin_call" && node.op != "end_call") {
+                steps.push_back(&node);
+            }
+            if (node.op == "finish") {
+                finish = &node;
+            }
+        }
+        if (finish == nullptr || slice.start > slice.stop || slice.stop > steps.size()) {
+            throw Diverged("a slice outside the graph's " + std::to_string(steps.size()) +
+                           " steps");
+        }
+        const auto value = [&](std::uint32_t id) -> const RecordedValue& {
+            if (id >= graph.values.size()) {
+                throw Diverged("no value " + std::to_string(id));
+            }
+            return graph.values[id];
+        };
+        for (std::size_t i = 0; i < slice.inputs.size(); ++i) {
+            const RecordedValue& input = value(slice.inputs[i]);
+            names_[slice.inputs[i]] =
+                target_.input("x" + std::to_string(i), input.shape, input.dtype);
+        }
+        // The parameters and states it reads, and the constants it reads that
+        // a step before it made, in the graph's order.
+        std::set<std::uint32_t> read;
+        for (std::size_t i = slice.start; i < slice.stop; ++i) {
+            for (const RecordedOperand& operand : steps[i]->operands) {
+                read.insert(operand.value);
+            }
+        }
+        read.insert(slice.outputs.begin(), slice.outputs.end());
+        for (const auto& [path, id] : slice.states) {
+            read.insert(id);
+        }
+        const std::set<const RecordedNode*> inside(
+            steps.begin() + static_cast<std::ptrdiff_t>(slice.start),
+            steps.begin() + static_cast<std::ptrdiff_t>(slice.stop));
+        const std::set<std::uint32_t> given(slice.inputs.begin(), slice.inputs.end());
+        for (const RecordedNode* node : steps) {
+            const bool persistent = node->op == "parameter" || node->op == "state";
+            const bool constant = node->op == "constant" && !inside.contains(node);
+            if ((persistent || constant) && node->results.size() == 1 &&
+                read.contains(node->results[0]) && !given.contains(node->results[0])) {
+                replay(*node);
+            }
+        }
+        for (std::size_t i = slice.start; i < slice.stop; ++i) {
+            const RecordedNode& node = *steps[i];
+            if (node.op != "input" && node.op != "parameter" && node.op != "state" &&
+                node.op != "finish") {
+                replay(node);
+            }
+        }
+        std::vector<TensorInfo> results;
+        results.reserve(slice.outputs.size());
+        for (const std::uint32_t id : slice.outputs) {
+            results.push_back({names_.at(id), value(id).shape, value(id).dtype});
+        }
+        std::vector<std::pair<std::string, TensorInfo>> states;
+        states.reserve(slice.states.size());
+        for (const auto& [path, id] : slice.states) {
+            states.emplace_back(path, TensorInfo{names_.at(id), value(id).shape, value(id).dtype});
+        }
+        return target_.finish(
+            results, states, text(*finish, "module"), text(*finish, "block"), slice.name);
+    }
+
 private:
     template <typename T>
     const T& attr(const RecordedNode& node, std::string_view key) const {
@@ -1053,6 +1125,17 @@ std::expected<std::string, std::string> replay_graph(const RecordedGraph& graph,
         return Replayer(graph, target).run(graph.nodes);
     } catch (const Diverged& error) {
         return std::unexpected(std::string("replay: ") + error.what());
+    } catch (const KernelError& error) {
+        return std::unexpected(std::string("kernel: ") + error.what());
+    }
+}
+
+std::expected<std::string, std::string>
+replay_slice(const RecordedGraph& graph, const GraphSlice& slice, GraphTarget& target) {
+    try {
+        return Replayer(graph, target).run_slice(graph, slice);
+    } catch (const Diverged& error) {
+        return std::unexpected(std::string("slice: ") + error.what());
     } catch (const KernelError& error) {
         return std::unexpected(std::string("kernel: ") + error.what());
     }

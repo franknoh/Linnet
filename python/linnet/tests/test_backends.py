@@ -189,3 +189,78 @@ def test_a_plan_through_the_generated_source_gives_the_entry_results(tmp_path: P
         expected: object = direct.run_entry("decode", [token, step])
         assert isinstance(expected, torch.Tensor)
         torch.testing.assert_close(logits, expected)
+
+
+class _Linear:
+    """A backend that takes every `linear` call and runs it with PyTorch,
+    reading the weight from the context by path."""
+
+    @property
+    def name(self) -> str:
+        return "linear"
+
+    @property
+    def version(self) -> str:
+        return "0"
+
+    def probe(self, target: Target) -> Capabilities | None:
+        return Capabilities()
+
+    def match(self, graph: Graph, target: Target) -> Iterable[Region]:
+        return [
+            Region.of(graph, call.start, call.stop, call.index)
+            for call in graph.semantic_calls("std.nn.linear::linear")
+        ]
+
+    def compile(self, region: Region, target: Target, options: Options) -> _LinearCall:
+        return _LinearCall(region)
+
+    def estimate_cost(self, region: Region, target: Target) -> Cost | None:
+        return None
+
+
+class _LinearCall:
+    def __init__(self, region: Region) -> None:
+        (self._weight,) = region.parameters
+
+    @property
+    def meta(self) -> ExecutableMeta:
+        return ExecutableMeta((), ())
+
+    def prepare(self, context: Context[torch.Tensor]) -> None:
+        return None
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        return [torch.nn.functional.linear(inputs[0], context.parameters[self._weight])]
+
+
+def test_the_generated_source_runs_what_another_backend_leaves(tmp_path: Path) -> None:
+    weights = random_llama(tmp_path / "model.safetensors")
+    planned, direct = (
+        load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
+        for _ in range(2)
+    )
+    assert isinstance(planned, CompiledLinnetModule)
+    tokens = [torch.tensor([[3]], dtype=torch.int32), torch.tensor([[5]], dtype=torch.int32)]
+    plan = planned.plan_for(
+        "decode", [tokens[0], torch.tensor(0, dtype=torch.int32)], backends=[_Linear()]
+    )
+    backends = [step.backend for step in plan.steps]
+    assert backends.count("linear") == 2 * 7 + 1
+    assert "torch-source" in backends
+    parameters = {
+        name.removeprefix("root."): parameter.detach()
+        for name, parameter in planned.named_parameters()
+    }
+    with torch.no_grad():
+        for pos, token in enumerate(tokens):
+            step = torch.tensor(pos, dtype=torch.int32)
+            (logits,) = plan.run([token, step], Context(plan.target, parameters))
+            expected: object = direct.run_entry("decode", [token, step])
+            assert isinstance(expected, torch.Tensor)
+            torch.testing.assert_close(logits, expected)
