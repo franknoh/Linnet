@@ -6,6 +6,7 @@ graph PyTorch captures records it.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Iterable, Sequence
 
@@ -59,7 +60,7 @@ class CublasLt:
 
     @property
     def version(self) -> str:
-        return "1"
+        return "2"
 
     def probe(self, target: Target) -> Capabilities | None:
         if target.kind != "cuda":
@@ -161,7 +162,9 @@ class _Product:
         # Which part of the output each of the region's outputs is.
         self._parts = [made.index(value) for value in region.outputs]
         self._joined: torch.Tensor | None = None
-        # The joined weights are a copy of the model's.
+        self._copied = len(weights) > 1
+        # Joined weights are a copy of the model's, unless the context lays
+        # them out side by side (`Context.join`).
         k = region.graph.values[region.inputs[0]].shape[-1]
         size = _BYTES[region.graph.values[region.inputs[0]].dtype]
         self._meta = ExecutableMeta(
@@ -173,11 +176,15 @@ class _Product:
 
     @property
     def meta(self) -> ExecutableMeta:
-        return self._meta
+        return self._meta if self._copied else dataclasses.replace(self._meta, holds=0)
 
     def prepare(self, context: Context[torch.Tensor]) -> None:
         if len(self._paths) > 1:
-            self._joined = torch.cat([context.parameters[p] for p in self._paths]).contiguous()
+            joined = context.join(self._paths) if context.join is not None else None
+            self._copied = joined is None
+            if joined is None:
+                joined = torch.cat([context.parameters[p] for p in self._paths]).contiguous()
+            self._joined = joined
 
     def execute(
         self,

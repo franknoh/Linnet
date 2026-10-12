@@ -38,7 +38,7 @@ part.
 - The regions that save the most go first. Two regions that overlap
   (one `linear` call, or it joined with its siblings) never both run.
 - `memory=bytes` caps what the plan keeps beyond the model's own weights,
-  such as joined copies of them.
+  such as weights a backend converted to another layout.
 - `measure=False` skips the timing: each backend takes what it matches,
   the largest regions first.
 
@@ -103,6 +103,10 @@ class MyLinearCall:
   captured graph records it.
 - A backend that compiles many regions better together may also define
   `compile_regions(regions, target, options)`.
+- `context.join(paths)` lays parameters out one after another in one
+  buffer and returns them as one tensor, so that an executable reads
+  sibling weights (q, k and v) joined without a copy. It returns `None`
+  where they cannot be laid out so.
 - `ExecutableMeta(holds=bytes)` declares memory the executable keeps
   beyond the model's weights, which the plan's `memory` budget counts.
 - `estimate_cost` returns `Cost(seconds, bytes)` when the backend knows

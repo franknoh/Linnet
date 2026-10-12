@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from typing import Generic, Literal, Protocol, TypeVar
 
@@ -256,12 +256,18 @@ class ExecutableMeta:
 @dataclass(slots=True)
 class Context(Generic[T]):
     """What an executable runs with: the target, the stream (None: the
-    library's current one), and the persistent values by path."""
+    library's current one), and the persistent values by path.
+
+    `join`, where the framework offers it, lays parameters out one after
+    another in one buffer (once; `parameters` then holds them so) and
+    returns them as one tensor over it, so that an executable reads them
+    joined without a copy; None where they cannot be laid out so."""
 
     target: Target
     parameters: Mapping[str, T] = field(default_factory=dict[str, T])
     states: MutableMapping[str, T] = field(default_factory=dict[str, T])
     stream: int | None = None
+    join: Callable[[Sequence[str]], T | None] | None = None
 
 
 class Executable(Protocol[T]):
