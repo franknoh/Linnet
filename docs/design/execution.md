@@ -134,24 +134,23 @@ parameters, and the runtime launches it. An executable that runs only
 through Python declares `host: python`. The planner counts its host cost,
 and inside a captured CUDA graph the cost disappears.
 
-Native executables follow a C ABI (`include/linnet/runtime/abi.h`):
+Native executables follow a C ABI (`include/linnet/runtime/runtime.h`):
 
 ```c
-typedef struct LnContext LnContext; /* device, stream, workspace, capture flag */
-
 typedef struct LnExecutable {
     uint32_t abi_version;
     void* state;
     int (*prepare)(void* state, LnContext* context);
-    int (*execute)(void* state, const DLTensor* inputs, size_t input_count,
-                   DLTensor* outputs, size_t output_count, LnContext* context);
+    int (*execute)(void* state, const LnTensor* inputs, size_t input_count,
+                   LnTensor* outputs, size_t output_count, LnContext* context);
     const char* (*error)(void* state);
     void (*destroy)(void* state);
 } LnExecutable;
 ```
 
-Tensors cross as DLPack `DLTensor`s, so PyTorch, JAX and CuPy share
-buffers without copies.
+`LnContext` holds the device, the stream, the call's workspace and whether a
+CUDA graph records the call. `LnTensor` is laid out as DLPack's `DLTensor`,
+so PyTorch, JAX and CuPy share buffers without copies.
 
 ## Planner
 
