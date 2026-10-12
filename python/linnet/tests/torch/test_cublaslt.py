@@ -102,11 +102,11 @@ def test_a_measured_plan_takes_what_cublaslt_runs_faster(tmp_path: Path) -> None
     taken = [step for step in plan.steps if step.backend == "cublaslt"]
     assert all(step.saving is not None and step.saving > 0 for step in taken)
     assert not any(step.region.members for step in taken)
-    runner = Captured(plan, planned.context_for(plan))
+    # Whatever it took (on so small a model, maybe nothing).
     with torch.no_grad():
         for pos in range(3):
             step = torch.tensor(pos, dtype=torch.int32, device="cuda")
-            (logits,) = runner([token, step])
+            (logits,) = plan.run([token, step], planned.context_for(plan))
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected, rtol=2e-2, atol=2e-2)
