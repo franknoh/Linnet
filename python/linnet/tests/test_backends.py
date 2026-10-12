@@ -543,11 +543,14 @@ def test_a_region_that_pays_alone_but_not_in_place_is_dropped() -> None:
     graph = _decode()
     clock = _Clock()
     fast = _Timed("fast", clock, LINEAR, seconds=0.5)
-    # Every region the fallback runs costs it 5 more: each linear call cut
-    # out of its code adds a region, which costs more than the call saves.
+    # Every region the fallback runs costs it 5 more: a linear call cut out
+    # of the middle of its code adds a region, which costs more than the
+    # call saves. The head, last of all, adds none and stays.
     fallback = _Timed("fallback", clock, overhead=5.0)
     plan = Planner([fast], fallback, cost_model=_measured(clock)).plan(graph, Target("cpu"))
-    assert {step.backend for step in plan.steps} == {"fallback"}
+    (head,) = [step for step in plan.steps if step.backend == "fast"]
+    assert head.region.call == list(graph.semantic_calls(LINEAR))[-1].index
+    assert head.saving == pytest.approx(0.5)
     # Without that cost, each call saves its half second in place too.
     fallback = _Timed("fallback", clock)
     plan = Planner([fast], fallback, cost_model=_measured(clock)).plan(graph, Target("cpu"))
