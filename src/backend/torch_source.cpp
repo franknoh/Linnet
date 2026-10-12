@@ -51,83 +51,6 @@ std::optional<EightBit> eight_bit(const std::string& implementation) {
     return found == eight_bit_layers().end() ? std::nullopt : std::optional(found->second);
 }
 
-// The kind an 8-bit layer's helper names (`_fp8_block_linear` -> `fp8_block`),
-// if `call` is one.
-std::optional<std::string> eight_bit_call(std::string_view call) {
-    constexpr std::string_view suffix = "_linear";
-    if (!call.starts_with('_') || !call.ends_with(suffix)) {
-        return std::nullopt;
-    }
-    const std::string_view kind = call.substr(1, call.size() - 1 - suffix.size());
-    const bool known = std::ranges::any_of(
-        eight_bit_layers(), [&](const auto& layer) { return layer.second.name == kind; });
-    return known ? std::optional(std::string(kind)) : std::nullopt;
-}
-
-// Each 8-bit layer's call `vN = _K_linear(x, W, S, B, R)` as two: its
-// operands, `vM = _K_operands(W, S, R)` (int8 groups take no `R`), which
-// read only weights, so `prepare` computes them once; and
-// `vN = _K_linear(x, vM, B)`. Every call is split, at any indent (a runtime
-// loop's body included); calls on the same weights at the top level share
-// their operands. New names count on from `next`.
-std::string split_eight_bit_operands(const std::string& body, std::size_t& next) {
-    std::map<std::string, std::string> shared; // top-level operands -> their name
-    std::string out;
-    out.reserve(body.size());
-    for (const std::string& line : split_lines(body)) {
-        const std::optional<Assignment> assignment = assignment_of(line);
-        const std::optional<Call> call =
-            assignment ? call_of(assignment->expression) : std::nullopt;
-        const std::optional<std::string> kind = call ? eight_bit_call(call->callee) : std::nullopt;
-        if (!kind || call->arguments.size() != 5) {
-            out += line;
-            out += "\n";
-            continue;
-        }
-        const std::string& indent = assignment->indent;
-        const std::vector<std::string>& parts = call->arguments;
-        std::string operands = "_";
-        operands += *kind;
-        operands += "_operands(";
-        operands += parts[1];
-        operands += ", ";
-        operands += parts[2];
-        if (*kind != "int8_group") {
-            operands += ", ";
-            operands += parts[4];
-        }
-        operands += ")";
-        // A loop body's operands stay in the body: a name it defines is not
-        // one the top level may read.
-        const bool top = indent == "    ";
-        auto found = top ? shared.find(operands) : shared.end();
-        std::string name = found == shared.end() ? "" : found->second;
-        if (name.empty()) {
-            name = "v" + std::to_string(next++);
-            out += indent;
-            out += name;
-            out += " = ";
-            out += operands;
-            out += "\n";
-            if (top) {
-                shared.emplace(operands, name);
-            }
-        }
-        out += indent;
-        out += assignment->name;
-        out += " = ";
-        out += call->callee;
-        out += "(";
-        out += parts[0];
-        out += ", ";
-        out += name;
-        out += ", ";
-        out += parts[3];
-        out += ")\n";
-    }
-    return out;
-}
-
 // The generated module: straight-line PyTorch over static shapes.
 class TorchTarget : public PythonTarget {
 public:
@@ -150,6 +73,120 @@ public:
         std::swap(body_, constants_body_);
         std::swap(cse_, constants_cse_);
         section_ = section;
+    }
+
+    // Sibling linear layers (`F.linear`, or one kind of 8-bit layer) on one
+    // input, run as one product over their weights joined where `prepare`
+    // builds them once (`_adjacent`, whose parameters the runtime lays out
+    // one after another: `FUSED`); each takes its rows of the product.
+    std::optional<std::vector<std::string>>
+    join_siblings(const std::string& implementation,
+                  const std::vector<Sibling>& siblings) override {
+        if (!prepare_ || !fuse_ || placed_) {
+            return std::nullopt;
+        }
+        const auto [base, fast, grouped] = call_name(implementation);
+        const std::optional<EightBit> eight = eight_bit(base);
+        if (base != "torch.nn.functional.linear" && !eight) {
+            return std::nullopt;
+        }
+        const std::size_t arity = eight ? 4 : 3;
+        const std::size_t bias_at = arity - 1;
+        std::vector<std::string> weights;
+        std::vector<std::string> biases;
+        std::vector<std::string> scales;
+        std::vector<std::int64_t> rows;
+        std::vector<TensorInfo> members; // each one's weight
+        std::string input;
+        bool reshaped = false;
+        for (const Sibling& sibling : siblings) {
+            const std::vector<const TensorInfo*> at = operand_pointers(sibling.operands);
+            const std::vector<const TensorInfo*> from = operand_pointers(sibling.reshaped);
+            if (at.size() != arity || at[0] == nullptr || at[1] == nullptr ||
+                (eight && at[2] == nullptr)) {
+                return std::nullopt;
+            }
+            input = at[0]->name;
+            members.push_back(*at[1]);
+            weights.push_back(at[1]->name);
+            rows.push_back(at[1]->shape[0]);
+            if (at[bias_at] != nullptr) {
+                biases.push_back(at[bias_at]->name);
+            }
+            if (eight) {
+                const TensorInfo* source = from.size() > 2 ? from[2] : nullptr;
+                reshaped = source != nullptr;
+                scales.push_back(source != nullptr ? source->name : at[2]->name);
+            }
+        }
+        const auto adjacent = [&](const std::vector<std::string>& names) {
+            std::vector<std::string> paths;
+            paths.reserve(names.size());
+            for (const std::string& parameter : names) {
+                paths.push_back(parameters_.at(std::stoul(parameter.substr(1))));
+            }
+            fused_.push_back(std::move(paths));
+            return define("_adjacent(" + join(names, ", ") + ")");
+        };
+        const std::string weight = adjacent(weights);
+        const std::string bias = biases.empty() ? "None" : adjacent(biases);
+        std::string product;
+        if (eight) {
+            std::string scale = adjacent(scales);
+            if (reshaped) {
+                std::int64_t total = 0;
+                for (const std::int64_t count : rows) {
+                    total += count;
+                }
+                scale = define(scale + ".reshape((" + std::to_string(total) + ",))");
+            }
+            product = eight_bit_product(*eight, input, weight, scale, bias);
+        } else {
+            product = define("F.linear(" + input + ", " + weight + ", " + bias + ")");
+        }
+        std::vector<std::string> out;
+        std::int64_t offset = 0;
+        for (std::size_t i = 0; i < siblings.size(); ++i) {
+            std::string part = define(product + "[..., " + std::to_string(offset) + ":" +
+                                      std::to_string(offset + rows[i]) + "]");
+            offset += rows[i];
+            if (!eight) {
+                part = with_adapters(part, input, members[i]);
+            }
+            out.push_back(part);
+        }
+        return out;
+    }
+
+    // A linear layer's `product` of `x` and `weight`, plus its LoRA
+    // adapters' where the weight takes them.
+    std::string
+    with_adapters(const std::string& product, const std::string& x, const TensorInfo& weight) {
+        const auto path = lora_target(weight.name);
+        if (!path || weight.shape.size() != 2) {
+            return product;
+        }
+        const auto [a, b] = adapters(*path, weight.shape, weight.dtype);
+        const std::string low = define("F.linear(F.linear(" + x + ", " + a + "), " + b + ")");
+        return define(product + " + " + low + " * " +
+                      python_float(lora_.alpha / static_cast<double>(lora_.rank)));
+    }
+
+    // `x` times an 8-bit layer's weight and scales: its operands, which read
+    // only weights, so that `prepare` computes them once (int8 groups take
+    // no rounding flag), then the product.
+    std::string eight_bit_product(const EightBit& kind,
+                                  const std::string& x,
+                                  const std::string& weight,
+                                  const std::string& scale,
+                                  const std::string& bias) {
+        eight_bit_.insert(kind.name);
+        std::string operands = "_" + kind.name + "_operands(" + weight + ", " + scale;
+        if (kind.name != "int8_group") {
+            operands += kind.rounded ? ", 1" : ", 0";
+        }
+        const std::string prepared = define(operands + ")");
+        return define("_" + kind.name + "_linear(" + x + ", " + prepared + ", " + bias + ")");
     }
 
     void sole_readers_of(const std::vector<std::string>& states) override {
@@ -505,13 +542,8 @@ public:
         if (const std::optional<EightBit> kind = eight_bit(implementation_base);
             kind && operands.size() == 4 && at[0] != nullptr && at[1] != nullptr &&
             at[2] != nullptr) {
-            // `std.quant`'s 8-bit linear layers (`linnet.torch.quantized`):
-            // one call here, the input, weight, scales, bias, and whether the
-            // input may be rounded to 8 bits; `finish` splits its weight-only
-            // operands into a call `prepare` runs once.
-            eight_bit_.insert(kind->name);
-            return define("_" + kind->name + "_linear(" + name(0) + ", " + name(1) + ", " +
-                          name(2) + ", " + name(3) + ", " + (kind->rounded ? "1" : "0") + ")");
+            // `std.quant`'s 8-bit linear layers (`linnet.torch.quantized`).
+            return eight_bit_product(*kind, name(0), name(1), name(2), name(3));
         }
         if (implementation_base == "torch._grouped_mm" && operands.size() == 3 && operands[0] &&
             operands[1] && operands[2]) {
@@ -573,18 +605,9 @@ public:
                           ".dtype)");
         }
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
-            std::string product =
+            const std::string product =
                 define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
-            const std::optional<TensorInfo>& weight = operands[1];
-            const auto path = lora_target(name(1));
-            if (!weight || !path || weight->shape.size() != 2) {
-                return product;
-            }
-            const auto [a, b] = adapters(*path, weight->shape, weight->dtype);
-            const std::string low =
-                define("F.linear(F.linear(" + name(0) + ", " + a + "), " + b + ")");
-            return define(product + " + " + low + " * " +
-                          python_float(lora_.alpha / static_cast<double>(lora_.rank)));
+            return operands[1] ? with_adapters(product, name(0), *operands[1]) : product;
         }
         // `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and
         // bf16 inputs themselves, so their results are bit-identical to the
@@ -920,16 +943,7 @@ public:
             begin_section(Section::Call);
         }
         Hoisted hoisted = hoist(constants_body_, body_, tail);
-        // Sibling linear layers become one product only where their joined
-        // weight is prepared once, not rebuilt every call.
-        std::vector<std::vector<std::string>> fused;
-        if (prepare_ && fuse_ && !placed_) {
-            hoisted.body = prune_python_assignments(fuse_linears(hoisted.body, fused), tail);
-        }
-        if (!eight_bit_.empty()) {
-            hoisted.body = split_eight_bit_operands(hoisted.body, next_);
-        }
-        if (!fused.empty()) {
+        if (!fused_.empty()) {
             out += adjacent_helper();
         }
         out += "CONSTANTS = " + string_list(hoisted.names) + "\n";
@@ -945,11 +959,11 @@ public:
             out += "PREPARED = " + string_list(prepared.keys) + "\n";
             out += "PREPARE_INPUTS = " + string_list(prepared.inputs) + "\n";
         }
-        if (!fused.empty()) {
+        if (!fused_.empty()) {
             // Parameters `_adjacent` joins, which the runtime lays out one
             // after another so that the joined weight is a view of them.
             out += "FUSED = [";
-            out += join(fused, ", ", [&](const auto& item) { return string_list(item); });
+            out += join(fused_, ", ", [&](const auto& item) { return string_list(item); });
             out += "]\n";
         }
         // The states `main` writes into the tensor it was given: CUDA graphs
@@ -1286,245 +1300,6 @@ public:
     }
 
 private:
-    // Linear layers that read one input with parameter weights of their own
-    // -- a layer's query, key, and value projections, its gate and up --
-    // become one product over their weights side by side, sliced after: at
-    // a decoding step's few rows, one kernel where there were three. The
-    // weights are joined by `_adjacent`, weight-only work that `prepare`
-    // does once; the runtime lays each group out contiguously (`FUSED`), so
-    // the joined weight is a view and costs no memory.
-    std::string fuse_linears(const std::string& body,
-                             std::vector<std::vector<std::string>>& fused) {
-        struct Linear {
-            std::size_t line;
-            std::string out;
-            std::string input;
-            std::size_t weight;
-            std::optional<std::size_t> bias;
-            // An 8-bit layer's helper (`_fp8_linear`, ...), its scales (a
-            // parameter, read whole or reshaped to one a row), and whether
-            // it may round its input.
-            std::string call;
-            std::optional<std::size_t> scale;
-            bool reshaped = false;
-            std::string rounded;
-        };
-        const std::vector<std::string> lines = split_lines(body);
-        const auto fresh = [&] { return "v" + std::to_string(next_++); };
-        const auto parameter_index = [&](const std::string& word) -> std::optional<std::size_t> {
-            if (!numbered(word, 'p')) {
-                return std::nullopt;
-            }
-            const std::size_t index = std::stoul(word.substr(1));
-            return index < parameter_types_.size() ? std::optional(index) : std::nullopt;
-        };
-        // `pK.reshape((N,))`: the parameter K.
-        const auto reshaped_parameter =
-            [&](std::string_view expression) -> std::optional<std::size_t> {
-            const std::size_t dot = expression.find(".reshape((");
-            const std::string_view size =
-                dot == std::string_view::npos ? "" : expression.substr(dot + 10);
-            if (size.size() < 4 || !size.ends_with(",))") ||
-                size.find_first_not_of("0123456789") != size.size() - 3) {
-                return std::nullopt;
-            }
-            return parameter_index(std::string(expression.substr(0, dot)));
-        };
-        std::vector<Linear> linears;
-        const std::string prefix = "    ";
-        // `vS = pK.reshape((N,))`: an 8-bit layer's scales of shape [Out, 1]
-        // as its helper takes them.
-        std::map<std::string, std::size_t> scales;
-        for (std::size_t i = 0; i < lines.size(); ++i) {
-            const auto assignment = top_level_assignment(lines[i]);
-            if (!assignment) {
-                continue;
-            }
-            const auto& [out, expression] = *assignment;
-            if (const auto index = reshaped_parameter(expression)) {
-                scales[out] = *index;
-            }
-            // `vN = F.linear(x, pW, pB | None)`, or an 8-bit layer's
-            // `vN = _K_linear(x, pW, S, pB | None, R)` with S its scales.
-            const std::optional<Call> call = call_of(expression);
-            const bool eight = call && eight_bit_call(call->callee).has_value();
-            if (!call || (call->callee != "F.linear" && !eight)) {
-                continue;
-            }
-            std::vector<std::string> parts = call->arguments;
-            if (parts.size() != (eight ? 5U : 3U)) {
-                continue;
-            }
-            std::optional<std::size_t> scale;
-            bool reshaped = false;
-            std::string rounded;
-            if (eight) {
-                rounded = parts[4];
-                if (const auto found = scales.find(parts[2]); found != scales.end()) {
-                    scale = found->second;
-                    reshaped = true;
-                } else {
-                    scale = parameter_index(parts[2]);
-                }
-                if (!scale) {
-                    continue;
-                }
-                parts.pop_back();
-                parts.erase(parts.begin() + 2);
-            }
-            const auto weight = parameter_index(parts[1]);
-            const auto bias = parameter_index(parts[2]);
-            if (!weight || (!bias && parts[2] != "None")) {
-                continue;
-            }
-            const auto& [shape, dtype] = parameter_types_[*weight];
-            if (shape.size() != 2) {
-                continue;
-            }
-            linears.push_back({i,
-                               out,
-                               parts[0],
-                               *weight,
-                               bias,
-                               eight ? call->callee : "",
-                               scale,
-                               reshaped,
-                               rounded});
-        }
-        // Groups: one input, all biased or none, the same kind of layer,
-        // input width, dtype and scales but for their rows, distinct weights.
-        std::map<std::string, std::vector<std::size_t>> groups;
-        for (std::size_t i = 0; i < linears.size(); ++i) {
-            const Linear& linear = linears[i];
-            const auto& [shape, dtype] = parameter_types_[linear.weight];
-            std::string key = linear.input + "|" + (linear.bias ? "b" : "-") + "|" + linear.call +
-                              linear.rounded + (linear.reshaped ? "r" : "") + "|" +
-                              std::to_string(shape[1]) + "|" +
-                              std::to_string(static_cast<int>(dtype));
-            if (linear.scale) {
-                const auto& [scale_shape, scale_dtype] = parameter_types_[*linear.scale];
-                for (std::size_t axis = 1; axis < scale_shape.size(); ++axis) {
-                    key += "|" + std::to_string(scale_shape[axis]);
-                }
-                key += "|" + std::to_string(static_cast<int>(scale_dtype));
-            }
-            auto& members = groups[key];
-            const bool repeated = std::any_of(members.begin(), members.end(), [&](std::size_t j) {
-                return linears[j].weight == linear.weight;
-            });
-            if (!repeated) {
-                members.push_back(i);
-            }
-        }
-        std::map<std::size_t, std::string> replaced; // first line -> the fused lines
-        std::set<std::size_t> removed;
-        for (const auto& [key, members] : groups) {
-            if (members.size() < 2) {
-                continue;
-            }
-            // `_adjacent(pA, pB, ...)`, its parameters' paths noted in `fused`.
-            const auto adjacent = [&](const std::vector<std::size_t>& indices) {
-                std::vector<std::string> paths;
-                paths.reserve(indices.size());
-                for (const std::size_t index : indices) {
-                    paths.push_back(parameters_[index]);
-                }
-                fused.push_back(paths);
-                return "_adjacent(" +
-                       join(indices,
-                            ", ",
-                            [](std::size_t index) { return "p" + std::to_string(index); }) +
-                       ")";
-            };
-            std::vector<std::size_t> weights;
-            std::vector<std::size_t> biases;
-            std::vector<std::size_t> row_scales;
-            std::int64_t total = 0;
-            for (const std::size_t i : members) {
-                weights.push_back(linears[i].weight);
-                total += parameter_types_[linears[i].weight].first[0];
-                if (const std::optional<std::size_t>& bias = linears[i].bias; bias.has_value()) {
-                    biases.push_back(bias.value());
-                }
-                if (const std::optional<std::size_t>& scale = linears[i].scale; scale.has_value()) {
-                    row_scales.push_back(scale.value());
-                }
-            }
-            const Linear& first = linears[members.front()];
-            const std::string weight = fresh();
-            std::string text = prefix + weight + " = " + adjacent(weights) + "\n";
-            std::string bias = "None";
-            if (!biases.empty()) {
-                bias = fresh();
-                text += prefix + bias + " = " + adjacent(biases) + "\n";
-            }
-            std::string scale;
-            if (!row_scales.empty()) {
-                scale = fresh();
-                text += prefix + scale + " = " + adjacent(row_scales) + "\n";
-                if (first.reshaped) {
-                    const std::string joined = scale;
-                    scale = fresh();
-                    text += prefix;
-                    text += scale;
-                    text += " = ";
-                    text += joined;
-                    text += ".reshape((";
-                    text += std::to_string(total);
-                    text += ",))\n";
-                }
-            }
-            const std::string product = fresh();
-            text += prefix;
-            text += product;
-            text += " = ";
-            text += first.call.empty() ? "F.linear" : first.call;
-            text += "(";
-            text += first.input;
-            text += ", ";
-            text += weight;
-            text += ", ";
-            if (!scale.empty()) {
-                text += scale;
-                text += ", ";
-            }
-            text += bias;
-            if (!first.call.empty()) {
-                text += ", ";
-                text += first.rounded;
-            }
-            text += ")\n";
-            std::int64_t offset = 0;
-            for (const std::size_t i : members) {
-                const std::int64_t rows = parameter_types_[linears[i].weight].first[0];
-                text += prefix;
-                text += linears[i].out;
-                text += " = ";
-                text += product;
-                text += "[..., ";
-                text += std::to_string(offset);
-                text += ":";
-                text += std::to_string(offset + rows);
-                text += "]\n";
-                offset += rows;
-                removed.insert(linears[i].line);
-            }
-            replaced[first.line] = text;
-        }
-        if (replaced.empty()) {
-            return body;
-        }
-        std::string out;
-        for (std::size_t i = 0; i < lines.size(); ++i) {
-            if (const auto found = replaced.find(i); found != replaced.end()) {
-                out += found->second;
-            } else if (!removed.contains(i)) {
-                out += lines[i] + "\n";
-            }
-        }
-        return out;
-    }
-
     static std::string adjacent_helper() {
         return "\n\ndef _adjacent(*parts):\n"
                "    \"\"\"`torch.cat(parts)`, as a view when the parts lie one after\n"
@@ -2038,9 +1813,10 @@ private:
     Section section_ = Section::Call;
     std::string constants_body_; // the section that is not open
     std::vector<std::map<std::string, std::string>> constants_cse_{1};
-    std::set<std::string> sole_states_; // the states the call being written alone reads
-    std::vector<std::string> written_;  // the states written in place, in order
-    bool fuse_ = true;                  // with `prepare`, join sibling linear layers
+    std::set<std::string> sole_states_;           // the states the call being written alone reads
+    std::vector<std::vector<std::string>> fused_; // the parameters each `_adjacent` joins
+    std::vector<std::string> written_;            // the states written in place, in order
+    bool fuse_ = true;                            // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
