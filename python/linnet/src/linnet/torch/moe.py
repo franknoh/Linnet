@@ -1,6 +1,6 @@
 """Routed MXFP4 experts on CUDA: each (row, choice) pair's input times its
-expert, the experts in MXFP4 as gpt-oss publishes them (`blocks`
-[E, Out, G, 16] u8, `scales` [E, Out, G] u8).
+expert, the experts in MXFP4 as gpt-oss publishes them (`blocks`, FP4
+E2M1 held as their bytes [E, Out, G, 16] u8, `scales` [E, Out, G] u8).
 
 With OpenAI's `triton_kernels` installed -- the Triton package of grouped
 matrix products for mixtures of experts that vLLM runs gpt-oss with -- its

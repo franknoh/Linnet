@@ -256,9 +256,9 @@ public:
         }
         if (implementation_base == "torch.ops.aten._weight_int4pack_mm" && operands.size() == 5 &&
             at[0] != nullptr && at[1] != nullptr && at[2] != nullptr && at[3] != nullptr) {
-            // ONNX Runtime's `MatMulNBits` reads the packed weights as they
-            // are (low nibble first) with a float zero point per group. It
-            // takes f32 and f16 inputs: bf16 goes through f32.
+            // ONNX Runtime's `MatMulNBits` reads the `u4` weight's bytes as
+            // they are (low nibble first) with a float zero point per group.
+            // It takes f32 and f16 inputs: bf16 goes through f32.
             const TensorInfo& x = *at[0];
             const TensorInfo& packed = *at[1];
             const TensorInfo& scale = *at[2];
@@ -269,7 +269,7 @@ public:
             const std::int64_t in = x.shape.back();
             const std::int64_t out = packed.shape[0];
             const std::int64_t groups = packed.shape[1];
-            const std::int64_t group = 2 * packed.shape[2];
+            const std::int64_t group = packed.shape[2];
             if (group < 16 || (group & (group - 1)) != 0) {
                 return std::nullopt;
             }

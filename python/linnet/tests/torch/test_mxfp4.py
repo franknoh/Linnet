@@ -17,6 +17,7 @@ from tests.helpers import STDLIB, requires_cuda
 SOURCE = """\
 module tests.mxfp4
 
+use std.dtypes::{f4e2m1}
 use std.quant::{
     dequantize_mxfp4,
     mxfp4_combine_experts,
@@ -26,7 +27,7 @@ use std.quant::{
 }
 
 pub block Model<E: Dim, Out: Dim, G: Dim, K: Dim, T: Float = f32> {
-    param blocks: Tensor[E, Out, G, 16; u8]
+    param blocks: Tensor[E, Out, G, 32; f4e2m1]
     param scales: Tensor[E, Out, G; u8]
 
     pub entry weights() -> Tensor[E, Out, G * 32; T] {

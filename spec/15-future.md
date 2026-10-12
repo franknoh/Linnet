@@ -29,7 +29,7 @@ Training support must not require model-specific Python classes.
 
 ## 15.5 Quantization
 
-[`std.quant`](../docs/quantization.md) stores integer weights beside their scales and dequantizes in source, and `std.dtypes` declares the FP8 storage formats (§3.1). Still open: 4-bit formats (`int(bits: 4)`, E2M1), and formats outside the families (NF4, codebooks), declared with the ops that widen them to a computing dtype and narrow them back. Formats whose elements share a scale (MXFP4, block-scaled FP8) stay structs with ops: a dtype describes one element. Dequantization stays explicit.
+[`std.quant`](../docs/quantization.md) stores weights of narrow formats beside their scales and dequantizes in source; `std.dtypes` declares the FP8, 4-bit and NF4 storage formats (§3.1). Formats whose elements share a scale (MXFP4, block-scaled FP8) stay a tensor of elements plus a tensor of scales: a dtype describes one element. Dequantization stays explicit. Still open: a scale format of its own (E8M0, MXFP4's), which `std.quant` reads from bytes today.
 
 ## 15.6 Sparse and structured tensors
 

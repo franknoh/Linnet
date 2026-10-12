@@ -2,46 +2,47 @@
 
 Run 8-bit (int8 and FP8, scaled per row, per group or per block), int4,
 group-wise 4-bit (GPTQ, AWQ), NF4 (bitsandbytes) and MXFP4 weights on every
-backend. A quantized weight is an ordinary parameter, an integer tensor plus
-scales, that `std.quant` dequantizes; there is no quantized dtype, and the
-arithmetic dtype `T` is separate from the storage.
+backend. A quantized weight is an ordinary parameter, a tensor of a narrow
+format (`i8`, or `std.dtypes`' `f8e4m3`, `i4`, `u4`, `f4e2m1`, `nf4`) plus
+scales, that `std.quant` casts and scales. The arithmetic dtype `T` is
+separate from the storage.
 
 ```linnet
 use std.quant::{Int4Linear, Int8Linear}
 
 pub block Mlp<H: Dim, Inner: Dim, T: Float = bf16>
 where H % 2 == 0 {
-    sub up: Int4Linear<H, Inner, T>      // weight: Tensor[Inner, H / 2; i8], scale: Tensor[Inner, 1; T]
+    sub up: Int4Linear<H, Inner, T>      // weight: Tensor[Inner, H; i4], scale: Tensor[Inner, 1; T]
     sub down: Int8Linear<Inner, H, T>    // weight: Tensor[H, Inner; i8], scale: Tensor[H, 1; T]
     ...
 }
 ```
 
-Packed 4-bit formats hold two values a byte, the even element in the low
-nibble.
+The 4-bit formats hold two values a byte along the last axis, the even
+element in the low nibble; a checkpoint stores them as those bytes (`U8`,
+the last axis halved).
 
 | `std.quant` | Format |
 | --- | --- |
 | `Int8Linear<In, Out, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, 1; T]`, optional bias |
 | `Int8GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, In / Group; T]`, optional bias |
-| `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale: Tensor[Out, 1; T]`, optional bias |
-| `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
+| `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In; i4]`, `scale: Tensor[Out, 1; T]`, optional bias |
+| `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group; u4]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
 | `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; f8e4m3]`, `scale: Tensor[Out, 1; T]`, optional bias |
 | `Fp8BlockLinear<In, Out, Block = 128, T>` | `weight: Tensor[Out, In; f8e4m3]`, `scale: Tensor[Out / Block, In / Block; T]`, optional bias |
 | `Nf4Linear<In, Out, Block = 64, T>` | `weight: Tensor[Out, In; nf4]`, `absmax: Tensor[Out, In / Block; f32]`, optional bias |
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `dequantize_int8_groups<Out, Groups, Group, T>(q, scale)` | symmetric int8, a scale per `Group` inputs |
 | `linear_int8(x, weight, scale, bias)`, `linear_int8_groups<Group>(...)` | linear layers over int8 weights |
-| `unpack_uint4<R, H>(packed)`, `unpack_int4<R, H>(packed)` | the nibbles of each byte, `0..15` or signed, `-8..7` |
-| `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
-| `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
-| `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
+| `dequantize_int4<R, N, T>(q, scale)` | symmetric per-row int4: `cast<f32>(q) * scale`, cast to `T` |
+| `dequantize_int4_groups<Out, Groups, Group, T>(q, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
+| `linear_int4_groups(x, q, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
 | `decode_fp8(bits)` | FP8 E4M3 bytes held as `u8`, as `f32` values |
 | `dequantize_fp8<*S, N, T>(q, scale)` | per-row FP8: `cast<f32>(q) * scale`, cast to `T` |
 | `dequantize_fp8_blocks<RowBlocks, ColBlocks, Block, T>(q, scale)` | FP8, a scale per `Block` by `Block` block |
 | `linear_fp8(x, weight, scale, bias)`, `linear_fp8_blocks<Block>(...)` | linear layers over FP8 weights |
 | `dequantize_nf4<Out, Blocks, Block, T>(q, absmax)` | NF4 codes, a scale per `Block` inputs: `cast<f32>(q) * absmax` |
-| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: E2M1 values in blocks of 32, one E8M0 scale byte a block |
+| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: `f4e2m1` values in blocks of 32 (`[E, Out, G, 32]`), one E8M0 scale byte a block |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
 | `mxfp4_linear_experts_shared(x, blocks, scales, experts)` | `std.nn.moe::linear_experts_shared` with MXFP4 experts, many rows (`x: [R, In]`) |

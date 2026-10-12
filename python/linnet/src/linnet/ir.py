@@ -933,7 +933,11 @@ def bind_input(env: Bindings, param: Value, shape: Sequence[int], dtype: str | N
         # A dtype generic of the entry's own (a function's `T`) is bound by
         # the first input that carries it; the rest must agree.
         wanted = env.dtypes.setdefault(spec.id, dtype) if isinstance(spec, DTypeVar) else spec
-        if dtype != wanted:
+        if dtype == "u8" and wanted in DTYPES and DTYPES[wanted].packed and shape:
+            # A packed format's tensor arrives as its bytes, the last axis
+            # halved, as PyTorch and ONNX hold it.
+            shape = (*shape[:-1], 2 * shape[-1])
+        elif dtype != wanted:
             raise PlanError(f"input `{name}` has dtype {dtype}, expected {wanted}")
     if isinstance(declared, ScalarType):
         if len(shape) != 0:
