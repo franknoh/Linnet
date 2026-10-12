@@ -58,6 +58,7 @@ inline constexpr const char* invalid_gradient = "E2125";
 inline constexpr const char* kernel_binding = "E2126";
 inline constexpr const char* invalid_kernel = "E2127";
 inline constexpr const char* invalid_dtype = "E2128";
+inline constexpr const char* packed_axis = "E2129";
 inline constexpr const char* not_implemented = "E2190";
 
 // Shapes

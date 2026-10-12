@@ -23,7 +23,10 @@ constexpr auto scalar_names = std::to_array<std::string_view>({"bool",
                                                                "f32",
                                                                "f64",
                                                                "f8e4m3",
-                                                               "f8e5m2"});
+                                                               "f8e5m2",
+                                                               "i4",
+                                                               "u4",
+                                                               "f4e2m1"});
 
 using Family = DTypeFormat::Family;
 
@@ -44,6 +47,9 @@ constexpr auto formats = std::to_array<DTypeFormat>({
     {Family::Float, 64, true, 11, 52, true, true},
     {Family::Float, 8, true, 4, 3, false, true},
     {Family::Float, 8, true, 5, 2, true, true},
+    {Family::Int, 4, true, 0, 0, false, false},
+    {Family::Int, 4, false, 0, 0, false, false},
+    {Family::Float, 4, true, 2, 1, false, false},
 });
 static_assert(formats.size() == scalar_names.size());
 
@@ -96,6 +102,10 @@ IntegerLimits integer_limits(ScalarKind kind) {
         return of(std::uint32_t{});
     case ScalarKind::U64:
         return of(std::uint64_t{});
+    case ScalarKind::I4:
+        return {-8, 7};
+    case ScalarKind::U4:
+        return {0, 15};
     default:
         return {};
     }
@@ -160,7 +170,11 @@ std::optional<ScalarKind> scalar_of(const DTypeFormat& format) {
 }
 
 bool is_storage(ScalarKind kind) {
-    return kind == ScalarKind::F8E4M3 || kind == ScalarKind::F8E5M2;
+    return kind >= ScalarKind::F8E4M3;
+}
+
+bool is_packed(ScalarKind kind) {
+    return kind == ScalarKind::I4 || kind == ScalarKind::U4 || kind == ScalarKind::F4E2M1;
 }
 
 bool is_float(ScalarKind kind) {

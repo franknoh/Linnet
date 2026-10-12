@@ -119,7 +119,11 @@ public:
         }
         // A storage dtype the body names comes from its declaration in
         // `std.dtypes`, as the source imports it.
-        for (const auto kind : {ScalarKind::F8E4M3, ScalarKind::F8E5M2}) {
+        for (const auto kind : {ScalarKind::F8E4M3,
+                                ScalarKind::F8E5M2,
+                                ScalarKind::I4,
+                                ScalarKind::U4,
+                                ScalarKind::F4E2M1}) {
             const std::string name(sema::scalar_name(kind));
             if (names_word(body, name) && module_path() != "std.dtypes") {
                 imports_["std.dtypes"].insert(name);

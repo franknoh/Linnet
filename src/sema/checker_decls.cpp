@@ -199,6 +199,28 @@ bool Checker::check_not_prelude(std::string_view name, SourceSpan span) {
     return false;
 }
 
+bool Checker::packed(const TypeData& tensor) {
+    return tensor.kind == TypeKind::Tensor && !tensor.dtype.is_var &&
+           is_packed(tensor.dtype.scalar);
+}
+
+bool Checker::keeps_last_axis(const TypeData& tensor, const Shape& target) {
+    if (tensor.shape.empty() || target.empty()) {
+        return false;
+    }
+    const ShapeElem& from = tensor.shape.back();
+    const ShapeElem& to = target.back();
+    return !from.is_pack && !to.is_pack && env_->solver.prove_equal(from.dim, to.dim);
+}
+
+void Checker::packed_error(SourceSpan span, const TypeData& tensor, std::string_view what) {
+    error(codes::packed_axis,
+          span,
+          "a tensor of `" + std::string(scalar_name(tensor.dtype.scalar)) +
+              "` packs two elements a byte along its last axis: no " + std::string(what))
+        .help("keep the last axis whole, or `cast` to a wider dtype first");
+}
+
 void Checker::declare(Scope& scope, EntityId entity, const char* duplicate_code) {
     const Entity& declared = entities_[entity];
     // `std.prelude` declares the dtype names every module sees.

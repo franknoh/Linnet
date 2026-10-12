@@ -8,3 +8,15 @@ pub dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)
 
 // FP8 E5M2, IEEE-like with infinities and NaNs: range ±57344.
 pub dtype f8e5m2 = float(exponent: 5, mantissa: 2)
+
+// Four-bit formats, stored two elements a byte along a tensor's last axis:
+// element 2k in the low four bits, 2k + 1 in the high four. The last axis
+// has an even length, and an operation keeps it whole (spec §3.1).
+
+// Two's complement integers: -8 to 7, and 0 to 15.
+pub dtype i4 = int(bits: 4)
+pub dtype u4 = int(bits: 4, signed: false)
+
+// FP4 E2M1 (OCP MX), with neither infinities nor NaN: 0, 0.5, 1, 1.5, 2, 3,
+// 4, 6 and their negatives.
+pub dtype f4e2m1 = float(exponent: 2, mantissa: 1, inf: false, nan: false)

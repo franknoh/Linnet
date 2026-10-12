@@ -249,7 +249,9 @@ infinities.
 Done: `dtype` declarations, with the FP8 formats declared in `std.dtypes`
 as storage formats (cast to and from, no operators); `std.quant`'s FP8
 layers on `f8e4m3`; and the prelude, `stdlib/prelude.linnet`, compiled
-into the checker, which declares `i8` to `f64`. To do: 4-bit formats, and
+into the checker, which declares `i8` to `f64`; the packed 4-bit formats
+(`i4`, `u4`, `f4e2m1`, two elements a byte along the last axis, which
+PyTorch holds as bytes and JAX and StableHLO as their own types). To do:
 the widening and narrowing ops for formats like NF4.
 
 ## Training and distribution

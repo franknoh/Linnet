@@ -137,6 +137,10 @@ std::optional<std::string> PythonTarget::contract(const TensorInfo& lhs,
 }
 
 std::string PythonTarget::dtype_name(ScalarKind dtype) const {
+    // PyTorch has no 4-bit element type: a 4-bit tensor is its bytes.
+    if (library_ == "torch" && sema::is_packed(dtype)) {
+        return "torch.uint8";
+    }
     return library_ + "." +
            (dtype == ScalarKind::Bool ? bool_name_ : std::string(dtype_names(dtype).numpy));
 }

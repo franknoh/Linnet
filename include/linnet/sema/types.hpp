@@ -36,7 +36,11 @@ enum class ScalarKind : std::uint8_t {
     // Storage formats: cast to and from, moved and gathered, but computed
     // with only after a cast (spec §3.1).
     F8E4M3, // float(exponent: 4, mantissa: 3, inf: false): FP8 E4M3FN
-    F8E5M2  // float(exponent: 5, mantissa: 2): FP8 E5M2
+    F8E5M2, // float(exponent: 5, mantissa: 2): FP8 E5M2
+    // Packed storage formats: two elements a byte along the last axis.
+    I4,    // int(bits: 4)
+    U4,    // int(bits: 4, signed: false)
+    F4E2M1 // float(exponent: 2, mantissa: 1, inf: false, nan: false): FP4 E2M1
 };
 
 // What a dtype is, as a `dtype` declaration spells it (spec §3.1): its
@@ -84,6 +88,9 @@ const std::map<std::string, ScalarKind, std::less<>>& prelude_dtypes();
 bool is_float(ScalarKind kind);
 bool is_integer(ScalarKind kind);
 bool is_storage(ScalarKind kind);
+// A storage format narrower than a byte, stored two elements a byte along a
+// tensor's last axis (spec §3.1).
+bool is_packed(ScalarKind kind);
 
 // The generic constraints that classify element types.
 enum class DTypeClass : std::uint8_t { Any, Numeric, Integer, Float };

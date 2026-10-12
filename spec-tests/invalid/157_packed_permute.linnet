@@ -1,0 +1,7 @@
+module m
+
+dtype nibble = int(bits: 4, signed: false)
+
+fn flip(x: Tensor[4, 8; nibble]) -> Tensor[8, 4; nibble] {
+    return permute(x, [1, 0])
+}

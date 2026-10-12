@@ -6,6 +6,7 @@ them: one record per dtype, which every table in the package is built from.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -18,8 +19,11 @@ Kind = Literal["bool", "int", "uint", "float"]
 class DType:
     """A scalar type: its Linnet name, width, kind, and its name in
     SafeTensors, ONNX (`TensorProto` element type), MLIR, NumPy (`bfloat16`
-    and the FP8 formats from `ml_dtypes`) and PyTorch (`torch.<name>`). A
-    storage format (`std.dtypes`) is cast to and from but computes nothing."""
+    and the FP8 and 4-bit formats from `ml_dtypes`) and PyTorch
+    (`torch.<name>`). A storage format (`std.dtypes`) is cast to and from but
+    computes nothing; a 4-bit one is packed, two elements a byte along a
+    tensor's last axis, which PyTorch holds as `uint8` bytes and SafeTensors
+    as `U8`."""
 
     name: str
     bits: int
@@ -33,7 +37,25 @@ class DType:
 
     @property
     def element_bytes(self) -> int:
+        """Whole bytes an element takes (a packed format's, rounded up:
+        `bytes_for` counts them exactly)."""
         return (self.bits + 7) // 8
+
+    def bytes_for(self, elements: int) -> int:
+        """Bytes `elements` elements take: two a byte when packed."""
+        return -(-elements * self.bits // 8)
+
+    @property
+    def packed(self) -> bool:
+        """Whether two elements share a byte along a tensor's last axis."""
+        return self.bits < 8
+
+    def storage_shape(self, shape: Sequence[int]) -> tuple[int, ...]:
+        """The shape of a tensor of `shape` as bytes: its last axis halved
+        when packed."""
+        if not self.packed or not shape:
+            return tuple(shape)
+        return (*shape[:-1], shape[-1] // 2)
 
     @property
     def is_float(self) -> bool:
@@ -61,6 +83,9 @@ DTYPES: dict[str, DType] = {
             "f8e4m3", 8, "float", "F8_E4M3", 17, "f8E4M3FN", "float8_e4m3fn", "float8_e4m3fn", True
         ),
         DType("f8e5m2", 8, "float", "F8_E5M2", 19, "f8E5M2", "float8_e5m2", "float8_e5m2", True),
+        DType("i4", 4, "int", "", 22, "i4", "int4", "uint8", True),
+        DType("u4", 4, "uint", "", 21, "ui4", "uint4", "uint8", True),
+        DType("f4e2m1", 4, "float", "", 23, "f4E2M1FN", "float4_e2m1fn", "uint8", True),
     )
 }
 
@@ -75,7 +100,9 @@ CLASSES: dict[str, frozenset[str]] = {
     "any": FLOATS | INTEGERS | STORAGE | {"bool"},
 }
 
-BY_SAFETENSORS: dict[str, DType] = {d.safetensors: d for d in DTYPES.values()}
+# The packed formats have no SafeTensors name: a checkpoint stores their bytes.
+BY_SAFETENSORS: dict[str, DType] = {d.safetensors: d for d in DTYPES.values() if d.safetensors}
+PACKED = frozenset(d.name for d in DTYPES.values() if d.packed)
 # Checkpoint dtypes whose bytes a `u8` parameter may also hold, as bits
 # (FP8 that `std.quant::decode_fp8` decodes); a `U8` tensor binds to an FP8
 # parameter the same way (`linnet.weights.as_bits`).
@@ -109,6 +136,7 @@ __all__ = [
     "DTYPES",
     "FLOATS",
     "INTEGERS",
+    "PACKED",
     "STORAGE",
     "DType",
     "Kind",

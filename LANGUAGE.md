@@ -186,9 +186,11 @@ shared = { path = "../shared" }
 | enum | `enum Pooling { Mean, ClassToken }`, variants `Pooling.Mean` |
 | dtype | `dtype word = int(bits: 32)`, `pub dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)` |
 
-`std.dtypes` declares the FP8 formats `f8e4m3` and `f8e5m2`. They are
-storage formats: a tensor of one is cast, moved, sliced and indexed, but
-computes only after a `cast` to a built-in dtype.
+`std.dtypes` declares the FP8 formats `f8e4m3` and `f8e5m2` and the 4-bit
+`i4`, `u4` and `f4e2m1`. They are storage formats: a tensor of one is cast,
+moved, sliced and indexed, but computes only after a `cast` to a built-in
+dtype. A 4-bit tensor packs two elements a byte along its last axis, which
+operations keep whole.
 
 Generic kinds: `N: Dim` (one dimension), `*S: Shape` (any number of
 dimensions, possibly none), `T: DType` (any element type), `T: Numeric`,

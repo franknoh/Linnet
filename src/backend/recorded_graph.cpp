@@ -1484,6 +1484,8 @@ std::expected<std::string, std::string> replay_graph(const RecordedGraph& graph,
                                                      GraphTarget& target) {
     try {
         return Replayer(graph, target).run_top(graph);
+    } catch (const ExportError& error) {
+        return std::unexpected(error.what());
     } catch (const Diverged& error) {
         return std::unexpected(std::string("replay: ") + error.what());
     } catch (const KernelError& error) {
@@ -1495,6 +1497,8 @@ std::expected<std::string, std::string>
 replay_slice(const RecordedGraph& graph, const GraphSlice& slice, GraphTarget& target) {
     try {
         return Replayer(graph, target).run_slice(graph, slice);
+    } catch (const ExportError& error) {
+        return std::unexpected(error.what());
     } catch (const Diverged& error) {
         return std::unexpected(std::string("slice: ") + error.what());
     } catch (const KernelError& error) {
