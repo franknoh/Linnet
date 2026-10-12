@@ -1,0 +1,28 @@
+module m
+
+// Four-bit formats pack two elements a byte along the last axis: operations
+// keep it whole, and computing takes a cast.
+dtype nibble = int(bits: 4, signed: false)
+dtype fp4 = float(exponent: 2, mantissa: 1, inf: false, nan: false)
+
+pub fn widen<R: Dim, N: Dim>(x: Tensor[R, N; fp4], scale: Tensor[R; f32]) -> Tensor[R, N; f32] {
+    let rows = cast<f32>(x)
+    let out[r, n] = rows[r, n] * scale[r]
+    return out
+}
+
+pub fn narrow<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; fp4] {
+    return cast<fp4>(x)
+}
+
+// Leading axes move freely: reshaped, permuted, sliced, concatenated.
+pub fn blocks<E: Dim, G: Dim>(x: Tensor[E, G, 32; fp4]) -> Tensor[G, E, 32; fp4] {
+    let flat = reshape(x, [E * G, 32])
+    let back = reshape(flat, [E, G, 32])
+    return permute(back, [1, 0, 2])
+}
+
+pub fn rows<N: Dim>(x: Tensor[8, N; nibble], y: Tensor[8, N; nibble]) -> Tensor[3, N; i32] {
+    let both = concat(x, y, axis = 0)
+    return cast<i32>(both[2:5, :])
+}

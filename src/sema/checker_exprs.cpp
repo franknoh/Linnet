@@ -1408,8 +1408,28 @@ TypeId Checker::check_index(const ast::Expr& node, const ast::IndexExpr& index) 
         std::all_of(index.components.begin(), index.components.end(), [](const auto& component) {
             return component.kind == ast::IndexKind::Expr || component.kind == ast::IndexKind::Pack;
         });
+    if (packed(data) && !env_->index_scopes.empty() && only_positions) {
+        packed_error(node.span, data, "index notation, which reads its elements one by one");
+        return types_.error();
+    }
     if (!env_->index_scopes.empty() && only_positions) {
         return check_element_access(node, index, data);
+    }
+    if (packed(data)) {
+        // The component that addresses the last axis, if any: the last one
+        // after a `...`, or the last of as many as there are axes.
+        const auto& components = index.components;
+        const auto ellipsis =
+            std::ranges::find(components, ast::IndexKind::Ellipsis, &ast::IndexComponent::kind);
+        const bool addressed = ellipsis != components.end()
+                                   ? ellipsis + 1 != components.end()
+                                   : components.size() == data.shape.size();
+        const ast::IndexComponent* last = addressed ? &components.back() : nullptr;
+        if (last != nullptr && (last->kind != ast::IndexKind::Slice || last->start != ast::no_id ||
+                                last->stop != ast::no_id || last->step != ast::no_id)) {
+            packed_error(last->span, data, "indexing or slicing its last axis");
+            return types_.error();
+        }
     }
     // Outside index notation an unknown name is just an unknown name.
     return check_slicing(node, index, data);

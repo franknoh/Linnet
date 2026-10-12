@@ -879,7 +879,15 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
                     .help("state divisibility in a `where` clause, for example `H % N == 0`");
                 return types_.error();
             }
+            if (packed(*tensor) && !keeps_last_axis(*tensor, *target)) {
+                packed_error(node.span, *tensor, "`reshape` that changes its last axis");
+                return types_.error();
+            }
             return types_.tensor(*target, tensor->dtype);
+        }
+        if (packed(*tensor) && !keeps_last_axis(*tensor, *target)) {
+            packed_error(node.span, *tensor, "`broadcast_to` that widens its last axis");
+            return types_.error();
         }
         if (tensor->shape.size() > target->size()) {
             error(codes::unproven_broadcast,
@@ -939,6 +947,11 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
             used[static_cast<std::size_t>(*position)] = true;
             result.push_back(tensor->shape[static_cast<std::size_t>(*position)]);
         }
+        if (packed(*tensor) &&
+            axes->back().dim.constant() != static_cast<std::int64_t>(tensor->shape.size() - 1)) {
+            packed_error(node.span, *tensor, "`permute` that moves its last axis");
+            return types_.error();
+        }
         return types_.tensor(std::move(result), tensor->dtype);
     }
 
@@ -988,6 +1001,10 @@ TypeId Checker::check_builtin_call(const ast::Expr& node,
         }
         Shape result = first->shape;
         const auto at = static_cast<std::size_t>(*position);
+        if (packed(*first) && at + 1 == result.size()) {
+            packed_error(node.span, *first, "`concat` along its last axis");
+            return types_.error();
+        }
         for (std::size_t i = 1; i < args.size(); ++i) {
             const TypeData* next = tensor_argument(i);
             if (next == nullptr) {

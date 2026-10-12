@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -93,6 +94,12 @@ struct Literal {
 // and dtype the evaluator computed.
 class KernelTarget;
 struct KernelLaunch;
+
+// A target's refusal of what it cannot write (a dtype it has no type for,
+// say): the export fails with its message.
+struct ExportError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 class GraphTarget {
 public:

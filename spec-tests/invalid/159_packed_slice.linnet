@@ -1,0 +1,7 @@
+module m
+
+dtype fp4 = float(exponent: 2, mantissa: 1, inf: false, nan: false)
+
+fn half(x: Tensor[4, 8; fp4]) -> Tensor[4, 3; fp4] {
+    return x[:, 1:4]
+}

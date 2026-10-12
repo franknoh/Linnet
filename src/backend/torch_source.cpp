@@ -233,9 +233,44 @@ public:
     }
 
     std::string convert(const TensorInfo& value, ScalarKind dtype) override {
+        if (sema::is_packed(value.dtype) || sema::is_packed(dtype)) {
+            // A 4-bit tensor is its bytes, two elements each along the last
+            // axis (`linnet.torch.packed`): widened, then packed.
+            packed_helpers_ = true;
+            std::string wide = value.name;
+            if (sema::is_packed(value.dtype)) {
+                wide = define("_unpack4(" + value.name + ", \"" +
+                              std::string(sema::scalar_name(value.dtype)) + "\")");
+            }
+            if (sema::is_packed(dtype)) {
+                return define("_pack4(" + wide + ", \"" + std::string(sema::scalar_name(dtype)) +
+                              "\")");
+            }
+            return define(wide + ".to(" + dtype_name(dtype) + ")");
+        }
         const std::string name = define(value.name + ".to(" + dtype_name(dtype) + ")");
         fold_convert(name, value, dtype);
         return name;
+    }
+
+    // A 4-bit tensor's shapes as its bytes have them: the last axis halved.
+    std::string reshape(const TensorInfo& value, const Dims& shape) override {
+        return PythonTarget::reshape(value, stored(value.dtype, shape));
+    }
+
+    std::string broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) override {
+        if (!sema::is_packed(value.dtype)) {
+            return PythonTarget::broadcast(value, dims, shape);
+        }
+        const TensorInfo bytes{value.name, stored(value.dtype, value.shape), value.dtype};
+        return PythonTarget::broadcast(bytes, dims, stored(value.dtype, shape));
+    }
+
+    static Dims stored(ScalarKind dtype, Dims shape) {
+        if (sema::is_packed(dtype) && !shape.empty()) {
+            shape.back() /= 2;
+        }
+        return shape;
     }
 
     std::string
@@ -872,6 +907,9 @@ public:
         }
         if (experts_helper_) {
             out += experts_helper();
+        }
+        if (packed_helpers_) {
+            out += "from linnet.torch.packed import pack4 as _pack4, unpack4 as _unpack4\n\n";
         }
         for (const std::string& kind : eight_bit_) {
             for (const char* part : {"_linear", "_operands"}) {
@@ -1820,6 +1858,7 @@ private:
     int slots_ = 1;
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
+    bool packed_helpers_ = false;                     // `_pack4` and `_unpack4` are used
     bool experts_helper_ = false;                     // `_linear_experts` is used
     std::set<std::string> eight_bit_;                 // 8-bit layers' kinds used (`fp8`, ...)
     bool multiply_ = false;                           // `_multiply` (a tile `prod`) is written

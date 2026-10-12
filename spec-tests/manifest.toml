@@ -405,3 +405,32 @@ code = "E2128"
 file = "invalid/155_dtype_literal.linnet"
 expect = "error"
 code = "E2101"
+
+[[case]]
+file = "valid/035_packed_dtypes.linnet"
+expect = "ok"
+
+[[case]]
+file = "invalid/156_packed_reshape.linnet"
+expect = "error"
+code = "E2129"
+
+[[case]]
+file = "invalid/157_packed_permute.linnet"
+expect = "error"
+code = "E2129"
+
+[[case]]
+file = "invalid/158_packed_concat.linnet"
+expect = "error"
+code = "E2129"
+
+[[case]]
+file = "invalid/159_packed_slice.linnet"
+expect = "error"
+code = "E2129"
+
+[[case]]
+file = "invalid/160_packed_element.linnet"
+expect = "error"
+code = "E2129"

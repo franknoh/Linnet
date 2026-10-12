@@ -24,9 +24,11 @@ from typing import Protocol, TypeAlias, TypedDict, TypeVar, cast
 import torch
 
 from .. import ir
+from ..dtypes import PACKED
 from ..plan import PlanError
 from .dtypes import torch_dtype
 from .native import NATIVE, causal_mask, convolution, group_norm, max_pool2d, upsample_nearest2d
+from .packed import pack4, unpack4
 
 _A = TypeVar("_A")
 _R = TypeVar("_R")
@@ -133,6 +135,8 @@ class Interpreter:
         # What an operation's attributes say, read once: a shape, a slice's
         # axes, the domains of index notation, a call's substitution.
         self._read: dict[tuple[int, str], object] = {}
+        # The values of a packed format, by id: its name (`f4e2m1`, ...).
+        self._packed: dict[int, str] = {}
 
     # ------------------------------------------------------------ functions
 
@@ -148,19 +152,31 @@ class Interpreter:
         values: dict[int, Value] = {}
         for arg, value in zip(body.args, arguments, strict=True):
             values[arg.id] = value
+        self._note_packed(body.args, env)
         result = self.run_region(body, env, values, Grid())
         return result[0] if len(result) == 1 else tuple(result)
 
     def run_region(
         self, region: ir.Region, env: ir.Bindings, values: dict[int, Value], grid: Grid
     ) -> list[Value]:
+        self._note_packed(region.args, env)
         for op in region.ops:
             if op.kind in ("return", "yield"):
                 return [values[operand] for operand in op.operands]
+            self._note_packed(op.results, env)
             results = self.run_op(op, env, values, grid)
             for result, value in zip(op.results, results, strict=True):
                 values[result.id] = value
         raise PlanError("region without a terminator")
+
+    def _note_packed(self, values: Sequence[ir.Value], env: ir.Bindings) -> None:
+        """Notes the packed format (`linnet.torch.packed`) of each of
+        `values` that has one: a tensor of it is held as its bytes."""
+        for value in values:
+            if isinstance(value.type, ir.TensorType):
+                name = env.dtype(value.type.dtype)
+                if name in PACKED:
+                    self._packed[value.id] = name
 
     # ------------------------------------------------------------ attributes
 
@@ -186,6 +202,13 @@ class Interpreter:
                 env.shape(kind.shape), dtype=torch_dtype(env, kind.dtype), device=self.device
             )
         return torch.stack([cast(torch.Tensor, e) for e in elements])
+
+    def _stored(self, op: ir.Op, shape: Sequence[int]) -> list[int]:
+        """`shape`, of `op`'s result, as the tensor holding it has it: the
+        last axis halved for a packed format, held as bytes."""
+        if op.results and op.results[0].id in self._packed and shape:
+            return [*shape[:-1], shape[-1] // 2]
+        return list(shape)
 
     def _shape_attr(self, op: ir.Op) -> ir.Shape:
         return self._attr(op, "shape", ir.parse_shape)
@@ -280,16 +303,23 @@ class Interpreter:
         if kind in unary:
             return [unary[kind](tensor(0))]
         if kind == "cast":
-            return [tensor(0).to(result_dtype())]
+            x = tensor(0)
+            if op.operands[0] in self._packed:
+                x = unpack4(x, self._packed[op.operands[0]])
+            assert isinstance(result_type, ir.TensorType | ir.ScalarType)
+            narrowed = env.dtype(result_type.dtype)
+            if narrowed in PACKED:
+                return [pack4(x, narrowed)]
+            return [x.to(result_dtype())]
         if kind == "select":
             return [torch.where(tensor(0), tensor(1), tensor(2))]
 
         if kind == "reshape":
-            return [tensor(0).reshape(env.shape(self._shape_attr(op)))]
+            return [tensor(0).reshape(self._stored(op, env.shape(self._shape_attr(op))))]
         if kind == "permute":
             return [tensor(0).permute(env.shape(self._shape_attr(op)))]
         if kind == "broadcast":
-            return [tensor(0).expand(env.shape(self._shape_attr(op)))]
+            return [tensor(0).expand(self._stored(op, env.shape(self._shape_attr(op))))]
         if kind == "slice":
             return [self._slice(tensor(0), self._attr(op, "axes", _slice_axes), env)]
         if kind == "cumsum":

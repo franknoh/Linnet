@@ -105,7 +105,9 @@ def _numel(obj: MemoryObject, env: Mapping[str, int]) -> int:
 
 
 def _bytes(obj: MemoryObject, env: Mapping[str, int]) -> int:
-    return ex.evaluate(obj.nbytes, env) if obj.owns_storage else _numel(obj, env) * _element(obj)
+    if obj.owns_storage:
+        return ex.evaluate(obj.nbytes, env)
+    return dtypes.dtype(obj.dtype).bytes_for(_numel(obj, env))
 
 
 def _element(obj: MemoryObject) -> int:

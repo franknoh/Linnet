@@ -26,6 +26,7 @@ from .dtypes import (
     LINNET_DTYPES,
     SAFETENSORS_NAMES,
     torch_dtype,
+    torch_shape,
 )
 from .interp import BlockInstance, Interpreter
 
@@ -80,7 +81,8 @@ class BlockModule(nn.Module):
             )
             if not isinstance(tensor_type, ir.TensorType):
                 raise PlanError(f"member `{member.name}` of block `{name}` is not a tensor")
-            shape = env.shape(tensor_type.shape)
+            # A packed format's tensor is its bytes: the last axis halved.
+            shape = torch_shape(env, tensor_type)
             dtype = torch_dtype(env, tensor_type.dtype)
             tensor = torch.zeros(shape, dtype=dtype, device=device)
             if is_optional:

@@ -474,15 +474,34 @@ def _zeros(
 _BYTES = frozenset(np.dtype(t) for t in (np.uint8, jnp.float8_e4m3fn, jnp.float8_e5m2))
 
 
+# The 4-bit formats, whose checkpoints hold their bytes: two elements each
+# along the last axis, the low four bits first.
+_PACKED = frozenset(np.dtype(t) for t in (jnp.int4, jnp.uint4, jnp.float4_e2m1fn))
+_E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+
+
 def as_declared(array: jax.Array, dtype: DTypeLike) -> jax.Array:
     """`array` as a parameter of `dtype` takes it: FP8 bytes held as `u8`,
     or `u8` bytes for an FP8 parameter, reinterpreted rather than
-    converted."""
+    converted; a 4-bit format's bytes unpacked into its elements."""
     wanted = np.dtype(dtype)
+    if wanted in _PACKED and np.dtype(array.dtype) == np.uint8:
+        return _unpacked(array, wanted)
     pair = {np.dtype(array.dtype), wanted}
     if len(pair) == 2 and np.dtype(np.uint8) in pair and pair <= _BYTES:
         return jax.lax.bitcast_convert_type(array, wanted)
     return array
+
+
+def _unpacked(packed: jax.Array, wanted: np.dtype[np.generic]) -> jax.Array:
+    """The elements of a 4-bit format `wanted` whose bytes `packed` holds."""
+    codes = jnp.stack((packed & 15, packed >> 4), axis=-1).reshape(*packed.shape[:-1], -1)
+    if wanted == np.dtype(jnp.uint4):
+        return codes.astype(wanted)
+    if wanted == np.dtype(jnp.int4):
+        return ((codes.astype(jnp.int8) ^ 8) - 8).astype(wanted)
+    table = jnp.asarray((*_E2M1, *(-v for v in _E2M1)), dtype=jnp.float32)
+    return table[codes].astype(wanted)
 
 
 def _device_array(value: ArrayLike) -> jax.Array:

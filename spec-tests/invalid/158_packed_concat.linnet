@@ -1,0 +1,7 @@
+module m
+
+dtype nibble = int(bits: 4)
+
+fn widen(x: Tensor[4, 8; nibble], y: Tensor[4, 8; nibble]) -> Tensor[4, 16; nibble] {
+    return concat(x, y, axis = 1)
+}

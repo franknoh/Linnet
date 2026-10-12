@@ -1,0 +1,8 @@
+module m
+
+dtype fp4 = float(exponent: 2, mantissa: 1, inf: false, nan: false)
+
+fn twice(x: Tensor[4, 8; fp4]) -> Tensor[4, 8; f32] {
+    let out[r, c] = cast<f32>(x[r, c]) * 2.0
+    return out
+}

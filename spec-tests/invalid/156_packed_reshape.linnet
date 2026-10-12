@@ -1,0 +1,8 @@
+module m
+
+dtype fp4 = float(exponent: 2, mantissa: 1, inf: false, nan: false)
+
+// Merging the last axis into another splits its bytes' pairs differently.
+fn flatten(x: Tensor[4, 8; fp4]) -> Tensor[32; fp4] {
+    return reshape(x, [32])
+}

@@ -17,6 +17,12 @@ namespace {
 using sema::ScalarKind;
 
 std::string tensor_type(const Dims& shape, ScalarKind dtype) {
+    if (sema::is_packed(dtype)) {
+        throw ExportError("ONNX export does not take the 4-bit dtypes (`" +
+                          std::string(sema::scalar_name(dtype)) +
+                          "`) yet: ONNX casts them from opset 21 and 23, and Linnet writes "
+                          "opset 20");
+    }
     std::string text(dtype_names(dtype).onnx);
     if (shape.empty()) {
         return text;

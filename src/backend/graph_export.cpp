@@ -35,6 +35,17 @@ struct Unsupported : std::runtime_error {
     throw Unsupported(message);
 }
 
+// A tensor of a 4-bit format packs its last axis two elements a byte, so
+// the axis has an even length (spec §3.1).
+void check_packed(const Dims& shape, ScalarKind dtype) {
+    if (sema::is_packed(dtype) && (shape.empty() || shape.back() % 2 != 0)) {
+        fail("a tensor of `" + std::string(sema::scalar_name(dtype)) +
+             "` packs two elements a byte along its last axis, which needs an even length; "
+             "found shape " +
+             python_tuple(shape));
+    }
+}
+
 // A value during evaluation. Tensors (scalars are rank 0) live in the
 // target's document; the other kinds are resolved statically while inlining.
 struct Val {
@@ -906,6 +917,7 @@ private:
         } else if (data.kind == TypeKind::Tensor) {
             value.shape = concrete_shape(data.shape);
             value.dtype = concrete_dtype(data.dtype);
+            check_packed(value.shape, value.dtype);
         } else {
             fail("type `" + types_.to_string(type) + "` has no tensor representation");
         }
@@ -970,6 +982,7 @@ private:
         if (value.dtype == dtype) {
             return value;
         }
+        check_packed(value.shape, dtype);
         return tensor(target_.convert(info(value), dtype), value.shape, dtype);
     }
 
@@ -2512,6 +2525,8 @@ export_graph(ir::Module& module, const GraphExportOptions& options, GraphTarget&
         return Evaluator(module, options, gradient).run();
     } catch (const Unsupported& error) {
         return std::unexpected(error.what());
+    } catch (const ExportError& error) {
+        return std::unexpected(error.what());
     } catch (const GradientError& error) {
         return std::unexpected(std::string("gradient: ") + error.what());
     } catch (const KernelError& error) {
@@ -2728,7 +2743,7 @@ bool literal_arguments(const std::string& arguments) {
     static const std::set<std::string, std::less<>> argument_words = [] {
         std::set<std::string, std::less<>> words{"torch", "jnp", "bool_", "None", "dtype"};
         for (auto kind = static_cast<int>(sema::ScalarKind::Bool);
-             kind <= static_cast<int>(sema::ScalarKind::F8E5M2);
+             kind <= static_cast<int>(sema::ScalarKind::F4E2M1);
              ++kind) {
             words.emplace(dtype_names(static_cast<sema::ScalarKind>(kind)).numpy);
         }
@@ -3152,7 +3167,7 @@ std::string python_tuple(const Dims& dims) {
 
 const DTypeNames& dtype_names(sema::ScalarKind dtype) {
     // In `ScalarKind` order.
-    static constexpr std::array<DTypeNames, 15> names{{
+    static constexpr std::array<DTypeNames, 18> names{{
         {"i1", "bool", 9, "bool"},
         {"i8", "int8", 3, "int8"},
         {"i16", "int16", 5, "int16"},
@@ -3168,6 +3183,9 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
         {"f64", "double", 11, "float64"},
         {"f8E4M3FN", "float8e4m3fn", 17, "float8_e4m3fn"},
         {"f8E5M2", "float8e5m2", 19, "float8_e5m2"},
+        {"i4", "int4", 22, "int4"},
+        {"ui4", "uint4", 21, "uint4"},
+        {"f4E2M1FN", "float4e2m1", 23, "float4_e2m1fn"},
     }};
     return names[static_cast<std::size_t>(dtype)];
 }

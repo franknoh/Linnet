@@ -90,6 +90,13 @@ private:
     EntityId add_entity(Entity entity);
     void declare(Scope& scope, EntityId entity, const char* duplicate_code);
     bool check_not_prelude(std::string_view name, SourceSpan span);
+    // A tensor of a 4-bit format, which packs two elements a byte along its
+    // last axis (spec §3.1): whether `tensor` is one, whether `target` keeps
+    // its last axis whole, and the error for an operation (`what`) that
+    // would not.
+    static bool packed(const TypeData& tensor);
+    bool keeps_last_axis(const TypeData& tensor, const Shape& target);
+    void packed_error(SourceSpan span, const TypeData& tensor, std::string_view what);
     void resolve_imports(std::uint32_t module);
     void report_import_cycles();
     std::optional<std::uint32_t> find_module(const std::vector<ast::Name>& path) const;
