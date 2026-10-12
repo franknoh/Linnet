@@ -283,8 +283,9 @@ to measured costs. On another H100 host, with both backends offered:
 
 Measuring takes about 10 s on the first plan; with the times kept, planning
 takes about 1 s. Timed alone, a region misses what its neighbours do: at
-16 rows FlashInfer saves 5 us a layer timed alone, and about 25 us in the
-plan. Counting those effects is part of the conversion costs still to do.
+16 rows FlashInfer's attention saves 5 us a layer timed alone, while the
+plan that uses it runs about 25 us a layer faster than the entry. Counting
+those effects is part of the conversion costs still to do.
 
 ## Not planned
 
