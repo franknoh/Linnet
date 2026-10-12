@@ -214,6 +214,12 @@ std::set<const RecordedNode*> constant_nodes(const RecordedGraph& graph);
 // read only what earlier ones of them made.
 std::set<const RecordedNode*> constants_among(const std::vector<const RecordedNode*>& nodes);
 
+// The states each top-level step is the only reader of (their values before
+// the call), anywhere in `graph`: what a replay tells the target
+// (`GraphTarget::sole_readers_of`), so that a write into one is in place.
+std::map<const RecordedNode*, std::vector<std::uint32_t>>
+sole_state_readers(const RecordedGraph& graph);
+
 // The calls of `graph` made again on `target`, a fresh target of the kind
 // that recorded it: what its `finish` returns. Each top-level call goes to
 // its section (`constant_nodes`). Fails where the target answers

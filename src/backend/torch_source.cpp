@@ -152,6 +152,28 @@ public:
         section_ = section;
     }
 
+    void sole_readers_of(const std::vector<std::string>& states) override {
+        sole_states_ = std::set<std::string>(states.begin(), states.end());
+    }
+
+    // A cache write's function: in place (`index_copy_`, `index_put_`)
+    // where the write is the only read of `state`, which the replay of the
+    // graph knows. The functional form copies the whole cache to change one
+    // position per sequence, every layer, every step -- for a batch of long
+    // sequences, more memory traffic than the weights. The runtime sees the
+    // state come back as the same tensor and keeps it (`IN_PLACE`).
+    std::string writing(const std::string& state, std::string_view call) {
+        if (!sole_states_.contains(state)) {
+            return std::string(call);
+        }
+        if (std::ranges::find(written_, state) == written_.end()) {
+            written_.push_back(state);
+        }
+        std::string in_place(call);
+        in_place.insert(in_place.size() - 1, "_");
+        return in_place;
+    }
+
     // `expression`, which reads only constants, defined among them: once
     // per shape, however many calls need it.
     std::string define_constant(const std::string& expression) {
@@ -311,13 +333,13 @@ public:
             // decoding, the whole prompt's span when prefilling.
             const Dims& value = at[1]->shape;
             const std::int64_t span = value.size() == 4 ? value[2] : 1;
+            const std::string copy = name(0) + writing(name(0), ".index_copy(");
             if (span == 1) {
-                return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long(), " +
-                              name(1) + ")");
+                return define(copy + "2, " + name(2) + ".reshape(1).long(), " + name(1) + ")");
             }
-            return define(name(0) + ".index_copy(2, " + name(2) + ".reshape(1).long() + " +
-                          "torch.arange(" + std::to_string(span) + ", device=" + name(0) +
-                          ".device), " + name(1) + ")");
+            return define(copy + "2, " + name(2) + ".reshape(1).long() + " + "torch.arange(" +
+                          std::to_string(span) + ", device=" + name(0) + ".device), " + name(1) +
+                          ")");
         }
         if ((implementation_base == "linnet.mxfp4_experts" ||
              implementation_base == "linnet.mxfp4_experts(shared)") &&
@@ -389,8 +411,8 @@ public:
             operands[0] && operands[1] && operands[2] && operands[3]) {
             // `write_tokens`: token p at (rows[p], positions[p]), every head;
             // the values [1, H, P, D] as [P, H, D].
-            return define("torch.ops.aten.index_put(" + name(0) + ", [" + name(2) +
-                          ".long(), None, " + name(3) + ".long()], " + name(1) +
+            return define(writing(name(0), "torch.ops.aten.index_put(") + name(0) + ", [" +
+                          name(2) + ".long(), None, " + name(3) + ".long()], " + name(1) +
                           "[0].permute(1, 0, 2))");
         }
         if (implementation_base == "torch.Tensor.index_put" &&
@@ -415,7 +437,7 @@ public:
                 return define_constant("torch.arange(" + std::to_string(length) +
                                        ", device=" + device + ")");
             };
-            const std::string put = "torch.ops.aten.index_put(" + name(0) + ", [";
+            const std::string put = writing(name(0), "torch.ops.aten.index_put(") + name(0) + ", [";
             if (operands.size() == 3) {
                 // `write_rows`: row b at at[b]; the values are [B, H, D].
                 const std::string rows = range(cache[0]);
@@ -932,12 +954,10 @@ public:
         }
         // The states `main` writes into the tensor it was given: CUDA graphs
         // must be told their addresses are fixed, or they are skipped.
-        std::vector<std::string> in_place;
-        const std::string body =
-            write_states_in_place(release_dead_values(prepared.body, tail), tail, in_place);
+        const std::string body = release_dead_values(prepared.body, tail);
         std::vector<std::string> in_place_paths;
-        in_place_paths.reserve(in_place.size());
-        for (const std::string& argument : in_place) {
+        in_place_paths.reserve(written_.size());
+        for (const std::string& argument : written_) {
             in_place_paths.push_back(states_.at(std::stoul(argument.substr(1))));
         }
         out += "IN_PLACE = " + string_list(in_place_paths) + "\n";
@@ -990,62 +1010,6 @@ public:
         }
         out += body;
         out += tail;
-        return out;
-    }
-
-    // A cache write whose cache is a state argument nothing else reads
-    // happens in place (`index_copy_`, `index_put_`): the
-    // functional form copies the whole cache to change one position per
-    // sequence, every layer, every step -- for a batch of long sequences,
-    // more memory traffic than the weights. The runtime sees the state
-    // come back as the same tensor and keeps it.
-    static std::string write_states_in_place(const std::string& body,
-                                             const std::string& tail,
-                                             std::vector<std::string>& written) {
-        std::vector<std::string> lines = split_lines(body);
-        lines.push_back(tail);
-        const auto mentions = [](const std::string& line, const std::string& name) {
-            return std::ranges::any_of(words_of(line),
-                                       [&](const auto& word) { return word.second == name; });
-        };
-        std::string out;
-        for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
-            std::string line = lines[i];
-            const auto assignment = top_level_assignment(line);
-            // `vN = sK.index_copy(...)`, `vN = sK.index_put(...)`, or the
-            // latter as an ATen call, `vN = torch.ops.aten.index_put(sK, ...)`
-            // (it takes `None` for a full slice): the state, and where in
-            // the expression the call's `(` is.
-            std::string state;
-            std::size_t open = 0;
-            if (assignment) {
-                const std::string& expression = assignment->second;
-                constexpr std::string_view aten = "torch.ops.aten.index_put(";
-                const std::size_t dot = expression.find('.');
-                if (expression.starts_with(aten)) {
-                    state = expression.substr(aten.size(), expression.find(',') - aten.size());
-                    open = aten.size() - 1;
-                } else if (dot != std::string::npos) {
-                    for (const std::string_view write : {".index_copy(", ".index_put("}) {
-                        if (expression.compare(dot, write.size(), write) == 0) {
-                            state = expression.substr(0, dot);
-                            open = dot + write.size() - 1;
-                        }
-                    }
-                }
-            }
-            // The write must be the state's only use: a read after it
-            // would see the new value, and one before it may be a view.
-            bool read_elsewhere = !numbered(state, 's');
-            for (std::size_t j = 0; j < lines.size() && !read_elsewhere; ++j) {
-                read_elsewhere = j != i && mentions(lines[j], state);
-            }
-            if (!read_elsewhere) {
-                line.insert(line.size() - assignment->second.size() + open, "_");
-                written.push_back(state);
-            }
-            out += line + "\n";
-        }
         return out;
     }
 
@@ -2074,7 +2038,9 @@ private:
     Section section_ = Section::Call;
     std::string constants_body_; // the section that is not open
     std::vector<std::map<std::string, std::string>> constants_cse_{1};
-    bool fuse_ = true; // with `prepare`, join sibling linear layers
+    std::set<std::string> sole_states_; // the states the call being written alone reads
+    std::vector<std::string> written_;  // the states written in place, in order
+    bool fuse_ = true;                  // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used

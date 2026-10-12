@@ -176,6 +176,9 @@ public:
     // writes everything into the call.
     enum class Section : std::uint8_t { Call, Constants };
     virtual void begin_section(Section section) { (void)section; }
+    // The states whose value before the call the next call alone reads, as
+    // a replay of the graph knows: a write into one may happen in place.
+    virtual void sole_readers_of(const std::vector<std::string>& states) { (void)states; }
     // Fully sharded parameters (see `GraphExportOptions::fully_shard`): a
     // target that supports them gathers a parameter's parts into the whole.
     virtual bool supports_fully_shard() const { return false; }
