@@ -690,6 +690,16 @@ namespace {
 
 class Replayer {
 public:
+    // Tells the target the next call's section, where it changes.
+    void enter(bool constant) {
+        const auto section =
+            constant ? GraphTarget::Section::Constants : GraphTarget::Section::Call;
+        if (section != section_) {
+            target_.begin_section(section);
+            section_ = section;
+        }
+    }
+
     Replayer(const RecordedGraph& graph, GraphTarget& target) : target_(target) {
         names_.reserve(graph.values.size());
         for (const RecordedValue& value : graph.values) {
@@ -700,6 +710,19 @@ public:
     std::string run(const std::list<RecordedNode>& nodes) {
         std::string out;
         for (const RecordedNode& node : nodes) {
+            if (auto text = replay(node)) {
+                out = std::move(*text);
+            }
+        }
+        return out;
+    }
+
+    // The top-level calls, each in its section.
+    std::string run_top(const RecordedGraph& graph) {
+        const std::set<const RecordedNode*> constants = constant_nodes(graph);
+        std::string out;
+        for (const RecordedNode& node : graph.nodes) {
+            enter(constants.contains(&node));
             if (auto text = replay(node)) {
                 out = std::move(*text);
             }
@@ -766,21 +789,28 @@ public:
                 wanted.push_back(operand.value);
             }
         }
+        std::vector<const RecordedNode*> order;
         for (const RecordedNode* node : steps) {
             const bool persistent = (node->op == "parameter" || node->op == "state") &&
                                     node->results.size() == 1 && read.contains(node->results[0]) &&
                                     !given.contains(node->results[0]);
             if (persistent || remade.contains(node)) {
-                replay(*node);
+                order.push_back(node);
             }
         }
         for (std::size_t i = slice.start; i < slice.stop; ++i) {
             const RecordedNode& node = *steps[i];
             if (node.op != "input" && node.op != "parameter" && node.op != "state" &&
                 node.op != "finish") {
-                replay(node);
+                order.push_back(&node);
             }
         }
+        const std::set<const RecordedNode*> constants = constants_among(order);
+        for (const RecordedNode* node : order) {
+            enter(constants.contains(node));
+            replay(*node);
+        }
+        enter(false);
         std::vector<TensorInfo> results;
         results.reserve(slice.outputs.size());
         for (const std::uint32_t id : slice.outputs) {
@@ -1176,9 +1206,60 @@ private:
 
     GraphTarget& target_;
     std::vector<std::string> names_;
+    GraphTarget::Section section_ = GraphTarget::Section::Call;
 };
 
 } // namespace
+
+std::set<const RecordedNode*> constants_among(const std::vector<const RecordedNode*>& nodes) {
+    static constexpr std::array<std::string_view, 4> opens = {
+        "begin_while", "begin_counted", "begin_custom_gradient", "begin_remat"};
+    static constexpr std::array<std::string_view, 4> closes = {
+        "end_while", "end_counted", "end_custom_gradient", "end_remat"};
+    // Steps that stand for what the call takes, mark structure, or end it.
+    static constexpr std::array<std::string_view, 11> skipped = {"input",
+                                                                 "parameter",
+                                                                 "state",
+                                                                 "finish",
+                                                                 "begin_call",
+                                                                 "end_call",
+                                                                 "enable_placement",
+                                                                 "set_slot",
+                                                                 "release",
+                                                                 "while_initial_condition",
+                                                                 "while_trailing_condition"};
+    std::set<std::uint32_t> made;
+    std::set<const RecordedNode*> out;
+    int depth = 0;
+    for (const RecordedNode* node : nodes) {
+        if (std::ranges::find(closes, node->op) != closes.end()) {
+            --depth;
+            continue;
+        }
+        if (std::ranges::find(opens, node->op) != opens.end()) {
+            ++depth;
+            continue;
+        }
+        const bool from_constants = std::ranges::all_of(node->operands, [&](const auto& operand) {
+            return operand.value == no_value || made.contains(operand.value);
+        });
+        if (depth == 0 && from_constants && !node->results.empty() && node->regions.empty() &&
+            std::ranges::find(skipped, node->op) == skipped.end()) {
+            out.insert(node);
+            made.insert(node->results.begin(), node->results.end());
+        }
+    }
+    return out;
+}
+
+std::set<const RecordedNode*> constant_nodes(const RecordedGraph& graph) {
+    std::vector<const RecordedNode*> nodes;
+    nodes.reserve(graph.nodes.size());
+    for (const RecordedNode& node : graph.nodes) {
+        nodes.push_back(&node);
+    }
+    return constants_among(nodes);
+}
 
 std::expected<std::string, std::string> export_through_graph(ir::Module& module,
                                                              const GraphExportOptions& options,
@@ -1189,13 +1270,15 @@ std::expected<std::string, std::string> export_through_graph(ir::Module& module,
     if (auto text = export_graph(module, options, recorder); !text) {
         return text;
     }
+    // A gradient export names the gradients among the results.
+    target.set_gradients(recorder.gradients());
     return replay_graph(recorder.graph(), target);
 }
 
 std::expected<std::string, std::string> replay_graph(const RecordedGraph& graph,
                                                      GraphTarget& target) {
     try {
-        return Replayer(graph, target).run(graph.nodes);
+        return Replayer(graph, target).run_top(graph);
     } catch (const Diverged& error) {
         return std::unexpected(std::string("replay: ") + error.what());
     } catch (const KernelError& error) {

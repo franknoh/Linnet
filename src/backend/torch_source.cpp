@@ -140,6 +140,30 @@ public:
 
     using PythonTarget::gather;
 
+    // The entry's constants are written apart from the call, to be hoisted
+    // into `constants`; the body (and what it has defined, for reuse) is
+    // whichever section is open.
+    void begin_section(Section section) override {
+        if (section == section_) {
+            return;
+        }
+        std::swap(body_, constants_body_);
+        std::swap(cse_, constants_cse_);
+        section_ = section;
+    }
+
+    // `expression`, which reads only constants, defined among them: once
+    // per shape, however many calls need it.
+    std::string define_constant(const std::string& expression) {
+        if (section_ == Section::Constants || placed_) {
+            return define(expression);
+        }
+        begin_section(Section::Constants);
+        const std::string name = define(expression);
+        begin_section(Section::Call);
+        return name;
+    }
+
     std::string compare(ir::CompareKind kind,
                         const TensorInfo& a,
                         const TensorInfo& b,
@@ -388,8 +412,8 @@ public:
             // are converted once a step, not once a cache.
             const std::string device = placed_ ? name(0) + ".device" : "_device";
             const auto range = [&](std::int64_t length) {
-                return define("torch.arange(" + std::to_string(length) + ", device=" + device +
-                              ")");
+                return define_constant("torch.arange(" + std::to_string(length) +
+                                       ", device=" + device + ")");
             };
             const std::string put = "torch.ops.aten.index_put(" + name(0) + ", [";
             if (operands.size() == 3) {
@@ -870,7 +894,10 @@ public:
         }
         tail += join(outputs, ", ");
         tail += outputs.size() == 1 ? ",)\n" : ")\n";
-        Hoisted hoisted = hoist(prune_python_assignments(body_, tail), tail);
+        if (section_ == Section::Constants) {
+            begin_section(Section::Call);
+        }
+        Hoisted hoisted = hoist(constants_body_, body_, tail);
         // Sibling linear layers become one product only where their joined
         // weight is prepared once, not rebuilt every call.
         std::vector<std::vector<std::string>> fused;
@@ -1028,28 +1055,26 @@ public:
         std::string body;               // the rest of the entry
     };
 
-    // Splits the entry into what depends only on constants (rotary tables,
-    // masks, folded scalars: computed once per shape by `constants`) and
-    // what depends on the inputs, parameters, or states. Only top-level
-    // assignments move; loop bodies stay where they are.
-    Hoisted hoist(const std::string& body, const std::string& tail) const {
+    // The entry split into what depends only on constants (rotary tables,
+    // masks, folded scalars: computed once per shape by `constants`), which
+    // the replay of its graph wrote apart (`Section::Constants`), and what
+    // depends on the inputs, parameters, or states.
+    Hoisted
+    hoist(const std::string& constants, const std::string& body, const std::string& tail) const {
         Hoisted out;
-        std::set<std::string> constant_names;
+        out.body = prune_python_assignments(body, tail);
         std::vector<std::string> hoisted_names;
-        for (const std::string& text : split_lines(body)) {
-            const auto assignment = top_level_assignment(text);
-            if (assignment && depends_only_on(assignment->second, constant_names)) {
-                constant_names.insert(assignment->first);
+        for (const std::string& text :
+             split_lines(prune_python_assignments(constants, out.body + tail))) {
+            if (const auto assignment = top_level_assignment(text)) {
                 hoisted_names.push_back(assignment->first);
-                // A mask that is the same every call has its blocks listed
-                // once, eagerly, and can say there is nothing to skip.
-                if (text.find(" = _flex_blocks(") != std::string::npos && text.ends_with(")")) {
-                    out.constants += text.substr(0, text.size() - 1) + ", once=True)\n";
-                } else {
-                    out.constants += text + "\n";
-                }
+            }
+            // A mask that is the same every call has its blocks listed
+            // once, eagerly, and can say there is nothing to skip.
+            if (text.find(" = _flex_blocks(") != std::string::npos && text.ends_with(")")) {
+                out.constants += text.substr(0, text.size() - 1) + ", once=True)\n";
             } else {
-                out.body += text + "\n";
+                out.constants += text + "\n";
             }
         }
         // Only the constants the entry reads cross the boundary; the rest
@@ -1061,22 +1086,6 @@ public:
             }
         }
         return out;
-    }
-
-    // An expression is constant when every identifier it mentions is a
-    // constant value, a literal, or a library name (no argument, no loop
-    // variable, no input-dependent value).
-    bool depends_only_on(const std::string& expression,
-                         const std::set<std::string>& constant_names) const {
-        const std::set<std::string> arguments(arguments_.begin(), arguments_.end());
-        return std::ranges::none_of(words_of(expression), [&](const auto& entry) {
-            const std::string& word = entry.second;
-            // `wN_k` from a `while`, `fN_k` from a counted `for`.
-            const bool loop_variable = word.size() > 1 && (word[0] == 'w' || word[0] == 'f') &&
-                                       std::isdigit(static_cast<unsigned char>(word[1])) != 0;
-            return arguments.contains(word) || loop_variable ||
-                   (numbered(word, 'v') && !constant_names.contains(word));
-        });
     }
 
     // A Python `while True:` over loop variables, broken out of when the
@@ -2062,7 +2071,10 @@ private:
     std::string detach(const std::string& value) const override { return value + ".detach()"; }
 
     bool placed_ = false; // with placement, `main` and `constants` take `_dev`
-    bool fuse_ = true;    // with `prepare`, join sibling linear layers
+    Section section_ = Section::Call;
+    std::string constants_body_; // the section that is not open
+    std::vector<std::map<std::string, std::string>> constants_cse_{1};
+    bool fuse_ = true; // with `prepare`, join sibling linear layers
     int slots_ = 1;
     int slot_ = 0;
     bool int4_helpers_ = false;                       // `_int4_pack` and `_int4_linear` are used
@@ -2138,9 +2150,6 @@ std::expected<std::string, std::string> export_torch_source(ir::Module& module,
         return std::unexpected(*conflict);
     }
     TorchTarget target(options);
-    if (options.gradient) {
-        return export_graph(module, options, target);
-    }
     TorchTarget recorded(options);
     return export_through_graph(module, options, recorded, "torch", target);
 }

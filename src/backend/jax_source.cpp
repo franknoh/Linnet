@@ -959,9 +959,6 @@ std::expected<std::string, std::string> export_jax_source(ir::Module& module,
         return std::unexpected(*conflict);
     }
     JaxTarget target(options);
-    if (options.gradient) {
-        return export_graph(module, options, target);
-    }
     JaxTarget recorded(options);
     return export_through_graph(module, options, recorded, "jax", target);
 }
