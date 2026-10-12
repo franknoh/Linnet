@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from .. import ir, lora
+from ..backends import Backend, Graph, Plan, Planner
 from ..compiler import bind_arguments, lora_arguments, run_compiler, std_arguments
 from ..generated import generated_directory, import_generated, write_generated
 from ..plan import PlanError
@@ -562,7 +563,45 @@ class CompiledLinnetModule(LinnetModule):
         `bindings`, with this module's placement, adapters, sharding and
         absent optional parameters. `prepare=False` keeps weight-only work
         in `main`."""
-        command = ["torch", "--root", self.program.root.name, "--entry", entry]
+        return self._export("torch", entry, bindings, trains=trains, prepare=prepare)
+
+    def graph_for(
+        self, entry: str, bindings: Mapping[str, str], *, trains: bool, prepare: bool = True
+    ) -> Graph:
+        """The graph `linnet graph` records for the source `source_for`
+        returns (docs/graph-format.md)."""
+        return Graph.parse(self._export("graph", entry, bindings, trains=trains, prepare=prepare))
+
+    def plan_for(
+        self,
+        entry: str,
+        inputs: list[torch.Tensor],
+        generics: Mapping[str, int | str] | None = None,
+        *,
+        backends: Sequence[Backend[torch.Tensor]] = (),
+        compile: bool | str | None = None,
+    ) -> Plan[torch.Tensor]:
+        """`entry`'s execution plan for inputs like `inputs`: each of
+        `backends` takes the regions it matches, and the generated source
+        runs the rest (docs/design/execution.md). Run it with
+        `plan.run(inputs, Context(plan.target))`."""
+        from .backend import TorchSource, target_of
+
+        bindings = self.bindings_for(entry, inputs, generics or {})
+        graph = self.graph_for(entry, bindings, trains=self.trains())
+        fallback = TorchSource(self, entry, generics or {}, compile)
+        return Planner(backends, fallback).plan(graph, target_of(self.interpreter.device))
+
+    def _export(
+        self,
+        command_name: str,
+        entry: str,
+        bindings: Mapping[str, str],
+        *,
+        trains: bool,
+        prepare: bool,
+    ) -> str:
+        command = [command_name, "--root", self.program.root.name, "--entry", entry]
         command += ["--numerics", self._numerics]
         command += ["--optionals", "present"]
         command += ["--absent-file", "-"]
