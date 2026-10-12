@@ -40,10 +40,15 @@ pub block Model<R: Dim, N: Dim> {
         let out[r, n] = wide[r, n] * scale[r] + x[n]
         return out
     }
+
+    // Rounded to FP4 and back.
+    pub entry round(x: Tensor[2, N; f32]) -> Tensor[2, N; f32] {
+        return cast<f32>(cast<f4e2m1>(x))
+    }
 }
 
-// Rounded to FP4 and back.
-pub entry round<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] {
+// The same, outside the block.
+pub entry round_values<N: Dim>(x: Tensor[N; f32]) -> Tensor[N; f32] {
     return cast<f32>(cast<f4e2m1>(x))
 }
 """
@@ -120,9 +125,10 @@ def test_torch_binds_the_bytes_and_widens(
     got = loaded.run_entry("forward", [torch.from_numpy(_input())])
     assert isinstance(got, torch.Tensor)
     np.testing.assert_allclose(got.numpy(), wide + _input(), rtol=1e-6, atol=1e-6)
-    rounded = loaded.run_entry("round", [torch.from_numpy(VALUES)], {"N": VALUES.size})
+    rows = VALUES.reshape(2, N)
+    rounded = loaded.run_entry("round", [torch.from_numpy(rows)])
     assert isinstance(rounded, torch.Tensor)
-    expected = VALUES.astype(ml_dtypes.float4_e2m1fn).astype(np.float32)
+    expected = rows.astype(ml_dtypes.float4_e2m1fn).astype(np.float32)
     assert np.array_equal(rounded.numpy(), expected)
 
 
@@ -145,7 +151,7 @@ def test_stablehlo_casts_natively(model: tuple[Path, Path, NDArray[np.float32]])
     import jax.extend as jex
 
     source, _, _ = model
-    command = [find_compiler(), "stablehlo", "--std", str(STDLIB), "--entry", "round"]
+    command = [find_compiler(), "stablehlo", "--std", str(STDLIB), "--entry", "round_values"]
     completed = subprocess.run(
         [*command, "--bind", f"N={VALUES.size}", str(source)],
         capture_output=True,
