@@ -503,3 +503,32 @@ def test_a_region_makes_again_what_it_computes_from_constants() -> None:
     # makes it again.
     assert scale.value in graph.constants
     assert region.inputs == (query.value, key.value, value.value, mask.value)
+
+
+def test_the_context_joins_parameters_without_a_copy(tmp_path: Path) -> None:
+    weights = random_llama(tmp_path / "model.safetensors")
+    planned, direct = (
+        load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
+        for _ in range(2)
+    )
+    assert isinstance(planned, CompiledLinnetModule)
+    token = torch.tensor([[3]], dtype=torch.int32)
+    plan = planned.plan_for("decode", [token, torch.tensor(0, dtype=torch.int32)], measure=False)
+    context = planned.context_for(plan)
+    assert context.join is not None
+    paths = [f"layers.0.attention.{name}_proj.weight" for name in ("q", "k", "v")]
+    apart = torch.cat([context.parameters[path].clone() for path in paths])
+    joined = context.join(paths)
+    assert joined is not None
+    torch.testing.assert_close(joined, apart)
+    # The model's parameters, and the context's, are now views of it.
+    storage = joined.untyped_storage().data_ptr()
+    assert all(context.parameters[p].untyped_storage().data_ptr() == storage for p in paths)
+    named = dict(planned.named_parameters())
+    assert all(named[f"root.{p}"].untyped_storage().data_ptr() == storage for p in paths)
+    with torch.no_grad():
+        step = torch.tensor(0, dtype=torch.int32)
+        (logits,) = plan.run([token, step], planned.context_for(plan))
+        expected: object = direct.run_entry("decode", [token, step])
+        assert isinstance(expected, torch.Tensor)
+        torch.testing.assert_close(logits, expected)

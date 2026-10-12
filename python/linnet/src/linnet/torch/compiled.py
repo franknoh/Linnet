@@ -660,7 +660,28 @@ class CompiledLinnetModule(LinnetModule):
             name.removeprefix("root."): parameter.detach()
             for name, parameter in self.named_parameters()
         }
-        return Context(target, parameters)
+
+        def join(paths: Sequence[str]) -> torch.Tensor | None:
+            joined = self._joined(paths)
+            if joined is not None:
+                for path in paths:
+                    owner, leaf = owner_of(self, path)
+                    parameters[path] = cast("torch.Tensor", getattr(owner, leaf)).detach()
+            return joined
+
+        return Context(target, parameters, join=join)
+
+    def _joined(self, paths: Sequence[str]) -> torch.Tensor | None:
+        """The parameters at `paths` laid out one after another in one buffer
+        (`_lay_out`), as one tensor over it; None where they cannot be."""
+        self._lay_out([list(paths)])
+        owners = [owner_of(self, path) for path in paths]
+        tensors = [cast("torch.Tensor", getattr(owner, leaf)).detach() for owner, leaf in owners]
+        first = tensors[0]
+        if not _adjacent(tensors) or any(t.shape[1:] != first.shape[1:] for t in tensors):
+            return None
+        rows = sum(t.shape[0] for t in tensors)
+        return first.as_strided((rows, *first.shape[1:]), first.stride(), first.storage_offset())
 
     def conform(
         self,

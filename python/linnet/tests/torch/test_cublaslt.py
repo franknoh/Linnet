@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from linnet.backends import Benchmarks, Context
+from linnet.backends import Benchmarks
 from linnet.torch import load
 from linnet.torch.compiled import CompiledLinnetModule
 from linnet.torch.cublaslt import CublasLt, runtime_for, tensor_ref
@@ -58,11 +58,7 @@ def test_a_plan_with_cublaslt_replays_as_one_graph(tmp_path: Path) -> None:
     # Each layer's q, k and v joined, its o, its gate and up joined, its
     # down; and the head.
     assert [step.backend for step in plan.steps].count("cublaslt") == 2 * 4 + 1
-    parameters = {
-        name.removeprefix("root."): parameter.detach()
-        for name, parameter in planned.named_parameters()
-    }
-    runner = Captured(plan, Context(plan.target, parameters))
+    runner = Captured(plan, planned.context_for(plan))
     with torch.no_grad():
         for pos in range(4):  # as it is, captured, then replayed twice
             step = torch.tensor(pos, dtype=torch.int32, device="cuda")
@@ -70,6 +66,8 @@ def test_a_plan_with_cublaslt_replays_as_one_graph(tmp_path: Path) -> None:
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected, rtol=2e-2, atol=2e-2)
+    # The joined weights are views of the model's, laid out side by side.
+    assert all(step.executable.meta.holds == 0 for step in plan.steps)
 
 
 @requires_cuda
@@ -95,13 +93,12 @@ def test_a_measured_plan_takes_what_cublaslt_runs_faster(tmp_path: Path) -> None
         "decode",
         [token, torch.tensor(0, dtype=torch.int32, device="cuda")],
         backends=[CublasLt()],
-        memory=0,  # no joined copies of the weights
+        memory=0,  # joined weights are views, which keep nothing
         benchmarks=benchmarks,
     )
     assert len(benchmarks) > 0
     taken = [step for step in plan.steps if step.backend == "cublaslt"]
     assert all(step.saving is not None and step.saving > 0 for step in taken)
-    assert not any(step.region.members for step in taken)
     # Whatever it took (on so small a model, maybe nothing).
     with torch.no_grad():
         for pos in range(3):
@@ -110,3 +107,4 @@ def test_a_measured_plan_takes_what_cublaslt_runs_faster(tmp_path: Path) -> None
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected, rtol=2e-2, atol=2e-2)
+    assert all(step.executable.meta.holds == 0 for step in taken)
