@@ -252,7 +252,7 @@ tensor-parallel model is one plan per process, as `Shards` builds it today.
 | M0 | `linnet graph`: the graph as JSON, built by a recording `GraphTarget` | the existing targets, replayed from the graph, print the same source for every Nest card |
 | P0 | Backend and Executable contract; runtime core; the generated PyTorch source as one full-graph backend | every Nest model runs through a plan at today's speed and passes today's tests |
 | P1 | partition and fallback; cuBLASLt and FlashInfer backends; the text passes over generated Python become graph passes | Llama 3.1 8B decode on an H100 runs attention on FlashInfer, the MLP on cuBLASLt and the rest on the fallback in one CUDA graph, at least as fast as `linnet-cudagraphs` |
-| P2 | plugin SDK: entry points, versions, capability checks, conformance tests against canonical bodies | an external package adds a backend without changing Linnet |
+| P2 | plugin SDK: entry points, versions, capability checks, conformance against the generated source (docs/backends.md) | an external package adds a backend without changing Linnet |
 | P3 | cost-based selection: benchmark and compile caches, memory budget, conversion costs | the planner picks backends with no user choice |
 | P4 | DeepGEMM, TileKernels, CUTLASS, Triton, XLA, TensorRT, external megakernels | each passes its conformance tests |
 
