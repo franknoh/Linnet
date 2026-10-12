@@ -10,6 +10,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -2121,6 +2122,14 @@ private:
 };
 
 } // namespace
+
+std::expected<std::unique_ptr<GraphTarget>, std::string>
+make_torch_target(const TorchSourceOptions& options) {
+    if (const auto conflict = python_options_conflict(options)) {
+        return std::unexpected(*conflict);
+    }
+    return std::make_unique<TorchTarget>(options);
+}
 
 std::expected<std::string, std::string> export_torch_source(ir::Module& module,
                                                             const TorchSourceOptions& options) {

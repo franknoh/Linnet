@@ -1,0 +1,18 @@
+# <target> <args...>: a library-heavy decoder, routed experts, kernels with
+# fallback bodies and atomics, state, runtime and counted loops, ops with a
+# `grad`, placement and offload, fully sharded blocks.
+torch --numerics fast --entry decode --prepare --bind Vocab=11 --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=6 --bind T=bf16 examples/01-llama/src/lib.linnet
+jax --entry decode --prepare --bind Vocab=11 --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=6 --bind T=bf16 examples/01-llama/src/lib.linnet
+torch --numerics exact --entry decode --bind Vocab=11 --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=6 --bind T=f32 examples/01-llama/src/lib.linnet
+torch --entry decode --place layers.0=0 --place layers.1=1 --offload layers.1 --bind Vocab=11 --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=6 --bind T=bf16 examples/01-llama/src/lib.linnet
+torch --numerics fast --bind E=8 --bind In=16 --bind Out=32 --bind K=2 --bind R=3 tests/cli/experts.linnet
+torch --entry run --bind R=5 --bind C=40 spec-tests/valid/030_kernels.linnet
+jax --entry run --bind R=5 --bind C=40 spec-tests/valid/030_kernels.linnet
+torch --entry run --bind R=37 --bind C=40 spec-tests/valid/031_kernel_atomics.linnet
+torch --entry step --bind B=2 --bind Max=8 --bind D=4 spec-tests/valid/020_state.linnet
+torch --entry run --bind N=4 spec-tests/valid/023_while.linnet
+jax --entry run --bind N=4 spec-tests/valid/023_while.linnet
+jax --entry recurrent --bind T=3 --bind H=4 spec-tests/valid/028_for_loops.linnet
+torch --entry counted --bind N=4 spec-tests/valid/028_for_loops.linnet
+torch --entry loss --bind N=4 spec-tests/valid/029_op_gradients.linnet
+jax --entry loss --bind N=4 spec-tests/valid/029_op_gradients.linnet

@@ -713,6 +713,27 @@ private:
         }
     }
 
+    // A call's dimension generics that are bound to constants, by name.
+    std::map<std::string, std::int64_t> dim_generics(const ir::Operation& op) {
+        std::map<std::string, std::int64_t> generics;
+        const auto callee = functions_.find(op.attributes.name);
+        if (callee == functions_.end()) {
+            return generics;
+        }
+        for (const sema::GenericInfo& generic : callee->second->generics) {
+            const auto bound = op.attributes.substitution.dims.find(generic.symbol);
+            if (generic.kind != sema::GenericKind::Dim ||
+                bound == op.attributes.substitution.dims.end()) {
+                continue;
+            }
+            const auto value = types_.substitute(bound->second, frame().subst).constant();
+            if (value) {
+                generics.emplace(std::string(generic.name), *value);
+            }
+        }
+        return generics;
+    }
+
     // A semantic call with a selected native implementation the target can
     // spell: whole tensors in, one tensor out, outside any grid.
     bool try_native(const ir::Operation& op) {
@@ -742,21 +763,7 @@ private:
             return false;
         }
         Val result = tensor_value(type, {});
-        std::map<std::string, std::int64_t> generics;
-        if (const auto callee = functions_.find(op.attributes.name); callee != functions_.end()) {
-            for (const sema::GenericInfo& generic : callee->second->generics) {
-                const auto bound = op.attributes.substitution.dims.find(generic.symbol);
-                if (generic.kind != sema::GenericKind::Dim ||
-                    bound == op.attributes.substitution.dims.end()) {
-                    continue;
-                }
-                const auto value = types_.substitute(bound->second, frame().subst).constant();
-                if (value) {
-                    generics.emplace(std::string(generic.name), *value);
-                }
-            }
-        }
-        target_.set_call_generics(std::move(generics));
+        target_.set_call_generics(dim_generics(op));
         const auto name = target_.native_call(names.front(), operands, result.shape, result.dtype);
         if (!name) {
             return false;
@@ -1738,6 +1745,56 @@ private:
             fail("callee `" + op.attributes.name + "` is not defined in this program");
         }
         const ir::Function& callee = *found->second;
+        if (!target_.wants_calls()) {
+            call_body(op, callee);
+            return;
+        }
+        GraphTarget::CallInfo call;
+        call.callee = callee.name;
+        call.semantic = callee.is_op;
+        call.generics = dim_generics(op);
+        for (const ir::ValueId id : op.operands) {
+            const Val& argument = value(id);
+            if (argument.kind == Val::Kind::Block && call.path.empty() && call.arguments.empty()) {
+                call.path = argument.path.ends_with('.')
+                                ? argument.path.substr(0, argument.path.size() - 1)
+                                : argument.path;
+            }
+            call.arguments.push_back(whole_tensor(argument));
+        }
+        target_.begin_call(call);
+        call_body(op, callee);
+        std::vector<TensorInfo> results;
+        if (!op.results.empty()) {
+            tensors_of(value(op.results.front()), results);
+        }
+        target_.end_call(results);
+    }
+
+    // A value as a call's argument: a whole tensor (or an optional one that
+    // is present), else nothing.
+    static std::optional<TensorInfo> whole_tensor(const Val& value) {
+        if (value.kind == Val::Kind::Some) {
+            return whole_tensor(value.elements.front());
+        }
+        if (value.kind == Val::Kind::Tensor && value.grid_rank == 0) {
+            return info(value);
+        }
+        return std::nullopt;
+    }
+
+    // The whole tensors of a value, tuples' and optionals' in order.
+    static void tensors_of(const Val& value, std::vector<TensorInfo>& out) {
+        if (value.kind == Val::Kind::Tuple || value.kind == Val::Kind::Some) {
+            for (const Val& element : value.elements) {
+                tensors_of(element, out);
+            }
+        } else if (value.kind == Val::Kind::Tensor && value.grid_rank == 0) {
+            out.push_back(info(value));
+        }
+    }
+
+    void call_body(const ir::Operation& op, const ir::Function& callee) {
         if (!callee.kernel.empty() && try_kernel(op, callee)) {
             return;
         }

@@ -12,7 +12,7 @@ speed, models keep running as generated PyTorch or JAX source.
 | --- | --- | --- |
 | Frontends | Linnet source; `torch.export`, StableHLO and ONNX importers | done |
 | Core IR | the checked program: functions, generics, blocks, state; shapes symbolic | done (`include/linnet/ir`) |
-| Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `graph_export` streams it to a target, and `linnet.resources` traces its own |
+| Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `linnet graph` records it as a target sees it (M0), and `linnet.resources` traces its own |
 | Planner | partition, backend selection, memory and stream plan | partly: `linnet.resources` costs and buffer plans |
 | Execution plan | executables, buffers, streams, capture segments | none |
 | Runtime | runs a plan: allocation, launches, CUDA graphs | PyTorch plays it |
@@ -62,9 +62,11 @@ Semantic calls and scopes nest. A backend matches at any level, and an
 unmatched semantic call is replaced by its body. A megakernel backend takes
 a whole scope, such as a decoder layer, and nothing else changes.
 
-A `GraphTarget` that records nodes instead of printing text builds the
-graph in C++. `linnet graph` prints it as JSON, and the Python package
-reads it in process later. `linnet.resources` moves to this graph, so the
+`RecordingTarget` builds the graph in C++: it records every call the
+exporter makes while passing it on to a target, so the graph holds that
+target's choices. `linnet graph` prints it as JSON
+([Graph format](../graph-format.md)), and `--replay` rebuilds the target's
+source from it unchanged. The Python package reads it in process later. `linnet.resources` moves to this graph, so the
 analysis and the runtime see the same steps.
 
 ## Backends

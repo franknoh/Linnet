@@ -71,6 +71,7 @@ function guideSidebar() {
         { text: "Command line", link: "/docs/tooling" },
         { text: "Memory planning", link: "/docs/memory" },
         { text: "Plan format", link: "/docs/plan-format" },
+        { text: "Graph format", link: "/docs/graph-format" },
         { text: "Diagnostics", link: "/docs/diagnostics" },
         { text: "Specification", link: "/spec/00-overview" },
       ],
@@ -85,6 +86,7 @@ function referenceSidebar() {
       items: [
         { text: "Command line", link: "/docs/tooling" },
         { text: "Plan format", link: "/docs/plan-format" },
+        { text: "Graph format", link: "/docs/graph-format" },
         { text: "Diagnostics", link: "/docs/diagnostics" },
       ],
     },

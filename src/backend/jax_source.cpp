@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -942,6 +943,14 @@ private:
 };
 
 } // namespace
+
+std::expected<std::unique_ptr<GraphTarget>, std::string>
+make_jax_target(const JaxSourceOptions& options) {
+    if (const auto conflict = python_options_conflict(options)) {
+        return std::unexpected(*conflict);
+    }
+    return std::make_unique<JaxTarget>(options);
+}
 
 std::expected<std::string, std::string> export_jax_source(ir::Module& module,
                                                           const JaxSourceOptions& options) {
