@@ -720,14 +720,32 @@ public:
     // The top-level calls, each in its section.
     std::string run_top(const RecordedGraph& graph) {
         const std::set<const RecordedNode*> constants = constant_nodes(graph);
+        sole_ = sole_state_readers(graph);
         std::string out;
         for (const RecordedNode& node : graph.nodes) {
             enter(constants.contains(&node));
-            if (auto text = replay(node)) {
+            if (auto text = replay_top(node)) {
                 out = std::move(*text);
             }
         }
         return out;
+    }
+
+    // A top-level call, the target told which states it alone reads.
+    std::optional<std::string> replay_top(const RecordedNode& node) {
+        const auto found = sole_.find(&node);
+        if (found == sole_.end()) {
+            return replay(node);
+        }
+        std::vector<std::string> states;
+        states.reserve(found->second.size());
+        for (const std::uint32_t id : found->second) {
+            states.push_back(names_.at(id));
+        }
+        target_.sole_readers_of(states);
+        auto text = replay(node);
+        target_.sole_readers_of({});
+        return text;
     }
 
     std::string run_slice(const RecordedGraph& graph, const GraphSlice& slice) {
@@ -806,9 +824,10 @@ public:
             }
         }
         const std::set<const RecordedNode*> constants = constants_among(order);
+        sole_ = sole_state_readers(graph);
         for (const RecordedNode* node : order) {
             enter(constants.contains(node));
-            replay(*node);
+            replay_top(*node);
         }
         enter(false);
         std::vector<TensorInfo> results;
@@ -1207,6 +1226,7 @@ private:
     GraphTarget& target_;
     std::vector<std::string> names_;
     GraphTarget::Section section_ = GraphTarget::Section::Call;
+    std::map<const RecordedNode*, std::vector<std::uint32_t>> sole_;
 };
 
 } // namespace
@@ -1247,6 +1267,57 @@ std::set<const RecordedNode*> constants_among(const std::vector<const RecordedNo
             std::ranges::find(skipped, node->op) == skipped.end()) {
             out.insert(node);
             made.insert(node->results.begin(), node->results.end());
+        }
+    }
+    return out;
+}
+
+std::map<const RecordedNode*, std::vector<std::uint32_t>>
+sole_state_readers(const RecordedGraph& graph) {
+    std::set<std::uint32_t> states;
+    std::map<std::uint32_t, std::size_t> reads;
+    std::map<std::uint32_t, const RecordedNode*> reader;
+    const auto count = [&](const auto& self, const std::list<RecordedNode>& nodes) -> void {
+        for (const RecordedNode& node : nodes) {
+            if (node.op == "state") {
+                states.insert(node.results.begin(), node.results.end());
+            }
+            // A call's markers name its arguments, and a call the target
+            // declined made nothing of them: neither reads.
+            const bool reads_operands =
+                node.op != "begin_call" && node.op != "end_call" && !node.declined;
+            for (const RecordedOperand& operand : node.operands) {
+                if (reads_operands) {
+                    ++reads[operand.value];
+                    reader[operand.value] = &node;
+                }
+            }
+            for (const RecordedRegion& region : node.regions) {
+                self(self, region.nodes);
+                for (const std::uint32_t result : region.results) {
+                    ++reads[result];
+                }
+            }
+        }
+    };
+    count(count, graph.nodes);
+    // Only a step outside every loop, op's gradient and recomputed block.
+    std::set<const RecordedNode*> top;
+    int depth = 0;
+    for (const RecordedNode& node : graph.nodes) {
+        if (node.op.starts_with("end_") && node.op != "end_call") {
+            --depth;
+        } else if (node.op.starts_with("begin_") && node.op != "begin_call") {
+            ++depth;
+        } else if (depth == 0) {
+            top.insert(&node);
+        }
+    }
+    std::map<const RecordedNode*, std::vector<std::uint32_t>> out;
+    for (const std::uint32_t state : states) {
+        const auto found = reads.find(state);
+        if (found != reads.end() && found->second == 1 && top.contains(reader.at(state))) {
+            out[reader.at(state)].push_back(state);
         }
     }
     return out;
