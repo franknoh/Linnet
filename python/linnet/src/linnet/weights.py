@@ -190,8 +190,8 @@ def match_checkpoint(
         if entry.kind != "param":
             continue
         try:
-            shape = ir.evaluate_shape(entry.shape, bindings)
             dtype = ir.evaluate_dtype(entry.dtype, bindings)
+            shape = ir.evaluate_shape(entry.shape, bindings)
             paths = ir.expand_paths(entry, bindings)
         except LinnetError as error:
             problems.append(f"{entry.path}: {error}")
@@ -204,7 +204,9 @@ def match_checkpoint(
                     problems.append(f"missing tensor `{source}` for `{path}`")
                 continue
             found_shape, found_dtype = tensors[source]
-            problem = tensor_problem(source, path, found_shape, found_dtype, shape, dtype)
+            # A packed format's tensor is stored as its bytes.
+            stored = DTYPES[dtype].storage_shape(shape) if dtype in DTYPES else shape
+            problem = tensor_problem(source, path, found_shape, found_dtype, stored, dtype)
             if problem is not None:
                 problems.append(problem)
             else:

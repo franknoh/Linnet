@@ -1,6 +1,6 @@
 module std.quant
 
-use std.dtypes::{f8e4m3}
+use std.dtypes::{f8e4m3, nf4}
 use std.nn.linear::{linear}
 use std.nn.moe::{combine_experts, linear_experts, linear_experts_shared}
 
@@ -191,6 +191,37 @@ where
             none => x
         }
         return linear_int4_groups(taken, weight, scale, zero, bias)
+    }
+}
+
+// NF4 (`std.dtypes::nf4`, QLoRA's 4-bit NormalFloat) in blocks of `Block`
+// consecutive inputs, one scale a block, the block's largest magnitude:
+// `weight[o, i] = nf4(q[o, i]) * absmax[o, i / Block]`.
+pub op dequantize_nf4<Out: Dim, Blocks: Dim, Block: Dim, T: Float>(
+    q: Tensor[Out, Blocks * Block; nf4],
+    absmax: Tensor[Out, Blocks; f32],
+) -> Tensor[Out, Blocks * Block; T] {
+    let values = reshape(cast<f32>(q), [Out, Blocks, Block])
+    let scaled[o, b, j] = values[o, b, j] * absmax[o, b]
+    return cast<T>(reshape(scaled, [Out, Blocks * Block]))
+}
+
+// A linear layer over NF4 weights with one scale for each `Block`
+// consecutive inputs of a row, as bitsandbytes' 4-bit layers keep them
+// (`linnet.quant.import_quantized` repacks such a checkpoint for it). Its
+// body widens the weight and multiplies in `T`.
+pub block Nf4Linear<In: Dim, Out: Dim, Block: Dim = 64, T: Float = bf16>
+where
+    Block > 0,
+    Block % 2 == 0,
+    In % Block == 0
+{
+    param weight: Tensor[Out, In; nf4]
+    param absmax: Tensor[Out, In / Block; f32]
+    param bias: Tensor[Out; T]? = none
+
+    pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
+        return linear(x, dequantize_nf4<Out, In / Block, Block, T>(weight, absmax), bias)
     }
 }
 
