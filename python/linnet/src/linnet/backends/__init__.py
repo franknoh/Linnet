@@ -26,7 +26,16 @@ from .contract import (
     TensorSpec,
 )
 from .graph import Call, Graph, Operand, Step, Value
-from .planner import Estimates, Greedy, Plan, Planner, PlanStep, Proposal, splittable
+from .planner import (
+    Estimates,
+    Greedy,
+    Plan,
+    Planner,
+    PlanStep,
+    Proposal,
+    runs_apart,
+    splittable,
+)
 
 _registered: list[Backend[object]] = []
 
@@ -75,5 +84,6 @@ __all__ = [
     "Value",
     "available",
     "register",
+    "runs_apart",
     "splittable",
 ]

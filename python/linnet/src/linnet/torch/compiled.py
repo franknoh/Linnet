@@ -11,10 +11,12 @@ work unchanged.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import functools
 import hashlib
 import json
+import re
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -143,6 +145,8 @@ class CompiledLinnetModule(LinnetModule):
         # `torch.cuda._POOL_HANDLE`, is private).
         self._graph_pool = None
         self._work = generated_directory()
+        # Each kind of slice's `main` compiled (`slices`), by its code.
+        self._slice_mains: dict[str, Callable[..., tuple[torch.Tensor, ...]]] = {}
 
     def _run_entry(
         self,
@@ -605,12 +609,19 @@ class CompiledLinnetModule(LinnetModule):
         return Planner(backends, fallback).plan(graph, target_of(self.interpreter.device))
 
     def slices(
-        self, entry: str, bindings: Mapping[str, str], regions: Sequence[Region]
+        self,
+        entry: str,
+        bindings: Mapping[str, str],
+        regions: Sequence[Region],
+        compile: str | None = None,
     ) -> list[Callable[[Sequence[torch.Tensor]], list[torch.Tensor]]]:
         """Each of `regions` of `entry`'s graph under `bindings` as a function
         of the region's inputs that returns its outputs, reading this
         module's parameters and states by path and writing the states it
-        assigns back (`linnet graph --slices`)."""
+        assigns back (`linnet graph --slices`). With `compile`, a
+        `torch.compile` backend, each kind of slice compiles once: slices
+        whose code is the same but for the weights they read (each layer's)
+        share it."""
         listed = [
             {
                 "name": f"{entry}_{region.start}_{region.stop}",
@@ -642,8 +653,15 @@ class CompiledLinnetModule(LinnetModule):
         functions: list[Callable[[Sequence[torch.Tensor]], list[torch.Tensor]]] = []
         for slice_, source in zip(listed, sources, strict=True):
             name = f"{slice_['name']}_{len(self._compiled)}"
-            prepared = self._prepared_for(self._compile_source(name, source, None, self.trains()))
-            functions.append(functools.partial(self._run_slice, prepared))
+            generated = self._compile_source(name, source, None, self.trains())
+            if compile is not None:
+                kind = _slice_kind(source)
+                if kind not in self._slice_mains:
+                    self._slice_mains[kind] = torch.compile(generated.main, backend=compile)
+                generated = dataclasses.replace(
+                    generated, main=self._slice_mains[kind], eager=False
+                )
+            functions.append(functools.partial(self._run_slice, self._prepared_for(generated)))
         return functions
 
     def _run_slice(self, prepared: _Prepared, inputs: Sequence[torch.Tensor]) -> list[torch.Tensor]:
@@ -790,6 +808,16 @@ class CompiledLinnetModule(LinnetModule):
             if entry is None or key[0] == entry:
                 return self._compiled[key].path.read_text(encoding="utf-8")
         raise PlanError("no entry has been compiled yet")
+
+
+def _slice_kind(source: str) -> str:
+    """A slice's code but for its name and the paths of what it reads and
+    writes: the same for each layer's slice of one kind."""
+    return "\n".join(
+        line
+        for line in source.splitlines()
+        if not line.startswith("#") and not re.match(r"[A-Z_]+ = \[", line)
+    )
 
 
 @dataclass

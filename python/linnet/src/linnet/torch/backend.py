@@ -80,8 +80,19 @@ class TorchSource:
     def compile(self, region: Region, target: Target, options: Options) -> _Entry | _Slice:
         if region.whole:
             return _Entry(self, region)
-        (function,) = self._module.slices(self._entry, self._bindings, [region])
-        return _Slice(region, function)
+        (slice_,) = self.compile_regions([region], target, options)
+        return slice_
+
+    def compile_regions(
+        self, regions: Sequence[Region], target: Target, options: Options
+    ) -> list[_Slice]:
+        """Regions smaller than the whole graph, compiled together: one call
+        of the compiler, and each kind of slice compiled once."""
+        compile = self._compile if isinstance(self._compile, str) else None
+        functions = self._module.slices(self._entry, self._bindings, regions, compile)
+        return [
+            _Slice(region, function) for region, function in zip(regions, functions, strict=True)
+        ]
 
     def estimate_cost(self, region: Region, target: Target) -> Cost | None:
         return None

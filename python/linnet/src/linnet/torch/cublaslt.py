@@ -70,42 +70,96 @@ class CublasLt:
         return Capabilities(dtypes=frozenset(_DTYPES.values()))
 
     def match(self, graph: Graph, target: Target) -> Iterable[Region]:
+        """Each `linear` call it can run, and each set of them that read the
+        same input (q, k and v; gate and up), which it joins into one."""
+        siblings: dict[int, list[int]] = {}
         for call in graph.semantic_calls("std.nn.linear::linear"):
-            if len(call.arguments) != 3 or call.arguments[2].value is not None:
-                continue  # a bias
-            x, weight = call.arguments[0], call.arguments[1]
-            region = Region.of(graph, call.start, call.stop, call.index)
-            if (
-                x.dtype in _DTYPES.values()
-                and weight.dtype == x.dtype
-                and len(region.parameters) == 1
-                and graph.parameters.get(region.parameters[0]) == weight.value
-                and region.inputs == (x.value,)
-            ):
-                yield region
+            if not _runs(graph, call.index):
+                continue
+            yield Region.of(graph, call.start, call.stop, call.index)
+            x = call.arguments[0].value
+            if call.stop - call.start == 1 and x is not None:
+                siblings.setdefault(x, []).append(call.index)
+        for calls in siblings.values():
+            if len(calls) > 1:
+                yield Region.of_steps(graph, [graph.calls[c].start for c in calls])
 
     def compile(self, region: Region, target: Target, options: Options) -> _Product:
-        if region.call is None:
-            raise PlanError("cuBLASLt takes a `linear` call")
-        call = region.graph.calls[region.call]
-        x, weight = call.arguments[0], call.arguments[1]
+        graph = region.graph
+        calls = [region.call] if region.call is not None else _calls_of(region)
+        x = graph.calls[calls[0]].arguments[0]
+        weights = [graph.calls[c].arguments[1] for c in calls]
         rows = math.prod(x.shape[:-1])
-        n, k = weight.shape
-        executable = runtime_for(target.index).cublaslt_linear(rows, n, k, x.dtype)
-        return _Product(region, executable, region.parameters[0], (*x.shape[:-1], n))
+        k = x.shape[-1]
+        widths = [weight.shape[0] for weight in weights]
+        executable = runtime_for(target.index).cublaslt_linear(rows, sum(widths), k, x.dtype)
+        paths = [_parameter(graph, weight.value) for weight in weights]
+        made = [graph.calls[c].results[0].value for c in calls]
+        return _Product(region, executable, paths, widths, x.shape[:-1], made)
 
     def estimate_cost(self, region: Region, target: Target) -> Cost | None:
         return None
 
 
+def _parameter(graph: Graph, value: int | None) -> str:
+    for path, made in graph.parameters.items():
+        if made == value:
+            return path
+    raise PlanError("a `linear` call whose weight is not a parameter")
+
+
+def _runs(graph: Graph, index: int) -> bool:
+    """Whether cuBLASLt runs `linear` call `index`: no bias, a parameter for
+    a weight, one of its dtypes throughout."""
+    call = graph.calls[index]
+    if len(call.arguments) != 3 or call.arguments[2].value is not None:
+        return False
+    x, weight = call.arguments[0], call.arguments[1]
+    region = Region.of(graph, call.start, call.stop, call.index)
+    return (
+        x.dtype in _DTYPES.values()
+        and weight.dtype == x.dtype
+        and len(region.parameters) == 1
+        and graph.parameters.get(region.parameters[0]) == weight.value
+        and region.inputs == (x.value,)
+    )
+
+
+def _calls_of(region: Region) -> list[int]:
+    """The `linear` calls whose steps a joined region holds, in order."""
+    found: list[int] = []
+    for step in region.steps:
+        call = next(
+            c
+            for c in reversed(step.calls)
+            if region.graph.calls[c].callee == "std.nn.linear::linear"
+        )
+        found.append(call)
+    return found
+
+
 class _Product:
+    """One product by cuBLASLt of the input by the weights of one or more
+    `linear` calls, joined (made once, on the first call), its output split
+    back into each call's."""
+
     def __init__(
-        self, region: Region, executable: Executable, weight: str, shape: tuple[int, ...]
+        self,
+        region: Region,
+        executable: Executable,
+        weights: list[str],
+        widths: list[int],
+        rows: tuple[int, ...],
+        made: list[int | None],
     ) -> None:
         values = region.graph.values
         self._executable = executable
-        self._weight = weight
-        self._shape = shape
+        self._paths = weights
+        self._widths = widths
+        self._shape = (*rows, sum(widths))
+        # Which part of the output each of the region's outputs is.
+        self._parts = [made.index(value) for value in region.outputs]
+        self._joined: torch.Tensor | None = None
         self._meta = ExecutableMeta(
             tuple(TensorSpec(values[v].shape, values[v].dtype) for v in region.inputs),
             tuple(TensorSpec(values[v].shape, values[v].dtype) for v in region.outputs),
@@ -117,7 +171,8 @@ class _Product:
         return self._meta
 
     def prepare(self, context: Context[torch.Tensor]) -> None:
-        return None
+        if len(self._paths) > 1:
+            self._joined = torch.cat([context.parameters[p] for p in self._paths]).contiguous()
 
     def execute(
         self,
@@ -125,9 +180,18 @@ class _Product:
         outputs: Sequence[torch.Tensor],
         context: Context[torch.Tensor],
     ) -> Sequence[torch.Tensor]:
+        if len(self._paths) == 1:
+            weight = context.parameters[self._paths[0]].contiguous()
+        else:
+            if self._joined is None:
+                self.prepare(context)
+            assert self._joined is not None
+            weight = self._joined
         x = inputs[0].contiguous()
-        weight = context.parameters[self._weight].contiguous()
         out = torch.empty(self._shape, dtype=x.dtype, device=x.device)
         stream = torch.cuda.current_stream(x.device).cuda_stream
         self._executable.execute([tensor_ref(x), tensor_ref(weight)], [tensor_ref(out)], stream)
-        return [out]
+        if len(self._widths) == 1:
+            return [out]
+        parts = torch.split(out, self._widths, dim=-1)
+        return [parts[i] for i in self._parts]

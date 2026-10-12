@@ -271,3 +271,64 @@ def test_the_region_with_the_entrys_finish_hands_on_its_results() -> None:
     head = list(graph.semantic_calls("std.nn.linear::linear"))[-1]
     region = Region.of(graph, head.start, len(graph.steps))
     assert set(graph.outputs) <= set(region.outputs)
+
+
+class _Joined(_Linear):
+    """Takes the `linear` calls that read the same input together, as one
+    region of separate steps, and runs each with PyTorch."""
+
+    @property
+    def name(self) -> str:
+        return "joined"
+
+    def match(self, graph: Graph, target: Target) -> Iterable[Region]:
+        siblings: dict[int | None, list[int]] = {}
+        for call in graph.semantic_calls("std.nn.linear::linear"):
+            siblings.setdefault(call.arguments[0].value, []).append(call.start)
+        return [Region.of_steps(graph, steps) for steps in siblings.values() if len(steps) > 1]
+
+    def compile(self, region: Region, target: Target, options: Options) -> _LinearCall:
+        return _JoinedCall(region)
+
+
+class _JoinedCall(_LinearCall):
+    def __init__(self, region: Region) -> None:
+        self._weights = list(region.parameters)
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        return [
+            torch.nn.functional.linear(inputs[0], context.parameters[path])
+            for path in self._weights
+        ]
+
+
+def test_sibling_calls_run_together_where_the_first_stands(tmp_path: Path) -> None:
+    weights = random_llama(tmp_path / "model.safetensors")
+    planned, direct = (
+        load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
+        for _ in range(2)
+    )
+    assert isinstance(planned, CompiledLinnetModule)
+    token = torch.tensor([[3]], dtype=torch.int32)
+    plan = planned.plan_for(
+        "decode", [token, torch.tensor(0, dtype=torch.int32)], backends=[_Joined()]
+    )
+    joined = [step.region for step in plan.steps if step.backend == "joined"]
+    # q, k and v; gate and up: in each layer.
+    assert sorted(len(region.members) for region in joined) == [2, 2, 3, 3]
+    parameters = {
+        name.removeprefix("root."): parameter.detach()
+        for name, parameter in planned.named_parameters()
+    }
+    with torch.no_grad():
+        for pos in range(2):
+            step = torch.tensor(pos, dtype=torch.int32)
+            (logits,) = plan.run([token, step], Context(plan.target, parameters))
+            expected: object = direct.run_entry("decode", [token, step])
+            assert isinstance(expected, torch.Tensor)
+            torch.testing.assert_close(logits, expected)

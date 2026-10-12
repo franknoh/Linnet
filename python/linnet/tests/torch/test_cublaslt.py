@@ -52,7 +52,9 @@ def test_a_plan_with_cublaslt_replays_as_one_graph(tmp_path: Path) -> None:
     plan = planned.plan_for(
         "decode", [token, torch.tensor(0, dtype=torch.int32, device="cuda")], backends=[CublasLt()]
     )
-    assert [step.backend for step in plan.steps].count("cublaslt") == 2 * 7 + 1
+    # Each layer's q, k and v joined, its o, its gate and up joined, its
+    # down; and the head.
+    assert [step.backend for step in plan.steps].count("cublaslt") == 2 * 4 + 1
     parameters = {
         name.removeprefix("root."): parameter.detach()
         for name, parameter in planned.named_parameters()
