@@ -128,68 +128,6 @@ private:
         return results.empty() ? no_id : module_.op(op).results.front();
     }
 
-    // A cast from or to a codebook format (spec §3.1), whose tensors hold
-    // their carrier's codes: widened, each code to its value (a `select`
-    // per code, so each value is exact); narrowed, to the code of the
-    // nearest value, the count of the midpoints between values below it (a
-    // tie to the lower code, NaN to the first). Only casts of the codes
-    // remain, which every target and the interpreter take as integers.
-    ValueId codebook_cast(ValueId source,
-                          TypeId result,
-                          const sema::Codebook* from,
-                          const sema::Codebook* to,
-                          SourceSpan span) {
-        const TypeData data = types().get(result);
-        const auto typed = [&](ScalarKind kind) {
-            return data.kind == TypeKind::Tensor ? types().tensor(data.shape, DType::of(kind))
-                                                 : types().scalar(kind);
-        };
-        const auto number = [&](double value) {
-            Attributes attributes;
-            attributes.number = value;
-            return emit(OpKind::ConstFloat, {}, types().scalar(ScalarKind::F32), attributes, span);
-        };
-        const auto integer = [&](std::int64_t value) {
-            Attributes attributes;
-            attributes.integer = value;
-            return emit(OpKind::ConstInt, {}, types().scalar(ScalarKind::I32), attributes, span);
-        };
-        const auto compare = [&](CompareKind kind, ValueId a, ValueId b) {
-            Attributes attributes;
-            attributes.compare = kind;
-            return emit(OpKind::Compare, {a, b}, typed(ScalarKind::Bool), attributes, span);
-        };
-        ValueId value = source;
-        if (from != nullptr) {
-            const ValueId codes = emit(OpKind::Cast, {source}, typed(ScalarKind::I32), {}, span);
-            value = number(from->values.front());
-            for (std::size_t k = 1; k < from->values.size(); ++k) {
-                const ValueId hit =
-                    compare(CompareKind::Eq, codes, integer(static_cast<std::int64_t>(k)));
-                value = emit(OpKind::Select,
-                             {hit, number(from->values[k]), value},
-                             typed(ScalarKind::F32),
-                             {},
-                             span);
-            }
-            if (to == nullptr) {
-                return emit(OpKind::Cast, {value}, result, {}, span);
-            }
-        }
-        const ValueId wide = emit(OpKind::Cast, {value}, typed(ScalarKind::F32), {}, span);
-        ValueId code = integer(0);
-        for (std::size_t k = 1; k < to->values.size(); ++k) {
-            const double midpoint = (to->values[k - 1] + to->values[k]) / 2;
-            const ValueId above = compare(CompareKind::Gt, wide, number(midpoint));
-            code = emit(OpKind::Add,
-                        {code, emit(OpKind::Cast, {above}, typed(ScalarKind::I32), {}, span)},
-                        typed(ScalarKind::I32),
-                        {},
-                        span);
-        }
-        return emit(OpKind::Cast, {code}, result, {}, span);
-    }
-
     ValueId const_dim(const shape::Poly& value) {
         Attributes attributes;
         attributes.dim = types().substitute(value, frame_->substitution);
@@ -1546,14 +1484,7 @@ private:
             return emit(found->second, {arg(0, type)}, type, {}, node.span);
         }
         if (name == "cast") {
-            const ValueId source = arg(0, no_type);
-            const sema::Codebook* from =
-                types().codebook_of(types().get(module_.value(source).type).dtype);
-            const sema::Codebook* to = types().codebook_of(types().get(type).dtype);
-            if (from != nullptr || to != nullptr) {
-                return codebook_cast(source, type, from, to, node.span);
-            }
-            return emit(OpKind::Cast, {source}, type, {}, node.span);
+            return emit(OpKind::Cast, {arg(0, no_type)}, type, {}, node.span);
         }
         if (name == "shl" || name == "shr") {
             if (types().kind(type) == TypeKind::CompileInt) {

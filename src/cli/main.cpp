@@ -11,6 +11,7 @@
 #include "linnet/diagnostic/render.hpp"
 #include "linnet/emit/source.hpp"
 #include "linnet/format/formatter.hpp"
+#include "linnet/ir/codebooks.hpp"
 #include "linnet/ir/lower.hpp"
 #include "linnet/lsp/json.hpp"
 #include "linnet/lsp/server.hpp"
@@ -799,6 +800,7 @@ int run_graph_export(std::span<const std::string_view> args,
     const std::vector<const ast::Ast*>& modules = checked.modules;
     const sema::AnalysisResult& analysis = *checked.analysis;
     ir::Module core = ir::lower(sources, modules, analysis.model);
+    ir::expand_codebook_casts(core);
     opt::run_pipeline(core, opt::optimizing_passes(opt::Legality::Exact));
     // Library calls the target has an operator for (contractions as
     // `dot_general`/`MatMul`, attention, softmax, ...) where the numerics
@@ -929,6 +931,7 @@ int run_plan(std::span<const std::string_view> args, const Options& options, con
     const std::vector<const ast::Ast*>& modules = checked.modules;
     const sema::AnalysisResult& analysis = *checked.analysis;
     ir::Module core = ir::lower(sources, modules, analysis.model);
+    ir::expand_codebook_casts(core);
     if (!verified(core)) {
         return exit_failure;
     }
