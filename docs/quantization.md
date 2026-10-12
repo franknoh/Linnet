@@ -25,8 +25,8 @@ nibble.
 | `Int8GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In; i8]`, `scale: Tensor[Out, In / Group; T]`, optional bias |
 | `Int4Linear<In, Out, T>` | `weight: Tensor[Out, In / 2; i8]`, `scale: Tensor[Out, 1; T]`, optional bias |
 | `Int4GroupLinear<In, Out, Group = 128, T>` | `weight: Tensor[Out, In / Group, Group / 2; u8]`, `scale` and `zero: [Out, In / Group]`, optional `order: [In; i32]` and bias |
-| `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; u8]` (FP8 E4M3 bytes), `scale: Tensor[Out, 1; T]`, optional bias |
-| `Fp8BlockLinear<In, Out, Block = 128, T>` | `weight: Tensor[Out, In; u8]`, `scale: Tensor[Out / Block, In / Block; T]`, optional bias |
+| `Fp8Linear<In, Out, T>` | `weight: Tensor[Out, In; f8e4m3]`, `scale: Tensor[Out, 1; T]`, optional bias |
+| `Fp8BlockLinear<In, Out, Block = 128, T>` | `weight: Tensor[Out, In; f8e4m3]`, `scale: Tensor[Out / Block, In / Block; T]`, optional bias |
 | `dequantize_int8<*S, N, T>(q, scale)` | symmetric per-row int8: `q * scale` in `f32`, cast to `T` |
 | `dequantize_int8_groups<Out, Groups, Group, T>(q, scale)` | symmetric int8, a scale per `Group` inputs |
 | `linear_int8(x, weight, scale, bias)`, `linear_int8_groups<Group>(...)` | linear layers over int8 weights |
@@ -34,8 +34,8 @@ nibble.
 | `dequantize_int4<R, H, T>(packed, scale)` | unpack, then dequantize |
 | `dequantize_int4_groups<Out, Groups, Half, T>(packed, scale, zero)` | asymmetric 4-bit: `(q - zero) * scale` per group |
 | `linear_int4_groups(x, packed, scale, zero, bias)` | a linear layer over group-wise 4-bit weights |
-| `decode_fp8(bits)` | FP8 E4M3 bytes as `f32` values |
-| `dequantize_fp8<*S, N, T>(q, scale)` | per-row FP8: `decode_fp8(q) * scale`, cast to `T` |
+| `decode_fp8(bits)` | FP8 E4M3 bytes held as `u8`, as `f32` values |
+| `dequantize_fp8<*S, N, T>(q, scale)` | per-row FP8: `cast<f32>(q) * scale`, cast to `T` |
 | `dequantize_fp8_blocks<RowBlocks, ColBlocks, Block, T>(q, scale)` | FP8, a scale per `Block` by `Block` block |
 | `linear_fp8(x, weight, scale, bias)`, `linear_fp8_blocks<Block>(...)` | linear layers over FP8 weights |
 | `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: E2M1 values in blocks of 32, one E8M0 scale byte a block |
@@ -105,9 +105,10 @@ in speed.
 ## 8-bit weights
 
 Four blocks cover the 8-bit checkpoints in use. Bind `scale` to the
-checkpoint's scale tensor; an `F8_E4M3` tensor binds to a `u8` parameter as
-its bytes, or as itself to an `f8e4m3` one (`std.dtypes`), which
-`cast<bf16>(w)` decodes.
+checkpoint's scale tensor. The FP8 blocks take `f8e4m3` weights
+(`std.dtypes`): an `F8_E4M3` tensor binds as itself, and a `U8` one as its
+bytes. An `F8_E4M3` tensor also binds to a `u8` parameter as its bytes,
+which `decode_fp8` decodes.
 
 | Block | Checkpoints | `scale` binds to |
 | --- | --- | --- |

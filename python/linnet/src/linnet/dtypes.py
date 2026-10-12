@@ -76,8 +76,9 @@ CLASSES: dict[str, frozenset[str]] = {
 }
 
 BY_SAFETENSORS: dict[str, DType] = {d.safetensors: d for d in DTYPES.values()}
-# Checkpoint dtypes whose bytes a `u8` parameter may also hold, as bits:
-# FP8 that `std.quant::decode_fp8` decodes.
+# Checkpoint dtypes whose bytes a `u8` parameter may also hold, as bits
+# (FP8 that `std.quant::decode_fp8` decodes); a `U8` tensor binds to an FP8
+# parameter the same way (`linnet.weights.as_bits`).
 AS_BITS = frozenset(("F8_E4M3", "F8_E5M2"))
 BY_ONNX: dict[int, DType] = {d.onnx: d for d in DTYPES.values()}
 BY_MLIR: dict[str, DType] = {d.mlir: d for d in DTYPES.values()}

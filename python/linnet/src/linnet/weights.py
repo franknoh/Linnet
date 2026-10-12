@@ -15,7 +15,7 @@ import numpy as np
 
 from . import ir
 from .compiler import LinnetError
-from .dtypes import AS_BITS, BY_SAFETENSORS, DTYPES
+from .dtypes import AS_BITS, BY_SAFETENSORS, DTYPES, STORAGE
 
 if TYPE_CHECKING:
     from jax.typing import ArrayLike as JaxArrayLike
@@ -48,9 +48,8 @@ def read_arrays(weights: str | Path | Mapping[str, ArrayLike]) -> dict[str, np.n
     """Loads a checkpoint as NumPy arrays by tensor name.
 
     `weights` is a mapping (returned as arrays), a `.safetensors` file, or a
-    directory of them. `BF16` tensors come back as `ml_dtypes.bfloat16`
-    arrays (installed with JAX), FP8 ones as their bits (`uint8`), which a
-    `u8` parameter holds.
+    directory of them. `BF16` and FP8 tensors come back as `ml_dtypes`
+    arrays (installed with JAX).
     """
     if isinstance(weights, Mapping):
         return {str(name): np.asarray(value) for name, value in weights.items()}
@@ -62,12 +61,10 @@ def numpy_array(tensor: RawTensor) -> np.ndarray:
     found = BY_SAFETENSORS.get(tensor.dtype)
     if found is None:
         raise LinnetError(f"`{tensor.name}` has dtype {tensor.dtype}, which Linnet does not read")
-    if tensor.dtype in AS_BITS:
-        dtype = np.dtype(np.uint8)
-    elif found.name == "bf16":
+    if found.name == "bf16" or found.storage:
         import ml_dtypes
 
-        dtype = np.dtype(ml_dtypes.bfloat16)
+        dtype = np.dtype(getattr(ml_dtypes, found.numpy))
     else:
         dtype = np.dtype(found.numpy)
     # Over a copy the array owns, so it is writable as any other.
@@ -148,7 +145,7 @@ def tensor_problem(
     if tuple(shape) != tuple(wanted_shape):
         return f"`{source}` has shape {list(shape)}, `{path}` needs {list(wanted_shape)}"
     found = BY_SAFETENSORS.get(code)
-    if (found is not None and found.name == wanted) or (code in AS_BITS and wanted == "u8"):
+    if (found is not None and found.name == wanted) or as_bits(code, wanted):
         return None
     needed = DTYPES.get(wanted)
     if (
@@ -160,6 +157,13 @@ def tensor_problem(
     ):
         return None
     return f"`{source}` is {code}, `{path}` needs {wanted}"
+
+
+def as_bits(code: str, wanted: str) -> bool:
+    """Whether a checkpoint tensor of SafeTensors dtype `code` binds to a
+    parameter of Linnet dtype `wanted` as its bytes: FP8 to `u8`, or `U8`
+    to an FP8 format."""
+    return (code in AS_BITS and wanted == "u8") or (code == "U8" and wanted in STORAGE)
 
 
 def check_problems(problems: Sequence[str], error: type[LinnetError] = LinnetError) -> None:

@@ -207,6 +207,7 @@ class LinnetFunction:
             array = uploaded.get(id(host))
             if array is None:
                 array = self.placement(path, host) if self.placement else _device_array(host)
+                array = as_declared(array, aval.dtype)
                 if (
                     self.cast_dtype
                     and array.dtype != aval.dtype
@@ -286,7 +287,10 @@ class LinnetFunction:
             missing = [path for path in compiled.parameters if path not in parameters]
             if missing:
                 raise LinnetError("missing parameters: " + ", ".join(missing))
-            arrays = [_device_array(parameters[path]) for path in compiled.parameters]
+            arrays = [
+                as_declared(_device_array(parameters[path]), dtype)
+                for path, dtype in zip(compiled.parameters, compiled.dtypes, strict=True)
+            ]
             if self.cast_dtype:
                 # Mixed precision: master parameters (f32, say) cast to the
                 # dtype the export declares on every call, so `jax.grad`
@@ -464,6 +468,21 @@ def _zeros(
         lambda: tuple(jnp.zeros(shape, dtype) for shape, dtype in shapes),
         out_shardings=None if placement is None else tuple(placement for _ in shapes),
     )
+
+
+# `u8` and the FP8 formats, whose bytes a checkpoint may hold as either.
+_BYTES = frozenset(np.dtype(t) for t in (np.uint8, jnp.float8_e4m3fn, jnp.float8_e5m2))
+
+
+def as_declared(array: jax.Array, dtype: DTypeLike) -> jax.Array:
+    """`array` as a parameter of `dtype` takes it: FP8 bytes held as `u8`,
+    or `u8` bytes for an FP8 parameter, reinterpreted rather than
+    converted."""
+    wanted = np.dtype(dtype)
+    pair = {np.dtype(array.dtype), wanted}
+    if len(pair) == 2 and np.dtype(np.uint8) in pair and pair <= _BYTES:
+        return jax.lax.bitcast_convert_type(array, wanted)
+    return array
 
 
 def _device_array(value: ArrayLike) -> jax.Array:

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from ..compiler import LinnetError, check_numerics
 from ..plan import compile_plan
 from ..results import Result
-from .load import LinnetFunction, function_of
+from .load import LinnetFunction, as_declared, function_of
 from .source import SourceFunction
 
 if TYPE_CHECKING:
@@ -140,7 +140,8 @@ class LinnetModel:
                         continue
                     if path not in replaced:
                         old = compiled.arrays[i]
-                        new = jnp.asarray(parameters[path]).astype(compiled.dtypes[i])
+                        new = as_declared(jnp.asarray(parameters[path]), compiled.dtypes[i])
+                        new = new.astype(compiled.dtypes[i])
                         # Placed already (the policy's own arrays, on the
                         # same device): taken as they are, not copied.
                         if (

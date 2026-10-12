@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 
     from ..train import Copies
 
+# `u8` and the FP8 formats, whose bytes a checkpoint may hold as either.
+_BYTE_FORMATS = frozenset((torch.uint8, torch.float8_e4m3fn, torch.float8_e5m2))
+
 # What an entry returns: its one result, or a tuple of its results.
 
 
@@ -567,8 +570,9 @@ def bind_weights(
                 else:
                     loaded = handle.get_tensor(source)
             target = getattr(owner, leaf)
-            if loaded.dtype == torch.float8_e4m3fn and target.dtype == torch.uint8:
-                loaded = loaded.view(torch.uint8)  # the bytes, as `decode_fp8` reads them
+            pair = {loaded.dtype, target.dtype}
+            if len(pair) == 2 and torch.uint8 in pair and pair <= _BYTE_FORMATS:
+                loaded = loaded.view(target.dtype)  # FP8 bytes held as `u8`, or the reverse
             target.copy_(loaded)
             module.weight_names[path] = source
     # The paths bound to a part of their tensor: split across processes.
