@@ -13,7 +13,7 @@ speed, models keep running as generated PyTorch or JAX source.
 | Frontends | Linnet source; `torch.export`, StableHLO and ONNX importers | done |
 | Core IR | the checked program: functions, generics, blocks, state; shapes symbolic | done (`include/linnet/ir`) |
 | Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `linnet graph` records it as a target sees it (M0), and `linnet.resources` traces its own |
-| Planner | partition, backend selection, memory and stream plan | partly: `linnet.backends` (greedy partition, fallback), `linnet.resources` costs |
+| Planner | partition, backend selection, memory and stream plan | partly: `linnet.backends` (greedy partition by measured savings, fallback, memory budget) |
 | Execution plan | executables, buffers, streams, capture segments | partly: `Plan`, run in order or captured whole (`linnet.torch.planned`) |
 | Runtime | runs a plan: allocation, launches, CUDA graphs | partly: `liblinnet_runtime` (native kernels, cuBLASLt, capture); PyTorch's allocator and streams |
 
@@ -90,8 +90,8 @@ class Backend(Protocol):
 - `match` proposes the regions it can run: a semantic call by identity, a
   scope, or any set of nodes.
 - `compile` returns an executable for one region.
-- `estimate_cost` returns seconds and bytes. Without it, the planner
-  benchmarks the region or asks `linnet.resources`.
+- `estimate_cost` returns seconds and the bytes the executable keeps beyond
+  the model's own. Without it, the planner benchmarks the region.
 
 Operator libraries (cuBLASLt, FlashInfer, DeepGEMM), fusing compilers
 (Triton, Inductor) and whole-graph compilers (XLA, TensorRT) implement the
@@ -173,8 +173,14 @@ first partitioner is greedy with a benchmark cache; a global solver can
 replace it without touching backends.
 
 A region's cost comes from the benchmark cache (keyed by device, backend
-version and region), else the backend's `estimate_cost`, else
-`linnet.resources`.
+version and the region's kind, the same for each layer), else from timing
+it (`Measured`: the graph run once by the fallback, cut at every region's
+boundary, gives each region real inputs), else from the backend's
+`estimate_cost`. The fallback is priced on the same steps (steps apart, as
+their ranges). A region is taken when it saves at least `Options.margin`
+of the fallback's time, the largest saving first, within `Options.memory`
+bytes kept beyond the model's own. Conversion costs between regions are
+not counted yet.
 
 ## Execution plan
 
@@ -267,8 +273,19 @@ against the entry as the bench runs it (Inductor, one CUDA graph):
 | `decode`, 1 row, positions 0-128 | 160 tok/s | 159 tok/s | 151 tok/s |
 | `decode_rows`, 16 rows, positions 1,000-3,377 | 1,772 tok/s | 1,825 tok/s | 1,904 tok/s |
 
-FlashInfer pays at long caches and costs at short ones, which is the cost
-model's choice (P3).
+FlashInfer pays at long caches and costs at short ones. P3 leaves the choice
+to measured costs. On another H100 host, with both backends offered:
+
+| | entry | cuBLASLt everywhere | + FlashInfer everywhere | measured |
+| --- | ---: | ---: | ---: | ---: |
+| `decode`, 1 row | 155 tok/s | 154 tok/s | | 154 tok/s: cuBLASLt, no FlashInfer |
+| `decode_rows`, 16 rows | 1,720 tok/s | 1,780 tok/s | 1,842 tok/s | 1,881 tok/s: FlashInfer, no cuBLASLt |
+
+Measuring takes about 10 s on the first plan; with the times kept, planning
+takes about 1 s. Timed alone, a region misses what its neighbours do: at
+16 rows FlashInfer's attention saves 5 us a layer timed alone, while the
+plan that uses it runs about 25 us a layer faster than the entry. Counting
+those effects is part of the conversion costs still to do.
 
 ## Not planned
 

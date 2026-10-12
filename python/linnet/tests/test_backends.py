@@ -4,21 +4,25 @@ through the generated source (docs/design/execution.md)."""
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
+import pytest
 import torch
 
 from linnet.backends import (
+    Benchmarks,
     Capabilities,
     Context,
     Cost,
     ExecutableMeta,
     Graph,
+    Measured,
     Options,
     Planner,
     Region,
     Target,
+    runs_of,
     splittable,
 )
 from linnet.compiler import find_compiler
@@ -248,7 +252,10 @@ def test_the_generated_source_runs_what_another_backend_leaves(tmp_path: Path) -
     assert isinstance(planned, CompiledLinnetModule)
     tokens = [torch.tensor([[3]], dtype=torch.int32), torch.tensor([[5]], dtype=torch.int32)]
     plan = planned.plan_for(
-        "decode", [tokens[0], torch.tensor(0, dtype=torch.int32)], backends=[_Linear()]
+        "decode",
+        [tokens[0], torch.tensor(0, dtype=torch.int32)],
+        backends=[_Linear()],
+        measure=False,
     )
     backends = [step.backend for step in plan.steps]
     assert backends.count("linear") == 2 * 7 + 1
@@ -316,7 +323,7 @@ def test_sibling_calls_run_together_where_the_first_stands(tmp_path: Path) -> No
     assert isinstance(planned, CompiledLinnetModule)
     token = torch.tensor([[3]], dtype=torch.int32)
     plan = planned.plan_for(
-        "decode", [token, torch.tensor(0, dtype=torch.int32)], backends=[_Joined()]
+        "decode", [token, torch.tensor(0, dtype=torch.int32)], backends=[_Joined()], measure=False
     )
     joined = [step.region for step in plan.steps if step.backend == "joined"]
     # q, k and v; gate and up: in each layer.
@@ -332,3 +339,167 @@ def test_sibling_calls_run_together_where_the_first_stands(tmp_path: Path) -> No
             expected: object = direct.run_entry("decode", [token, step])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected)
+
+
+LINEAR = "std.nn.linear::linear"
+
+
+class _Clock:
+    """What the fake executables take: each says how long it ran, and the
+    timer returns that."""
+
+    def __init__(self) -> None:
+        self.last = 0.0
+        self.calls = 0
+
+    def time(self, run: Callable[[], object], meta: ExecutableMeta) -> float:
+        self.calls += 1
+        run()
+        return self.last
+
+
+class _TimedCall(_Executable):
+    def __init__(self, region: Region, clock: _Clock, seconds: float, holds: int) -> None:
+        super().__init__(region)
+        self._clock = clock
+        self._seconds = seconds
+        self._holds = holds
+
+    @property
+    def meta(self) -> ExecutableMeta:
+        return ExecutableMeta((), (), holds=self._holds)
+
+    def execute(
+        self, inputs: Sequence[object], outputs: Sequence[object], context: Context[object]
+    ) -> Sequence[object]:
+        self._clock.last = self._seconds
+        return super().execute(inputs, outputs, context)
+
+
+class _Timed(_Backend):
+    """Takes every call of `callee` and runs each in `seconds`, keeping
+    `holds` bytes; without a callee, runs any region in `seconds` a step."""
+
+    def __init__(
+        self,
+        name: str,
+        clock: _Clock,
+        callee: str | None = None,
+        seconds: float = 1.0,
+        holds: int = 0,
+    ) -> None:
+        super().__init__(name, callee)
+        self._clock = clock
+        self._each = seconds
+        self._holds = holds
+
+    def compile(self, region: Region, target: Target, options: Options) -> _TimedCall:
+        seconds = self._each if self._callee else self._each * len(region.indices)
+        return _TimedCall(region, self._clock, seconds, self._holds)
+
+
+def _measured(clock: _Clock, benchmarks: Benchmarks | None = None) -> Measured[object]:
+    reference = _Timed("fallback", clock)
+    return Measured([object(), object()], Context(Target("cpu")), reference, clock.time, benchmarks)
+
+
+def test_a_backend_takes_only_the_regions_it_runs_faster() -> None:
+    graph = _decode()
+    clock = _Clock()
+    fallback = _Timed("fallback", clock)
+    fast = _Timed("fast", clock, LINEAR, seconds=0.5)
+    slow = _Timed("slow", clock, LINEAR, seconds=2.0)
+    close = _Timed("close", clock, LINEAR, seconds=0.99)  # saves less than the margin
+    plan = Planner([slow, close, fast], fallback, cost_model=_measured(clock)).plan(
+        graph, Target("cpu")
+    )
+    taken = [step for step in plan.steps if step.backend != "fallback"]
+    assert [step.backend for step in taken] == ["fast"] * (2 * 7 + 1)
+    assert all(step.saving == pytest.approx(0.5) for step in taken)
+    plan = Planner([slow, close], fallback, cost_model=_measured(clock)).plan(graph, Target("cpu"))
+    assert {step.backend for step in plan.steps} == {"fallback"}
+
+
+def test_each_kind_of_region_is_timed_once_and_kept(tmp_path: Path) -> None:
+    graph = _decode()
+    clock = _Clock()
+    fallback = _Timed("fallback", clock)
+    fast = _Timed("fast", clock, LINEAR, seconds=0.5)
+    kept = tmp_path / "benchmarks.json"
+    Planner([fast], fallback, cost_model=_measured(clock, Benchmarks(kept))).plan(
+        graph, Target("cpu")
+    )
+    # Fifteen calls, five kinds whatever the layer: q and o, k and v, gate
+    # and up, down, the head. Each timed on `fast` and on the fallback.
+    assert clock.calls == 2 * 5
+    clock.calls = 0
+    benchmarks = Benchmarks(kept)
+    assert len(benchmarks) == 2 * 5
+    plan = Planner([fast], fallback, cost_model=_measured(clock, benchmarks)).plan(
+        graph, Target("cpu")
+    )
+    assert clock.calls == 0
+    assert [step.backend for step in plan.steps].count("fast") == 2 * 7 + 1
+
+
+def test_regions_keep_no_more_bytes_than_the_budget() -> None:
+    graph = _decode()
+    clock = _Clock()
+    big = _Timed("big", clock, LINEAR, seconds=0.1, holds=10)
+    fast = _Timed("fast", clock, LINEAR, seconds=0.5)
+    plan = Planner([big, fast], _Timed("fallback", clock), cost_model=_measured(clock)).plan(
+        graph, Target("cpu"), Options(memory=25)
+    )
+    used = [step.backend for step in plan.steps]
+    assert used.count("big") == 2
+    assert used.count("fast") == 2 * 7 + 1 - 2
+
+
+def test_the_fallback_runs_steps_apart_as_ranges_of_their_own() -> None:
+    graph = _decode()
+    q, k, v = list(graph.semantic_calls(LINEAR))[:3]
+    joined = Region.of_steps(graph, [q.start, k.start, v.start])
+    runs = runs_of(joined)
+    assert [(run.start, run.stop) for run in runs] == [(c.start, c.stop) for c in (q, k, v)]
+    # The layers' regions of one kind are one kind.
+    calls = list(graph.semantic_calls(LINEAR))
+    other = Region.of_steps(graph, [calls[7].start, calls[8].start, calls[9].start])
+    assert other.kind == joined.kind
+    assert Region.of(graph, q.start, q.stop).kind != joined.kind
+
+
+def test_a_measured_plan_gives_the_entry_results(tmp_path: Path) -> None:
+    weights = random_llama(tmp_path / "model.safetensors")
+    planned, direct = (
+        load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
+        for _ in range(2)
+    )
+    assert isinstance(planned, CompiledLinnetModule)
+    token = torch.tensor([[3]], dtype=torch.int32)
+    benchmarks = Benchmarks(tmp_path / "benchmarks.json")
+    plan = planned.plan_for(
+        "decode",
+        [token, torch.tensor(0, dtype=torch.int32)],
+        backends=[_Linear()],
+        benchmarks=benchmarks,
+    )
+    # Each kind timed on both; whichever was faster runs it.
+    assert len(Benchmarks(tmp_path / "benchmarks.json")) == 2 * 5
+    with torch.no_grad():
+        for pos in range(2):
+            step = torch.tensor(pos, dtype=torch.int32)
+            (logits,) = plan.run([token, step], planned.context_for(plan))
+            expected: object = direct.run_entry("decode", [token, step])
+            assert isinstance(expected, torch.Tensor)
+            torch.testing.assert_close(logits, expected)
+
+
+def test_a_region_makes_again_what_it_computes_from_constants() -> None:
+    graph = _decode()
+    attention = next(graph.semantic_calls("std.nn.attention::grouped_attention"))
+    region = Region.of(graph, attention.start, attention.stop, attention.index)
+    query, key, value, scale, mask = attention.arguments
+    # The scale, computed from the head width, is no input: the region
+    # makes it again.
+    assert scale.value in graph.constants
+    assert region.inputs == (query.value, key.value, value.value, mask.value)

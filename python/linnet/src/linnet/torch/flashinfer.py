@@ -116,7 +116,9 @@ class FlashInfer:
         decode = _decode()
         if scale is None or decode is None:
             raise PlanError("FlashInfer cannot run this call")
-        order = [region.inputs.index(a.value) for a in call.arguments if a.value is not None]
+        # The scale, computed from constants, is no input: the region makes it.
+        query, key, value, _, mask = call.arguments
+        order = [region.inputs.index(a.value) for a in (query, key, value, mask)]
         return _Attention(region, decode, scale, order)
 
     def estimate_cost(self, region: Region, target: Target) -> Cost | None:
@@ -212,7 +214,7 @@ class _Attention:
         values = region.graph.values
         self._decode = decode
         self._scale = scale
-        self._order = order  # query, key, value, scale, mask: where each is among the inputs
+        self._order = order  # query, key, value, mask: where each is among the inputs
         self._blocks: torch.Tensor | None = None
         self._meta = ExecutableMeta(
             tuple(TensorSpec(values[v].shape, values[v].dtype) for v in region.inputs),
@@ -232,7 +234,7 @@ class _Attention:
         outputs: Sequence[torch.Tensor],
         context: Context[torch.Tensor],
     ) -> Sequence[torch.Tensor]:
-        query, key, value, _, mask = (inputs[i] for i in self._order)
+        query, key, value, mask = (inputs[i] for i in self._order)
         rows, heads, _, width = query.shape
         kv_heads, length = key.shape[1], key.shape[2]
         page = _page(length)

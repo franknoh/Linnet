@@ -27,15 +27,19 @@ from .contract import (
     Target,
     TensorSpec,
 )
+from .costs import Benchmarks, Measured, Timer
 from .graph import Call, Graph, Operand, Step, Value
 from .planner import (
+    CostModel,
     Estimates,
     Greedy,
+    Partitioner,
     Plan,
     Planner,
     PlanStep,
     Proposal,
     runs_apart,
+    runs_of,
     splittable,
 )
 
@@ -86,17 +90,21 @@ def skipped() -> dict[str, str]:
 __all__ = [
     "CONTRACT",
     "Backend",
+    "Benchmarks",
     "Call",
     "Capabilities",
     "Context",
     "Cost",
+    "CostModel",
     "Estimates",
     "Executable",
     "ExecutableMeta",
     "Graph",
     "Greedy",
+    "Measured",
     "Operand",
     "Options",
+    "Partitioner",
     "Plan",
     "PlanStep",
     "Planner",
@@ -105,10 +113,12 @@ __all__ = [
     "Step",
     "Target",
     "TensorSpec",
+    "Timer",
     "Value",
     "available",
     "register",
     "runs_apart",
+    "runs_of",
     "skipped",
     "splittable",
 ]

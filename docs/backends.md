@@ -22,12 +22,25 @@ This interface is new and changes between releases.
 ## Plans
 
 `plan_for(entry, inputs, backends=..., compile=...)` reads the entry's
-graph for inputs like `inputs`, asks each backend which regions it can run,
-and keeps the largest ones that do not overlap. The generated source runs
-every step left over, a slice of the entry at a time; `compile` is the
-`torch.compile` backend for those slices, each kind compiled once.
+graph for inputs like `inputs` and asks each backend which regions it can
+run. It times each region on its backend and on the generated source, with
+`inputs`, and gives a backend the regions it runs faster. The generated
+source runs every step left over, a slice of the entry at a time; `compile`
+is the `torch.compile` backend for those slices, each kind compiled once.
 Without `backends`, every backend `linnet.backends.available()` lists takes
 part.
+
+- Regions of one kind (each layer's q, k and v, say) are timed once. The
+  times are kept by device, backend version and kind in
+  `$LINNET_HOME/benchmarks.json`, so the next plan reads them instead.
+- A backend takes a region only if it saves 2% or more of the generated
+  source's time for the same steps (`Options.margin`).
+- The regions that save the most go first. Two regions that overlap
+  (one `linear` call, or it joined with its siblings) never both run.
+- `memory=bytes` caps what the plan keeps beyond the model's own weights,
+  such as joined copies of them.
+- `measure=False` skips the timing: each backend takes what it matches,
+  the largest regions first.
 
 `plan.run(inputs, model.context_for(plan))` runs the plan step by step.
 `Captured(plan, context)` runs it once, then captures it whole as a CUDA
@@ -90,6 +103,10 @@ class MyLinearCall:
   captured graph records it.
 - A backend that compiles many regions better together may also define
   `compile_regions(regions, target, options)`.
+- `ExecutableMeta(holds=bytes)` declares memory the executable keeps
+  beyond the model's weights, which the plan's `memory` budget counts.
+- `estimate_cost` returns `Cost(seconds, bytes)` when the backend knows
+  them without running. A measured plan times the region instead.
 
 `graph.steps` and `graph.calls` follow the graph format
 ([Graph format](graph-format.md)): each step is one call the export made,

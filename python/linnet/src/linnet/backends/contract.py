@@ -9,10 +9,13 @@ through the same four methods; only the regions its `match` returns differ.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from typing import Generic, Literal, Protocol, TypeVar
 
+from ..ir import JsonValue
 from .graph import SOURCES, STRUCTURE, Graph, Step
 
 T = TypeVar("T")
@@ -41,7 +44,8 @@ class Capabilities:
 
 @dataclass(frozen=True, slots=True)
 class Cost:
-    """A region's time on a backend, and the bytes it moves."""
+    """A region's time on a backend, and the bytes its executable keeps
+    beyond the model's own (its weights joined or laid out anew, say)."""
 
     seconds: float
     bytes: int = 0
@@ -49,9 +53,14 @@ class Cost:
 
 @dataclass(frozen=True, slots=True)
 class Options:
-    """How to compile: the numerics the program allows."""
+    """How to plan and compile: the numerics the program allows, the bytes
+    the plan's executables may keep beyond the model's own (None: any),
+    and the share of the fallback's time a region must save for another
+    backend to take it."""
 
     numerics: str = "equivalent"
+    memory: int | None = None
+    margin: float = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,12 +95,67 @@ class Region:
     def whole(self) -> bool:
         return not self.members and self.start == 0 and self.stop == len(self.graph.steps)
 
+    @property
+    def kind(self) -> str:
+        """What the region computes, apart from which values it computes it
+        on: the same for each layer's region of one kind. Its steps, each
+        operand named by where it comes from (an earlier step of the region,
+        an input, a parameter, a state, a constant), and its outputs."""
+        local: dict[int, int] = {}
+        persistent = {value: path for path, value in self.graph.parameters.items()}
+        state = {value: path for path, value in self.graph.states.items()}
+        constants = self.graph.constants
+        values = self.graph.values
+
+        def source(value: int | None) -> JsonValue:
+            if value is None:
+                return None
+            if value in local:
+                return ["made", local[value]]
+            if value in self.inputs:
+                return ["input", self.inputs.index(value)]
+            if value in persistent:
+                return ["parameter", self.parameters.index(persistent[value])]
+            if value in state:
+                return ["state", self.states.index(state[value])]
+            if value in constants:
+                step = constants[value]
+                made = [source(o.value) for o in step.operands]
+                return ["constant", step.op, dict(step.attrs), made, step.results.index(value)]
+            return "outside"  # what a marker step names, which crosses nothing
+
+        steps: list[JsonValue] = []
+        for step in self.steps:
+            if step.op in SOURCES:
+                continue
+            operands: list[JsonValue] = [
+                [source(o.value), list(o.shape), o.dtype] for o in step.operands
+            ]
+            results: list[JsonValue] = [
+                [list(values[v].shape), values[v].dtype] for v in step.results
+            ]
+            steps.append([step.op, dict(step.attrs), operands, results])
+            for value in step.results:
+                local.setdefault(value, len(local))
+        weights = (self.graph.parameters[path] for path in self.parameters)
+        document: JsonValue = {
+            "steps": steps,
+            "inputs": [[list(values[v].shape), values[v].dtype] for v in self.inputs],
+            "parameters": [[list(values[v].shape), values[v].dtype] for v in weights],
+            "outputs": [source(v) for v in self.outputs],
+            "next_states": [source(v) for _, v in self.next_states],
+        }
+        text = json.dumps(document, sort_keys=True)
+        return hashlib.sha256(text.encode()).hexdigest()
+
     @classmethod
     def of(cls, graph: Graph, start: int, stop: int, call: int | None = None) -> Region:
         """The range's region: its inputs are the values its steps read that
         steps before it made, in order of first use; its outputs the values
         it makes that later steps read, or that the entry returns. A
-        constant crosses no boundary: each region that reads one makes it."""
+        constant crosses no boundary, nor a small value computed from
+        constants alone (`Graph.constants`): each region that reads one
+        makes it."""
         return cls.of_steps(graph, range(start, stop), call)
 
     @classmethod
@@ -102,7 +166,7 @@ class Region:
         start, stop = members[0], members[-1] + 1
         persistent = {value: path for path, value in graph.parameters.items()}
         state = {value: path for path, value in graph.states.items()}
-        constants = {value for step in graph.find("constant") for value in step.results}
+        constants = graph.constants
         made: set[int] = set()
         inputs: dict[int, None] = {}
         parameters: dict[str, None] = {}
@@ -136,9 +200,9 @@ class Region:
         outputs = tuple(
             value
             for step in (graph.steps[i] for i in members)
-            if step.op not in SOURCES and step.op != "constant"
+            if step.op not in SOURCES
             for value in step.results
-            if value in read_after
+            if value in read_after and value not in constants
         )
         contiguous = len(members) == stop - start
         if contiguous and start == 0 and stop == len(graph.steps):
@@ -182,6 +246,7 @@ class ExecutableMeta:
     allocates: bool = True
     aliases: Mapping[int, int] = field(default_factory=dict[int, int])  # output -> input
     workspace: int = 0  # scratch bytes
+    holds: int = 0  # bytes it keeps beyond the model's own (weights joined, say)
     capturable: bool = True  # a CUDA graph may record it
     stream: Literal["caller", "own"] = "caller"
     host: Literal["native", "python"] = "python"

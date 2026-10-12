@@ -25,7 +25,9 @@ an entry of its own, as `{"sources": [source]}`. The file lists them:
 
 A range's steps are the graph's nodes but `call`, numbered in order. Its
 `inputs` become the entry's inputs, and the parameters and states its steps
-read become its own. A constant it reads is made again. `outputs` and
+read become its own. A constant it reads is made again, and so is a value
+of at most 64 elements computed from constants alone (`elementwise`,
+`convert`, `reshape`, `broadcast`), such as a scale. `outputs` and
 `states` (each state's value after the call, by path) are its results. The
 planner gives the generated PyTorch source the ranges no other backend
 takes this way.

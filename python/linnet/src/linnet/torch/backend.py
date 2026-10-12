@@ -67,7 +67,8 @@ class TorchSource:
 
     @property
     def version(self) -> str:
-        return torch.__version__
+        """PyTorch's version, and how it compiles slices."""
+        return f"{torch.__version__} {self._compile or 'eager'}"
 
     def probe(self, target: Target) -> Capabilities | None:
         if target.kind != self._module.interpreter.device.type:

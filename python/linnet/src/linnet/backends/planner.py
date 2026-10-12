@@ -1,20 +1,24 @@
 """From a graph to an execution plan: which backend runs which range of
 steps (docs/design/execution.md).
 
-Partitioning and costing sit behind separate interfaces. `Greedy` takes the
-largest proposed regions first, the cheaper of two the same size; the
-fallback backend runs every step no region took. A plan runs its
-executables in order, each on the values the ones before it made.
+Partitioning and costing sit behind separate interfaces. A cost model
+prices each region a backend proposes, and the same steps on the fallback;
+a region that saves too little of the fallback's time is dropped. `Greedy`
+takes the regions that save the most first, then, where the costs are not
+known, the largest; the fallback backend runs every step no region took. A
+plan runs its executables in order, each on the values the ones before it
+made.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar, cast
 
 from ..compiler import PlanError
-from .contract import Backend, Context, Executable, Options, Region, Target
+from .contract import Backend, Context, Cost, Executable, Options, Region, Target
 from .graph import Graph
 
 T = TypeVar("T")
@@ -69,57 +73,98 @@ def splittable(graph: Graph, start: int, stop: int) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Proposal(Generic[T]):
-    """A region a backend offered to run, at a cost (seconds, or a rank)."""
+    """A region a backend offered to run: its cost, and the seconds it saves
+    against the fallback, where both are known. `rank` is the backend's
+    place among the planner's."""
 
     backend: Backend[T]
     region: Region
-    cost: float
+    cost: Cost | None = None
+    saving: float | None = None
+    rank: int = 0
 
 
 class CostModel(Protocol[T]):
-    def cost(self, backend: Backend[T], region: Region, target: Target) -> float: ...
+    def costs(
+        self, asked: Sequence[tuple[Backend[T], Region]], target: Target, options: Options
+    ) -> list[Cost | None]:
+        """Each region's cost on its backend, None where unknown."""
+        ...
 
 
 class Estimates(Generic[T]):
-    """A region's cost as its backend estimates it; a backend without an
-    estimate ranks by the order it was given in."""
+    """A region's cost as its backend estimates it."""
 
-    def __init__(self, backends: Sequence[Backend[T]]) -> None:
-        self._rank = {id(backend): i for i, backend in enumerate(backends)}
-
-    def cost(self, backend: Backend[T], region: Region, target: Target) -> float:
-        estimate = backend.estimate_cost(region, target)
-        if estimate is not None:
-            return estimate.seconds
-        return float(self._rank.get(id(backend), len(self._rank)))
+    def costs(
+        self, asked: Sequence[tuple[Backend[T], Region]], target: Target, options: Options
+    ) -> list[Cost | None]:
+        return [backend.estimate_cost(region, target) for backend, region in asked]
 
 
 class Partitioner(Protocol[T]):
-    def partition(self, graph: Graph, proposals: Sequence[Proposal[T]]) -> list[Proposal[T]]:
-        """The proposals taken: none overlapping, in step order."""
+    def partition(
+        self, graph: Graph, proposals: Sequence[Proposal[T]], memory: int | None
+    ) -> list[Proposal[T]]:
+        """The proposals taken: none overlapping, in step order, together
+        keeping at most `memory` bytes (None: any)."""
         ...
 
 
 class Greedy(Generic[T]):
-    """The largest regions first; of two the same size, the cheaper."""
+    """The regions that save the most first; then, of those whose saving is
+    not known, the largest, and of two the same size, the cheaper. A region
+    that would keep more bytes than the budget has left is passed over."""
 
-    def partition(self, graph: Graph, proposals: Sequence[Proposal[T]]) -> list[Proposal[T]]:
+    def partition(
+        self, graph: Graph, proposals: Sequence[Proposal[T]], memory: int | None = None
+    ) -> list[Proposal[T]]:
+        def order(p: Proposal[T]) -> tuple[int, float, float, int, int]:
+            seconds = p.cost.seconds if p.cost is not None else float("inf")
+            if p.saving is not None:
+                return (0, -p.saving, seconds, p.rank, p.region.start)
+            return (1, -len(p.region.indices), seconds, p.rank, p.region.start)
+
         taken: list[Proposal[T]] = []
-        ordered = sorted(proposals, key=lambda p: (-len(p.region.indices), p.cost, p.region.start))
         used: set[int] = set()
-        for proposal in ordered:
+        left = memory
+        for proposal in sorted(proposals, key=order):
             steps = set(proposal.region.indices)
-            if not steps & used:
-                taken.append(proposal)
-                used |= steps
+            held = proposal.cost.bytes if proposal.cost is not None else 0
+            if steps & used or (left is not None and held > left):
+                continue
+            taken.append(proposal)
+            used |= steps
+            if left is not None:
+                left -= held
         return sorted(taken, key=lambda p: p.region.start)
+
+
+def runs_of(region: Region) -> list[Region]:
+    """The region as the fallback would run it: its ranges of steps, each a
+    region of its own (one, unless its steps lie apart)."""
+    if not region.members:
+        return [region]
+    runs: list[Region] = []
+    first = previous = region.members[0]
+    for i in (*region.members[1:], None):
+        if i is not None and i == previous + 1:
+            previous = i
+            continue
+        runs.append(Region.of(region.graph, first, previous + 1))
+        if i is not None:
+            first = previous = i
+    return runs
 
 
 @dataclass(frozen=True, slots=True)
 class PlanStep(Generic[T]):
+    """A region, the backend that runs it and the executable it made; the
+    seconds it saves against the fallback, where known."""
+
     backend: str
     region: Region
     executable: Executable[T]
+    saving: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,26 +219,61 @@ class Planner(Generic[T]):
         self.backends = list(backends)
         self.fallback = fallback
         self.partitioner: Partitioner[T] = partitioner or Greedy()
-        self.cost_model: CostModel[T] = cost_model or Estimates([*self.backends, fallback])
+        self.cost_model: CostModel[T] = cost_model or Estimates()
 
-    def proposals(self, graph: Graph, target: Target) -> list[Proposal[T]]:
-        found: list[Proposal[T]] = []
-        for backend in self.backends:
+    def proposals(
+        self, graph: Graph, target: Target, options: Options | None = None
+    ) -> list[Proposal[T]]:
+        """Each region a backend that runs on `target` matched, priced with
+        the same steps on the fallback. One that saves less than
+        `options.margin` of the fallback's time is left out."""
+        options = options or Options()
+        offered: list[tuple[int, Backend[T], Region]] = []
+        for rank, backend in enumerate(self.backends):
             if backend.probe(target) is None:
                 continue
-            for region in backend.match(graph, target):
-                if runs_apart(graph, region):
-                    found.append(
-                        Proposal(backend, region, self.cost_model.cost(backend, region, target))
-                    )
+            offered += [
+                (rank, backend, region)
+                for region in backend.match(graph, target)
+                if runs_apart(graph, region)
+            ]
+        # The fallback's runs of each region, each priced once.
+        parts = [runs_of(region) for _, _, region in offered]
+        runs: dict[tuple[int, int], Region] = {}
+        for part in parts:
+            for run in part:
+                runs.setdefault((run.start, run.stop), run)
+        asked: list[tuple[Backend[T], Region]] = [(b, r) for _, b, r in offered]
+        asked += [(self.fallback, run) for run in runs.values()]
+        priced = self.cost_model.costs(asked, target, options) if asked else []
+        fallback = dict(zip(runs, priced[len(offered) :], strict=True))
+        found: list[Proposal[T]] = []
+        for (rank, backend, region), part, cost in zip(
+            offered, parts, priced[: len(offered)], strict=True
+        ):
+            spans = [fallback[(run.start, run.stop)] for run in part]
+            if cost is None or any(span is None for span in spans):
+                found.append(Proposal(backend, region, cost, None, rank))
+                continue
+            instead = sum(span.seconds for span in spans if span is not None)
+            if not math.isfinite(instead):
+                # The fallback failed to run it alone: no saving is known.
+                found.append(Proposal(backend, region, cost, None, rank))
+                continue
+            saving = instead - cost.seconds
+            if saving > options.margin * instead:
+                found.append(Proposal(backend, region, cost, saving, rank))
         return found
 
     def plan(self, graph: Graph, target: Target, options: Options | None = None) -> Plan[T]:
         if self.fallback.probe(target) is None:
             raise PlanError(f"the fallback backend `{self.fallback.name}` does not run on {target}")
         options = options or Options()
-        taken = self.partitioner.partition(graph, self.proposals(graph, target))
+        taken = self.partitioner.partition(
+            graph, self.proposals(graph, target, options), options.memory
+        )
         regions: list[tuple[Backend[T], Region]] = [(p.backend, p.region) for p in taken]
+        savings = {id(p.region): p.saving for p in taken}
         # The fallback runs each run of steps no region took.
         used = {i for p in taken for i in p.region.indices}
         start = 0
@@ -222,7 +302,7 @@ class Planner(Generic[T]):
             for i in indices:
                 compiled[i] = backend.compile(regions[i][1], target, options)
         steps = tuple(
-            PlanStep(backend.name, region, compiled[i])
+            PlanStep(backend.name, region, compiled[i], savings.get(id(region)))
             for i, (backend, region) in enumerate(regions)
         )
         return Plan(graph, target, steps)
