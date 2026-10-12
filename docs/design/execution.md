@@ -259,6 +259,17 @@ tensor-parallel model is one plan per process, as `Shards` builds it today.
 Dtype families land during P0 and P1, before the plugin SDK, because
 backends declare dtypes by format.
 
+P1 on an H100, Llama 3.1 8B bf16, each plan replayed as one CUDA graph,
+against the entry as the bench runs it (Inductor, one CUDA graph):
+
+| | entry | cuBLASLt + Inductor slices | + FlashInfer attention |
+| --- | ---: | ---: | ---: |
+| `decode`, 1 row, positions 0-128 | 160 tok/s | 159 tok/s | 151 tok/s |
+| `decode_rows`, 16 rows, positions 1,000-3,377 | 1,772 tok/s | 1,825 tok/s | 1,904 tok/s |
+
+FlashInfer pays at long caches and costs at short ones, which is the cost
+model's choice (P3).
+
 ## Not planned
 
 - A Linnet megakernel compiler or runtime.
