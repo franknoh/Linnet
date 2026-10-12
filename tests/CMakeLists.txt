@@ -117,7 +117,8 @@ linnet_add_test(emit_test unit/emit_test.cpp)
 linnet_add_test(python_text_test unit/python_text_test.cpp)
 # The runtime's sources built in, so the test finds no library to load.
 linnet_add_test(runtime_test unit/runtime_test.cpp
-    ${PROJECT_SOURCE_DIR}/src/runtime/runtime.cpp ${PROJECT_SOURCE_DIR}/src/runtime/driver.cpp)
+    ${PROJECT_SOURCE_DIR}/src/runtime/runtime.cpp ${PROJECT_SOURCE_DIR}/src/runtime/driver.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/cublaslt.cpp)
 target_compile_definitions(runtime_test PRIVATE LINNET_RUNTIME_STATIC)
 target_link_libraries(runtime_test PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME cli_inspect_emit

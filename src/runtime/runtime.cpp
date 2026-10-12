@@ -1,8 +1,5 @@
-#include "linnet/runtime/runtime.h"
+#include "internal.hpp"
 
-#include "driver.hpp"
-
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <set>
@@ -12,7 +9,6 @@
 
 using linnet::runtime::CUcontext;
 using linnet::runtime::cuda_success;
-using linnet::runtime::CUdevice;
 using linnet::runtime::CUfunction;
 using linnet::runtime::CUgraph;
 using linnet::runtime::CUgraphExec;
@@ -20,17 +16,30 @@ using linnet::runtime::CUmodule;
 using linnet::runtime::CUresult;
 using linnet::runtime::CUstream;
 using linnet::runtime::Driver;
+using linnet::runtime::executable_failed;
+using linnet::runtime::fail;
+
+namespace linnet::runtime {
 
 namespace {
 
 thread_local std::string last_error;
+
+constexpr std::size_t cpu_alignment = 256;
+
+} // namespace
 
 LnStatus fail(LnStatus status, std::string message) {
     last_error = std::move(message);
     return status;
 }
 
-constexpr std::size_t cpu_alignment = 256;
+LnStatus executable_failed(const LnExecutable* executable, const char* what) {
+    const char* message =
+        executable->error != nullptr ? executable->error(executable->state) : nullptr;
+    return fail(LN_ERROR,
+                std::string(what) + " failed" + (message ? std::string(": ") + message : ""));
+}
 
 void* cpu_alloc(std::size_t bytes) {
     // Rounded up: `aligned_alloc` takes only a multiple of the alignment.
@@ -50,57 +59,7 @@ void cpu_free(void* pointer) {
 #endif
 }
 
-} // namespace
-
-struct LnRuntime {
-    LnDevice device{};
-    const Driver* driver = nullptr; // CUDA only
-    CUdevice cuda_device = 0;
-    CUcontext context = nullptr;
-    CUstream stream = nullptr;
-    std::set<void*> allocations;
-
-    bool cuda() const { return driver != nullptr; }
-
-    // Runs `body` with the device's context current, as the driver needs
-    // for every call, and the caller's restored after.
-    template <typename Body>
-    LnStatus in_context(const char* what, Body body) {
-        if (!cuda()) {
-            return body();
-        }
-        if (const CUresult result = driver->cuCtxPushCurrent(context); result != cuda_success) {
-            return fail(LN_ERROR, driver->message(what, result));
-        }
-        const LnStatus status = body();
-        CUcontext popped = nullptr;
-        driver->cuCtxPopCurrent(&popped);
-        return status;
-    }
-
-    LnStatus check(const char* what, CUresult result) const {
-        return result == cuda_success ? LN_OK : fail(LN_ERROR, driver->message(what, result));
-    }
-
-    void* allocate(std::size_t bytes) {
-        if (!cuda()) {
-            return cpu_alloc(bytes);
-        }
-        void* pointer = nullptr;
-        if (driver->cuMemAlloc(&pointer, bytes == 0 ? 1 : bytes) != cuda_success) {
-            return nullptr;
-        }
-        return pointer;
-    }
-
-    void release(void* pointer) {
-        if (!cuda()) {
-            cpu_free(pointer);
-            return;
-        }
-        driver->cuMemFree(pointer);
-    }
-};
+} // namespace linnet::runtime
 
 namespace {
 
@@ -130,13 +89,6 @@ struct Call {
     std::size_t workspace_offset = 0;
     std::size_t workspace_bytes = 0;
 };
-
-LnStatus executable_failed(const LnExecutable* executable, const char* what) {
-    const char* message =
-        executable->error != nullptr ? executable->error(executable->state) : nullptr;
-    return fail(LN_ERROR,
-                std::string(what) + " failed" + (message ? std::string(": ") + message : ""));
-}
 
 } // namespace
 
@@ -192,7 +144,7 @@ struct LnPlan {
 extern "C" {
 
 const char* ln_last_error(void) {
-    return last_error.c_str();
+    return linnet::runtime::last_error.c_str();
 }
 
 LnStatus ln_runtime_create(LnDevice device, LnRuntime** out) {
@@ -247,6 +199,9 @@ void ln_runtime_destroy(LnRuntime* runtime) {
         return;
     }
     runtime->in_context("destroy", [&] {
+        for (const auto& cleanup : runtime->cleanups) {
+            cleanup();
+        }
         for (void* pointer : runtime->allocations) {
             runtime->release(pointer);
         }
@@ -630,6 +585,32 @@ LnStatus ln_kernel_create(LnRuntime* runtime,
     executable->error = kernel_error;
     executable->destroy = kernel_destroy;
     *out = executable.release();
+    return LN_OK;
+}
+
+LnStatus ln_executable_prepare(LnExecutable* executable, LnContext* context) {
+    if (executable == nullptr || context == nullptr) {
+        return fail(LN_ERROR, "ln_executable_prepare: no executable or no context");
+    }
+    if (executable->prepare != nullptr && executable->prepare(executable->state, context) != 0) {
+        return executable_failed(executable, "preparing an executable");
+    }
+    return LN_OK;
+}
+
+LnStatus ln_executable_execute(LnExecutable* executable,
+                               const LnTensor* inputs,
+                               size_t input_count,
+                               LnTensor* outputs,
+                               size_t output_count,
+                               LnContext* context) {
+    if (executable == nullptr || context == nullptr) {
+        return fail(LN_ERROR, "ln_executable_execute: no executable or no context");
+    }
+    if (executable->execute(
+            executable->state, inputs, input_count, outputs, output_count, context) != 0) {
+        return executable_failed(executable, "an executable");
+    }
     return LN_OK;
 }
 
