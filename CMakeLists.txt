@@ -18,6 +18,10 @@ if(MSVC)
     target_compile_options(linnet_build_options INTERFACE /W4 /permissive- /utf-8 /Zc:preprocessor)
     # Standard functions such as std::getenv are not deprecated in C++.
     target_compile_definitions(linnet_build_options INTERFACE _CRT_SECURE_NO_WARNINGS)
+    # The 8 MiB stack Linux and macOS give a main thread, not Windows' 1 MiB:
+    # the parser's nesting limit is sized for it, and a Debug build's frames
+    # at that limit overflow 1 MiB.
+    target_link_options(linnet_build_options INTERFACE /STACK:8388608)
     if(LINNET_WARNINGS_AS_ERRORS)
         target_compile_options(linnet_build_options INTERFACE /WX)
     endif()
