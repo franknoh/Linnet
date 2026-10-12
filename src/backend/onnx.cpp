@@ -5,9 +5,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -52,6 +55,31 @@ std::string float_text(double value) {
         return "-Infinity";
     }
     return decimal_float(value);
+}
+
+// `value` rounded to `f32`, spelled with the fewest digits that name it:
+// ONNX's text parser misrounds a longer decimal (it reads
+// -0.8480964004993439 one step off the `f32` nearest to it).
+std::string f32_text(double value) {
+    if (value != value || std::fabs(value) > std::numeric_limits<float>::max()) {
+        return float_text(value != value ? value : std::copysign(HUGE_VAL, value));
+    }
+    const auto narrow = static_cast<float>(value);
+    std::string text;
+    for (int precision = 6; precision <= 9; ++precision) {
+        std::ostringstream stream;
+        stream.precision(precision);
+        stream << narrow;
+        text = stream.str();
+        if (std::strtof(text.c_str(), nullptr) == narrow) {
+            break;
+        }
+    }
+    if (text.find('.') == std::string::npos) {
+        const std::size_t exponent = text.find_first_of("eE");
+        text.insert(exponent == std::string::npos ? text.size() : exponent, ".0");
+    }
+    return text;
 }
 
 std::string int_list(const Dims& values) {
@@ -1014,14 +1042,18 @@ private:
         return out;
     }
 
+    static std::string real_text(double value, ScalarKind dtype) {
+        return dtype == ScalarKind::F32 ? f32_text(value) : float_text(value);
+    }
+
     static std::string literal_text(const Literal& literal, ScalarKind dtype) {
         const bool is_real = sema::is_float(dtype);
         switch (literal.kind) {
         case Literal::Kind::Integer:
-            return is_real ? float_text(static_cast<double>(literal.integer))
+            return is_real ? real_text(static_cast<double>(literal.integer), dtype)
                            : std::to_string(literal.integer);
         case Literal::Kind::Real:
-            return is_real ? float_text(literal.real)
+            return is_real ? real_text(literal.real, dtype)
                            : std::to_string(static_cast<std::int64_t>(literal.real));
         case Literal::Kind::Boolean:
             return literal.integer != 0 ? "1" : "0";
@@ -1174,10 +1206,10 @@ private:
         }
         std::string values;
         for (const double magnitude : e2m1_magnitudes) {
-            values += (values.empty() ? "" : ", ") + float_text(magnitude);
+            values += (values.empty() ? "" : ", ") + f32_text(magnitude);
         }
         for (const double magnitude : e2m1_magnitudes) {
-            values += ", " + float_text(-magnitude);
+            values += ", " + f32_text(-magnitude);
         }
         const TensorInfo table{constant_text(values, {16}, ScalarKind::F32), {16}, ScalarKind::F32};
         const TensorInfo index = cast_to(codes, ScalarKind::I64);
