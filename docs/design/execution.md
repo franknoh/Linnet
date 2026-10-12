@@ -12,7 +12,7 @@ speed, models keep running as generated PyTorch or JAX source.
 | --- | --- | --- |
 | Frontends | Linnet source; `torch.export`, StableHLO and ONNX importers | done |
 | Core IR | the checked program: functions, generics, blocks, state; shapes symbolic | done (`include/linnet/ir`) |
-| Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `linnet graph` records it as a target sees it (M0); PyTorch and JAX source are written by replaying it, which decides the constants; `linnet.resources` traces its own |
+| Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `linnet graph` records it as a target sees it (M0); PyTorch and JAX source are written by replaying it, which decides the constants, the cache writes done in place and the sibling linears joined; `linnet.resources` traces its own |
 | Planner | partition, backend selection, memory and stream plan | partly: `linnet.backends` (greedy partition by measured savings, fallback, memory budget) |
 | Execution plan | executables, buffers, streams, capture segments | partly: `Plan`, run in order or captured whole (`linnet.torch.planned`) |
 | Runtime | runs a plan: allocation, launches, CUDA graphs | partly: `liblinnet_runtime` (native kernels, cuBLASLt, capture); PyTorch's allocator and streams |
@@ -266,7 +266,7 @@ tensor-parallel model is one plan per process, as `Shards` builds it today.
 | --- | --- | --- |
 | M0 | `linnet graph`: the graph as JSON, built by a recording `GraphTarget` | the existing targets, replayed from the graph, print the same source for every Nest card |
 | P0 | Backend and Executable contract; runtime core; the generated PyTorch source as one full-graph backend | every Nest model runs through a plan at today's speed and passes today's tests |
-| P1 | partition and fallback; cuBLASLt and FlashInfer backends; the text passes over generated Python become graph passes | Llama 3.1 8B decode on an H100 runs attention on FlashInfer, the MLP on cuBLASLt and the rest on the fallback in one CUDA graph, at least as fast as `linnet-cudagraphs` |
+| P1 | partition and fallback; cuBLASLt and FlashInfer backends; the text passes over generated Python become graph passes (all but the `prepare` split; pruning dead lines and releasing values stay with the code a target writes, which has lines of its own) | Llama 3.1 8B decode on an H100 runs attention on FlashInfer, the MLP on cuBLASLt and the rest on the fallback in one CUDA graph, at least as fast as `linnet-cudagraphs` |
 | P2 | plugin SDK: entry points, versions, capability checks, conformance against the generated source (docs/backends.md) | an external package adds a backend without changing Linnet |
 | P3 | cost-based selection: benchmark and compile caches, memory budget, conversion costs | the planner picks backends with no user choice |
 | P4 | DeepGEMM, TileKernels, CUTLASS, Triton, XLA, TensorRT, external megakernels | each passes its conformance tests |
