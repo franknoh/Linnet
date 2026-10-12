@@ -13,7 +13,7 @@ speed, models keep running as generated PyTorch or JAX source.
 | Frontends | Linnet source; `torch.export`, StableHLO and ONNX importers | done |
 | Core IR | the checked program: functions, generics, blocks, state; shapes symbolic | done (`include/linnet/ir`) |
 | Graph | one entry under one binding: values with shape, dtype, layout and device; primitive nodes; semantic calls with their bodies | partly: `linnet graph` records it as a target sees it (M0), and `linnet.resources` traces its own |
-| Planner | partition, backend selection, memory and stream plan | partly: `linnet.backends` (greedy partition, fallback), `linnet.resources` costs |
+| Planner | partition, backend selection, memory and stream plan | partly: `linnet.backends` (greedy partition by measured savings, fallback, memory budget) |
 | Execution plan | executables, buffers, streams, capture segments | partly: `Plan`, run in order or captured whole (`linnet.torch.planned`) |
 | Runtime | runs a plan: allocation, launches, CUDA graphs | partly: `liblinnet_runtime` (native kernels, cuBLASLt, capture); PyTorch's allocator and streams |
 
@@ -273,8 +273,18 @@ against the entry as the bench runs it (Inductor, one CUDA graph):
 | `decode`, 1 row, positions 0-128 | 160 tok/s | 159 tok/s | 151 tok/s |
 | `decode_rows`, 16 rows, positions 1,000-3,377 | 1,772 tok/s | 1,825 tok/s | 1,904 tok/s |
 
-FlashInfer pays at long caches and costs at short ones, which is the cost
-model's choice (P3).
+FlashInfer pays at long caches and costs at short ones. P3 leaves the choice
+to measured costs. On another H100 host, with both backends offered:
+
+| | entry | cuBLASLt everywhere | + FlashInfer everywhere | measured |
+| --- | ---: | ---: | ---: | ---: |
+| `decode`, 1 row | 155 tok/s | 154 tok/s | | 154 tok/s: cuBLASLt, no FlashInfer |
+| `decode_rows`, 16 rows | 1,720 tok/s | 1,780 tok/s | 1,842 tok/s | 1,881 tok/s: FlashInfer, no cuBLASLt |
+
+Measuring takes about 10 s on the first plan; with the times kept, planning
+takes about 1 s. Timed alone, a region misses what its neighbours do: at
+16 rows FlashInfer saves 5 us a layer timed alone, and about 25 us in the
+plan. Counting those effects is part of the conversion costs still to do.
 
 ## Not planned
 
