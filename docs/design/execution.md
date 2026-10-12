@@ -292,6 +292,14 @@ takes about 1 s. Timed alone, a region misses what its neighbours do: at
 plan that uses it runs about 25 us a layer faster than the entry. Counting
 those effects is part of the conversion costs still to do.
 
+P4 so far: DeepGEMM takes block-scaled FP8 projections under
+`numerics="fast"`. Qwen3 8B FP8 on an H100:
+
+| | entry | DeepGEMM everywhere | measured |
+| --- | ---: | ---: | ---: |
+| prefill, 2,048 tokens | 45.7 ms | 35.6 ms | 34.9 ms: DeepGEMM for 180 of 252 projections |
+| decode, 1 row | 4.37 ms | 5.93 ms | 4.37 ms: no DeepGEMM |
+
 ## Not planned
 
 - A Linnet megakernel compiler or runtime.
