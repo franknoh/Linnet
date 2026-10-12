@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace linnet::sema {
+
+// `stdlib/prelude.linnet`, compiled in: the dtypes every module sees.
+inline constexpr std::string_view prelude_source = R"linnet_prelude(@LINNET_PRELUDE@)linnet_prelude";
+
+} // namespace linnet::sema

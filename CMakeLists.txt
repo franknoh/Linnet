@@ -50,6 +50,16 @@ configure_file(
     ${CMAKE_CURRENT_BINARY_DIR}/generated/linnet/version.hpp
     @ONLY)
 
+# The prelude's dtype declarations, compiled into the checker; editing the
+# file configures the build again.
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/prelude.linnet LINNET_PRELUDE)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/prelude.linnet)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/prelude.hpp.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/linnet/prelude.hpp
+    @ONLY)
+
 add_library(linnet_core STATIC
     src/ast/ast.cpp
     src/ast/dump.cpp
@@ -89,6 +99,7 @@ add_library(linnet_core STATIC
     src/sema/checker_exprs.cpp
     src/sema/checker_kernels.cpp
     src/sema/manifest.cpp
+    src/sema/prelude.cpp
     src/sema/symbols.cpp
     src/sema/types.cpp
     src/shape/dim.cpp

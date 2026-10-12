@@ -115,8 +115,35 @@ std::optional<ScalarKind> scalar_from_name(std::string_view name) {
 }
 
 std::optional<ScalarKind> builtin_scalar(std::string_view name) {
-    const auto found = scalar_from_name(name);
-    return found && !is_storage(*found) ? found : std::nullopt;
+    if (name == "bool") {
+        return ScalarKind::Bool;
+    }
+    const auto& declared = prelude_dtypes();
+    const auto found = declared.find(name);
+    return found == declared.end() ? std::nullopt : std::optional(found->second);
+}
+
+DTypeFormat dtype_format(bool is_float, const std::map<std::string_view, std::int64_t>& values) {
+    const auto value_of = [&](std::string_view name, std::int64_t otherwise) {
+        const auto found = values.find(name);
+        return found == values.end() ? otherwise : found->second;
+    };
+    DTypeFormat format;
+    if (is_float) {
+        format.family = Family::Float;
+        format.exponent = static_cast<std::uint32_t>(value_of("exponent", 0));
+        format.mantissa = static_cast<std::uint32_t>(value_of("mantissa", 0));
+        format.bits = 1 + format.exponent + format.mantissa;
+        format.inf = value_of("inf", 1) != 0;
+        format.nan = value_of("nan", 1) != 0;
+    } else {
+        format.family = Family::Int;
+        format.bits = static_cast<std::uint32_t>(value_of("bits", 0));
+        format.is_signed = value_of("signed", 1) != 0;
+        format.inf = false;
+        format.nan = false;
+    }
+    return format;
 }
 
 DTypeFormat format_of(ScalarKind kind) {

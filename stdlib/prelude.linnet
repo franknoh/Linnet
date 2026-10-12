@@ -1,0 +1,21 @@
+// The dtypes every module sees without a `use` (spec §3.1). The compiler
+// knows `bool` and two families, `int` and `float`; each name here is one
+// format of a family. The compiler reads this file as it builds, so a
+// format and the name of it are declared in one place.
+module std.prelude
+
+pub dtype i8 = int(bits: 8)
+pub dtype i16 = int(bits: 16)
+pub dtype i32 = int(bits: 32)
+pub dtype i64 = int(bits: 64)
+
+pub dtype u8 = int(bits: 8, signed: false)
+pub dtype u16 = int(bits: 16, signed: false)
+pub dtype u32 = int(bits: 32, signed: false)
+pub dtype u64 = int(bits: 64, signed: false)
+
+// IEEE binary16, 32 and 64, and bfloat16: f32's exponent in 16 bits.
+pub dtype f16 = float(exponent: 5, mantissa: 10)
+pub dtype bf16 = float(exponent: 8, mantissa: 7)
+pub dtype f32 = float(exponent: 8, mantissa: 23)
+pub dtype f64 = float(exponent: 11, mantissa: 52)
