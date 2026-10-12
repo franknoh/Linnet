@@ -34,7 +34,9 @@ part.
   times are kept by device, backend version and kind in
   `$LINNET_HOME/benchmarks.json`, so the next plan reads them instead.
 - A backend takes a region only if it saves 2% or more of the generated
-  source's time for the same steps (`Options.margin`).
+  source's time for the same steps (`Options.margin`), and still does in
+  place: each kind taken is timed again against the generated source's
+  code around it, which cutting the region out splits in two.
 - The regions that save the most go first. Two regions that overlap
   (one `linear` call, or it joined with its siblings) never both run.
 - `memory=bytes` caps what the plan keeps beyond the model's own weights,
