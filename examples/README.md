@@ -14,6 +14,7 @@ what runs on it.
 | `06-lora` | Llama 3.1 8B fine-tuned with LoRA on one GPU, 1.8 times TRL's speed in less memory. |
 | `07-fsdp` | Llama 3.1 8B fine-tuned in full across four GPUs, in PyTorch and in JAX from the same card. |
 | `08-rl` | GRPO with the serving engine sampling, and DPO, on Llama 3.1 8B: 2.4 to 2.7 times TRL's speed. |
+| `09-backends` | Libraries plugged in as backends from packages of their own: DeepGEMM's FP8 product. |
 
 The `.linnet` examples check with `linnet lint --std stdlib examples/<name>`,
 and the tests under `python/linnet/tests/torch` compare them with
