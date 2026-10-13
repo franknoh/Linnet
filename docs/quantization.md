@@ -115,8 +115,10 @@ layer becomes `.weight` (NF4 codes, `std.dtypes::nf4`) and `.absmax` (`f32`,
 one per block of 64 inputs) for `Nf4Linear`. Nested absmax codes
 (`bnb_4bit_use_double_quant`) are decoded at import. bitsandbytes' `fp4`
 type and its 8-bit layers do not import. `Nf4Linear` widens the weight and
-multiplies in `T` on every backend; the bitsandbytes backend plugin in
-`examples/09-backends` multiplies a row from the 4-bit codes instead.
+multiplies in `T` on every backend; compiled PyTorch widens it once and
+keeps the 16-bit copy. The bitsandbytes backend plugin in
+`examples/09-backends` multiplies from the 4-bit codes instead, without
+that copy.
 
 ## 8-bit weights
 

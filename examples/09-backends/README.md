@@ -48,12 +48,15 @@ plan = model.plan_for("prefill", [tokens, pos], backends=[DeepGemm()])
 
 ## bitsandbytes
 
-`Nf4Linear` on its own widens its whole weight on every call. The plugin
-takes its `std.quant::linear_nf4` call to `bitsandbytes.matmul_4bit`, which
-multiplies a single row straight from the 4-bit codes. bitsandbytes reads
-the codes in another order (the first of each pair in the high four bits),
-so the plugin keeps them once more in that order: half a byte a weight,
-which the plan's memory budget counts.
+Compiled PyTorch widens an `Nf4Linear` weight once and keeps the 16-bit
+copy, four times the bytes of the codes. The plugin takes the layer's
+`std.quant::linear_nf4` call to `bitsandbytes.matmul_4bit` instead, which
+multiplies a row straight from the 4-bit codes. bitsandbytes reads the
+codes in another order (the first of each pair in the high four bits), so
+the plugin keeps them once more in that order: half a byte a weight, which
+the plan's memory budget counts. On an RTX A5000, an 8192 by 8192 layer
+holds 68 MiB in the plan against 172 MiB in the entry, at the same speed
+for one row.
 
 ```bash
 pip install -e examples/09-backends/bitsandbytes
