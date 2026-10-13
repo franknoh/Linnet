@@ -1,9 +1,9 @@
 # Backend plugins
 
 A backend runs part of a Linnet model on a library of its own
-([Backends](../../docs/backends.md)). Each directory here is a package of
-its own that plugs one library in through the `linnet.backends` entry
-point, without changes to Linnet:
+([Backends](https://linnet.franknoh.dev/docs/backends)). Each directory here
+is a package of its own that plugs one library in through the
+`linnet.backends` entry point, without changes to Linnet:
 
 | Plugin | Library | Takes |
 | --- | --- | --- |
