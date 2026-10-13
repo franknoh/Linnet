@@ -186,10 +186,21 @@ pub op dequantize_nf4<Out: Dim, Blocks: Dim, Block: Dim, T: Float>(
     return cast<T>(reshape(scaled, [Out, Blocks * Block]))
 }
 
-// A linear layer over NF4 weights with one scale for each `Block`
-// consecutive inputs of a row, as bitsandbytes' 4-bit layers keep them
-// (`linnet.quant.import_quantized` repacks such a checkpoint for it). Its
-// body widens the weight and multiplies in `T`.
+// A linear layer over NF4 weights, one scale for each `Block` consecutive
+// inputs of a row. Its body widens the weight and multiplies in `T`; a
+// backend with a 4-bit product may take the call instead.
+pub op linear_nf4<Block: Dim, *S: Shape, Out: Dim, Blocks: Dim, T: Float>(
+    x: Tensor[*S, Blocks * Block; T],
+    q: Tensor[Out, Blocks * Block; nf4],
+    absmax: Tensor[Out, Blocks; f32],
+    bias: Tensor[Out; T]?,
+) -> Tensor[*S, Out; T] {
+    return linear(x, dequantize_nf4<Out, Blocks, Block, T>(q, absmax), bias)
+}
+
+// A linear layer whose weight is stored as NF4 with one scale for each
+// `Block` consecutive inputs of a row, as bitsandbytes' 4-bit layers keep
+// them (`linnet.quant.import_quantized` repacks such a checkpoint for it).
 pub block Nf4Linear<In: Dim, Out: Dim, Block: Dim = 64, T: Float = bf16>
 where
     Block > 0,
@@ -201,7 +212,7 @@ where
     param bias: Tensor[Out; T]? = none
 
     pub fn forward<*S: Shape>(x: Tensor[*S, In; T]) -> Tensor[*S, Out; T] {
-        return linear(x, dequantize_nf4<Out, In / Block, Block, T>(weight, absmax), bias)
+        return linear_nf4<Block>(x, weight, absmax, bias)
     }
 }
 

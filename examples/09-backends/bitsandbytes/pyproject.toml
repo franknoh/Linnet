@@ -1,0 +1,13 @@
+[project]
+name = "linnet-bitsandbytes"
+version = "0.1.0"
+description = "bitsandbytes' 4-bit product as a Linnet backend"
+requires-python = ">=3.11"
+dependencies = ["linnet-lang[torch]", "bitsandbytes>=0.45"]
+
+[project.entry-points."linnet.backends"]
+bitsandbytes = "linnet_bitsandbytes:BitsAndBytes"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

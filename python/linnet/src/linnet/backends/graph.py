@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import cast
 
 from ..compiler import PlanError
 from ..ir import JsonValue
@@ -210,6 +211,79 @@ class Graph:
             for call in self.calls
             if call.semantic and (callee is None or call.callee == callee)
         )
+
+    @property
+    def producers(self) -> Mapping[int, Step]:
+        """The step that made each value, by value."""
+        if "producers" not in self._memo:
+            made = {value: step for step in self.steps for value in step.results}
+            self._memo["producers"] = MappingProxyType(made)
+        return self._memo["producers"]
+
+    def scalar(self, value: int | None) -> float | None:
+        """The number a value computed from constants alone holds, such as an
+        attention's scale, or None where it reads anything else."""
+        step = self.producers.get(value) if value is not None else None
+        if step is None:
+            return None
+        if step.op == "constant":
+            literal = step.attrs.get("literal")
+            number = literal.get("value") if isinstance(literal, dict) else None
+            return float(number) if isinstance(number, int | float) else None
+        if step.op in ("convert", "reshape", "broadcast") and len(step.operands) == 1:
+            return self.scalar(step.operands[0].value)
+        if step.op != "elementwise":
+            return None
+        numbers = [self.scalar(operand.value) for operand in step.operands]
+        if any(n is None for n in numbers):
+            return None
+        kind = str(step.attrs.get("kind"))
+        if len(numbers) == 1 and kind in _UNARY:
+            return _UNARY[kind](cast("float", numbers[0]))
+        if len(numbers) == 2 and kind in _BINARY:
+            return _BINARY[kind](cast("float", numbers[0]), cast("float", numbers[1]))
+        return None
+
+    def reaches_prefix(self, mask: int) -> bool:
+        """Whether an attention mask reaches a prefix of the keys: positions
+        compared with something below or at them (`iota <= position`),
+        maybe reshaped or broadcast."""
+        step = self.producers.get(mask)
+        while step is not None and step.op in ("reshape", "broadcast") and len(step.operands) == 1:
+            inner = step.operands[0].value
+            step = self.producers.get(inner) if inner is not None else None
+        if step is None or step.op != "compare" or step.attrs.get("kind") not in ("le", "lt"):
+            return False
+        keys, limit = step.operands
+        return self._from_iota(keys.value) and not self._from_iota(limit.value)
+
+    def _from_iota(self, value: int | None) -> bool:
+        """Whether `value` is positions 0, 1, ... (an `iota`, converted,
+        reshaped or broadcast)."""
+        while value is not None and value in self.producers:
+            step = self.producers[value]
+            if step.op == "iota":
+                return True
+            if step.op not in ("convert", "reshape", "broadcast") or len(step.operands) != 1:
+                return False
+            value = step.operands[0].value
+        return False
+
+
+# The elementwise operations `Graph.scalar` evaluates.
+_UNARY: dict[str, Callable[[float], float]] = {
+    "neg": lambda a: -a,
+    "sqrt": math.sqrt,
+    "rsqrt": lambda a: 1.0 / math.sqrt(a),
+    "exp": math.exp,
+    "log": math.log,
+}
+_BINARY: dict[str, Callable[[float, float], float]] = {
+    "add": lambda a, b: a + b,
+    "sub": lambda a, b: a - b,
+    "mul": lambda a, b: a * b,
+    "div": lambda a, b: a / b,
+}
 
 
 def _present(operand: Operand) -> int:

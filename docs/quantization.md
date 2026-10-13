@@ -42,6 +42,7 @@ the last axis halved).
 | `dequantize_fp8_blocks<RowBlocks, ColBlocks, Block, T>(q, scale)` | FP8, a scale per `Block` by `Block` block |
 | `linear_fp8(x, weight, scale, bias)`, `linear_fp8_blocks<Block>(...)` | linear layers over FP8 weights |
 | `dequantize_nf4<Out, Blocks, Block, T>(q, absmax)` | NF4 codes, a scale per `Block` inputs: `cast<f32>(q) * absmax` |
+| `linear_nf4<Block>(x, q, absmax, bias)` | a linear layer over NF4 weights |
 | `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: `f4e2m1` values in blocks of 32 (`[E, Out, G, 32]`), one E8M0 scale byte a block |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
@@ -114,7 +115,10 @@ layer becomes `.weight` (NF4 codes, `std.dtypes::nf4`) and `.absmax` (`f32`,
 one per block of 64 inputs) for `Nf4Linear`. Nested absmax codes
 (`bnb_4bit_use_double_quant`) are decoded at import. bitsandbytes' `fp4`
 type and its 8-bit layers do not import. `Nf4Linear` widens the weight and
-multiplies in `T` on every backend.
+multiplies in `T` on every backend; compiled PyTorch widens it once and
+keeps the 16-bit copy. The bitsandbytes backend plugin in
+`examples/09-backends` multiplies from the 4-bit codes instead, without
+that copy.
 
 ## 8-bit weights
 
