@@ -16,8 +16,7 @@ block table lists each row's pages.
 from __future__ import annotations
 
 import importlib
-import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from typing import Protocol, cast
 
 import torch
@@ -33,7 +32,6 @@ from ..backends import (
     Target,
     TensorSpec,
 )
-from ..backends.graph import Step
 from ..compiler import PlanError
 
 _CALLEES = ("std.nn.attention::grouped_attention", "std.nn.attention::grouped_attention_rows")
@@ -86,7 +84,6 @@ class FlashInfer:
         return Capabilities({"flashinfer": self.version}, frozenset(_DTYPES))
 
     def match(self, graph: Graph, target: Target) -> Iterable[Region]:
-        made = {value: step for step in graph.steps for value in step.results}
         for call in graph.semantic_calls():
             if call.callee not in _CALLEES or len(call.arguments) != 5:
                 continue
@@ -100,8 +97,8 @@ class FlashInfer:
                 or _page(call.generics.get("K", 0)) is None
                 or scale.value is None
                 or mask.value is None
-                or _scalar(made, scale.value) is None
-                or not _prefix(made, mask.value)
+                or graph.scalar(scale.value) is None
+                or not graph.reaches_prefix(mask.value)
             ):
                 continue
             yield Region.of(graph, call.start, call.stop, call.index)
@@ -111,8 +108,7 @@ class FlashInfer:
             raise PlanError("FlashInfer takes an attention call")
         graph = region.graph
         call = graph.calls[region.call]
-        made = {value: step for step in graph.steps for value in step.results}
-        scale = _scalar(made, call.arguments[3].value)
+        scale = graph.scalar(call.arguments[3].value)
         decode = _decode()
         if scale is None or decode is None:
             raise PlanError("FlashInfer cannot run this call")
@@ -123,74 +119,6 @@ class FlashInfer:
 
     def estimate_cost(self, region: Region, target: Target) -> Cost | None:
         return None
-
-
-def _scalar(made: dict[int, Step], value: int | None) -> float | None:
-    """A value computed from constants alone, such as an attention's scale:
-    its number, or None where it reads anything else."""
-    if value is None or value not in made:
-        return None
-    step = made[value]
-    if step.op == "constant":
-        literal = step.attrs.get("literal")
-        if isinstance(literal, dict) and isinstance(literal.get("value"), int | float):
-            number = literal["value"]
-            assert isinstance(number, int | float)
-            return float(number)
-        return None
-    if step.op in ("convert", "reshape", "broadcast") and len(step.operands) == 1:
-        return _scalar(made, step.operands[0].value)
-    if step.op != "elementwise":
-        return None
-    operands = [_scalar(made, operand.value) for operand in step.operands]
-    if any(o is None for o in operands):
-        return None
-    numbers = cast("list[float]", operands)
-    unary: dict[str, Callable[[float], float]] = {
-        "neg": lambda a: -a,
-        "sqrt": math.sqrt,
-        "rsqrt": lambda a: 1.0 / math.sqrt(a),
-        "exp": math.exp,
-        "log": math.log,
-    }
-    binary: dict[str, Callable[[float, float], float]] = {
-        "add": lambda a, b: a + b,
-        "sub": lambda a, b: a - b,
-        "mul": lambda a, b: a * b,
-        "div": lambda a, b: a / b,
-    }
-    kind = str(step.attrs.get("kind"))
-    if kind in unary and len(numbers) == 1:
-        return unary[kind](numbers[0])
-    if kind in binary and len(numbers) == 2:
-        return binary[kind](numbers[0], numbers[1])
-    return None
-
-
-def _from_iota(made: dict[int, Step], value: int | None) -> bool:
-    """Whether `value` is positions 0, 1, ... (an `iota`, converted, reshaped
-    or broadcast)."""
-    while value is not None and value in made:
-        step = made[value]
-        if step.op == "iota":
-            return True
-        if step.op not in ("convert", "reshape", "broadcast") or len(step.operands) != 1:
-            return False
-        value = step.operands[0].value
-    return False
-
-
-def _prefix(made: dict[int, Step], value: int) -> bool:
-    """Whether a mask reaches a prefix of the keys: positions compared with
-    something below or at them (`iota <= position`), maybe reshaped."""
-    step = made.get(value)
-    while step is not None and step.op in ("reshape", "broadcast") and len(step.operands) == 1:
-        inner = step.operands[0].value
-        step = made.get(inner) if inner is not None else None
-    if step is None or step.op != "compare" or step.attrs.get("kind") not in ("le", "lt"):
-        return False
-    keys, limit = step.operands
-    return _from_iota(made, keys.value) and not _from_iota(made, limit.value)
 
 
 def _page(length: int) -> int | None:

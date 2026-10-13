@@ -61,6 +61,8 @@ its entry point:
 | Example | Takes |
 | --- | --- |
 | `deepgemm` | block-scaled FP8 `linear` calls (`Fp8BlockLinear`, blocks of 128) under `numerics="fast"`, by DeepGEMM, on Hopper |
+| `bitsandbytes` | NF4 `linear` calls (`Nf4Linear`), by bitsandbytes' 4-bit product |
+| `flash-attn` | decode attention (one query a row, a prefix mask) by FlashAttention, on Ampere and later |
 
 ## Writing one
 
@@ -106,6 +108,9 @@ class MyLinearCall:
   block's call (`graph.calls`, with its `path`), any range of steps
   (`Region.of`), or steps apart that run together where the first stands
   (`Region.of_steps`).
+- `graph.scalar(value)` is the number a value computed from constants
+  holds (an attention's scale), and `graph.reaches_prefix(mask)` whether an
+  attention mask reaches a prefix of the keys, as a decode step's does.
 - A region's `inputs` are the values it reads that earlier steps made.
   Parameters and states are not inputs: an executable reads them from
   `context.parameters` by path.

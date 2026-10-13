@@ -1,0 +1,13 @@
+[project]
+name = "linnet-flash-attn"
+version = "0.1.0"
+description = "FlashAttention's decode attention over a KV cache as a Linnet backend"
+requires-python = ">=3.11"
+dependencies = ["linnet-lang[torch]", "flash-attn>=2.6"]
+
+[project.entry-points."linnet.backends"]
+flash-attn = "linnet_flash_attn:FlashAttention"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
