@@ -52,7 +52,15 @@ graph and replays it.
 | --- | --- |
 | `linnet.torch.cublaslt.CublasLt` | `linear` calls without a bias, by cuBLASLt; sibling calls that read the same input (q, k and v) as one product |
 | `linnet.torch.flashinfer.FlashInfer` | decode attention (one query a row, a prefix mask) by FlashInfer, on Hopper and later |
-| `linnet.torch.deepgemm.DeepGemm` | block-scaled FP8 `linear` calls (`Fp8BlockLinear`, blocks of 128) under `numerics="fast"`, by DeepGEMM, on Hopper |
+
+Backends for other libraries are packages of their own. The examples in
+[`examples/09-backends`](https://github.com/franknoh/Linnet/tree/main/examples/09-backends)
+are such packages, each installed with `pip install -e` and found through
+its entry point:
+
+| Example | Takes |
+| --- | --- |
+| `deepgemm` | block-scaled FP8 `linear` calls (`Fp8BlockLinear`, blocks of 128) under `numerics="fast"`, by DeepGEMM, on Hopper |
 
 ## Writing one
 

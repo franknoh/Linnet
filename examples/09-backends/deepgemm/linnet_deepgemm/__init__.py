@@ -1,6 +1,6 @@
-"""DeepGEMM's FP8 product as a backend for PyTorch tensors
-(docs/backends.md): a `std.quant::linear_fp8_blocks` call with weight
-blocks of 128 by 128 that the export lets round its input to FP8
+"""DeepGEMM's FP8 product as a Linnet backend, a plugin from a package of
+its own (docs/backends.md): a `std.quant::linear_fp8_blocks` call with
+weight blocks of 128 by 128 that the export lets round its input to FP8
 (`numerics="fast"`, where it takes `torch._scaled_mm(blocks)`), as
 `deep_gemm.fp8_gemm_nt` on Hopper.
 
@@ -18,7 +18,7 @@ from typing import Protocol, cast
 
 import torch
 
-from ..backends import (
+from linnet.backends import (
     Capabilities,
     Context,
     Cost,
@@ -29,10 +29,10 @@ from ..backends import (
     Target,
     TensorSpec,
 )
-from ..compiler import PlanError
+from linnet.compiler import PlanError
 
 try:
-    from . import kernels
+    from linnet.torch import kernels
 except ImportError:  # no Triton: nothing rounds the input
     kernels = None
 
@@ -64,6 +64,8 @@ def _gemm() -> _Gemm | None:
 
 class DeepGemm:
     """Takes the FP8 block-scaled `linear` calls it can run."""
+
+    contract = 1  # the version of `linnet.backends` it was written for
 
     @property
     def name(self) -> str:
@@ -182,3 +184,6 @@ class _BlockProduct:
         if self._bias is not None:
             y = y + context.parameters[self._bias]
         return [y.reshape(*x.shape[:-1], self._width)]
+
+
+__all__ = ["DeepGemm"]

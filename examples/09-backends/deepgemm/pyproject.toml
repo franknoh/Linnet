@@ -1,0 +1,14 @@
+[project]
+name = "linnet-deepgemm"
+version = "0.1.0"
+description = "DeepGEMM's FP8 product as a Linnet backend"
+requires-python = ">=3.11"
+# DeepGEMM itself is built from source (see the README).
+dependencies = ["linnet-lang[torch]"]
+
+[project.entry-points."linnet.backends"]
+deepgemm = "linnet_deepgemm:DeepGemm"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

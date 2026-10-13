@@ -300,8 +300,9 @@ takes about 1 s. Timed alone, a region misses what its neighbours do: at
 plan that uses it runs about 25 us a layer faster than the entry. Hence
 `Planner.confirm`, which times each kind taken in place.
 
-P4 so far: DeepGEMM takes block-scaled FP8 projections under
-`numerics="fast"`. Qwen3 8B FP8 on an H100:
+P4 so far: DeepGEMM, a plugin in `examples/09-backends` rather than part
+of Linnet, takes block-scaled FP8 projections under `numerics="fast"`.
+Qwen3 8B FP8 on an H100:
 
 | | entry | DeepGEMM everywhere | measured |
 | --- | ---: | ---: | ---: |
