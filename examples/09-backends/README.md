@@ -9,7 +9,7 @@ is a package of its own that plugs one library in through the
 | --- | --- | --- |
 | `deepgemm` | [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM) | block-scaled FP8 `linear` calls (`Fp8BlockLinear`, blocks of 128) under `numerics="fast"`, on Hopper |
 | `bitsandbytes` | [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) | NF4 `linear` calls (`Nf4Linear`), on CUDA |
-| `flash-attn` | [FlashAttention](https://github.com/Dao-AILab/flash-attention) | decode attention over a KV cache (one query a row, a prefix mask), on Ampere and later |
+| `flash-attn` | [FlashAttention](https://github.com/Dao-AILab/flash-attention) | decode attention over a KV cache, packed prompts, and paged decode and prompts (pages of a multiple of 256), on Ampere and later |
 
 Install one beside Linnet and its library:
 
@@ -64,10 +64,19 @@ pip install -e examples/09-backends/bitsandbytes
 
 ## FlashAttention
 
-The plugin takes a decode step's attention, one query a row over the KV
-cache, to `flash_attn_with_kvcache`. It reads Linnet's cache as it is and
-each row's length from the mask on the device, so a plan captured as one
-CUDA graph replays it at any position.
+The plugin takes four kinds of attention, each reading Linnet's cache as
+it is and every length on the device, so a plan captured as one CUDA graph
+replays it at any position:
+
+- a decode step's attention, one query a row over the KV cache, to
+  `flash_attn_with_kvcache`, each row's length from the mask;
+- a packed pass of prompts (`prefill_packed`, the prompts of
+  `step_packed`), each token seeing its own prompt up to itself, to
+  `flash_attn_varlen_func`, the prompts' bounds from the segments; the
+  pass's mask is then never built;
+- `paged_attention` and `paged_prefill_attention` over a pool of pages, to
+  the same two with the rows' page table. FlashAttention 2 reads pages of
+  a multiple of 256 positions: load the model with `PageSize=256`.
 
 ```bash
 pip install flash-attn --no-build-isolation

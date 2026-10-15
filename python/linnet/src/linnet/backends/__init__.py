@@ -28,7 +28,7 @@ from .contract import (
     TensorSpec,
 )
 from .costs import Benchmarks, Measured, Timer
-from .graph import Call, Graph, Operand, Step, Value
+from .graph import Call, Graph, Operand, SegmentMask, Step, Value
 from .planner import (
     CostModel,
     Estimates,
@@ -110,6 +110,7 @@ __all__ = [
     "Planner",
     "Proposal",
     "Region",
+    "SegmentMask",
     "Step",
     "Target",
     "TensorSpec",
