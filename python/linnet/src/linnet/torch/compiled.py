@@ -37,6 +37,7 @@ from ..backends import (
     Options,
     Plan,
     Planner,
+    PlanStep,
     Region,
     Target,
     available,
@@ -689,8 +690,31 @@ class CompiledLinnetModule(LinnetModule):
                 and not self.plan_beats(plan, entry, inputs, against, options.margin)
             ):
                 plan = Planner([], fallback).plan(graph, target, options)
+        plan = self._differentiable(plan, fallback, target, options)
         self._plans.append(plan)
         return plan
+
+    def _differentiable(
+        self,
+        plan: Plan[torch.Tensor],
+        fallback: Backend[torch.Tensor],
+        target: Target,
+        options: Options,
+    ) -> Plan[torch.Tensor]:
+        """`plan` with each backend's step part of autograd
+        (`linnet.torch.differentiable`)."""
+        from .differentiable import Differentiable
+
+        def wrapped(step: PlanStep[torch.Tensor]) -> PlanStep[torch.Tensor]:
+            if step.backend == fallback.name:
+                return step
+            region = step.region
+            executable = Differentiable(
+                step.executable, region, self, lambda: fallback.compile(region, target, options)
+            )
+            return dataclasses.replace(step, executable=executable)
+
+        return dataclasses.replace(plan, steps=tuple(wrapped(s) for s in plan.steps))
 
     def plan_beats(
         self,
