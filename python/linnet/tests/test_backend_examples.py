@@ -201,6 +201,13 @@ def test_bitsandbytes_multiplies_as_the_entry_does(
     torch.testing.assert_close(got.float(), expected.float(), rtol=2e-2, atol=2e-2)
     findings = planned.conform("forward", [x], bitsandbytes, tolerance=5e-2)
     assert len(findings) == 1 and findings[0].passed
+    # Run only through its plan, the model lets it swap the codes in place.
+    only = _compiled(nf4_source, NF4_GENERICS, tmp_path / "w.safetensors")
+    plan = only.plan_for("forward", [x], backends=[bitsandbytes], measure=False)
+    with torch.no_grad():
+        (adopted,) = plan.run([x], only.context_for(plan, adopt=True))
+    assert set(only.adopted) == {"proj.weight"}
+    torch.testing.assert_close(adopted.float(), expected.float(), rtol=2e-2, atol=2e-2)
 
 
 # ---- FlashAttention: decode attention over the KV cache, in a plan replayed
