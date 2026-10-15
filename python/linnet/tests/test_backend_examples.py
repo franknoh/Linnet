@@ -262,3 +262,105 @@ def test_flash_attn_attends_as_the_entry_does(llama_weights: Path) -> None:
             expected: object = direct.run_entry("decode", [tokens, position(step)])
             assert isinstance(expected, torch.Tensor)
             torch.testing.assert_close(logits, expected, rtol=3e-2, atol=3e-2)
+
+
+# ---- FlashAttention over prompts: packed passes, and pages.
+
+# The serving test's model, in bf16; paged with pages of 256 positions,
+# which FlashAttention 2 reads: page 0 takes the writes nobody reads.
+SERVE_GENERICS: dict[str, int | str] = {
+    "Vocab": 64,
+    "H": 64,
+    "Heads": 4,
+    "Batch": 3,
+    "MaxSeq": 48,
+    "T": "bf16",
+}
+PAGED_GENERICS: dict[str, int | str] = {
+    **SERVE_GENERICS,
+    "Batch": 1,
+    "MaxSeq": 768,
+    "PageSize": 256,
+}
+
+
+def _serve_model(tmp_path: Path, generics: dict[str, int | str]) -> tuple[Path, Path]:
+    from tests.test_serve import SOURCE as SERVE
+
+    source = tmp_path / "serve.linnet"
+    source.write_text(SERVE, encoding="utf-8")
+    skeleton = load(source, generics=generics, std_root=STDLIB)
+    generator = torch.Generator().manual_seed(0)
+    tensors = {
+        name.removeprefix("root."): (torch.randn(p.shape, generator=generator) * 0.3).bfloat16()
+        for name, p in skeleton.named_parameters()
+        if not name.endswith(".bias")
+    }
+    weights = tmp_path / "serve.safetensors"
+    save_file(tensors, str(weights))
+    return source, weights
+
+
+def _ints(values: list[int], *shape: int) -> torch.Tensor:
+    tensor = torch.tensor(values, dtype=torch.int32, device="cuda")
+    return tensor.reshape(shape) if shape else tensor
+
+
+def test_flash_attn_takes_packed_and_paged_prompts(tmp_path: Path) -> None:
+    flash = _plugin("flash-attn", "FlashAttention")
+    ampere = Target("cuda", 0, "A100", (8, 0))
+    source, _ = _serve_model(tmp_path, SERVE_GENERICS)
+    packed = _graph(source, "prefill_packed", {**SERVE_GENERICS, "P": 16}, "fast")
+    assert len(list(flash.match(packed, ampere))) == 1
+    paged = {**PAGED_GENERICS, "P": 16, "Rows": 2, "Pages": 1}
+    assert len(list(flash.match(_graph(source, "prefill_paged", paged, "fast"), ampere))) == 1
+    small = {**paged, "PageSize": 64}  # pages FlashAttention 2 does not read
+    assert list(flash.match(_graph(source, "prefill_paged", small, "fast"), ampere)) == []
+
+
+@requires_cuda
+def test_flash_attn_attends_packed_prompts_as_the_entry_does(tmp_path: Path) -> None:
+    pytest.importorskip("flash_attn")
+    flash = _plugin("flash-attn", "FlashAttention")
+    source, weights = _serve_model(tmp_path, SERVE_GENERICS)
+    planned, direct = (_compiled(source, SERVE_GENERICS, weights) for _ in range(2))
+    # Prompts of 5 and 7 tokens, then 4 of padding, as the engine packs them.
+    tokens = _ints([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 0, 0, 0, 0])
+    rows = _ints([0] * 5 + [1] * 7 + [0] * 4)
+    at = _ints([*range(5), *range(7), *[47] * 4])
+    segments = _ints([0] * 5 + [1] * 7 + [-1] * 4)
+    last = _ints([4, 11, 0])
+    inputs = [tokens, rows, at, segments, last]
+    plan = planned.plan_for("prefill_packed", inputs, backends=[flash], measure=False)
+    assert [step.backend for step in plan.steps].count("flash-attn") == 1
+    with torch.no_grad():
+        (got,) = plan.run(inputs, planned.context_for(plan))
+        expected: object = direct.run_entry("prefill_packed", inputs)
+    assert isinstance(expected, torch.Tensor)
+    torch.testing.assert_close(got.float(), expected.float(), rtol=3e-2, atol=3e-2)
+
+
+@requires_cuda
+def test_flash_attn_attends_over_pages_as_the_entry_does(tmp_path: Path) -> None:
+    pytest.importorskip("flash_attn")
+    flash = _plugin("flash-attn", "FlashAttention")
+    source, weights = _serve_model(tmp_path, PAGED_GENERICS)
+    planned, direct = (_compiled(source, PAGED_GENERICS, weights) for _ in range(2))
+    # Two rows on pages 1 and 2: prompts of 6 and 8 tokens, 2 of padding.
+    table = _ints([1, 2], 2, 1)
+    lengths = (6, 8)
+    tokens = _ints([7, 1, 2, 3, 4, 5, 9, 8, 7, 6, 5, 4, 3, 2, 0, 0])
+    rows = _ints([0] * 6 + [1] * 8 + [0, 0])
+    at = _ints([*range(6), *range(8), 0, 0])
+    slots = _ints([256 + p for p in range(6)] + [512 + p for p in range(8)] + [0, 0])
+    last = _ints([5, 13])
+    prompts = [tokens, at, rows, slots, last, table]
+    step = [_ints([1, 2], 2, 1), _ints(list(lengths)), table]
+    with torch.no_grad():
+        for entry, inputs in (("prefill_paged", prompts), ("decode_paged", step)):
+            plan = planned.plan_for(entry, inputs, backends=[flash], measure=False)
+            assert [s.backend for s in plan.steps].count("flash-attn") == 1, entry
+            (got,) = plan.run(inputs, planned.context_for(plan))
+            expected: object = direct.run_entry(entry, inputs)
+            assert isinstance(expected, torch.Tensor)
+            torch.testing.assert_close(got.float(), expected.float(), rtol=3e-2, atol=3e-2)

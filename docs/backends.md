@@ -114,6 +114,9 @@ class MyLinearCall:
 - `graph.scalar(value)` is the number a value computed from constants
   holds (an attention's scale), and `graph.reaches_prefix(mask)` whether an
   attention mask reaches a prefix of the keys, as a decode step's does.
+  `graph.segment_causal(mask)` finds a packed pass's mask (each token
+  seeing its own prompt up to itself): its segments, its positions and
+  the first step that builds it.
 - A region's `inputs` are the values it reads that earlier steps made.
   Parameters and states are not inputs: an executable reads them from
   `context.parameters` by path.
