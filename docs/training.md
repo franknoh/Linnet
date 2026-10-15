@@ -36,6 +36,11 @@ state: on two H100s, TinyLlama's full fine-tune took the same 12 losses as
 with AdamW whole on each, at 10.7 rather than 12.8 GiB a GPU. Only the
 first process saves.
 
+`train(..., plans=True)` runs each batch's step by an execution plan over
+the backends found ([Backends](backends.md)), one plan for each shape of
+batch: a backend's regions differentiate by their own backward, or by the
+generated source run again. It needs `compile=True`.
+
 ## Checkpoints
 
 With `checkpoint="run/"`, `train` resumes from the latest checkpoint

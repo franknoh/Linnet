@@ -3,6 +3,7 @@ through the generated source (docs/design/execution.md)."""
 
 from __future__ import annotations
 
+import itertools
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 import torch
 
 from linnet.backends import (
+    Backend,
     Benchmarks,
     Capabilities,
     Context,
@@ -28,7 +30,17 @@ from linnet.backends import (
 from linnet.compiler import find_compiler
 from linnet.torch import load
 from linnet.torch.compiled import CompiledLinnetModule
-from tests.helpers import LLAMA, REPO, STDLIB, TINY_LLAMA, random_llama, requires_cuda
+from linnet.train import pack, train
+from tests.helpers import (
+    LLAMA,
+    REPO,
+    STDLIB,
+    TINY_LLAMA,
+    random_llama,
+    requires_cuda,
+    tiny_examples,
+    trainable_llama,
+)
 
 
 def _graph(*args: str) -> Graph:
@@ -657,3 +669,77 @@ def test_copied_weights_reach_what_a_plans_executables_keep(tmp_path: Path) -> N
         expected: object = other.run_entry("decode", inputs)
     assert isinstance(expected, torch.Tensor)
     torch.testing.assert_close(logits, expected)
+
+
+class _DifferentiatingLinear(_Linear):
+    """`_Linear` with a backward of its own."""
+
+    @property
+    def name(self) -> str:
+        return "differentiating-linear"
+
+    def compile(self, region: Region, target: Target, options: Options) -> _LinearCall:
+        return _DifferentiatingCall(region)
+
+
+class _DifferentiatingCall(_LinearCall):
+    def backward(
+        self,
+        inputs: Sequence[torch.Tensor],
+        grad_outputs: Sequence[torch.Tensor | None],
+        context: Context[torch.Tensor],
+    ) -> tuple[list[torch.Tensor | None], dict[str, torch.Tensor]]:
+        (x,), (grad,) = inputs, grad_outputs
+        assert grad is not None
+        weight = context.parameters[self._weight]
+        by_weight = grad.reshape(-1, grad.shape[-1]).T @ x.reshape(-1, x.shape[-1])
+        return [grad @ weight], {self._weight: by_weight}
+
+
+@pytest.mark.parametrize("backend", [_Linear(), _DifferentiatingLinear()], ids=["again", "own"])
+def test_gradients_reach_the_weights_through_a_backends_steps(
+    tmp_path: Path, backend: _Linear
+) -> None:
+    """A plan run with gradients on: a backend's steps are part of autograd,
+    by the backward it has, else by the region again on the generated
+    source, and every weight gets the entry's gradient."""
+    weights = random_llama(tmp_path / "model.safetensors")
+    planned, direct = trainable_llama(weights), trainable_llama(weights)
+    assert isinstance(planned, CompiledLinnetModule)
+    tokens = torch.tensor([[3, 1, 4, 1]], dtype=torch.int32)
+    plan = planned.plan_for("forward", [tokens], backends=[backend], measure=False)
+    assert backend.name in {step.backend for step in plan.steps}
+    (logits,) = plan.run([tokens], planned.context_for(plan))
+    logits.square().mean().backward()  # pyright: ignore[reportUnknownMemberType]
+    expected = direct.run_entry("forward", [tokens])
+    assert isinstance(expected, torch.Tensor)
+    expected.square().mean().backward()  # pyright: ignore[reportUnknownMemberType]
+    torch.testing.assert_close(logits, expected)
+    for (name, got), (_, want) in zip(
+        planned.named_parameters(), direct.named_parameters(), strict=True
+    ):
+        if want.grad is not None:
+            assert got.grad is not None, name
+            torch.testing.assert_close(got.grad, want.grad, msg=name)
+
+
+def test_training_through_plans_follows_the_entry(tmp_path: Path) -> None:
+    """`train(plans=...)`: a backend takes the projections, with its own
+    backward or by the generated source again, and the steps lose what
+    the entry's do."""
+    weights = random_llama(tmp_path / "model.safetensors")
+    batch = next(pack(tiny_examples(), tokens=24))
+    losses: list[list[float]] = []
+    plans: list[bool | list[Backend[torch.Tensor]]] = [
+        False,
+        [_DifferentiatingLinear()],
+        [_Linear()],
+    ]
+    for chosen in plans:
+        model = trainable_llama(weights)
+        trained = [p for p in model.parameters() if p.requires_grad]
+        optimizer = torch.optim.SGD(trained, lr=0.1)
+        history = train(model, itertools.repeat(batch), optimizer=optimizer, steps=3, plans=chosen)
+        losses.append(history.losses)
+    torch.testing.assert_close(losses[1], losses[0], atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(losses[2], losses[0], atol=1e-5, rtol=1e-4)

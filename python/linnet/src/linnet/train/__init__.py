@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     from torch.distributed import ProcessGroup
     from torch.optim.lr_scheduler import LRScheduler
 
+    from ..backends import Backend
     from ..torch.module import LinnetModule
+    from ..torch.planned import Planned
 
 
 @dataclass
@@ -133,6 +135,7 @@ def train(
     checkpoint: str | Path | None = None,
     checkpoint_every: int | None = None,
     on_step: Callable[[Step], None] | None = None,
+    plans: bool | Sequence[Backend[torch.Tensor]] = False,
 ) -> History:
     """Fits `model` on `batches` through its `entry` (`loss_packed`).
 
@@ -143,6 +146,13 @@ def train(
     optimizer step. It stops after `steps` steps or when the batches run
     out. Every `save_every` steps, and at the end, it writes the weights to
     `save_to` (the adapters alone when the model has them).
+
+    `plans` runs the entry by execution plans (`linnet.torch.planned.Planned`)
+    over the backends found (`True`) or those given, one plan for each shape
+    of batch. A backend's region differentiates by its own backward where it
+    has one, else by running the region again on the generated source, which
+    keeps less memory but computes it twice. It needs a module loaded with
+    `compile=True`.
 
     Under `torch.distributed`, every process trains a copy of the model on
     its own batches: the count of learned positions and the gradients are
@@ -172,6 +182,7 @@ def train(
     # One process saves; a sharded model is gathered to be saved, by every one.
     saves = not distributed or dist.get_rank() == 0 or bool(getattr(model, "fully_sharded", ()))
     history = History()
+    run = _planned(model, plans)
     iterator = iter(batches)
     start = 0
     if checkpoint is not None:
@@ -203,7 +214,9 @@ def train(
         begin = time.perf_counter()
         total = torch.zeros((), dtype=torch.float64, device=device)
         for batch in group:
-            loss = cast(torch.Tensor, model.run_entry(entry, batch.inputs(count, device)))
+            inputs = batch.inputs(count, device)
+            made = run(entry, inputs) if run is not None else model.run_entry(entry, inputs)
+            loss = cast(torch.Tensor, made)
             loss.backward()  # pyright: ignore[reportUnknownMemberType]
             total += loss.detach().double()
         if distributed:
@@ -386,3 +399,15 @@ __all__ = [
     "save_checkpoint",
     "train",
 ]
+
+
+def _planned(model: LinnetModule, plans: bool | Sequence[Backend[torch.Tensor]]) -> Planned | None:
+    """What `train(plans=...)` runs its entry by, or None without plans."""
+    if not plans:
+        return None
+    from ..torch.compiled import CompiledLinnetModule
+    from ..torch.planned import Planned
+
+    if not isinstance(model, CompiledLinnetModule):
+        raise ValueError("plans need a module loaded with compile=True")
+    return Planned(model, None if plans is True else list(plans))

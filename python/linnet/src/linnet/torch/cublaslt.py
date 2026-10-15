@@ -214,3 +214,25 @@ class _Product:
             return [out]
         parts = torch.split(out, self._widths, dim=-1)
         return [parts[i] for i in self._parts]
+
+    def backward(
+        self,
+        inputs: Sequence[torch.Tensor],
+        grad_outputs: Sequence[torch.Tensor | None],
+        context: Context[torch.Tensor],
+    ) -> tuple[list[torch.Tensor | None], dict[str, torch.Tensor]]:
+        """The input's gradient and each weight's, by path
+        (`linnet.torch.differentiable`): the product's two others."""
+        (x,) = inputs
+        grad = torch.zeros(self._shape, dtype=x.dtype, device=x.device)
+        offsets = [0]
+        for width in self._widths:
+            offsets.append(offsets[-1] + width)
+        for part, given in zip(self._parts, grad_outputs, strict=True):
+            if given is not None:
+                grad[..., offsets[part] : offsets[part + 1]] = given
+        weights = [context.parameters[p] for p in self._paths]
+        weight = weights[0] if len(weights) == 1 else torch.cat(weights)
+        rows = grad.reshape(-1, grad.shape[-1])
+        by_weight = torch.split(rows.T @ x.reshape(-1, x.shape[-1]), self._widths)
+        return [grad @ weight], dict(zip(self._paths, by_weight, strict=True))

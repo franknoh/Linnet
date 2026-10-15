@@ -140,6 +140,13 @@ class MyLinearCall:
   (`model.copy_weights`): what the executable keeps (weights joined or
   converted) it writes into the same tensors, since a captured plan reads
   them where they are.
+- An executable may also define `backward(inputs, grad_outputs, context)`,
+  returning its inputs' gradients and its weights' by path. With
+  gradients on, a backend's step is part of autograd: by that backward,
+  or else by the region run again on the generated source and
+  differentiated there, which keeps less memory but computes it twice.
+  `train(plans=...)` and `linnet.torch.planned.Planned` run training
+  steps through plans this way.
 - `ExecutableMeta(holds=bytes)` declares memory the executable keeps
   beyond the model's weights, which the plan's `memory` budget counts.
 - `estimate_cost` returns `Cost(seconds, bytes)` when the backend knows

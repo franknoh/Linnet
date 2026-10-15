@@ -10,12 +10,14 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from ..backends import Context, Plan
+from ..backends import Backend, Context, Plan
 from ..compiler import PlanError
 
 if TYPE_CHECKING:
     # The type `torch.cuda.graph_pool_handle` returns.
     from torch.cuda import _POOL_HANDLE  # pyright: ignore[reportPrivateUsage]
+
+    from .compiled import CompiledLinnetModule
 
 
 class Captured:
@@ -61,3 +63,37 @@ class Captured:
             self._graph = graph
         self._graph.replay()
         return [value.clone() for value in self._outputs]
+
+
+class Planned:
+    """`model`'s entries run by plans over `backends` (every one
+    `linnet.backends.available` lists, by default): one plan for each entry
+    and shape of inputs, made the first time that shape comes
+    (`plan_for`). With gradients on, a backend's steps are part of autograd
+    (`linnet.torch.differentiable`), so a training step runs through it."""
+
+    def __init__(
+        self,
+        model: CompiledLinnetModule,
+        backends: Sequence[Backend[torch.Tensor]] | None = None,
+        *,
+        measure: bool = True,
+    ) -> None:
+        self.model = model
+        self.backends = backends
+        self.measure = measure
+        self._plans: dict[
+            tuple[str, tuple[tuple[int, ...], ...]],
+            tuple[Plan[torch.Tensor], Context[torch.Tensor]],
+        ] = {}
+
+    def __call__(
+        self, entry: str, inputs: list[torch.Tensor]
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        key = (entry, tuple(tuple(t.shape) for t in inputs))
+        if key not in self._plans:
+            plan = self.model.plan_for(entry, inputs, backends=self.backends, measure=self.measure)
+            self._plans[key] = (plan, self.model.context_for(plan))
+        plan, context = self._plans[key]
+        results = plan.run(inputs, context)
+        return results[0] if len(results) == 1 else tuple(results)
