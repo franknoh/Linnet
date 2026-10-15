@@ -508,6 +508,34 @@ def test_torch_cuda_graphs(model_files: tuple[Path, Path]) -> None:
 
 
 @requires_cuda
+@pytest.mark.parametrize("pack", [48, 0])
+def test_torch_plans(model_files: tuple[Path, Path], pack: int) -> None:
+    """With `plans`, warmup plans each shape it compiles: cuBLASLt takes the
+    step's projections, the plan replays as a CUDA graph, and the rows
+    decode as greedy decoding does."""
+    from linnet.torch.cublaslt import CublasLt
+
+    source, weights = model_files
+    model = load(
+        source, generics=GENERICS, std_root=STDLIB, weights=weights, device="cuda", compile=True
+    )
+    engine = Engine(model, buckets=[8, 16, 32], pack=pack, plans=[CublasLt()])
+    engine.warmup([8])
+    assert "decode_rows" in {entry for entry, _ in engine.planned}
+    requests = _requests()
+    done, _ = engine.run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
+
+
+def test_plans_need_a_compiled_cuda_module(model_files: tuple[Path, Path]) -> None:
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights)
+    with pytest.raises(ValueError, match="compile=True"):
+        Engine(model, plans=True)
+
+
+@requires_cuda
 def test_mixed_passes_on_flex_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Heads 16 wide and passes of 128 tokens and more, so the prompts and
     the rows' steps both run on FlexAttention, replayed as CUDA graphs: the

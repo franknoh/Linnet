@@ -64,6 +64,9 @@ its entry point:
 | `bitsandbytes` | NF4 `linear` calls (`Nf4Linear`), by bitsandbytes' 4-bit product |
 | `flash-attn` | decode attention (one query a row, a prefix mask) by FlashAttention, on Ampere and later |
 
+The serving engine plans its own steps: `Engine(model, plans=True)`
+([Serving](integrations.md#plans)).
+
 ## Writing one
 
 A backend is an object with a name, a version and four methods:

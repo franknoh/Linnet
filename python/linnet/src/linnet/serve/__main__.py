@@ -71,6 +71,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--name", help="the model's name in the API (default: the Hub repo, or the card's name)"
     )
+    parser.add_argument(
+        "--plans",
+        action="store_true",
+        help="run the step and packed passes as execution plans over the backends found "
+        "(PyTorch on CUDA; planned while warming up)",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -135,9 +141,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     hub = nest.HUB_REPO.match(args.model)
     name = args.name or (hub["repo"] if hub and not Path(args.model).exists() else card.name)
     engine = (
-        Engine(model, paged=True, rows=args.batch, max_len=args.max_seq)
+        Engine(model, paged=True, rows=args.batch, max_len=args.max_seq, plans=args.plans)
         if args.pool
-        else Engine(model)
+        else Engine(model, plans=args.plans)
     )
     # The smallest pass by default: a few seconds rather than a minute or more
     # for every pass size.
