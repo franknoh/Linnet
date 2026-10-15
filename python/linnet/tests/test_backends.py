@@ -28,7 +28,7 @@ from linnet.backends import (
 from linnet.compiler import find_compiler
 from linnet.torch import load
 from linnet.torch.compiled import CompiledLinnetModule
-from tests.helpers import LLAMA, REPO, STDLIB, TINY_LLAMA, random_llama
+from tests.helpers import LLAMA, REPO, STDLIB, TINY_LLAMA, random_llama, requires_cuda
 
 
 def _graph(*args: str) -> Graph:
@@ -557,3 +557,46 @@ def test_a_region_that_pays_alone_but_not_in_place_is_dropped() -> None:
     taken = [step for step in plan.steps if step.backend == "fast"]
     assert len(taken) == 2 * 7 + 1
     assert all(step.saving == pytest.approx(0.5) for step in taken)
+
+
+class _SlowLinear(_Linear):
+    """`_Linear`, keeping the device busy a while before each product."""
+
+    @property
+    def name(self) -> str:
+        return "slow-linear"
+
+    def compile(self, region: Region, target: Target, options: Options) -> _LinearCall:
+        return _SlowCall(region)
+
+
+class _SlowCall(_LinearCall):
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        busy = torch.ones(1024, 1024, device=inputs[0].device)
+        for _ in range(20):
+            busy = busy @ busy / 1024
+        return super().execute(inputs, outputs, context)
+
+
+@requires_cuda
+def test_a_plan_slower_than_the_entry_is_not_used(tmp_path: Path) -> None:
+    """Timed whole against the entry as the caller runs it, a plan that
+    loses runs the entry as it is."""
+    weights = random_llama(tmp_path / "model.safetensors")
+    model = load(
+        LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True, device="cuda"
+    )
+    assert isinstance(model, CompiledLinnetModule)
+    inputs = [
+        torch.tensor([[3]], dtype=torch.int32, device="cuda"),
+        torch.tensor(0, dtype=torch.int32, device="cuda"),
+    ]
+    slow = model.plan_for("decode", inputs, backends=[_SlowLinear()], measure=False)
+    assert "slow-linear" in {step.backend for step in slow.steps}
+    with torch.no_grad():
+        assert not model.plan_beats(slow, "decode", inputs, against="reduce-overhead")
