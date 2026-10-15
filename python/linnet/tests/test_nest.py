@@ -145,6 +145,33 @@ def test_a_card_can_state_its_published_parameter_count(model_dir: Path) -> None
     assert stated == 20914757184 != counted
 
 
+def test_a_card_lists_what_backends_did_for_it(model_dir: Path) -> None:
+    card_path = model_dir / "nest.toml"
+    measured = """
+[[backends]]
+name = "flashinfer"
+package = "built in"
+entry = "decode_rows"
+device = "H100"
+inputs = "16 rows"
+before = 1717
+after = 1858.5
+unit = "tokens/s"
+"""
+    card_path.write_text(CARD + measured, encoding="utf-8")
+    card = nest.Card.read(model_dir)
+    assert card.backends == (
+        nest.BackendResult(
+            "flashinfer", "built in", "decode_rows", "H100", "16 rows", 1717.0, 1858.5, "tokens/s"
+        ),
+    )
+    (model,) = nest.index(model_dir.parent, STDLIB)["models"]
+    assert model["backends"][0]["after"] == 1858.5
+    card_path.write_text(CARD + measured.replace('unit = "tokens/s"\n', ""), encoding="utf-8")
+    with pytest.raises(nest.NestError, match="lacks unit"):
+        nest.Card.read(model_dir)
+
+
 def test_cli_check_and_index(
     model_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
