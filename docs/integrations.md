@@ -150,7 +150,8 @@ execution plans over Linnet's backends and the installed plugins
 backend the regions it runs faster there, and replays the plan as a CUDA
 graph. A shape no backend speeds up runs as before; `engine.planned` lists
 the ones that run as plans. It takes a CUDA module loaded with
-`compile=True`, without `amp` or tensor parallelism.
+`compile=True`. Under `amp` or a DTensor split no backend takes part; a
+card that splits itself (`Shards`) plans alike on every process.
 
 ### Over HTTP
 

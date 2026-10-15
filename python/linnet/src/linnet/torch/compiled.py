@@ -641,19 +641,32 @@ class CompiledLinnetModule(LinnetModule):
         as a CUDA graph, is timed against that, and where it is not faster
         the plan returned runs the entry as it is. Regions priced one by one
         miss what they do to each other (a cast at a boundary, a fusion two
-        backends split); the whole step does not."""
+        backends split); the whole step does not.
+
+        Under `amp` or a split into DTensors (`tensor_parallel` without a
+        `Shards` generic) no backend takes part: the plan runs the entry as
+        it is. A model that splits itself (`Shards`) plans alike on every
+        process: each times every region, and the slowest time stands."""
         from .backend import TorchSource, target_of
         from .timing import timer_for
 
         if backends is None:
             backends = cast("list[Backend[torch.Tensor]]", available())
+        if self.amp is not None or self.tensor_parallel is not None:
+            # Autocast's dtypes and DTensor weights reach no backend.
+            backends = []
+        group = self.shard_group
+        processes = 1 if group is None else torch.distributed.get_world_size(group)
         bindings = self.bindings_for(entry, inputs, generics or {})
         graph = self.graph_for(entry, bindings, trains=self.trains())
-        target = target_of(self.interpreter.device)
+        target = target_of(self.interpreter.device, processes)
         fallback = TorchSource(self, entry, bindings, generics or {}, compile)
         costs: CostModel[torch.Tensor] | None = None
         if measure:
             reference = TorchSource(self, entry, bindings, generics or {}, None)
+            if group is not None:
+                # Times kept from before could differ between processes.
+                benchmarks = Benchmarks()
             costs = Measured(
                 inputs,
                 self._context(target),
@@ -661,6 +674,10 @@ class CompiledLinnetModule(LinnetModule):
                 timer_for(self.interpreter.device),
                 benchmarks if benchmarks is not None else Benchmarks.default(),
             )
+            if group is not None:
+                from .agreed import Agreed
+
+                costs = Agreed(costs, group, self.interpreter.device)
         options = Options(memory=memory)
         with torch.no_grad():
             plan = Planner(backends, fallback, cost_model=costs).plan(graph, target, options)
@@ -697,6 +714,11 @@ class CompiledLinnetModule(LinnetModule):
             captured = self.captured(plan)
             planned = timer(lambda: captured(inputs), meta)
         whole = timer(lambda: self.run_entry(entry, inputs, compile=against), meta)
+        if self.shard_group is not None:
+            from .agreed import agree
+
+            # The slowest process's times, so every process decides alike.
+            planned, whole = agree([planned, whole], self.shard_group, self.interpreter.device)
         return planned < whole * (1 - margin)
 
     def captured(self, plan: Plan[torch.Tensor]) -> Captured:

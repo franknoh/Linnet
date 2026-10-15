@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import socket
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,7 +18,18 @@ import torch.distributed as dist
 from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 from torch.multiprocessing.spawn import spawn  # pyright: ignore[reportUnknownVariableType]
 
+from linnet.backends import (
+    Capabilities,
+    Context,
+    Cost,
+    ExecutableMeta,
+    Graph,
+    Options,
+    Region,
+    Target,
+)
 from linnet.torch import load
+from linnet.torch.compiled import CompiledLinnetModule
 from linnet.weights import write_bindings
 from tests.helpers import STDLIB
 
@@ -115,6 +127,102 @@ def test_each_process_holds_its_part_and_gets_the_whole_result(tmp_path: Path) -
         assert shapes["root.up.weight"] == (6, 8) and shapes["root.up.bias"] == (6,)
         assert shapes["root.down.weight"] == (8, 6)
         assert shapes["root.head.weight"] == (5, 8)
+
+
+class _Products:
+    """Takes every `linear` call, multiplying by the weights by path."""
+
+    name = "products"
+    version = "0"
+
+    def probe(self, target: Target) -> Capabilities | None:
+        return Capabilities()
+
+    def match(self, graph: Graph, target: Target) -> Iterable[Region]:
+        return [
+            Region.of(graph, call.start, call.stop, call.index)
+            for call in graph.semantic_calls("std.nn.linear::linear")
+        ]
+
+    def compile(self, region: Region, target: Target, options: Options) -> _Product:
+        return _Product(region)
+
+    def estimate_cost(self, region: Region, target: Target) -> Cost | None:
+        return None
+
+
+class _Product:
+    def __init__(self, region: Region) -> None:
+        self._paths = region.parameters
+        self.meta = ExecutableMeta((), ())
+
+    def prepare(self, context: Context[torch.Tensor]) -> None:
+        return None
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        weight, *bias = (context.parameters[p] for p in self._paths)
+        return [torch.nn.functional.linear(inputs[0], weight, *bias)]
+
+
+def _planned_shard(rank: int, port: int, source: str, weights: str, out: str) -> None:
+    os.environ.update({"MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(port)})
+    dist.init_process_group("gloo", rank=rank, world_size=2)
+    try:
+        from torch.distributed.device_mesh import init_device_mesh
+
+        mesh = init_device_mesh("cpu", (2,))
+        model = load(
+            source,
+            generics=GENERICS,
+            std_root=STDLIB,
+            weights=weights,
+            compile=True,
+            tensor_parallel=mesh,
+        )
+        assert isinstance(model, CompiledLinnetModule)
+        x = torch.arange(24, dtype=torch.float32).reshape(3, 8) / 10
+        plan = model.plan_for("forward", [x], backends=[_Products()])
+        with torch.no_grad():
+            (y,) = plan.run([x], model.context_for(plan))
+        taken = [(step.backend, step.region.start) for step in plan.steps]
+        torch.save({"y": y, "taken": taken, "processes": plan.target.processes}, f"{out}.{rank}")
+    finally:
+        dist.destroy_process_group()
+
+
+def test_each_process_plans_alike(tmp_path: Path) -> None:
+    """Planned with timing on every process of a split model, the
+    processes take the same regions (each timed everywhere, the slowest
+    time standing), and the plan gives the whole model's result."""
+    source = tmp_path / "shards.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    generator = torch.Generator().manual_seed(0)
+    tensors = {
+        "up.weight": torch.randn(12, 8, generator=generator),
+        "up.bias": torch.randn(12, generator=generator),
+        "down.weight": torch.randn(8, 12, generator=generator),
+        "head.weight": torch.randn(10, 8, generator=generator),
+    }
+    weights = tmp_path / "model.safetensors"
+    save_file(tensors, str(weights))
+    whole = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    x = torch.arange(24, dtype=torch.float32).reshape(3, 8) / 10
+    expected = whole.run_entry("forward", [x])
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = str(tmp_path / "planned")
+    spawn(_planned_shard, args=(port, str(source), str(weights), out), nprocs=2, join=True)
+    results = [torch.load(f"{out}.{rank}") for rank in range(2)]
+    assert results[0]["taken"] == results[1]["taken"]
+    assert results[0]["processes"] == 2
+    for result in results:
+        torch.testing.assert_close(result["y"], expected, atol=1e-5, rtol=1e-5)
 
 
 TRAINING = """\

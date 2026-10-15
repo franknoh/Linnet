@@ -327,8 +327,8 @@ class Engine:
     each shape it compiles, giving a backend the regions it runs faster
     there, and replays the plan as a CUDA graph; a shape no backend speeds
     up, or one `warmup` did not see, runs as before. It needs a CUDA module
-    loaded with `compile=True` and CUDA graphs, without `amp` or tensor
-    parallelism.
+    loaded with `compile=True` and CUDA graphs; under `amp` or a DTensor
+    split no backend takes part.
     """
 
     def __init__(
@@ -1193,7 +1193,7 @@ def _plan_backends(
 ) -> list[Backend[torch.Tensor]]:
     """The backends `Engine(plans=...)` plans with: every one available, or
     those given. Refuses a module plans cannot run: one not compiled, off
-    CUDA, without CUDA graphs, or under `amp` or tensor parallelism."""
+    CUDA, or without CUDA graphs."""
     from ..backends import available
     from ..torch.compiled import CompiledLinnetModule
 
@@ -1201,8 +1201,6 @@ def _plan_backends(
         raise ValueError("plans need a module loaded with compile=True and graphs=True")
     if next(iter(model.parameters())).device.type != "cuda":
         raise ValueError("plans are replayed as CUDA graphs: load the module on CUDA")
-    if model.amp is not None or model.tensor_parallel is not None:
-        raise ValueError("plans do not run under amp or tensor parallelism yet")
     if plans is True:
         from ..torch.cublaslt import CublasLt
         from ..torch.flashinfer import FlashInfer
