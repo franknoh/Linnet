@@ -61,7 +61,7 @@ graph and replays it.
 | Backend | Takes |
 | --- | --- |
 | `linnet.torch.cublaslt.CublasLt` | `linear` calls without a bias, by cuBLASLt; sibling calls that read the same input (q, k and v) as one product |
-| `linnet.torch.flashinfer.FlashInfer` | decode attention (one query a row, a prefix mask) by FlashInfer, on Hopper and later |
+| `linnet.torch.flashinfer.FlashInfer` | decode attention (one query a row, a prefix mask), and `paged_attention` over pages of 16 to 128 positions, by FlashInfer, on Hopper and later |
 
 Backends for other libraries are packages of their own. The examples in
 [`examples/09-backends`](https://github.com/franknoh/Linnet/tree/main/examples/09-backends)
@@ -149,7 +149,9 @@ class MyLinearCall:
   or else by the region run again on the generated source and
   differentiated there, which keeps less memory but computes it twice.
   `train(plans=...)` and `linnet.torch.planned.Planned` run training
-  steps through plans this way.
+  steps through plans this way. A module that trains is planned on what a
+  training step costs: each region timed forward and backward, its times
+  kept apart from inference's.
 - `context.adopt(path, convert, restore)` converts a weight in place into
   the layout a kernel reads (its shape and dtype kept) and returns it, so
   the executable keeps no copy. A model run only through its plans offers

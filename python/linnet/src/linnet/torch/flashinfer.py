@@ -35,6 +35,7 @@ from ..backends import (
 from ..compiler import PlanError
 
 _CALLEES = ("std.nn.attention::grouped_attention", "std.nn.attention::grouped_attention_rows")
+_PAGED = "std.nn.attention::paged_attention"
 _DTYPES = ("bf16", "f16")
 _WORKSPACE_BYTES = 128 << 20
 
@@ -84,6 +85,18 @@ class FlashInfer:
         return Capabilities({"flashinfer": self.version}, frozenset(_DTYPES))
 
     def match(self, graph: Graph, target: Target) -> Iterable[Region]:
+        for call in graph.semantic_calls(_PAGED):
+            query, key, value = call.arguments[:3]
+            size = call.generics.get("Size", 0)
+            if (
+                query.dtype in _DTYPES
+                and key.dtype == query.dtype
+                and value.dtype == query.dtype
+                and call.generics.get("D") in (64, 128, 256)
+                and size in (16, 32, 64, 128)
+                and graph.scalar(call.arguments[-1].value) is not None
+            ):
+                yield Region.of(graph, call.start, call.stop, call.index)
         for call in graph.semantic_calls():
             if call.callee not in _CALLEES or len(call.arguments) != 5:
                 continue
@@ -108,6 +121,14 @@ class FlashInfer:
             raise PlanError("FlashInfer takes an attention call")
         graph = region.graph
         call = graph.calls[region.call]
+        if call.callee == _PAGED:
+            scale = graph.scalar(call.arguments[-1].value)
+            decode = _decode()
+            if scale is None or decode is None:
+                raise PlanError("FlashInfer cannot run this call")
+            order = [region.inputs.index(cast("int", a.value)) for a in call.arguments[:5]]
+            size, pages = int(call.generics["Size"]), int(call.generics["Pages"])
+            return _PagedDecode(region, decode, scale, order, size, pages)
         scale = graph.scalar(call.arguments[3].value)
         decode = _decode()
         if scale is None or decode is None:
@@ -179,12 +200,59 @@ class _Attention:
         # Each row's length: how many keys its mask reaches (a prefix).
         lengths = mask.reshape(-1, length).sum(-1, dtype=torch.int32).expand(rows)
         out = self._decode(
-            query.reshape(rows, heads, width),
+            query.reshape(rows, heads, width).contiguous(),
             (torch.as_strided(key, size, strides), torch.as_strided(value, size, strides)),
             _workspace(query.device),
             self._blocks,
             lengths.contiguous().view(torch.uint32),
             length,
+            self._scale,
+            kv_layout="HND",
+        )
+        return [out.reshape(rows, heads, 1, width)]
+
+
+class _PagedDecode(_Attention):
+    """`paged_attention`: one query a row over a pool of pages, each row's
+    pages its row of the table. The pool `[1, kv heads, length, width]` is
+    FlashInfer's `HND` pages as it is, a page apart every `size * width`
+    elements."""
+
+    def __init__(
+        self,
+        region: Region,
+        decode: _Decode,
+        scale: float,
+        order: list[int],
+        size: int,
+        pages: int,
+    ) -> None:
+        super().__init__(region, decode, scale, order)
+        self._size = size
+        self._reach = size * pages  # positions a row's table reaches
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        query, key, value, table, positions = (inputs[i] for i in self._order)
+        rows, heads, _, width = query.shape
+        _, kv_heads, length, _ = key.shape
+        size = (length // self._size, kv_heads, self._size, width)
+        strides = (self._size * width, length * width, width, 1)
+        lengths = (positions + 1).clamp(max=self._reach).to(torch.int32)
+        out = self._decode(
+            query.reshape(rows, heads, width).contiguous(),
+            (
+                torch.as_strided(key, size, strides, key.storage_offset()),
+                torch.as_strided(value, size, strides, value.storage_offset()),
+            ),
+            _workspace(query.device),
+            table,
+            lengths.view(torch.uint32),
+            self._reach,
             self._scale,
             kv_layout="HND",
         )

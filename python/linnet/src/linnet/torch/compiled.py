@@ -31,6 +31,7 @@ from ..backends import (
     Benchmarks,
     Context,
     CostModel,
+    Executable,
     ExecutableMeta,
     Graph,
     Measured,
@@ -101,6 +102,15 @@ _CallKey: TypeAlias = tuple[
     str | None,
     bool,
 ]
+
+
+class MeasuredTiming(TypedDict, total=False):
+    """`Measured`'s keywords for timing a training step."""
+
+    timed: Callable[
+        [Backend[torch.Tensor], Region, Executable[torch.Tensor]], Executable[torch.Tensor]
+    ]
+    purpose: str
 
 
 class CompiledLinnetModule(LinnetModule):
@@ -683,14 +693,21 @@ class CompiledLinnetModule(LinnetModule):
                 reference,
                 timer_for(self.interpreter.device),
                 benchmarks if benchmarks is not None else Benchmarks.default(),
+                **self._training_timing(fallback, target),
             )
             if group is not None:
                 from .agreed import Agreed
 
                 costs = Agreed(costs, group, self.interpreter.device)
         options = Options(memory=memory)
+        # Timing a training step's backward adds into the weights' gradients.
+        # By name: planning may lay parameters out anew (`Context.join`).
+        grads = {name: p.grad for name, p in self.named_parameters()}
         with torch.no_grad():
             plan = Planner(backends, fallback, cost_model=costs).plan(graph, target, options)
+        for name, p in self.named_parameters():
+            p.grad = grads.get(name)
+        with torch.no_grad():
             if (
                 measure
                 and against is not None
@@ -724,6 +741,25 @@ class CompiledLinnetModule(LinnetModule):
             return dataclasses.replace(step, executable=executable)
 
         return dataclasses.replace(plan, steps=tuple(wrapped(s) for s in plan.steps))
+
+    def _training_timing(self, fallback: Backend[torch.Tensor], target: Target) -> MeasuredTiming:
+        """How `Measured` times regions for a module that trains: as a
+        training step, forward and backward, a backend's step differentiated
+        as the plan will run it (`linnet.torch.differentiable`)."""
+        if not self.trains():
+            return {}
+        from .differentiable import Differentiable, TrainingStep
+
+        def timed(
+            backend: Backend[torch.Tensor], region: Region, made: Executable[torch.Tensor]
+        ) -> Executable[torch.Tensor]:
+            if backend.name != fallback.name:
+                made = Differentiable(
+                    made, region, self, lambda: fallback.compile(region, target, Options())
+                )
+            return TrainingStep(made)
+
+        return {"timed": timed, "purpose": "train"}
 
     def plan_beats(
         self,
