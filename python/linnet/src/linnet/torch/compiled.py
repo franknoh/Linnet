@@ -61,6 +61,7 @@ from .module import (
     spec,
 )
 from .placement import Placement
+from .planned import Captured
 from .regions import regional
 
 if TYPE_CHECKING:
@@ -648,6 +649,19 @@ class CompiledLinnetModule(LinnetModule):
             return Planner(backends, fallback, cost_model=costs).plan(
                 graph, target, Options(memory=memory)
             )
+
+    def captured(self, plan: Plan[torch.Tensor]) -> Captured:
+        """`plan` run with this module's context and replayed as one CUDA
+        graph, in the memory pool this module's own graphs use."""
+        if self._graph_pool is None:
+            self._graph_pool = torch.cuda.graph_pool_handle()
+        device = self.interpreter.device
+        return Captured(
+            plan,
+            self.context_for(plan),
+            pool=self._graph_pool,
+            before_capture=lambda: _warm_blas(device),
+        )
 
     def context_for(self, plan: Plan[torch.Tensor]) -> Context[torch.Tensor]:
         """What `plan`'s executables run with: this module's parameters, by

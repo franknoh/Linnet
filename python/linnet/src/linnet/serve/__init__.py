@@ -97,10 +97,14 @@ if TYPE_CHECKING:
     from jax.typing import ArrayLike
     from numpy.typing import DTypeLike, NDArray
 
+    from ..backends import Backend
     from ..jax.module import LinnetModel
     from ..onnx.runtime import OnnxModel
     from ..torch.module import LinnetModule
+    from ..torch.planned import Captured
 
+    # A call of an entry by its inputs' shapes and dtypes.
+    _Shapes: TypeAlias = tuple[str, tuple[tuple[int, ...], ...], tuple[torch.dtype, ...]]
     # What `Engine` serves: a `linnet.torch` module, a `linnet.jax`
     # model, or a `linnet.onnx` model.
     _Model: TypeAlias = LinnetModule | LinnetModel | OnnxModel
@@ -315,6 +319,16 @@ class Engine:
     the tokens in it and before it: a prompt starting with the same tokens
     as one before reads those pages instead of passing them, up to its last
     page, and pages nobody uses are given out again oldest first.
+
+    `plans` runs the PyTorch step and packed passes as execution plans
+    (docs/backends.md): `True` offers them to Linnet's cuBLASLt and
+    FlashInfer backends and every one `linnet.backends.available()` lists, a
+    list to those. `warmup` plans
+    each shape it compiles, giving a backend the regions it runs faster
+    there, and replays the plan as a CUDA graph; a shape no backend speeds
+    up, or one `warmup` did not see, runs as before. It needs a CUDA module
+    loaded with `compile=True` and CUDA graphs, without `amp` or tensor
+    parallelism.
     """
 
     def __init__(
@@ -333,8 +347,9 @@ class Engine:
         max_len: int | None = None,
         reserve: int | None = None,
         chunk: int | None = None,
+        plans: bool | Sequence[Backend[torch.Tensor]] = False,
     ) -> None:
-        self.backend: _Backend = _backend_for(model, graphs, paged, rows, max_len)
+        self.backend: _Backend = _backend_for(model, graphs, paged, rows, max_len, plans)
         self.paged = self.backend.paged
         if self.paged and pack <= 0:
             raise ValueError("serving from pages packs the prompts: pack must be positive")
@@ -380,9 +395,29 @@ class Engine:
     def slots(self) -> int:
         return self.backend.slots
 
+    @property
+    def planned(self) -> list[tuple[str, tuple[tuple[int, ...], ...]]]:
+        """The entries and input shapes `warmup` planned with a backend
+        taking part of them (with `plans`), which run as those plans."""
+        if not isinstance(self.backend, _TorchBackend):
+            return []
+        planned = self.backend._planned  # pyright: ignore[reportPrivateUsage]
+        return [(entry, shapes) for (entry, shapes, _), run in planned.items() if run is not None]
+
     def warmup(self, prompt_lengths: Iterable[int] = ()) -> None:
         """Compiles the step and the prompt shapes `prompt_lengths` need, so
-        the first requests do not pay for it."""
+        the first requests do not pay for it (and plans them, with
+        `plans`)."""
+        torch_backend = self.backend if isinstance(self.backend, _TorchBackend) else None
+        if torch_backend is not None:
+            torch_backend.warming = True
+        try:
+            self._warmup(prompt_lengths)
+        finally:
+            if torch_backend is not None:
+                torch_backend.warming = False
+
+    def _warmup(self, prompt_lengths: Iterable[int]) -> None:
         if self.pack:
             # The sizes a pass can reach: up to the one that holds the longest
             # `slots` prompts together (every size, without lengths).
@@ -1130,7 +1165,12 @@ class _Generics(Protocol):
 
 
 def _backend_for(
-    model: _Model, graphs: bool, paged: bool | None, rows: int, max_len: int | None
+    model: _Model,
+    graphs: bool,
+    paged: bool | None,
+    rows: int,
+    max_len: int | None,
+    plans: bool | Sequence[Backend[torch.Tensor]],
 ) -> _Backend:
     # Told apart by module rather than `isinstance`, which would import every
     # framework: hence the casts.
@@ -1138,12 +1178,39 @@ def _backend_for(
     if module.startswith(("linnet.jax", "linnet.onnx")):
         if paged:
             raise ValueError("serving from pages runs with the PyTorch backend")
+        if plans:
+            raise ValueError("execution plans run with the PyTorch backend")
         return (
             _JaxBackend(cast("LinnetModel", model))
             if module.startswith("linnet.jax")
             else _OnnxBackend(cast("OnnxModel", model))
         )
-    return _TorchBackend(cast("LinnetModule", model), graphs, paged, rows, max_len)
+    return _TorchBackend(cast("LinnetModule", model), graphs, paged, rows, max_len, plans)
+
+
+def _plan_backends(
+    model: LinnetModule, graphs: bool, plans: bool | Sequence[Backend[torch.Tensor]]
+) -> list[Backend[torch.Tensor]]:
+    """The backends `Engine(plans=...)` plans with: every one available, or
+    those given. Refuses a module plans cannot run: one not compiled, off
+    CUDA, without CUDA graphs, or under `amp` or tensor parallelism."""
+    from ..backends import available
+    from ..torch.compiled import CompiledLinnetModule
+
+    if not isinstance(model, CompiledLinnetModule) or not graphs:
+        raise ValueError("plans need a module loaded with compile=True and graphs=True")
+    if next(iter(model.parameters())).device.type != "cuda":
+        raise ValueError("plans are replayed as CUDA graphs: load the module on CUDA")
+    if model.amp is not None or model.tensor_parallel is not None:
+        raise ValueError("plans do not run under amp or tensor parallelism yet")
+    if plans is True:
+        from ..torch.cublaslt import CublasLt
+        from ..torch.flashinfer import FlashInfer
+
+        # Linnet's own, which decline what they cannot run, and the plugins'.
+        own: list[Backend[torch.Tensor]] = [CublasLt(), FlashInfer()]
+        return [*own, *cast("list[Backend[torch.Tensor]]", available())]
+    return list(cast("Sequence[Backend[torch.Tensor]]", plans))
 
 
 def _root_dim(model: LinnetModule, name: str) -> int | None:
@@ -1180,11 +1247,20 @@ class _TorchBackend:
         paged: bool | None,
         rows: int,
         max_len: int | None,
+        plans: bool | Sequence[Backend[torch.Tensor]] = False,
     ) -> None:
         import torch
 
         self.torch = torch
         self.model = model
+        # The backends to plan with (None: no plans), and each shape's plan
+        # replayed as a CUDA graph, or None where the generated step runs.
+        self.plans: list[Backend[torch.Tensor]] | None = None
+        if plans:
+            self.plans = _plan_backends(model, graphs, plans)
+        # By entry, input shapes and dtypes.
+        self._planned: dict[_Shapes, Captured | None] = {}
+        self.warming = False  # `Engine.warmup` running: a new shape is planned
         batch, length = _cache_generics(model, lambda name: _root_dim(model, name))
         if paged is None:
             paged = batch == 1 and all(
@@ -1398,10 +1474,9 @@ class _TorchBackend:
         # of thousands of tokens has as many kernels as the step.
         logits = cast(
             "torch.Tensor",
-            self.model.run_entry(
+            self._run(
                 "prefill_paged" if self.paged else "prefill_packed",
                 self._pack(prompts, slots, size, pad, starts),
-                compile=self.step_compile,
             ),
         )[: len(prompts)]
         logits, prompts, slots, sampling = self._share(logits, prompts, slots, sampling, copies)
@@ -1445,9 +1520,7 @@ class _TorchBackend:
             entry, inputs = "step_paged", [*passed, self.tokens, positions, table]
         else:
             entry, inputs = "step_packed", [*packed, self.tokens, positions]
-        logits = cast(
-            "torch.Tensor", self.model.run_entry(entry, inputs, compile=self.step_compile)
-        )
+        logits = cast("torch.Tensor", self._run(entry, inputs))
         stepped = self._advance(logits[self.slots :], need)
         prompted, prompts, slots, sampling = self._share(
             logits[: len(prompts)], prompts, slots, sampling, copies
@@ -1517,14 +1590,37 @@ class _TorchBackend:
         self.positions.add_(1).clamp_(max=self.max_seq - 1)
         return produced
 
+    def _run(self, entry: str, inputs: list[torch.Tensor]) -> object:
+        """`entry` on `inputs`: by the plan for their shapes where one was
+        made, else as the generated step. While warming up, a shape seen
+        for the first time is planned."""
+        if self.plans is not None:
+            key = (entry, tuple(tuple(v.shape) for v in inputs), tuple(v.dtype for v in inputs))
+            if key not in self._planned and self.warming:
+                self._planned[key] = self._plan(entry, inputs)
+            run = self._planned.get(key)
+            if run is not None:
+                results = run(inputs)
+                return results[0] if len(results) == 1 else tuple(results)
+        return self.model.run_entry(entry, inputs, compile=self.step_compile)
+
+    def _plan(self, entry: str, inputs: list[torch.Tensor]) -> Captured | None:
+        """`entry`'s plan for inputs like `inputs`, measured on them, as a
+        CUDA graph; None where no backend takes a region of it."""
+        from ..torch.compiled import CompiledLinnetModule
+
+        model = cast("CompiledLinnetModule", self.model)
+        plan = model.plan_for(entry, inputs, backends=self.plans, compile="inductor")
+        if all(step.backend == "torch-source" for step in plan.steps):
+            return None
+        return model.captured(plan)
+
     def decode(self, need: int, top: int = -1) -> _Tokens:
         if self.paged:
             entry, inputs = "decode_paged", [self.tokens, self.positions, self._table()]
         else:
             entry, inputs = "decode_rows", [self.tokens, self.positions]
-        logits = cast(
-            "torch.Tensor", self.model.run_entry(entry, inputs, compile=self.step_compile)
-        )
+        logits = cast("torch.Tensor", self._run(entry, inputs))
         produced = self._advance(logits, need)
         return _TorchTokens(produced, _logprobs_torch(logits, produced, top) if top >= 0 else None)
 

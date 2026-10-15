@@ -142,6 +142,16 @@ weights, such as dequantizing a quantized checkpoint, into a `prepare`
 function that runs once at load instead of on every call. A model loaded with
 `trainable=True` keeps that work in the graph, where gradients reach it.
 
+### Plans
+
+`Engine(model, plans=True)` runs the step and the packed passes as
+execution plans over Linnet's backends and the installed plugins
+([Backends](backends.md)). `warmup` plans each shape it compiles, giving a
+backend the regions it runs faster there, and replays the plan as a CUDA
+graph. A shape no backend speeds up runs as before; `engine.planned` lists
+the ones that run as plans. It takes a CUDA module loaded with
+`compile=True`, without `amp` or tensor parallelism.
+
 ### Over HTTP
 
 ```bash
@@ -174,6 +184,7 @@ reply = client.chat.completions.create(
 | `--backend jax`, `--backend onnx` | serves through that runtime instead of PyTorch |
 | `--tokenizer` | the tokenizer and chat template's repository (default: the card's checkpoint repository) |
 | `--warmup 128 512` | compiles those prompt lengths before the first request; others compile when first seen |
+| `--plans` | runs the step and packed passes as plans over the backends found, planned while warming up |
 | `--port` | the HTTP port |
 
 | Request field | Does |

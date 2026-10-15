@@ -5,6 +5,7 @@ ONNX Runtime alike."""
 
 from __future__ import annotations
 
+import functools
 import json
 import random
 import threading
@@ -505,6 +506,43 @@ def test_torch_cuda_graphs(model_files: tuple[Path, Path]) -> None:
     for completion in done:
         assert completion.tokens == _greedy(model, completion.request)
     assert stats.generated_tokens == sum(r.max_new_tokens for r in requests)
+
+
+@requires_cuda
+@pytest.mark.parametrize("pack", [48, 0])
+def test_torch_plans(
+    model_files: tuple[Path, Path], pack: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `plans`, warmup plans each shape it compiles: cuBLASLt takes the
+    step's projections, the plan replays as a CUDA graph, and the rows
+    decode as greedy decoding does."""
+    from linnet.torch.compiled import CompiledLinnetModule
+    from linnet.torch.cublaslt import CublasLt
+
+    # Planned without timing, so cuBLASLt takes these small projections too.
+    monkeypatch.setattr(
+        CompiledLinnetModule,
+        "plan_for",
+        functools.partialmethod(CompiledLinnetModule.plan_for, measure=False),
+    )
+    source, weights = model_files
+    model = load(
+        source, generics=GENERICS, std_root=STDLIB, weights=weights, device="cuda", compile=True
+    )
+    engine = Engine(model, buckets=[8, 16, 32], pack=pack, plans=[CublasLt()])
+    engine.warmup([8])
+    assert "decode_rows" in {entry for entry, _ in engine.planned}
+    requests = _requests()
+    done, _ = engine.run(requests)
+    for completion in done:
+        assert completion.tokens == _greedy(model, completion.request)
+
+
+def test_plans_need_a_compiled_cuda_module(model_files: tuple[Path, Path]) -> None:
+    source, weights = model_files
+    model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights)
+    with pytest.raises(ValueError, match="compile=True"):
+        Engine(model, plans=True)
 
 
 @requires_cuda
