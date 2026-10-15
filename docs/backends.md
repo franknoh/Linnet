@@ -49,6 +49,10 @@ part.
   against)` is that comparison on its own.
 - `measure=False` skips the timing: each backend takes what it matches,
   the largest regions first.
+- Under `amp`, or a model split into DTensors, no backend takes part: the
+  plan runs the entry as it is. A card that splits itself (`Shards`) plans
+  alike on every process: each times every region, and the slowest
+  process's time stands, so none runs a collective the others leave out.
 
 `plan.run(inputs, model.context_for(plan))` runs the plan step by step.
 `Captured(plan, context)` runs it once, then captures it whole as a CUDA

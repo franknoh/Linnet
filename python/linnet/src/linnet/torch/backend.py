@@ -22,16 +22,17 @@ from ..backends import (
     Target,
     TensorSpec,
 )
+from ..backends.graph import Step
 
 if TYPE_CHECKING:
     from .compiled import CompiledLinnetModule
 
 
-def target_of(device: torch.device) -> Target:
-    """`device` as a plan's target."""
+def target_of(device: torch.device, processes: int = 1) -> Target:
+    """`device` as a plan's target, for a model split over `processes`."""
     index = cast("int | None", device.index)
     if device.type != "cuda":
-        return Target(device.type, index or 0)
+        return Target(device.type, index or 0, processes=processes)
     if index is None:
         index = torch.cuda.current_device()
     return Target(
@@ -40,6 +41,7 @@ def target_of(device: torch.device) -> Target:
         torch.cuda.get_device_name(index),
         torch.cuda.get_device_capability(index),
         torch.cuda.mem_get_info(index)[1],
+        processes,
     )
 
 
@@ -149,6 +151,13 @@ def _specs(region: Region) -> tuple[tuple[TensorSpec, ...], tuple[TensorSpec, ..
     return tuple(spec(v) for v in region.inputs), tuple(spec(v) for v in region.outputs)
 
 
+def _collective(step: Step) -> bool:
+    """Whether a step talks to the other processes of a split."""
+    return step.op == "native_call" and str(step.attrs.get("implementation", "")).startswith(
+        "torch.distributed."
+    )
+
+
 class _Slice:
     """A region as a module of its own, over the model's parameters and
     states by path."""
@@ -160,7 +169,14 @@ class _Slice:
     ) -> None:
         self._function = function
         inputs, outputs = _specs(region)
-        self._meta = ExecutableMeta(inputs, outputs, effects="state" if region.states else "pure")
+        effects = (
+            "collective"
+            if any(_collective(step) for step in region.steps)
+            else "state"
+            if region.states
+            else "pure"
+        )
+        self._meta = ExecutableMeta(inputs, outputs, effects=effects)
 
     @property
     def meta(self) -> ExecutableMeta:
