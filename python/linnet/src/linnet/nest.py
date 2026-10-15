@@ -94,6 +94,24 @@ class Links:
 
 
 @dataclass(frozen=True, slots=True)
+class BackendResult:
+    """What one backend did for the model (`[[backends]]` in `nest.toml`):
+    `entry` on `device` with `inputs`, timed `before` (the generated source
+    alone) and `after` (planned with the backend), in `unit`. `name` is the
+    backend's as `linnet.backends` lists it, `package` where it comes from
+    (`built in`, or what to install)."""
+
+    name: str
+    package: str
+    entry: str
+    device: str
+    inputs: str
+    before: float
+    after: float
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
 class Weights:
     """A SafeTensors checkpoint: `files` of the Hub's `repo` at `revision`, or
     beside the card when `repo` is empty."""
@@ -127,6 +145,7 @@ class Card:
     # would get it wrong: 4-bit weights packed two to a byte (gpt-oss's
     # MXFP4) count half their parameters as elements.
     parameters: int | None = None
+    backends: tuple[BackendResult, ...] = ()
 
     @staticmethod
     def read(directory: str | Path) -> Card:
@@ -174,6 +193,7 @@ class Card:
             weights=weights,
             extra=MappingProxyType({k: v for k, v in document.items() if k not in _KNOWN_TABLES}),
             parameters=int(cast(int, model["parameters"])) if "parameters" in model else None,
+            backends=_backends(document.get("backends", []), card_path),
         )
 
     @property
@@ -192,7 +212,33 @@ class Card:
         )
 
 
-_KNOWN_TABLES = {"model", "links", "source", "generics", "check", "weights"}
+_KNOWN_TABLES = {"model", "links", "source", "generics", "check", "weights", "backends"}
+
+_BACKEND_TEXT = ("name", "package", "entry", "device", "inputs", "unit")
+
+
+def _backends(value: TomlValue, path: Path) -> tuple[BackendResult, ...]:
+    """A card's `[[backends]]`: each backend's measured result."""
+    if not isinstance(value, list):
+        raise NestError(f"{path}: `backends` must be an array of tables (`[[backends]]`)")
+    results: list[BackendResult] = []
+    for item in cast(list[TomlValue], value):
+        if not isinstance(item, dict):
+            raise NestError(f"{path}: each `[[backends]]` must be a table")
+        table = cast(dict[str, TomlValue], item)
+        missing = [k for k in (*_BACKEND_TEXT, "before", "after") if k not in table]
+        if missing:
+            raise NestError(f"{path}: a `[[backends]]` lacks {', '.join(missing)}")
+        before, after = table["before"], table["after"]
+        if (
+            isinstance(before, bool)
+            or isinstance(after, bool)
+            or not (isinstance(before, int | float) and isinstance(after, int | float))
+        ):
+            raise NestError(f"{path}: `before` and `after` must be numbers")
+        text = {k: str(table[k]) for k in _BACKEND_TEXT}
+        results.append(BackendResult(before=float(before), after=float(after), **text))
+    return tuple(results)
 
 
 def _table(document: Mapping[str, TomlValue], name: str) -> dict[str, TomlValue]:
@@ -406,6 +452,7 @@ class ModelDescription(TypedDict):
     blocks: dict[str, str]
     weights: WeightsDescription | None
     files: list[str]
+    backends: list[dict[str, str | float]]
 
 
 class IndexDocument(TypedDict):
@@ -465,6 +512,7 @@ def describe(card: Card, std_root: str | Path | None = None) -> ModelDescription
             "bindings": card.weights.bindings,
         },
         "files": files,
+        "backends": [asdict(result) for result in card.backends],
     }
 
 
