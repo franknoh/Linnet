@@ -701,11 +701,12 @@ class CompiledLinnetModule(LinnetModule):
                 costs = Agreed(costs, group, self.interpreter.device)
         options = Options(memory=memory)
         # Timing a training step's backward adds into the weights' gradients.
-        grads = {id(p): p.grad for p in self.parameters()}
+        # By name: planning may lay parameters out anew (`Context.join`).
+        grads = {name: p.grad for name, p in self.named_parameters()}
         with torch.no_grad():
             plan = Planner(backends, fallback, cost_model=costs).plan(graph, target, options)
-        for p in self.parameters():
-            p.grad = grads[id(p)]
+        for name, p in self.named_parameters():
+            p.grad = grads.get(name)
         with torch.no_grad():
             if (
                 measure

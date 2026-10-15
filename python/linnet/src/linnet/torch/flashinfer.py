@@ -200,7 +200,7 @@ class _Attention:
         # Each row's length: how many keys its mask reaches (a prefix).
         lengths = mask.reshape(-1, length).sum(-1, dtype=torch.int32).expand(rows)
         out = self._decode(
-            query.reshape(rows, heads, width),
+            query.reshape(rows, heads, width).contiguous(),
             (torch.as_strided(key, size, strides), torch.as_strided(value, size, strides)),
             _workspace(query.device),
             self._blocks,
@@ -244,7 +244,7 @@ class _PagedDecode(_Attention):
         strides = (self._size * width, length * width, width, 1)
         lengths = (positions + 1).clamp(max=self._reach).to(torch.int32)
         out = self._decode(
-            query.reshape(rows, heads, width),
+            query.reshape(rows, heads, width).contiguous(),
             (
                 torch.as_strided(key, size, strides, key.storage_offset()),
                 torch.as_strided(value, size, strides, value.storage_offset()),

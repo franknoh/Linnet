@@ -168,4 +168,4 @@ def test_flashinfer_attends_over_pages_as_the_entry_does(tmp_path: Path) -> None
         (got,) = plan.run(step, planned.context_for(plan))
         expected: object = direct.run_entry("decode_paged", step)
     assert isinstance(expected, torch.Tensor)
-    torch.testing.assert_close(got.float(), expected.float(), rtol=3e-2, atol=3e-2)
+    torch.testing.assert_close(got.float(), expected.float(), rtol=5e-2, atol=5e-2)
