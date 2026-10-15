@@ -160,7 +160,11 @@ class _BlockProduct:
         return self._meta
 
     def prepare(self, context: Context[torch.Tensor]) -> None:
-        self._scale = context.parameters[self._scale_path].float().contiguous()
+        scale = context.parameters[self._scale_path].float()
+        if self._scale is not None:
+            self._scale.copy_(scale)  # again: into the tensor a captured graph reads
+            return
+        self._scale = scale.contiguous()
 
     def execute(
         self,

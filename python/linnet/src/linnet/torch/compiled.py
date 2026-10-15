@@ -159,6 +159,8 @@ class CompiledLinnetModule(LinnetModule):
         # The memory every hand-captured CUDA graph allocates from (its type,
         # `torch.cuda._POOL_HANDLE`, is private).
         self._graph_pool = None
+        # Every plan `plan_for` made, which `copy_weights` prepares again.
+        self._plans: list[Plan[torch.Tensor]] = []
         self._work = generated_directory()
         # Each kind of slice's `main` compiled (`slices`), by its code.
         self._slice_mains: dict[str, Callable[..., tuple[torch.Tensor, ...]]] = {}
@@ -288,6 +290,11 @@ class CompiledLinnetModule(LinnetModule):
         values computed ahead are computed again into their own tensors."""
         super().copy_weights(source)
         self._refresh_prepared()
+        # What the plans' executables keep (weights joined or converted),
+        # written again into the same tensors.
+        with torch.no_grad():
+            for plan in self._plans:
+                plan.prepare(self.context_for(plan))
 
     def _refresh_prepared(self) -> None:
         """Computes every prepared value again from the current weights, into
@@ -664,8 +671,9 @@ class CompiledLinnetModule(LinnetModule):
                 and any(step.backend != fallback.name for step in plan.steps)
                 and not self.plan_beats(plan, entry, inputs, against, options.margin)
             ):
-                return Planner([], fallback).plan(graph, target, options)
-            return plan
+                plan = Planner([], fallback).plan(graph, target, options)
+        self._plans.append(plan)
+        return plan
 
     def plan_beats(
         self,
@@ -710,9 +718,10 @@ class CompiledLinnetModule(LinnetModule):
         return self._context(plan.target)
 
     def _context(self, target: Target) -> Context[torch.Tensor]:
+        # Every path, a tied weight's too (each path a graph may read it by).
         parameters = {
             name.removeprefix("root."): parameter.detach()
-            for name, parameter in self.named_parameters()
+            for name, parameter in self.named_parameters(remove_duplicate=False)
         }
 
         def join(paths: Sequence[str]) -> torch.Tensor | None:

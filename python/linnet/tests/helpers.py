@@ -57,15 +57,15 @@ TINY_LLAMA: dict[str, int | str] = {
 }
 
 
-def random_llama(path: Path) -> Path:
-    """`TINY_LLAMA`'s weights drawn at random (normal, times 0.3, seed 0),
-    without biases, written to `path` as SafeTensors."""
+def random_llama(path: Path, seed: int = 0) -> Path:
+    """`TINY_LLAMA`'s weights drawn at random (normal, times 0.3, from
+    `seed`), without biases, written to `path` as SafeTensors."""
     from safetensors.torch import save_file  # pyright: ignore[reportUnknownVariableType]
 
     from linnet.torch import load
 
     skeleton = load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB)
-    generator = torch.Generator().manual_seed(0)
+    generator = torch.Generator().manual_seed(seed)
     tensors = {
         name.removeprefix("root."): torch.randn(parameter.shape, generator=generator) * 0.3
         for name, parameter in skeleton.named_parameters()

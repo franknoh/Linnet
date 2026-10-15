@@ -132,6 +132,10 @@ class MyLinearCall:
   buffer and returns them as one tensor, so that an executable reads
   sibling weights (q, k and v) joined without a copy. It returns `None`
   where they cannot be laid out so.
+- `prepare` runs again after the model's weights change
+  (`model.copy_weights`): what the executable keeps (weights joined or
+  converted) it writes into the same tensors, since a captured plan reads
+  them where they are.
 - `ExecutableMeta(holds=bytes)` declares memory the executable keeps
   beyond the model's weights, which the plan's `memory` budget counts.
 - `estimate_cost` returns `Cost(seconds, bytes)` when the backend knows

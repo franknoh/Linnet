@@ -600,3 +600,60 @@ def test_a_plan_slower_than_the_entry_is_not_used(tmp_path: Path) -> None:
     assert "slow-linear" in {step.backend for step in slow.steps}
     with torch.no_grad():
         assert not model.plan_beats(slow, "decode", inputs, against="reduce-overhead")
+
+
+class _KeepingLinear(_Linear):
+    """`_Linear`, multiplying by a copy of the weight it keeps."""
+
+    @property
+    def name(self) -> str:
+        return "keeping-linear"
+
+    def compile(self, region: Region, target: Target, options: Options) -> _LinearCall:
+        return _KeepingCall(region)
+
+
+class _KeepingCall(_LinearCall):
+    def __init__(self, region: Region) -> None:
+        super().__init__(region)
+        self._kept: torch.Tensor | None = None
+
+    def prepare(self, context: Context[torch.Tensor]) -> None:
+        weight = context.parameters[self._weight]
+        if self._kept is None:
+            self._kept = weight.clone()
+        else:
+            self._kept.copy_(weight)
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        if self._kept is None:
+            self.prepare(context)
+        assert self._kept is not None
+        return [torch.nn.functional.linear(inputs[0], self._kept)]
+
+
+def test_copied_weights_reach_what_a_plans_executables_keep(tmp_path: Path) -> None:
+    """`copy_weights` prepares every plan again: an executable that keeps a
+    weight of its own writes the new one into it."""
+    first = random_llama(tmp_path / "first.safetensors")
+    second = random_llama(tmp_path / "second.safetensors", seed=1)
+    planned, other = (
+        load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=w, compile=True)
+        for w in (first, second)
+    )
+    assert isinstance(planned, CompiledLinnetModule)
+    inputs = [torch.tensor([[3]], dtype=torch.int32), torch.tensor(0, dtype=torch.int32)]
+    plan = planned.plan_for("decode", inputs, backends=[_KeepingLinear()], measure=False)
+    assert "keeping-linear" in {step.backend for step in plan.steps}
+    with torch.no_grad():
+        plan.run(inputs, planned.context_for(plan))
+        planned.copy_weights(other)
+        (logits,) = plan.run(inputs, planned.context_for(plan))
+        expected: object = other.run_entry("decode", inputs)
+    assert isinstance(expected, torch.Tensor)
+    torch.testing.assert_close(logits, expected)

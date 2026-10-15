@@ -149,8 +149,15 @@ class _Nf4Product:
         functional = importlib.import_module("bitsandbytes.functional")
         packed = context.parameters[self._codes_path]
         # Each byte's two codes swapped, flattened: bitsandbytes' layout.
-        self._codes = ((packed << 4) | (packed >> 4)).reshape(-1, 1).contiguous()
+        codes = ((packed << 4) | (packed >> 4)).reshape(-1, 1)
         absmax = context.parameters[self._absmax_path].reshape(-1).contiguous()
+        if self._codes is not None and self._state is not None:
+            # Again, after the weights changed: into the same tensors, which
+            # a captured graph reads.
+            self._codes.copy_(codes)
+            self._state.absmax.copy_(absmax)  # pyright: ignore[reportAttributeAccessIssue]
+            return
+        self._codes = codes.contiguous()
         self._state = functional.QuantState(
             absmax=absmax,
             shape=torch.Size(self._shape),

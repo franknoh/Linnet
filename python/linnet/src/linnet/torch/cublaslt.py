@@ -179,12 +179,19 @@ class _Product:
         return self._meta if self._copied else dataclasses.replace(self._meta, holds=0)
 
     def prepare(self, context: Context[torch.Tensor]) -> None:
-        if len(self._paths) > 1:
-            joined = context.join(self._paths) if context.join is not None else None
-            self._copied = joined is None
-            if joined is None:
-                joined = torch.cat([context.parameters[p] for p in self._paths]).contiguous()
-            self._joined = joined
+        if len(self._paths) <= 1:
+            return
+        if self._joined is not None:
+            # Again, after the weights changed: a copy is written over, in
+            # place (a captured graph reads it); a joined view reads them.
+            if self._copied:
+                self._joined.copy_(torch.cat([context.parameters[p] for p in self._paths]))
+            return
+        joined = context.join(self._paths) if context.join is not None else None
+        self._copied = joined is None
+        if joined is None:
+            joined = torch.cat([context.parameters[p] for p in self._paths]).contiguous()
+        self._joined = joined
 
     def execute(
         self,
