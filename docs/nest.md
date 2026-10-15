@@ -91,6 +91,22 @@ The card names the source, root block, generics and checkpoint. In
 `[weights]`, `repo` names the Hub repo that holds `files`; leave it out to
 keep the files beside the card. Its full schema is in the registry's README.
 
+A card may list what [backends](backends.md) did for it, one
+`[[backends]]` each: the entry timed on a device with given inputs, by the
+generated source alone (`before`) and planned with the backend (`after`):
+
+```toml
+[[backends]]
+name = "flashinfer"         # as linnet.backends lists it
+package = "built in"        # or what to install
+entry = "decode_rows"
+device = "H100"
+inputs = "16 rows at positions 1000 to 3377"
+before = 1717
+after = 1858
+unit = "tokens/s"
+```
+
 ## Share a model
 
 A model directory is a Hub repo as it is. Check it, then upload it:
