@@ -124,6 +124,9 @@ class MyLinearCall:
 - `graph.scalar(value)` is the number a value computed from constants
   holds (an attention's scale), and `graph.reaches_prefix(mask)` whether an
   attention mask reaches a prefix of the keys, as a decode step's does.
+  `graph.segment_causal(mask)` finds a packed pass's mask (each token
+  seeing its own prompt up to itself): its segments, its positions and
+  the first step that builds it.
 - A region's `inputs` are the values it reads that earlier steps made.
   Parameters and states are not inputs: an executable reads them from
   `context.parameters` by path.
@@ -151,9 +154,8 @@ class MyLinearCall:
   the layout a kernel reads (its shape and dtype kept) and returns it, so
   the executable keeps no copy. A model run only through its plans offers
   it (`model.context_for(plan, adopt=True)`). It returns `None` while
-  anything else may
-  read the weight as it is: training, a tied path, another step of the
-  plan, or an entry or slice already compiled. An adopted weight saves as
+  anything else may read the weight as it is: training, a tied path,
+  another step of the plan, or an entry or slice already compiled. An adopted weight saves as
   it was (`restore`), and compiling an entry that reads it raises.
 - `ExecutableMeta(holds=bytes)` declares memory the executable keeps
   beyond the model's weights, which the plan's `memory` budget counts.

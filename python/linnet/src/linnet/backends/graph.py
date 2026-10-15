@@ -257,6 +257,57 @@ class Graph:
         keys, limit = step.operands
         return self._from_iota(keys.value) and not self._from_iota(limit.value)
 
+    def segment_causal(self, mask: int) -> SegmentMask | None:
+        """The segments and positions of an attention mask that lets each
+        query see the keys of its own segment at its position or before
+        (`segments[i] == segments[j] && positions[j] <= positions[i]`, as a
+        packed pass of prompts builds it), with the first step that builds
+        it; None for any other mask."""
+        step = self.producers.get(mask)
+        if step is None or step.op != "elementwise" or step.attrs.get("kind") != "and":
+            return None
+        if len(step.operands) != 2:
+            return None
+        compares = [
+            self.producers.get(o.value) if o.value is not None else None for o in step.operands
+        ]
+        if any(c is None or c.op != "compare" for c in compares):
+            return None
+        same, before = sorted(
+            cast("list[Step]", compares), key=lambda c: str(c.attrs.get("kind")) != "eq"
+        )
+        if same.attrs.get("kind") != "eq" or before.attrs.get("kind") != "le":
+            return None
+        a, b = (o.value for o in same.operands)
+        segments = self._spread(a, b)
+        if segments is None:
+            segments = self._spread(b, a)  # `==` either way round
+        # `positions[j] <= positions[i]`: the keys' along the second axis.
+        positions = self._spread(before.operands[1].value, before.operands[0].value)
+        if segments is None or positions is None or self._from_iota(positions):
+            return None
+        built = [step, *cast("list[Step]", compares)]
+        built += [
+            self.producers[o.value]
+            for c in cast("list[Step]", compares)
+            for o in c.operands
+            if o.value is not None
+        ]
+        first = min(self.steps.index(s) for s in built)
+        return SegmentMask(segments, positions, first)
+
+    def _spread(self, rows: int | None, columns: int | None) -> int | None:
+        """The one value `rows` broadcasts along the first axis and
+        `columns` along the second, or None."""
+        made = [self.producers.get(v) if v is not None else None for v in (rows, columns)]
+        if any(m is None or m.op != "broadcast" or len(m.operands) != 1 for m in made):
+            return None
+        row, column = cast("list[Step]", made)
+        if row.attrs.get("dims") != [0] or column.attrs.get("dims") != [1]:
+            return None
+        source = row.operands[0].value
+        return source if source is not None and source == column.operands[0].value else None
+
     def _from_iota(self, value: int | None) -> bool:
         """Whether `value` is positions 0, 1, ... (an `iota`, converted,
         reshaped or broadcast)."""
@@ -268,6 +319,16 @@ class Graph:
                 return False
             value = step.operands[0].value
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentMask:
+    """What `Graph.segment_causal` found: the values of the segments and of
+    the positions the mask compares, and the first step that builds it."""
+
+    segments: int
+    positions: int
+    start: int
 
 
 # The elementwise operations `Graph.scalar` evaluates.
