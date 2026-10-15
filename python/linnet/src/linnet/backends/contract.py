@@ -268,6 +268,11 @@ class Context(Generic[T]):
     states: MutableMapping[str, T] = field(default_factory=dict[str, T])
     stream: int | None = None
     join: Callable[[Sequence[str]], T | None] | None = None
+    # `adopt(path, convert, restore)`: the parameter at `path` converted in
+    # place by `convert` (into the layout a kernel reads, its shape and
+    # dtype kept) and held so, returned; None where something else reads it
+    # as it is. `restore` gives it back as it was (to save it, say).
+    adopt: Callable[[str, Callable[[T], T], Callable[[T], T]], T | None] | None = None
 
 
 class Executable(Protocol[T]):

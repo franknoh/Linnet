@@ -427,6 +427,12 @@ class LinnetModule(nn.Module):
                     )
                 continue
             written[name] = (tensor_path, tensor)
+            # A weight a backend holds in its own layout, written as it was.
+            restore = cast(
+                "dict[str, Callable[[torch.Tensor], torch.Tensor]]", getattr(self, "adopted", {})
+            ).get(tensor_path)
+            if restore is not None:
+                tensor = restore(tensor.detach())
             if callable(getattr(tensor, "full_tensor", None)):
                 split.append(tensor)
             target = dtype if dtype is not None and tensor.is_floating_point() else tensor.dtype

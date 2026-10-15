@@ -4,13 +4,16 @@ as `bitsandbytes.matmul_4bit`, which multiplies one row straight from the
 4-bit codes and longer inputs over the weight it widens.
 
 bitsandbytes holds a weight's codes flattened, the first of each pair in
-the high four bits, where Linnet's `nf4` puts it in the low four: `prepare`
-keeps the codes once more in bitsandbytes' order, half a byte a weight. The
-scales, one per block of a row, are the same numbers in the same order.
+the high four bits, where Linnet's `nf4` puts it in the low four. Where
+nothing else reads the model's codes, `prepare` swaps them in place
+(`Context.adopt`); otherwise it keeps them once more in bitsandbytes' order,
+half a byte a weight. The scales, one per block of a row, are the same
+numbers in the same order.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 from collections.abc import Iterable, Sequence
 from types import ModuleType
@@ -113,6 +116,12 @@ class BitsAndBytes:
         return None
 
 
+def _swap(codes: torch.Tensor) -> torch.Tensor:
+    """Each byte's two codes the other way round: Linnet's order to
+    bitsandbytes' (the first of each pair in the high four bits), and back."""
+    return (codes << 4) | (codes >> 4)
+
+
 class _Nf4Product:
     def __init__(
         self,
@@ -134,6 +143,7 @@ class _Nf4Product:
         self._block = block
         self._dtype = dtype  # the input's, which the product widens to
         self._codes: torch.Tensor | None = None  # in bitsandbytes' order
+        self._adopted = False  # the model's own codes, swapped in place
         self._state: object | None = None
         self._meta = ExecutableMeta(
             tuple(TensorSpec(values[v].shape, values[v].dtype) for v in region.inputs),
@@ -143,21 +153,30 @@ class _Nf4Product:
 
     @property
     def meta(self) -> ExecutableMeta:
-        return self._meta
+        return dataclasses.replace(self._meta, holds=0) if self._adopted else self._meta
 
     def prepare(self, context: Context[torch.Tensor]) -> None:
         functional = importlib.import_module("bitsandbytes.functional")
         packed = context.parameters[self._codes_path]
-        # Each byte's two codes swapped, flattened: bitsandbytes' layout.
-        codes = ((packed << 4) | (packed >> 4)).reshape(-1, 1)
         absmax = context.parameters[self._absmax_path].reshape(-1).contiguous()
-        if self._codes is not None and self._state is not None:
-            # Again, after the weights changed: into the same tensors, which
-            # a captured graph reads.
-            self._codes.copy_(codes)
+        if self._codes is None or self._adopted:
+            # The model's own codes swapped in place where nothing else reads
+            # them (`Context.adopt`): no copy to keep.
+            held = (
+                context.adopt(self._codes_path, _swap, _swap) if context.adopt is not None else None
+            )
+            self._adopted = held is not None
+            if held is not None:
+                self._codes = held.reshape(-1, 1)
+            elif self._codes is None:
+                self._codes = _swap(packed).reshape(-1, 1).contiguous()
+        else:
+            # Again, after the weights changed: into the same tensor, which a
+            # captured graph reads.
+            self._codes.copy_(_swap(packed).reshape(-1, 1))
+        if self._state is not None:
             self._state.absmax.copy_(absmax)  # pyright: ignore[reportAttributeAccessIssue]
             return
-        self._codes = codes.contiguous()
         self._state = functional.QuantState(
             absmax=absmax,
             shape=torch.Size(self._shape),

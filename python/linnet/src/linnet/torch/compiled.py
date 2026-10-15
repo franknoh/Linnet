@@ -162,6 +162,9 @@ class CompiledLinnetModule(LinnetModule):
         self._graph_pool = None
         # Every plan `plan_for` made, which `copy_weights` prepares again.
         self._plans: list[Plan[torch.Tensor]] = []
+        # The parameters a plan's backend holds in its own layout
+        # (`Context.adopt`), each with what gives it back as it was.
+        self.adopted: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {}
         self._work = generated_directory()
         # Each kind of slice's `main` compiled (`slices`), by its code.
         self._slice_mains: dict[str, Callable[..., tuple[torch.Tensor, ...]]] = {}
@@ -488,6 +491,12 @@ class CompiledLinnetModule(LinnetModule):
         return self._prepared_for(self._compiled[key])
 
     def _prepared_for(self, generated: _Generated) -> _Prepared:
+        held = [path for path in generated.parameters if path in self.adopted]
+        if held:
+            raise PlanError(
+                f"`{held[0]}` is held in a backend's layout by a plan "
+                "(`Context.adopt`): no other entry or slice may read it"
+            )
         return _Prepared(
             generated,
             [owner_of(self, path) for path in generated.parameters],
@@ -760,8 +769,43 @@ class CompiledLinnetModule(LinnetModule):
 
     def context_for(self, plan: Plan[torch.Tensor]) -> Context[torch.Tensor]:
         """What `plan`'s executables run with: this module's parameters, by
-        path."""
-        return self._context(plan.target)
+        path, and `adopt`, which lets one convert a parameter nothing else
+        reads in place rather than keep a copy."""
+        context = self._context(plan.target)
+        context.adopt = lambda path, convert, restore: self._adopt(plan, path, convert, restore)
+        return context
+
+    def _adopt(
+        self,
+        plan: Plan[torch.Tensor],
+        path: str,
+        convert: Callable[[torch.Tensor], torch.Tensor],
+        restore: Callable[[torch.Tensor], torch.Tensor],
+    ) -> torch.Tensor | None:
+        """`path`'s parameter converted in place for one step of `plan`, or
+        None where anything else may read it as it is: training, another
+        path to the same tensor, another step of the plan, or any entry or
+        slice compiled already."""
+        readers = [step for step in plan.steps if path in step.region.parameters]
+        same = [
+            name
+            for name, p in self.named_parameters(remove_duplicate=False)
+            if p is self.get_parameter(_root(path))
+        ]
+        compiled = any(
+            path in g.parameters or path in g.prepare_inputs for g in self._compiled.values()
+        )
+        if self.trains() or len(readers) != 1 or len(same) != 1 or compiled:
+            return None
+        owner, leaf = owner_of(self, path)
+        parameter = cast("torch.Tensor", getattr(owner, leaf))
+        with torch.no_grad():
+            converted = convert(parameter.detach())
+            if converted.shape != parameter.shape or converted.dtype != parameter.dtype:
+                raise PlanError(f"`adopt` must keep `{path}`'s shape and dtype")
+            parameter.copy_(converted)
+        self.adopted[path] = restore
+        return parameter.detach()
 
     def _context(self, target: Target) -> Context[torch.Tensor]:
         # Every path, a tied weight's too (each path a graph may read it by).
@@ -1171,3 +1215,8 @@ class _Generated:
     captured: bool = False  # replayed as a CUDA graph captured by hand
     fused: list[list[str]] = field(default_factory=list[list[str]])  # `FUSED`
     eager: bool = True  # `main` runs without `torch.compile`
+
+
+def _root(path: str) -> str:
+    """A parameter path as the module names it, under `root`."""
+    return f"root.{path}"

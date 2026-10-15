@@ -27,7 +27,7 @@ from linnet.backends import (
     runs_of,
     splittable,
 )
-from linnet.compiler import find_compiler
+from linnet.compiler import PlanError, find_compiler
 from linnet.torch import load
 from linnet.torch.compiled import CompiledLinnetModule
 from linnet.train import pack, train
@@ -743,3 +743,91 @@ def test_training_through_plans_follows_the_entry(tmp_path: Path) -> None:
         losses.append(history.losses)
     torch.testing.assert_close(losses[1], losses[0], atol=1e-5, rtol=1e-4)
     torch.testing.assert_close(losses[2], losses[0], atol=1e-5, rtol=1e-4)
+
+
+class _AdoptingLinear(_Linear):
+    """`_Linear`, holding each weight negated in place where the model lets
+    it (`Context.adopt`), else a negated copy."""
+
+    @property
+    def name(self) -> str:
+        return "adopting-linear"
+
+    def compile(self, region: Region, target: Target, options: Options) -> _LinearCall:
+        return _AdoptingCall(region)
+
+
+def _negated(weight: torch.Tensor) -> torch.Tensor:
+    return -weight
+
+
+class _AdoptingCall(_LinearCall):
+    def __init__(self, region: Region) -> None:
+        super().__init__(region)
+        self.held: torch.Tensor | None = None
+        self.adopted = False
+
+    def prepare(self, context: Context[torch.Tensor]) -> None:
+        adopt = context.adopt
+        held = adopt(self._weight, _negated, _negated) if adopt is not None else None
+        self.adopted = held is not None
+        self.held = held if held is not None else -context.parameters[self._weight]
+
+    def execute(
+        self,
+        inputs: Sequence[torch.Tensor],
+        outputs: Sequence[torch.Tensor],
+        context: Context[torch.Tensor],
+    ) -> Sequence[torch.Tensor]:
+        if self.held is None:
+            self.prepare(context)
+        assert self.held is not None
+        return [torch.nn.functional.linear(inputs[0], -self.held)]
+
+
+def test_a_backend_holds_a_weight_nothing_else_reads_in_its_own_layout(tmp_path: Path) -> None:
+    """`Context.adopt` converts a weight in place where the plan's step is
+    all that reads it: the plan computes the entry's results, the weights
+    save as they were, and an entry compiled after that reads it is
+    refused."""
+    weights = random_llama(tmp_path / "model.safetensors")
+    planned, direct = (
+        load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
+        for _ in range(2)
+    )
+    assert isinstance(planned, CompiledLinnetModule)
+    inputs = [torch.tensor([[3]], dtype=torch.int32), torch.tensor(0, dtype=torch.int32)]
+    plan = planned.plan_for("decode", inputs, backends=[_AdoptingLinear()], measure=False)
+    with torch.no_grad():
+        (logits,) = plan.run(inputs, planned.context_for(plan))
+        expected: object = direct.run_entry("decode", inputs)
+    assert isinstance(expected, torch.Tensor)
+    torch.testing.assert_close(logits, expected)
+    assert planned.adopted
+    path = next(iter(planned.adopted))
+    torch.testing.assert_close(
+        planned.get_parameter(f"root.{path}"), -direct.get_parameter(f"root.{path}")
+    )
+    planned.save_weights(tmp_path / "saved.safetensors", names="linnet")
+    again = load(
+        LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=tmp_path / "saved.safetensors"
+    )
+    torch.testing.assert_close(
+        again.get_parameter(f"root.{path}"), direct.get_parameter(f"root.{path}")
+    )
+    with pytest.raises(PlanError, match="held in a backend's layout"):
+        planned.run_entry("decode", inputs)
+
+
+def test_a_weight_an_entry_reads_is_not_adopted(tmp_path: Path) -> None:
+    weights = random_llama(tmp_path / "model.safetensors")
+    model = load(LLAMA, generics=TINY_LLAMA, std_root=STDLIB, weights=weights, compile=True)
+    assert isinstance(model, CompiledLinnetModule)
+    inputs = [torch.tensor([[3]], dtype=torch.int32), torch.tensor(0, dtype=torch.int32)]
+    with torch.no_grad():
+        expected = model.run_entry("decode", inputs)  # compiled: it reads every weight
+        plan = model.plan_for("decode", inputs, backends=[_AdoptingLinear()], measure=False)
+        (logits,) = plan.run(inputs, model.context_for(plan))
+    assert not model.adopted
+    assert isinstance(expected, torch.Tensor)
+    torch.testing.assert_close(logits, expected)
