@@ -4,6 +4,7 @@ through the generated source (docs/design/execution.md)."""
 from __future__ import annotations
 
 import itertools
+import json
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
@@ -831,3 +832,23 @@ def test_a_weight_an_entry_reads_is_not_adopted(tmp_path: Path) -> None:
     assert not model.adopted
     assert isinstance(expected, torch.Tensor)
     torch.testing.assert_close(logits, expected)
+
+
+def test_a_training_plan_times_forward_and_backward(tmp_path: Path) -> None:
+    """A module that trains is planned on what a training step costs, each
+    region timed forward and backward (kept apart from inference times),
+    and the timing leaves the weights' gradients as they were."""
+    weights = random_llama(tmp_path / "model.safetensors")
+    model = trainable_llama(weights)
+    assert isinstance(model, CompiledLinnetModule)
+    tokens = torch.tensor([[3, 1, 4, 1]], dtype=torch.int32)
+    benchmarks = Benchmarks(tmp_path / "benchmarks.json")
+    plan = model.plan_for(
+        "forward", [tokens], backends=[_DifferentiatingLinear()], benchmarks=benchmarks
+    )
+    kept = json.loads((tmp_path / "benchmarks.json").read_text(encoding="utf-8"))
+    assert kept and all(key.endswith("|train") for key in kept)
+    assert all(p.grad is None for p in model.parameters())
+    (logits,) = plan.run([tokens], model.context_for(plan))
+    logits.square().mean().backward()  # pyright: ignore[reportUnknownMemberType]
+    assert all(p.grad is not None for p in model.parameters() if p.requires_grad)

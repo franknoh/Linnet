@@ -80,8 +80,11 @@ class Benchmarks:
         return costs
 
 
-def key_of(backend: Backend[T], region: Region, target: Target, options: Options) -> str:
-    """Where `Benchmarks` keeps `region`'s cost on `backend`."""
+def key_of(
+    backend: Backend[T], region: Region, target: Target, options: Options, purpose: str = ""
+) -> str:
+    """Where `Benchmarks` keeps `region`'s cost on `backend`; `purpose` sets
+    apart costs timed another way (`train`: forward and backward)."""
     device = f"{target.kind}:{target.name}:{target.capability[0]}.{target.capability[1]}"
     return "|".join(
         (
@@ -91,6 +94,7 @@ def key_of(backend: Backend[T], region: Region, target: Target, options: Options
             backend.version,
             options.numerics,
             region.kind,
+            *((purpose,) if purpose else ()),
         )
     )
 
@@ -99,7 +103,9 @@ class Measured(Generic[T]):
     """Costs measured by timing (`time`) each kind of region on its backend,
     on the values `reference` gives the region's inputs when it runs the
     graph on `inputs` with `context`. A region that fails to compile or run
-    costs infinitely much."""
+    costs infinitely much. `timed` turns each executable into what is timed
+    (a training step's forward and backward, say), and `purpose` keeps
+    those times apart from others."""
 
     def __init__(
         self,
@@ -108,6 +114,9 @@ class Measured(Generic[T]):
         reference: Backend[T],
         time: Timer,
         benchmarks: Benchmarks | None = None,
+        *,
+        timed: Callable[[Backend[T], Region, Executable[T]], Executable[T]] | None = None,
+        purpose: str = "",
     ) -> None:
         self.inputs = list(inputs)
         self.context = context
@@ -115,11 +124,13 @@ class Measured(Generic[T]):
         self.time = time
         self.benchmarks = benchmarks if benchmarks is not None else Benchmarks()
         self.failures: dict[str, str] = {}
+        self.timed = timed
+        self.purpose = purpose
 
     def costs(
         self, asked: Sequence[tuple[Backend[T], Region]], target: Target, options: Options
     ) -> list[Cost | None]:
-        keys = [key_of(backend, region, target, options) for backend, region in asked]
+        keys = [key_of(backend, region, target, options, self.purpose) for backend, region in asked]
         missing: dict[str, tuple[Backend[T], Region]] = {}
         for key, pair in zip(keys, asked, strict=True):
             if self.benchmarks.get(key) is None and key not in self.failures:
@@ -146,6 +157,9 @@ class Measured(Generic[T]):
                     self.failures[key] = made
                     continue
                 region = missing[key][1]
+                timed = self.timed
+                if timed is not None:
+                    made = timed(backend, region, made)
                 try:
                     made.prepare(self.context)
                     arguments = [values[value] for value in region.inputs]
