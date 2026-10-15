@@ -767,12 +767,17 @@ class CompiledLinnetModule(LinnetModule):
             before_capture=lambda: _warm_blas(device),
         )
 
-    def context_for(self, plan: Plan[torch.Tensor]) -> Context[torch.Tensor]:
+    def context_for(
+        self, plan: Plan[torch.Tensor], *, adopt: bool = False
+    ) -> Context[torch.Tensor]:
         """What `plan`'s executables run with: this module's parameters, by
-        path, and `adopt`, which lets one convert a parameter nothing else
-        reads in place rather than keep a copy."""
+        path. With `adopt`, for a module that runs only through its plans,
+        an executable may convert a parameter nothing else reads in place
+        rather than keep a copy (`Context.adopt`); no entry that reads it
+        runs after that."""
         context = self._context(plan.target)
-        context.adopt = lambda path, convert, restore: self._adopt(plan, path, convert, restore)
+        if adopt:
+            context.adopt = lambda path, convert, restore: self._adopt(plan, path, convert, restore)
         return context
 
     def _adopt(

@@ -799,7 +799,7 @@ def test_a_backend_holds_a_weight_nothing_else_reads_in_its_own_layout(tmp_path:
     inputs = [torch.tensor([[3]], dtype=torch.int32), torch.tensor(0, dtype=torch.int32)]
     plan = planned.plan_for("decode", inputs, backends=[_AdoptingLinear()], measure=False)
     with torch.no_grad():
-        (logits,) = plan.run(inputs, planned.context_for(plan))
+        (logits,) = plan.run(inputs, planned.context_for(plan, adopt=True))
         expected: object = direct.run_entry("decode", inputs)
     assert isinstance(expected, torch.Tensor)
     torch.testing.assert_close(logits, expected)
@@ -827,7 +827,7 @@ def test_a_weight_an_entry_reads_is_not_adopted(tmp_path: Path) -> None:
     with torch.no_grad():
         expected = model.run_entry("decode", inputs)  # compiled: it reads every weight
         plan = model.plan_for("decode", inputs, backends=[_AdoptingLinear()], measure=False)
-        (logits,) = plan.run(inputs, model.context_for(plan))
+        (logits,) = plan.run(inputs, model.context_for(plan, adopt=True))
     assert not model.adopted
     assert isinstance(expected, torch.Tensor)
     torch.testing.assert_close(logits, expected)
