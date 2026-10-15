@@ -150,6 +150,13 @@ class MyLinearCall:
   differentiated there, which keeps less memory but computes it twice.
   `train(plans=...)` and `linnet.torch.planned.Planned` run training
   steps through plans this way.
+- `context.adopt(path, convert, restore)` converts a weight in place into
+  the layout a kernel reads (its shape and dtype kept) and returns it, so
+  the executable keeps no copy. A model run only through its plans offers
+  it (`model.context_for(plan, adopt=True)`). It returns `None` while
+  anything else may read the weight as it is: training, a tied path,
+  another step of the plan, or an entry or slice already compiled. An adopted weight saves as
+  it was (`restore`), and compiling an entry that reads it raises.
 - `ExecutableMeta(holds=bytes)` declares memory the executable keeps
   beyond the model's weights, which the plan's `memory` budget counts.
 - `estimate_cost` returns `Cost(seconds, bytes)` when the backend knows
