@@ -41,6 +41,12 @@ part.
   (one `linear` call, or it joined with its siblings) never both run.
 - `memory=bytes` caps what the plan keeps beyond the model's own weights,
   such as weights a backend converted to another layout.
+- `against=` (with the timing, on CUDA) times the whole plan, replayed as a
+  CUDA graph, against the entry as `run_entry(compile=against)` runs it.
+  Where the plan is not faster, it runs the entry as it is: regions priced
+  one by one miss what they do to each other, such as a cast at a boundary
+  or a fusion two backends split. `model.plan_beats(plan, entry, inputs,
+  against)` is that comparison on its own.
 - `measure=False` skips the timing: each backend takes what it matches,
   the largest regions first.
 
@@ -126,6 +132,10 @@ class MyLinearCall:
   buffer and returns them as one tensor, so that an executable reads
   sibling weights (q, k and v) joined without a copy. It returns `None`
   where they cannot be laid out so.
+- `prepare` runs again after the model's weights change
+  (`model.copy_weights`): what the executable keeps (weights joined or
+  converted) it writes into the same tensors, since a captured plan reads
+  them where they are.
 - `ExecutableMeta(holds=bytes)` declares memory the executable keeps
   beyond the model's weights, which the plan's `memory` budget counts.
 - `estimate_cost` returns `Cost(seconds, bytes)` when the backend knows

@@ -31,6 +31,7 @@ from ..backends import (
     Benchmarks,
     Context,
     CostModel,
+    ExecutableMeta,
     Graph,
     Measured,
     Options,
@@ -158,6 +159,8 @@ class CompiledLinnetModule(LinnetModule):
         # The memory every hand-captured CUDA graph allocates from (its type,
         # `torch.cuda._POOL_HANDLE`, is private).
         self._graph_pool = None
+        # Every plan `plan_for` made, which `copy_weights` prepares again.
+        self._plans: list[Plan[torch.Tensor]] = []
         self._work = generated_directory()
         # Each kind of slice's `main` compiled (`slices`), by its code.
         self._slice_mains: dict[str, Callable[..., tuple[torch.Tensor, ...]]] = {}
@@ -287,6 +290,11 @@ class CompiledLinnetModule(LinnetModule):
         values computed ahead are computed again into their own tensors."""
         super().copy_weights(source)
         self._refresh_prepared()
+        # What the plans' executables keep (weights joined or converted),
+        # written again into the same tensors.
+        with torch.no_grad():
+            for plan in self._plans:
+                plan.prepare(self.context_for(plan))
 
     def _refresh_prepared(self) -> None:
         """Computes every prepared value again from the current weights, into
@@ -613,6 +621,7 @@ class CompiledLinnetModule(LinnetModule):
         measure: bool = True,
         memory: int | None = None,
         benchmarks: Benchmarks | None = None,
+        against: bool | str | None = None,
     ) -> Plan[torch.Tensor]:
         """`entry`'s execution plan for inputs like `inputs`: each of
         `backends` (every one `linnet.backends.available` lists, by default)
@@ -625,7 +634,14 @@ class CompiledLinnetModule(LinnetModule):
         kind of region and device: `benchmarks`, by default the ones kept
         in `$LINNET_HOME`, keeps the times), and its regions together keep
         at most `memory` bytes beyond the model's own. Without, each takes
-        what it matches, the largest regions first."""
+        what it matches, the largest regions first.
+
+        `against` (with `measure`, on CUDA) is how the caller would run the
+        entry otherwise, as `run_entry`'s `compile`: the whole plan, replayed
+        as a CUDA graph, is timed against that, and where it is not faster
+        the plan returned runs the entry as it is. Regions priced one by one
+        miss what they do to each other (a cast at a boundary, a fusion two
+        backends split); the whole step does not."""
         from .backend import TorchSource, target_of
         from .timing import timer_for
 
@@ -645,10 +661,43 @@ class CompiledLinnetModule(LinnetModule):
                 timer_for(self.interpreter.device),
                 benchmarks if benchmarks is not None else Benchmarks.default(),
             )
+        options = Options(memory=memory)
         with torch.no_grad():
-            return Planner(backends, fallback, cost_model=costs).plan(
-                graph, target, Options(memory=memory)
-            )
+            plan = Planner(backends, fallback, cost_model=costs).plan(graph, target, options)
+            if (
+                measure
+                and against is not None
+                and self.interpreter.device.type == "cuda"
+                and any(step.backend != fallback.name for step in plan.steps)
+                and not self.plan_beats(plan, entry, inputs, against, options.margin)
+            ):
+                plan = Planner([], fallback).plan(graph, target, options)
+        self._plans.append(plan)
+        return plan
+
+    def plan_beats(
+        self,
+        plan: Plan[torch.Tensor],
+        entry: str,
+        inputs: list[torch.Tensor],
+        against: bool | str,
+        margin: float = 0.02,
+    ) -> bool:
+        """Whether `plan`, replayed as a CUDA graph where it can be, runs
+        `entry` on `inputs` faster by more than `margin` than `run_entry`
+        with `compile=against` does. Both run, state writes and all."""
+        from .timing import timer_for
+
+        timer = timer_for(self.interpreter.device)
+        meta = ExecutableMeta((), (), capturable=False)  # each replays a graph of its own
+        if not all(step.executable.meta.capturable for step in plan.steps):
+            context = self.context_for(plan)
+            planned = timer(lambda: plan.run(inputs, context), meta)
+        else:
+            captured = self.captured(plan)
+            planned = timer(lambda: captured(inputs), meta)
+        whole = timer(lambda: self.run_entry(entry, inputs, compile=against), meta)
+        return planned < whole * (1 - margin)
 
     def captured(self, plan: Plan[torch.Tensor]) -> Captured:
         """`plan` run with this module's context and replayed as one CUDA
@@ -669,9 +718,10 @@ class CompiledLinnetModule(LinnetModule):
         return self._context(plan.target)
 
     def _context(self, target: Target) -> Context[torch.Tensor]:
+        # Every path, a tied weight's too (each path a graph may read it by).
         parameters = {
             name.removeprefix("root."): parameter.detach()
-            for name, parameter in self.named_parameters()
+            for name, parameter in self.named_parameters(remove_duplicate=False)
         }
 
         def join(paths: Sequence[str]) -> torch.Tensor | None:

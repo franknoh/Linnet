@@ -1610,7 +1610,9 @@ class _TorchBackend:
         from ..torch.compiled import CompiledLinnetModule
 
         model = cast("CompiledLinnetModule", self.model)
-        plan = model.plan_for(entry, inputs, backends=self.plans, compile="inductor")
+        plan = model.plan_for(
+            entry, inputs, backends=self.plans, compile="inductor", against=self.step_compile
+        )
         if all(step.backend == "torch-source" for step in plan.steps):
             return None
         return model.captured(plan)
