@@ -423,12 +423,14 @@ def _int8_group_linear(args: OptionalArgs) -> torch.Tensor:
 
 
 def _grouped(x: torch.Tensor, weight: torch.Tensor) -> bool:
-    """Whether `torch._grouped_mm` runs these: CUDA, Hopper or later, bf16."""
+    """Whether `torch._grouped_mm` runs these: bf16 on a GPU it has a kernel
+    for (`moe.grouped_mm_native`)."""
+    from .moe import grouped_mm_native
+
     return (
-        hasattr(torch, "_grouped_mm")
-        and x.is_cuda
+        x.is_cuda
         and x.dtype == weight.dtype == torch.bfloat16
-        and torch.cuda.get_device_capability(x.device)[0] >= 9
+        and grouped_mm_native(x.device)
         and x.shape[-1] % 8 == 0
         and weight.shape[1] % 8 == 0
     )

@@ -958,11 +958,13 @@ def test_onnx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> Non
     tokens = np.array([[3, 1, 4, 1, 5, 9, 2, 6]], dtype=np.int32)
     expected = wide.run_entry("forward", [tokens])
     got = np.asarray(narrow.run_entry("forward", [tokens]))
-    # Two steps of the type at the logits' own scale: bf16's step at 32 is
-    # already 0.25.
+    # Two steps of the type at the logits' own scale (bf16's step at 32 is
+    # already 0.25), six of f16's: ONNX Runtime's kernels for an ARM CPU add
+    # in f16 itself, where x86's widen to f32.
     step = {"f16": 2.0**-10, "bf16": 2.0**-7}[dtype] * float(np.abs(expected).max())
+    steps = {"f16": 6, "bf16": 2}[dtype]
     np.testing.assert_allclose(
-        got.astype(np.float32), expected, atol=max(0.15, 2 * step), rtol=0.05
+        got.astype(np.float32), expected, atol=max(0.15, steps * step), rtol=0.05
     )
 
 

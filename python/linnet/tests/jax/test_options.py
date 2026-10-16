@@ -58,8 +58,39 @@ def test_many_tokens_are_bound_by_arithmetic(tmp_path: Path) -> None:
     assert one < 2
 
 
-def test_off_gpus_the_defaults_stay(tmp_path: Path) -> None:
+def test_off_gpus_the_defaults_stay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
     assert compiler_options(_module(tmp_path, 1024)) is None
+
+
+ROUNDED = """\
+module @rounded {
+  func.func @main(%x: tensor<16xf32>) -> tensor<16xf32> {
+    %0 = "stablehlo.convert"(%x) : (tensor<16xf32>) -> tensor<16xf4E2M1FN>
+    %1 = "stablehlo.convert"(%0) : (tensor<16xf4E2M1FN>) -> tensor<16xf32>
+    "func.return"(%1) : (tensor<16xf32>) -> ()
+  }
+}
+"""
+
+
+def test_a_narrow_rounding_keeps_its_precision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A value rounded to FP4 and widened again: XLA, allowed excess
+    precision, may drop the pair, so a module with one is compiled without."""
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    assert compiler_options(ROUNDED) == {"xla_allow_excess_precision": False}
+    # A stored FP8 weight widened, and a value narrowed for an FP8 product:
+    # neither rounds and widens again.
+    widened = """\
+  func.func @main(%w: tensor<16xf8E4M3FN>) -> tensor<16xf32> {
+    %0 = "stablehlo.convert"(%w) : (tensor<16xf8E4M3FN>) -> tensor<16xf32>
+"""
+    narrowed = """\
+  func.func @main(%x: tensor<16xf32>) -> tensor<16xf8E4M3FN> {
+    %0 = "stablehlo.convert"(%x) : (tensor<16xf32>) -> tensor<16xf8E4M3FN>
+"""
+    assert compiler_options(widened) is None
+    assert compiler_options(narrowed) is None
 
 
 @pytest.mark.parametrize("loader", ["load", "load_source"])

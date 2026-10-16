@@ -15,6 +15,11 @@ REPO = Path(__file__).resolve().parents[3]
 # before any test imports Triton.
 if not torch.cuda.is_available():
     os.environ.setdefault("TRITON_INTERPRET", "1")
+# JAX on the CPU, also where a GPU is there: the tests compare f32 results
+# to a few ulps, as XLA computes them on a CPU, where on a GPU it multiplies
+# f32 in TF32 (`numerics="fast"`). The Nest benchmarks run the models' JAX
+# rows on GPUs. Read as JAX is first imported.
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 
 @pytest.fixture(autouse=True, scope="session")

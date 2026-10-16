@@ -400,6 +400,10 @@ _DOT = re.compile(
 )
 _DOT_OPERAND = re.compile(r": \(tensor<([^>]*)>")
 _ARGUMENT = re.compile(r"%[\w.]+: tensor<([^>]*)>")
+# A convert's result of a float type of 8 bits or fewer, and any convert's
+# operand.
+_NARROWED = re.compile(r'(%[\w.#]+) = "stablehlo\.convert"\(.*-> tensor<[^>]*x(?:f4|f6|f8)E\w*>')
+_CONVERTED = re.compile(r'"stablehlo\.convert"\((%[\w.#]+)\)')
 
 
 def jit_with_options(
@@ -421,12 +425,25 @@ def jit_with_options(
 
 
 def compiler_options(text: str) -> dict[str, str | bool] | None:
-    """XLA's options for the StableHLO module `text`: those for a program
-    bound by arithmetic when its `intensity` reaches `_COMPUTE_BOUND` on a
-    GPU, otherwise None (the defaults)."""
-    if jax.default_backend() != "gpu" or intensity(text) < _COMPUTE_BOUND:
+    """XLA's options for the StableHLO module `text` on a GPU: those for a
+    program bound by arithmetic when its `intensity` reaches
+    `_COMPUTE_BOUND`, and no excess precision where it `rounds_narrow`;
+    None (the defaults) when neither, or off GPUs."""
+    if jax.default_backend() != "gpu":
         return None
-    return dict(_COMPUTE_BOUND_OPTIONS)
+    options = dict(_COMPUTE_BOUND_OPTIONS) if intensity(text) >= _COMPUTE_BOUND else {}
+    if rounds_narrow(text):
+        options["xla_allow_excess_precision"] = False
+    return options or None
+
+
+def rounds_narrow(text: str) -> bool:
+    """Whether the StableHLO module `text` converts a value to a float of 8
+    bits or fewer and that result on again: a rounding, which XLA, allowed
+    excess precision (its default), may drop for the wide value it started
+    from (it does on the GB10)."""
+    narrowed = set(_NARROWED.findall(text))
+    return bool(narrowed) and any(value in narrowed for value in _CONVERTED.findall(text))
 
 
 def intensity(text: str) -> float:

@@ -122,8 +122,12 @@ def test_the_experts_products(
     taken = weight[experts.long()]
     expected_each = torch.einsum("rki,rkoi->rko", each, taken)
     expected_shared = torch.einsum("ri,rkoi->rko", shared[:, 0], taken)
-    torch.testing.assert_close(model.run_entry("each", [each, experts]), expected_each)
-    torch.testing.assert_close(model.run_entry("shared", [shared, experts]), expected_shared)
+    # f32 sums of 96 products, in another order where the vectors are
+    # narrower (an ARM CPU's).
+    each_got = model.run_entry("each", [each, experts])
+    torch.testing.assert_close(each_got, expected_each, rtol=1e-5, atol=1e-5)
+    shared_got = model.run_entry("shared", [shared, experts])
+    torch.testing.assert_close(shared_got, expected_shared, rtol=1e-5, atol=1e-5)
 
 
 @requires_cuda
