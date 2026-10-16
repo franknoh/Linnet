@@ -2,6 +2,7 @@
 
 #include "linnet/lsp/json.hpp"
 
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -631,7 +632,14 @@ private:
             a.name = attrs["atomic"].as_string();
             break;
         case ir::OpKind::ConstFloat:
-            a.number = attrs["value"].as_number();
+            if (attrs["value"].is_string()) {
+                const std::string& text = attrs["value"].as_string();
+                a.number = text == "nan"   ? std::numeric_limits<double>::quiet_NaN()
+                           : text == "inf" ? std::numeric_limits<double>::infinity()
+                                           : -std::numeric_limits<double>::infinity();
+            } else {
+                a.number = attrs["value"].as_number();
+            }
             break;
         case ir::OpKind::ConstDim:
             a.dim = dim(attrs["value"]);
