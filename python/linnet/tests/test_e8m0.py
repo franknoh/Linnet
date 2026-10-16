@@ -2,8 +2,9 @@
 its byte on every backend: each byte widens to `2 ** (byte - 127)` (NaN for
 255) and values narrow to the power PyTorch's `float8_e8m0fnu` rounds a
 normal `f32` to, on PyTorch (compiled and interpreted), JAX, ONNX and
-StableHLO alike, save that XLA flushes byte 0's subnormal `2 ** -127` to
-zero; a checkpoint's `U8` (or `F8_E8M0`) bytes bind to it."""
+StableHLO alike, save that XLA may flush byte 0's subnormal `2 ** -127`
+to zero (an H100's XLA does, the GB10's does not); a checkpoint's `U8` (or
+`F8_E8M0`) bytes bind to it."""
 
 # pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
@@ -107,15 +108,20 @@ def model(tmp_path: Path) -> tuple[Path, Path]:
     return source, weights
 
 
-def _flushed(values: NDArray[np.float32]) -> NDArray[np.float32]:
-    """`values` as XLA holds them: byte 0's `2 ** -127`, a subnormal `f32`,
-    flushed to zero."""
-    return np.where(values == np.float32(2.0**-127), np.float32(0.0), values)
+def _as_xla_holds(got: NDArray[np.float32], values: NDArray[np.float32]) -> None:
+    """`got` is `values` as XLA holds them: byte 0's `2 ** -127`, a
+    subnormal `f32`, kept or flushed to zero, as the device has it."""
+    if not np.array_equal(got, values, equal_nan=True):
+        flushed = np.where(values == np.float32(2.0**-127), np.float32(0.0), values)
+        np.testing.assert_array_equal(got, flushed)
 
 
-def _check_round(rounded: NDArray[np.float32], flush: bool = False) -> None:
+def _check_round(rounded: NDArray[np.float32], xla: bool = False) -> None:
     expected = _widened(_codes(_values()))
-    np.testing.assert_array_equal(rounded, _flushed(expected) if flush else expected)
+    if xla:
+        _as_xla_holds(rounded, expected)
+    else:
+        np.testing.assert_array_equal(rounded, expected)
 
 
 @pytest.mark.parametrize("compile", [False, True])
@@ -156,9 +162,9 @@ def test_jax_holds_the_byte(model: tuple[Path, Path]) -> None:
     source, weights = model
     for make in (load_jax, load_source):
         widen = make(source, generics={"N": 256}, weights=weights, std_root=STDLIB, entry="widen")
-        np.testing.assert_array_equal(np.asarray(widen()), _flushed(_widened(BYTES)))
+        _as_xla_holds(np.asarray(widen()), _widened(BYTES))
         round_ = make(source, generics={"N": 256}, weights=weights, std_root=STDLIB, entry="round")
-        _check_round(np.asarray(round_(_values())), flush=True)
+        _check_round(np.asarray(round_(_values())), xla=True)
 
 
 def test_stablehlo_holds_the_byte(model: tuple[Path, Path]) -> None:
@@ -177,7 +183,7 @@ def test_stablehlo_holds_the_byte(model: tuple[Path, Path]) -> None:
         completed.stdout, options.DeviceList((device,)), options.CompileOptions()
     )
     (got,) = executable.execute([jax.device_put(_values(), device)])
-    _check_round(np.asarray(got), flush=True)
+    _check_round(np.asarray(got), xla=True)
 
 
 def test_onnx_holds_the_byte(model: tuple[Path, Path]) -> None:

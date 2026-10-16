@@ -35,15 +35,27 @@ _dequantized: dict[int, tuple[tuple[int, int], torch.Tensor]] = {}
 _kernels: list[bool] = []
 
 
+def grouped_mm_native(device: torch.device) -> bool:
+    """Whether `torch._grouped_mm` has a kernel of its own on `device`:
+    Hopper and the data-center Blackwells (compute capability 9 and 10).
+    Elsewhere (the GB10's 12.1, say) PyTorch runs it group by group from
+    the host, which reads the offsets back and so fails in a CUDA graph."""
+    return (
+        hasattr(torch, "_grouped_mm")
+        and device.type == "cuda"
+        and torch.cuda.get_device_capability(device)[0] in (9, 10)
+    )
+
+
 def available(x: torch.Tensor) -> bool:
     """Whether `mxfp4_grouped` runs for `x`: bf16 on a CUDA GPU of compute
-    capability 9 or later (Hopper), where `triton_kernels`' product or
-    `torch._grouped_mm` does."""
+    capability 9 or later (Hopper), where `triton_kernels`' product runs,
+    or `torch._grouped_mm` without it."""
     return (
         x.is_cuda
         and x.dtype == torch.bfloat16
-        and hasattr(torch, "_grouped_mm")
         and torch.cuda.get_device_capability(x.device)[0] >= 9
+        and (_triton_kernels() or grouped_mm_native(x.device))
     )
 
 
@@ -211,6 +223,7 @@ def mxfp4_grouped(
 __all__ = [
     "available",
     "dequantized",
+    "grouped_mm_native",
     "mxfp4_grouped",
     "mxfp4_grouped_routed",
     "routes",

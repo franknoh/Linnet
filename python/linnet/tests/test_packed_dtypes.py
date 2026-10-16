@@ -150,6 +150,8 @@ def test_stablehlo_casts_natively(model: tuple[Path, Path, NDArray[np.float32]])
     jax = pytest.importorskip("jax")
     import jax.extend as jex
 
+    from linnet.jax.load import compiler_options
+
     source, _, _ = model
     command = [find_compiler(), "stablehlo", "--std", str(STDLIB), "--entry", "round_values"]
     completed = subprocess.run(
@@ -161,8 +163,12 @@ def test_stablehlo_casts_natively(model: tuple[Path, Path, NDArray[np.float32]])
     options = importlib.import_module("jaxlib._jax")
     backend = jex.backend.get_backend()
     device = backend.local_devices()[0]
+    # With the options Linnet compiles the module with: the GB10's XLA,
+    # allowed excess precision, drops the rounding.
+    compile_options = options.CompileOptions()
+    compile_options.env_option_overrides = list((compiler_options(completed.stdout) or {}).items())
     executable = backend.compile_and_load(
-        completed.stdout, options.DeviceList((device,)), options.CompileOptions()
+        completed.stdout, options.DeviceList((device,)), compile_options
     )
     (got,) = executable.execute([jax.device_put(VALUES, device)])
     expected = VALUES.astype(ml_dtypes.float4_e2m1fn).astype(np.float32)

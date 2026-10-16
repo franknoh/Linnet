@@ -142,8 +142,10 @@ def fp8_block_operands(weight: torch.Tensor, scale: torch.Tensor, rounded: int) 
     transposed = weight.view(torch.float8_e4m3fn).t()
     block = weight.shape[0] // scale.shape[0]
     fast = _fp8_kernels(weight) if weight.shape[1] == block * scale.shape[1] else 0
-    # PyTorch's block-scaled FP8 product takes blocks of 128 only.
-    fast = min(fast, 1) if block != 128 else fast
+    # PyTorch's block-scaled FP8 product takes blocks of 128 only, and cuBLAS
+    # has it on Hopper and the data-center Blackwells alone (not the GB10).
+    if block != 128 or _capability(weight)[0] not in (9, 10):
+        fast = min(fast, 1)
     return weight, transposed, scale.float().contiguous(), block, rounded, fast
 
 
