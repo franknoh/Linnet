@@ -937,6 +937,8 @@ def bind_input(env: Bindings, param: Value, shape: Sequence[int], dtype: str | N
             # A packed format's tensor arrives as its bytes, the last axis
             # halved, as PyTorch and ONNX hold it.
             shape = (*shape[:-1], 2 * shape[-1])
+        elif dtype == "u8" and wanted in DTYPES and DTYPES[wanted].byte:
+            pass  # held as its byte (E8M0)
         elif dtype != wanted:
             raise PlanError(f"input `{name}` has dtype {dtype}, expected {wanted}")
     if isinstance(declared, ScalarType):

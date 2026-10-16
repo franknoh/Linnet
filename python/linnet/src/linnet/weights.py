@@ -61,7 +61,7 @@ def numpy_array(tensor: RawTensor) -> np.ndarray:
     found = BY_SAFETENSORS.get(tensor.dtype)
     if found is None:
         raise LinnetError(f"`{tensor.name}` has dtype {tensor.dtype}, which Linnet does not read")
-    if found.name == "bf16" or found.storage:
+    if found.name == "bf16" or (found.storage and not found.byte):
         import ml_dtypes
 
         dtype = np.dtype(getattr(ml_dtypes, found.numpy))
@@ -161,8 +161,8 @@ def tensor_problem(
 
 def as_bits(code: str, wanted: str) -> bool:
     """Whether a checkpoint tensor of SafeTensors dtype `code` binds to a
-    parameter of Linnet dtype `wanted` as its bytes: FP8 to `u8`, or `U8`
-    to an FP8 format."""
+    parameter of Linnet dtype `wanted` as its bytes: FP8 or E8M0 to `u8`,
+    or `U8` to a storage format."""
     return (code in AS_BITS and wanted == "u8") or (code == "U8" and wanted in STORAGE)
 
 

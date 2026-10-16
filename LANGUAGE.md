@@ -186,10 +186,10 @@ shared = { path = "../shared" }
 | enum | `enum Pooling { Mean, ClassToken }`, variants `Pooling.Mean` |
 | dtype | `dtype word = int(bits: 32)`, `pub dtype f8e4m3 = float(exponent: 4, mantissa: 3, inf: false)` |
 
-`std.dtypes` declares the FP8 formats `f8e4m3` and `f8e5m2` and the 4-bit
-`i4`, `u4` and `f4e2m1`. They are storage formats: a tensor of one is cast,
-moved, sliced and indexed, but computes only after a `cast` to a built-in
-dtype. A 4-bit tensor packs two elements a byte along its last axis, which
+`std.dtypes` declares the FP8 formats `f8e4m3` and `f8e5m2`, `f8e8m0` (the
+power-of-two scale of an MX block), and the 4-bit `i4`, `u4` and `f4e2m1`.
+They are storage formats: a tensor of one is cast, moved, sliced and
+indexed, but computes only after a `cast` to a built-in dtype. A 4-bit tensor packs two elements a byte along its last axis, which
 operations keep whole. A codebook format gives each code of a small unsigned
 format a value, `dtype nf4 = codebook(carrier: u4, values: [...])`: a cast
 from it looks each code up, a cast to it takes the nearest value's code.

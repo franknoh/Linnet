@@ -27,7 +27,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   NF4; MXFP4).
 - `dtype` declarations of `int`, `float` and `codebook` formats: the
   prelude declares the built-in dtypes, `std.dtypes` FP8, the packed 4-bit
-  `i4`, `u4` and FP4 E2M1, and NF4.
+  `i4`, `u4` and FP4 E2M1, E8M0 (MX block scales, held as their byte), and
+  NF4.
 - The specification in `spec/`, with an executable suite in `spec-tests/`.
 - Packages with path and git dependencies (GitHub and the Hugging Face Hub),
   pinned in `linnet.lock` by `linnet fetch` and `linnet update`.

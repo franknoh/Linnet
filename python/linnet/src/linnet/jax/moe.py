@@ -54,8 +54,8 @@ class _KernelRef(Protocol):
 
 def mxfp4_weight(blocks: jax.Array, scales: jax.Array, dtype: DTypeLike) -> jax.Array:
     """MXFP4 experts (`blocks` [E, Out, G, 32] FP4 E2M1, `scales` [E, Out, G]
-    u8) as `std.quant::dequantize_mxfp4` reads them: [E, Out, G * 32] in
-    `dtype`, every value exact (a power of two times an FP4 value)."""
+    E8M0 bytes) as `std.quant::dequantize_mxfp4` reads them: [E, Out, G * 32]
+    in `dtype`, every value exact (a power of two times an FP4 value)."""
     exponent = jnp.clip(scales.astype(jnp.int32) - 127, -62, 62).astype(jnp.float32)
     values = blocks.astype(jnp.float32) * jnp.exp2(exponent)[..., None]
     count, out, groups = scales.shape
