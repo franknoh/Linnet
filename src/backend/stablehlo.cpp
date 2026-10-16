@@ -4,6 +4,7 @@
 #include "linnet/support/text.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <vector>
@@ -77,6 +78,31 @@ std::string highest(ScalarKind dtype) {
     default:
         return std::to_string(sema::integer_limits(dtype).highest);
     }
+}
+
+// The quiet NaN's bit pattern, as an MLIR literal: MLIR spells no NaN or
+// infinity in decimal.
+std::string not_a_number(ScalarKind dtype) {
+    switch (dtype) {
+    case ScalarKind::F16:
+        return "0x7E00";
+    case ScalarKind::BF16:
+        return "0x7FC0";
+    case ScalarKind::F64:
+        return "0x7FF8000000000000";
+    default:
+        return "0x7FC00000";
+    }
+}
+
+std::string real_text(double value, ScalarKind dtype) {
+    if (value != value) {
+        return not_a_number(dtype);
+    }
+    if (std::isinf(value)) {
+        return value > 0 ? highest(dtype) : lowest(dtype);
+    }
+    return decimal_float(value);
 }
 
 const char* elementwise_name(Elementwise kind) {
@@ -163,7 +189,7 @@ public:
             text = std::to_string(literal.integer);
             break;
         case Literal::Kind::Real:
-            text = decimal_float(literal.real);
+            text = real_text(literal.real, dtype);
             break;
         case Literal::Kind::Boolean:
             text = literal.integer != 0 ? "true" : "false";

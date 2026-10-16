@@ -152,7 +152,8 @@ public:
                                 ScalarKind::F8E5M2,
                                 ScalarKind::I4,
                                 ScalarKind::U4,
-                                ScalarKind::F4E2M1}) {
+                                ScalarKind::F4E2M1,
+                                ScalarKind::F8E8M0}) {
             const std::string name(sema::scalar_name(kind));
             if (names_word(body, name) && module_path() != "std.dtypes") {
                 imports_["std.dtypes"].insert(name);

@@ -38,9 +38,11 @@ enum class ScalarKind : std::uint8_t {
     F8E4M3, // float(exponent: 4, mantissa: 3, inf: false): FP8 E4M3FN
     F8E5M2, // float(exponent: 5, mantissa: 2): FP8 E5M2
     // Packed storage formats: two elements a byte along the last axis.
-    I4,    // int(bits: 4)
-    U4,    // int(bits: 4, signed: false)
-    F4E2M1 // float(exponent: 2, mantissa: 1, inf: false, nan: false): FP4 E2M1
+    I4,     // int(bits: 4)
+    U4,     // int(bits: 4, signed: false)
+    F4E2M1, // float(exponent: 2, mantissa: 1, inf: false, nan: false): FP4 E2M1
+    // A power of two, held as its byte: an MX block's scale.
+    F8E8M0 // float(exponent: 8, mantissa: 0, signed: false, inf: false): E8M0
 };
 
 // What a dtype is, as a `dtype` declaration spells it (spec §3.1): its

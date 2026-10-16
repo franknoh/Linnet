@@ -43,7 +43,7 @@ the last axis halved).
 | `linear_fp8(x, weight, scale, bias)`, `linear_fp8_blocks<Block>(...)` | linear layers over FP8 weights |
 | `dequantize_nf4<Out, Blocks, Block, T>(q, absmax)` | NF4 codes, a scale per `Block` inputs: `cast<f32>(q) * absmax` |
 | `linear_nf4<Block>(x, q, absmax, bias)` | a linear layer over NF4 weights |
-| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: `f4e2m1` values in blocks of 32 (`[E, Out, G, 32]`), one E8M0 scale byte a block |
+| `dequantize_mxfp4<E, Out, G, T>(blocks, scales)` | MXFP4: `f4e2m1` values in blocks of 32 (`[E, Out, G, 32]`), one `f8e8m0` scale a block (`[E, Out, G]`) |
 | `mxfp4_experts(x, blocks, scales, experts)` | a mixture's chosen experts multiplied from MXFP4, each slot its own input |
 | `mxfp4_experts_shared(x, blocks, scales, experts)` | the same, each row's slots sharing one input (`x: [R, 1, In]`) |
 | `mxfp4_linear_experts_shared(x, blocks, scales, experts)` | `std.nn.moe::linear_experts_shared` with MXFP4 experts, many rows (`x: [R, In]`) |

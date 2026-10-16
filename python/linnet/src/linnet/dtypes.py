@@ -23,7 +23,8 @@ class DType:
     (`torch.<name>`). A storage format (`std.dtypes`) is cast to and from but
     computes nothing; a 4-bit one is packed, two elements a byte along a
     tensor's last axis, which PyTorch holds as `uint8` bytes and SafeTensors
-    as `U8`."""
+    as `U8`. One held as `byte` (E8M0) is its byte in every framework, whose
+    names here are `u8`'s: its casts are integer operations on it."""
 
     name: str
     bits: int
@@ -34,6 +35,7 @@ class DType:
     numpy: str
     torch: str
     storage: bool = False
+    byte: bool = False
 
     @property
     def element_bytes(self) -> int:
@@ -86,6 +88,7 @@ DTYPES: dict[str, DType] = {
         DType("i4", 4, "int", "", 22, "i4", "int4", "uint8", True),
         DType("u4", 4, "uint", "", 21, "ui4", "uint4", "uint8", True),
         DType("f4e2m1", 4, "float", "", 23, "f4E2M1FN", "float4_e2m1fn", "uint8", True),
+        DType("f8e8m0", 8, "float", "F8_E8M0", 2, "ui8", "uint8", "uint8", True, True),
     )
 }
 
@@ -105,11 +108,12 @@ BY_SAFETENSORS: dict[str, DType] = {d.safetensors: d for d in DTYPES.values() if
 PACKED = frozenset(d.name for d in DTYPES.values() if d.packed)
 # Checkpoint dtypes whose bytes a `u8` parameter may also hold, as bits
 # (FP8 that `std.quant::decode_fp8` decodes); a `U8` tensor binds to an FP8
-# parameter the same way (`linnet.weights.as_bits`).
-AS_BITS = frozenset(("F8_E4M3", "F8_E5M2"))
-BY_ONNX: dict[int, DType] = {d.onnx: d for d in DTYPES.values()}
-BY_MLIR: dict[str, DType] = {d.mlir: d for d in DTYPES.values()}
-BY_NUMPY: dict[str, DType] = {d.numpy: d for d in DTYPES.values()}
+# or E8M0 parameter the same way (`linnet.weights.as_bits`).
+AS_BITS = frozenset(("F8_E4M3", "F8_E5M2", "F8_E8M0"))
+# A dtype held as its byte has `u8`'s names, which name `u8`.
+BY_ONNX: dict[int, DType] = {d.onnx: d for d in DTYPES.values() if not d.byte}
+BY_MLIR: dict[str, DType] = {d.mlir: d for d in DTYPES.values() if not d.byte}
+BY_NUMPY: dict[str, DType] = {d.numpy: d for d in DTYPES.values() if not d.byte}
 
 
 def from_safetensors(code: str) -> str | None:

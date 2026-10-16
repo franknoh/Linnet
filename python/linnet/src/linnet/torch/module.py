@@ -36,8 +36,16 @@ if TYPE_CHECKING:
 
     from ..train import Copies
 
-# `u8` and the FP8 formats, whose bytes a checkpoint may hold as either.
-_BYTE_FORMATS = frozenset((torch.uint8, torch.float8_e4m3fn, torch.float8_e5m2))
+# `u8` and the FP8 formats, whose bytes a checkpoint may hold as either; and
+# E8M0 (PyTorch 2.7 on), held as its byte.
+_BYTE_FORMATS = frozenset(
+    (
+        torch.uint8,
+        torch.float8_e4m3fn,
+        torch.float8_e5m2,
+        *((torch.float8_e8m0fnu,) if hasattr(torch, "float8_e8m0fnu") else ()),
+    )
+)
 
 # What an entry returns: its one result, or a tuple of its results.
 

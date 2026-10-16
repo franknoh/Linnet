@@ -12,14 +12,17 @@ TORCH_DTYPES: dict[str, torch.dtype] = {
 }
 
 # PyTorch dtypes back to Linnet names, for binding a dtype generic from an
-# input: a packed format is held as `uint8`, which names `u8`.
+# input: a packed format, or one held as its byte, is held as `uint8`,
+# which names `u8`.
 LINNET_DTYPES: dict[torch.dtype, str] = {
-    TORCH_DTYPES[name]: name for name, info in DTYPES.items() if not info.packed
+    TORCH_DTYPES[name]: name for name, info in DTYPES.items() if not info.packed and not info.byte
 }
 
 # PyTorch dtypes as SafeTensors names them.
 SAFETENSORS_NAMES: dict[torch.dtype, str] = {
-    TORCH_DTYPES[name]: info.safetensors for name, info in DTYPES.items() if not info.packed
+    TORCH_DTYPES[name]: info.safetensors
+    for name, info in DTYPES.items()
+    if not info.packed and not info.byte
 }
 
 

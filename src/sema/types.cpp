@@ -26,30 +26,32 @@ constexpr auto scalar_names = std::to_array<std::string_view>({"bool",
                                                                "f8e5m2",
                                                                "i4",
                                                                "u4",
-                                                               "f4e2m1"});
+                                                               "f4e2m1",
+                                                               "f8e8m0"});
 
 using Family = DTypeFormat::Family;
 
 // In `ScalarKind` order.
 constexpr auto formats = std::to_array<DTypeFormat>({
-    {Family::Bool, 8, false, 0, 0, false, false},
-    {Family::Int, 8, true, 0, 0, false, false},
-    {Family::Int, 16, true, 0, 0, false, false},
-    {Family::Int, 32, true, 0, 0, false, false},
-    {Family::Int, 64, true, 0, 0, false, false},
-    {Family::Int, 8, false, 0, 0, false, false},
-    {Family::Int, 16, false, 0, 0, false, false},
-    {Family::Int, 32, false, 0, 0, false, false},
-    {Family::Int, 64, false, 0, 0, false, false},
-    {Family::Float, 16, true, 5, 10, true, true},
-    {Family::Float, 16, true, 8, 7, true, true},
-    {Family::Float, 32, true, 8, 23, true, true},
-    {Family::Float, 64, true, 11, 52, true, true},
-    {Family::Float, 8, true, 4, 3, false, true},
-    {Family::Float, 8, true, 5, 2, true, true},
-    {Family::Int, 4, true, 0, 0, false, false},
-    {Family::Int, 4, false, 0, 0, false, false},
-    {Family::Float, 4, true, 2, 1, false, false},
+    {Family::Bool, 8, false, 0, 0, false, false},  // bool
+    {Family::Int, 8, true, 0, 0, false, false},    // i8
+    {Family::Int, 16, true, 0, 0, false, false},   // i16
+    {Family::Int, 32, true, 0, 0, false, false},   // i32
+    {Family::Int, 64, true, 0, 0, false, false},   // i64
+    {Family::Int, 8, false, 0, 0, false, false},   // u8
+    {Family::Int, 16, false, 0, 0, false, false},  // u16
+    {Family::Int, 32, false, 0, 0, false, false},  // u32
+    {Family::Int, 64, false, 0, 0, false, false},  // u64
+    {Family::Float, 16, true, 5, 10, true, true},  // f16
+    {Family::Float, 16, true, 8, 7, true, true},   // bf16
+    {Family::Float, 32, true, 8, 23, true, true},  // f32
+    {Family::Float, 64, true, 11, 52, true, true}, // f64
+    {Family::Float, 8, true, 4, 3, false, true},   // f8e4m3
+    {Family::Float, 8, true, 5, 2, true, true},    // f8e5m2
+    {Family::Int, 4, true, 0, 0, false, false},    // i4
+    {Family::Int, 4, false, 0, 0, false, false},   // u4
+    {Family::Float, 4, true, 2, 1, false, false},  // f4e2m1
+    {Family::Float, 8, false, 8, 0, false, true},  // f8e8m0
 });
 static_assert(formats.size() == scalar_names.size());
 
@@ -143,7 +145,8 @@ DTypeFormat dtype_format(bool is_float, const std::map<std::string_view, std::in
         format.family = Family::Float;
         format.exponent = static_cast<std::uint32_t>(value_of("exponent", 0));
         format.mantissa = static_cast<std::uint32_t>(value_of("mantissa", 0));
-        format.bits = 1 + format.exponent + format.mantissa;
+        format.is_signed = value_of("signed", 1) != 0;
+        format.bits = (format.is_signed ? 1 : 0) + format.exponent + format.mantissa;
         format.inf = value_of("inf", 1) != 0;
         format.nan = value_of("nan", 1) != 0;
     } else {

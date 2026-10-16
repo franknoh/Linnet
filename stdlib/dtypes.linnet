@@ -21,6 +21,14 @@ pub dtype u4 = int(bits: 4, signed: false)
 // 4, 6 and their negatives.
 pub dtype f4e2m1 = float(exponent: 2, mantissa: 1, inf: false, nan: false)
 
+// E8M0 (OCP MX), the scale of an MX block: a power of two `2 ** (e - 127)`
+// for a byte `e` of 0 to 254, and NaN for 255, with no sign, zero or
+// infinities. A cast to it takes a value's magnitude to a power of two, as
+// PyTorch's `float8_e8m0fnu` rounds a normal `f32`: to the next one up from
+// 1.5 times a power (and at it); below `2 ** -127`, zero included, to
+// `2 ** -127`; NaN, infinities and from `1.5 * 2 ** 127` up, to NaN.
+pub dtype f8e8m0 = float(exponent: 8, mantissa: 0, signed: false, inf: false)
+
 // NF4 (QLoRA's NormalFloat): codes of `u4` for 16 values spread as a normal
 // distribution's quantiles over -1 to 1, the ones bitsandbytes uses. A cast
 // to it takes each value to the nearest of them (a tie to the lower).

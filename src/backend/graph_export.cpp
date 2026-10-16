@@ -2743,7 +2743,7 @@ bool literal_arguments(const std::string& arguments) {
     static const std::set<std::string, std::less<>> argument_words = [] {
         std::set<std::string, std::less<>> words{"torch", "jnp", "bool_", "None", "dtype"};
         for (auto kind = static_cast<int>(sema::ScalarKind::Bool);
-             kind <= static_cast<int>(sema::ScalarKind::F4E2M1);
+             kind <= static_cast<int>(sema::ScalarKind::F8E8M0);
              ++kind) {
             words.emplace(dtype_names(static_cast<sema::ScalarKind>(kind)).numpy);
         }
@@ -3167,7 +3167,7 @@ std::string python_tuple(const Dims& dims) {
 
 const DTypeNames& dtype_names(sema::ScalarKind dtype) {
     // In `ScalarKind` order.
-    static constexpr std::array<DTypeNames, 18> names{{
+    static constexpr std::array<DTypeNames, 19> names{{
         {"i1", "bool", 9, "bool"},
         {"i8", "int8", 3, "int8"},
         {"i16", "int16", 5, "int16"},
@@ -3186,6 +3186,9 @@ const DTypeNames& dtype_names(sema::ScalarKind dtype) {
         {"i4", "int4", 22, "int4"},
         {"ui4", "uint4", 21, "uint4"},
         {"f4E2M1FN", "float4e2m1", 23, "float4_e2m1fn"},
+        // E8M0 is held as its byte everywhere: its casts are integer
+        // operations on it (`ir::expand_format_casts`).
+        {"ui8", "uint8", 2, "uint8"},
     }};
     return names[static_cast<std::size_t>(dtype)];
 }

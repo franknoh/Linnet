@@ -5,6 +5,7 @@
 #include "linnet/support/text.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
@@ -538,7 +539,13 @@ private:
             }
             break;
         case ir::OpKind::ConstFloat:
-            attrs.push_back("\"value\":" + shortest_float(a.number));
+            // JSON has no NaN or infinity: those are strings, as Python's
+            // `float` reads them.
+            attrs.push_back("\"value\":" + (std::isfinite(a.number)
+                                                ? shortest_float(a.number)
+                                                : json_string(std::isnan(a.number) ? "nan"
+                                                              : a.number > 0       ? "inf"
+                                                                                   : "-inf")));
             break;
         case ir::OpKind::ConstDim:
             attrs.push_back("\"value\":" + dim(a.dim));

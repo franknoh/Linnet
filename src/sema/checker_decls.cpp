@@ -778,7 +778,7 @@ void Checker::resolve_dtype(EntityId entity) {
               decl.family.span,
               "unknown dtype family `" + std::string(decl.family.text) + "`")
             .note("a dtype is an `int(bits: N, signed: B)`, a "
-                  "`float(exponent: E, mantissa: M, inf: B, nan: B)`, or a "
+                  "`float(exponent: E, mantissa: M, signed: B, inf: B, nan: B)`, or a "
                   "`codebook(carrier: u4, values: [...])`");
         return;
     }
@@ -787,6 +787,7 @@ void Checker::resolve_dtype(EntityId entity) {
         is_float
             ? std::vector<std::pair<std::string_view, bool>>{{"exponent", true},
                                                              {"mantissa", true},
+                                                             {"signed", false},
                                                              {"inf", false},
                                                              {"nan", false}}
             : std::vector<std::pair<std::string_view, bool>>{{"bits", true}, {"signed", false}};
@@ -840,8 +841,9 @@ void Checker::resolve_dtype(EntityId entity) {
     const auto scalar = scalar_of(format);
     if (!scalar) {
         error(codes::invalid_dtype, decl.name.span, "no target stores this format")
-            .note("Linnet stores `bool`, `int` of 8, 16, 32 and 64 bits, IEEE floats of 16, 32 "
-                  "and 64 bits, `bf16`, and the FP8 formats E4M3 (`inf: false`) and E5M2");
+            .note("Linnet stores `bool`, `int` of 4, 8, 16, 32 and 64 bits, IEEE floats of 16, "
+                  "32 and 64 bits, `bf16`, the FP8 formats E4M3 (`inf: false`) and E5M2, FP4 "
+                  "E2M1 (`inf: false, nan: false`), and E8M0 (`signed: false, inf: false`)");
         return;
     }
     info.aliased = types_.scalar(*scalar);

@@ -1,4 +1,4 @@
-#include "linnet/ir/codebooks.hpp"
+#include "linnet/ir/formats.hpp"
 #include "linnet/ir/ir.hpp"
 
 #include "lowered.hpp"
@@ -157,11 +157,31 @@ TEST("ir: codebook casts lower to casts of their codes") {
     test::with_lowered(source, [](ir::Module& module) {
         // Lowered, the casts stand as source wrote them.
         CHECK_EQ(test::count(ir::print(module), "select"), std::size_t{0});
-        ir::expand_codebook_casts(module);
+        ir::expand_format_casts(module);
         const std::string text = ir::print(module);
         // Widening selects each code's value; narrowing counts midpoints.
         CHECK_EQ(test::count(text, "select"), std::size_t{15});
         CHECK_EQ(test::count(text, "compare gt"), std::size_t{15});
+        CHECK(ir::verify(module).empty());
+        return 0;
+    });
+}
+
+TEST("ir: E8M0 casts lower to integer operations on its byte") {
+    const std::string source =
+        "module m\n"
+        "dtype e8m0 = float(exponent: 8, mantissa: 0, signed: false, inf: false)\n"
+        "fn round(x: Tensor[4; f32]) -> Tensor[4; f32] {\n"
+        "    return cast<f32>(cast<e8m0>(x))\n"
+        "}\n";
+    test::with_lowered(source, [](ir::Module& module) {
+        CHECK_EQ(test::count(ir::print(module), "shl"), std::size_t{0});
+        ir::expand_format_casts(module);
+        const std::string text = ir::print(module);
+        // A power of two from three shifts each way; the narrowing's
+        // logarithm only guesses the exponent.
+        CHECK_EQ(test::count(text, "shl"), std::size_t{6});
+        CHECK_EQ(test::count(text, " log "), std::size_t{1});
         CHECK(ir::verify(module).empty());
         return 0;
     });
