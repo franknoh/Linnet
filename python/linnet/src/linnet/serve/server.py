@@ -102,7 +102,7 @@ class Server:
         self._active: list[_Pending] = []
         self.failed: str | None = None  # the engine's error, once it has one
         self._stopping = threading.Event()
-        self._http = ThreadingHTTPServer((host, port), _handler(self))
+        self._http = _HTTPServer((host, port), _handler(self))
         self._http.daemon_threads = True
         self._engine_thread = threading.Thread(target=self._run, name="engine", daemon=True)
 
@@ -228,6 +228,12 @@ class Server:
 
     def cancel(self, pending: _Pending) -> None:
         self._inbox.put(("cancel", pending))
+
+
+class _HTTPServer(ThreadingHTTPServer):
+    # Connections waiting to be accepted: the default 5 resets the rest of
+    # a burst of clients connecting at once.
+    request_queue_size = 1024
 
 
 def _done(pending: _Pending) -> bool:

@@ -300,11 +300,12 @@ class Engine:
     instead, first fit by decreasing length into passes of up to `pack`
     tokens (at least the longest prompt a row holds) and `Batch` prompts,
     each padded at its end to the smallest of `pack_sizes` that holds it: by
-    default 512, 1024, 1536, 2048, 3072 and 4096, scaled to `pack`.
-    `pack=0` keeps the grouped passes. A card that also has `step_packed`
-    takes the step of the rows already decoding in the smallest such pass of
-    a step, if it fits the second of `pack_sizes` (`mix=False` keeps them
-    apart); the rows that pass admits take their first step with the next.
+    default 512, 1024, 1536, 2048, 3072 and 4096, scaled to `pack`, with 128
+    and 256 before them for a short prompt alone. `pack=0` keeps the grouped
+    passes. A card that also has `step_packed` takes the step of the rows
+    already decoding in the smallest such pass of a step, if it fits the
+    second of the scaled sizes (`mix=False` keeps them apart); the rows that
+    pass admits take their first step with the next.
 
     `paged` serves from pages (see the module docs): by default when the
     card has the paged entries and the model was loaded with `Batch` 1.
@@ -314,8 +315,8 @@ class Engine:
     prompt's (by default 1%). Prompts fill passes in the order they arrive,
     one cut where a pass ends and continued in the next, so a pass holds
     `pack` tokens whatever the prompts' lengths; while rows decode, a step
-    passes `chunk` prompt tokens at most (by default the second of
-    `pack_sizes`), along with their step. `share` keeps every full page by
+    passes `chunk` prompt tokens at most (by default the second of the
+    scaled sizes), along with their step. `share` keeps every full page by
     the tokens in it and before it: a prompt starting with the same tokens
     as one before reads those pages instead of passing them, up to its last
     page, and pages nobody uses are given out again oldest first.
@@ -358,6 +359,10 @@ class Engine:
         limit = self.backend.max_seq
         self.pack = 0
         self.pack_sizes: list[int] = []
+        # The sizes up to the first, which warmup compiles whatever the
+        # prompts it is given.
+        self._smallest = 0
+        sizes: list[int] = []
         if pack > 0 and self.backend.packs:
             # A pass holds the longest prompt a row does, unless a prompt
             # can pass in chunks (paged).
@@ -366,8 +371,14 @@ class Engine:
             # kernel; a smaller pass runs as a plain masked attention.
             step = 128 if unit >= 128 else 16
             unit = -(-unit // step) * step
-            self.pack_sizes = [unit * k for k in (1, 2, 3, 4, 6, 8)]
+            sizes = [unit * k for k in (1, 2, 3, 4, 6, 8)]
+            # A short prompt alone (a chat's turn) passes in 128 or 256
+            # tokens rather than `unit`: on a GPU short of compute, a pass
+            # of 512 takes a few times as long as one of 128.
+            small = [s for s in (128, 256) if s < unit]
+            self.pack_sizes = [*small, *sizes]
             self.pack = self.pack_sizes[-1]
+            self._smallest = unit
         if buckets is None:
             buckets = []
             length = 16
@@ -380,7 +391,7 @@ class Engine:
         # The largest pass that takes the decoding rows' step along: the
         # prompts that arrive while others decode are few, and each size
         # `step_packed` runs at is one more compiled pass at warmup.
-        second = self.pack_sizes[min(1, len(self.pack_sizes) - 1)] if self.pack else 0
+        second = sizes[min(1, len(sizes) - 1)] if self.pack else 0
         self.chunk = 0
         if self.paged:
             self.chunk = second if chunk is None else min(max(1, chunk), self.pack)
@@ -422,7 +433,7 @@ class Engine:
             # The sizes a pass can reach: up to the one that holds the longest
             # `slots` prompts together (every size, without lengths).
             longest = sorted(prompt_lengths)[-self.slots :]
-            reach = sum(longest) if longest else self.pack
+            reach = max(sum(longest), self._smallest) if longest else self.pack
             for size in self.pack_sizes:
                 # Twice: the first call compiles the pass, the second captures
                 # it as a CUDA graph, which a pass of thousands of tokens takes
@@ -686,11 +697,19 @@ class Engine:
         return 1
 
     def _decoding(self) -> list[tuple[int, Completion]]:
-        """The rows that take a step: in use, their prompts passed."""
+        """The rows that take a step: in use, their prompts passed, and short
+        of `max_new_tokens` with the passes queued for them. A step past it
+        would only hold up the next requests' passes."""
+        queued: dict[int, int] = {}
+        for pending in self._queued:
+            for _, _, completion in pending.owners:
+                queued[id(completion)] = queued.get(id(completion), 0) + 1
         return [
             (slot, c)
             for slot, c in enumerate(self._rows)
-            if c is not None and slot not in self._filling
+            if c is not None
+            and slot not in self._filling
+            and len(c.tokens) + queued.get(id(c), 0) < c.request.max_new_tokens
         ]
 
     def _read_behind(self, ahead: int) -> list[Completion]:
@@ -1294,6 +1313,10 @@ class _TorchBackend:
             )
             self._pages: list[list[int]] = [[] for _ in range(rows)]
             self._changed: set[int] = set()
+            # The rows without pages: free, or freed. A step keeps them at
+            # position 0, where their attention reads one position (of page
+            # 0, which nobody reads) rather than every page of the table.
+            self._unused = torch.ones(rows, dtype=torch.bool, device=self.device)
             self.packs = True
             self.mixes = "step_paged" in model.entries
         else:
@@ -1416,7 +1439,10 @@ class _TorchBackend:
             rows = sorted(self._changed)
             width = self.table.shape[1]
             values = [self._pages[r] + [0] * (width - len(self._pages[r])) for r in rows]
-            self.table.index_copy_(0, self._put(rows).long(), self._put(values))
+            at = self._put(rows).long()
+            self.table.index_copy_(0, at, self._put(values))
+            unused = [int(not self._pages[r]) for r in rows]
+            self._unused.index_copy_(0, at, self._put(unused, self.torch.bool))
             self._changed.clear()
         return self.table
 
@@ -1586,6 +1612,8 @@ class _TorchBackend:
         # A row whose request has finished computes along until the engine
         # reads that it has; its position stays inside the cache.
         self.positions.add_(1).clamp_(max=self.max_seq - 1)
+        if self.paged:
+            self.positions.masked_fill_(self._unused, 0)
         return produced
 
     def _run(self, entry: str, inputs: list[torch.Tensor]) -> object:

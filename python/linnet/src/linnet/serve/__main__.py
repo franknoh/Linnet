@@ -61,7 +61,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         metavar="POSITIONS",
         help="serve from pages of one pool of POSITIONS cached positions (the card's paged "
-        "entries, PyTorch): --batch is then the requests in flight, --max-seq the longest",
+        "entries, PyTorch): --batch is then the requests in flight, --max-seq the longest "
+        "(default: on PyTorch, when the card has them, --batch times --max-seq positions)",
+    )
+    parser.add_argument(
+        "--fixed-rows",
+        action="store_true",
+        help="keep a cache row of --max-seq positions for each of --batch requests instead "
+        "of pages (each step then reads every row whole)",
     )
     parser.add_argument("--dtype", help="the `T` generic (default: the card's; f16 on ONNX)")
     parser.add_argument("--weights", help="a checkpoint on disk instead of the card's")
@@ -84,8 +91,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         nargs="*",
         metavar="LENGTH",
-        help="prompt lengths to compile for before serving (default: one short prompt; "
-        "the passes longer prompts need compile when first seen)",
+        help="prompt lengths to compile for before serving (default: every pass size; "
+        "with lengths, the passes longer prompts need compile when first seen)",
     )
     args = parser.parse_args(argv)
 
@@ -95,7 +102,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.pool and args.backend != "torch":
         parser.error("--pool serves from pages with the PyTorch backend")
+    if args.pool and args.fixed_rows:
+        parser.error("--pool serves from pages, --fixed-rows from rows: give one")
     card = nest.resolve(args.model)
+    if args.backend == "torch" and not args.pool and not args.fixed_rows:
+        # Pages by default: a step reads the rows in flight to their lengths,
+        # where fixed rows are read whole, every one of them.
+        entries = {entry.short_name for entry in card.program().entries()}
+        if {"prefill_paged", "decode_paged"} <= entries:
+            args.pool = args.batch * args.max_seq
     generics: dict[str, int | str] = (
         {"Batch": 1, "MaxSeq": args.pool}
         if args.pool
@@ -145,9 +160,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.pool
         else Engine(model, plans=args.plans)
     )
-    # The smallest pass by default: a few seconds rather than a minute or more
-    # for every pass size.
-    engine.warmup(args.warmup if args.warmup else [64])
+    # Every pass size by default: a pass first compiled while serving holds
+    # up every request in flight for as long.
+    engine.warmup(args.warmup or [])
     server = Server(engine, tokenizer, name=name, eos=eos, host=args.host, port=args.port)
     host, port = server.address
     print(f"serving {name} at http://{host}:{port}/v1", flush=True)
