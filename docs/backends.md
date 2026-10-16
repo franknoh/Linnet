@@ -72,7 +72,8 @@ its entry point:
 | --- | --- |
 | `deepgemm` | block-scaled FP8 `linear` calls (`Fp8BlockLinear`, blocks of 128) under `numerics="fast"`, by DeepGEMM, on Hopper |
 | `bitsandbytes` | NF4 `linear` calls (`Nf4Linear`), by bitsandbytes' 4-bit product |
-| `flash-attn` | decode attention (one query a row, a prefix mask) by FlashAttention, on Ampere and later |
+| `marlin` | group-wise int4 `linear` calls (`Int4GroupLinear`: GPTQ and AWQ), by vLLM's Marlin, on Ampere and later |
+| `flash-attn` | decode attention, packed prompts, and paged decode and prompts by FlashAttention 2, on Ampere and later, or 3 on Hopper (pages of any size) |
 
 The serving engine plans its own steps: `Engine(model, plans=True)`
 ([Serving](integrations.md#plans)).
