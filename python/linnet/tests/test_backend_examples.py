@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -37,6 +38,7 @@ def _plugin(name: str, backend: str) -> Backend[torch.Tensor]:
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module  # as an installed package's, for its dataclasses
     spec.loader.exec_module(module)
     made_backend: Backend[torch.Tensor] = getattr(module, backend)()
     return made_backend
@@ -210,6 +212,84 @@ def test_bitsandbytes_multiplies_as_the_entry_does(
     torch.testing.assert_close(adopted.float(), expected.float(), rtol=2e-2, atol=2e-2)
 
 
+# ---- Marlin: group-wise int4 `linear` calls (`Int4GroupLinear`, GPTQ's and
+# AWQ's layers) by vLLM's Marlin product, at any number of rows.
+
+INT4 = """\
+module tests.int4
+
+use std.quant::{Int4GroupLinear}
+
+pub block Model<In: Dim, Out: Dim, T: Float = bf16>
+where In % 128 == 0 {
+    sub proj: Int4GroupLinear<In, Out, 128, T>
+
+    pub entry forward<B: Dim>(x: Tensor[B, In; T]) -> Tensor[B, Out; T] {
+        return proj.forward(x)
+    }
+}
+"""
+INT4_GENERICS: dict[str, int | str] = {"In": 512, "Out": 256}
+
+
+@pytest.fixture
+def int4_source(tmp_path: Path) -> Path:
+    path = tmp_path / "int4.linnet"
+    path.write_text(INT4, encoding="utf-8")
+    return path
+
+
+def test_marlin_takes_the_int4_products(int4_source: Path) -> None:
+    marlin = _plugin("marlin", "Marlin")
+    graph = _graph(int4_source, "forward", {**INT4_GENERICS, "B": 4}, "equivalent")
+    assert len(list(marlin.match(graph, HOPPER))) == 1
+    # Not with an output count Marlin does not tile.
+    graph = _graph(int4_source, "forward", {"In": 512, "Out": 96, "B": 4}, "equivalent")
+    assert not list(marlin.match(graph, HOPPER))
+
+
+@requires_cuda
+@pytest.mark.parametrize(("rows", "dtype"), [(1, "bf16"), (33, "bf16"), (5, "f16")])
+def test_marlin_multiplies_as_the_entry_does(
+    int4_source: Path, tmp_path: Path, rows: int, dtype: str
+) -> None:
+    pytest.importorskip("vllm")
+    marlin = _plugin("marlin", "Marlin")
+    torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float16
+    generics: dict[str, int | str] = {**INT4_GENERICS, "T": dtype}
+    out_features, in_features = int(INT4_GENERICS["Out"]), int(INT4_GENERICS["In"])
+    generator = torch.Generator().manual_seed(0)
+    codes = torch.randint(0, 16, (out_features, in_features), generator=generator)
+    packed = (codes[:, 0::2] | (codes[:, 1::2] << 4)).to(torch.uint8)
+    groups = in_features // 128
+    save_file(
+        {
+            "proj.weight": packed.reshape(out_features, groups, 64),
+            "proj.scale": (torch.rand(out_features, groups, generator=generator) * 0.02 + 0.01).to(
+                torch_dtype
+            ),
+            "proj.zero": torch.randint(0, 16, (out_features, groups), generator=generator).to(
+                torch.uint8
+            ),
+            "proj.bias": torch.randn(out_features, generator=generator).to(torch_dtype),
+        },
+        str(tmp_path / "w.safetensors"),
+    )
+    planned, direct = (
+        _compiled(int4_source, generics, tmp_path / "w.safetensors") for _ in range(2)
+    )
+    x = torch.randn(rows, in_features, device="cuda").to(torch_dtype)
+    plan = planned.plan_for("forward", [x], backends=[marlin], measure=False)
+    assert [step.backend for step in plan.steps].count("marlin") == 1
+    with torch.no_grad():
+        (got,) = plan.run([x], planned.context_for(plan))
+        expected: object = direct.run_entry("forward", [x])
+    assert isinstance(expected, torch.Tensor)
+    torch.testing.assert_close(got.float(), expected.float(), rtol=2e-2, atol=5e-2)
+    findings = planned.conform("forward", [x], marlin, tolerance=0.1)
+    assert len(findings) == 1 and findings[0].passed
+
+
 # ---- FlashAttention: decode attention over the KV cache, in a plan replayed
 # as one CUDA graph.
 
@@ -326,9 +406,14 @@ def test_flash_attn_takes_packed_and_paged_prompts(tmp_path: Path) -> None:
 
 
 @requires_cuda
-def test_flash_attn_attends_packed_prompts_as_the_entry_does(tmp_path: Path) -> None:
-    pytest.importorskip("flash_attn")
+@pytest.mark.parametrize("version", [2, 3])
+def test_flash_attn_attends_packed_prompts_as_the_entry_does(tmp_path: Path, version: int) -> None:
+    if version == 2:
+        pytest.importorskip("flash_attn")
+    else:
+        _flash_attn_3()
     flash = _plugin("flash-attn", "FlashAttention")
+    flash = type(flash)(three=version == 3)  # pyright: ignore[reportCallIssue]
     source, weights = _serve_model(tmp_path, SERVE_GENERICS)
     planned, direct = (_compiled(source, SERVE_GENERICS, weights) for _ in range(2))
     # Prompts of 5 and 7 tokens, then 4 of padding, as the engine packs them.
@@ -347,19 +432,30 @@ def test_flash_attn_attends_packed_prompts_as_the_entry_does(tmp_path: Path) -> 
     torch.testing.assert_close(got.float(), expected.float(), rtol=3e-2, atol=3e-2)
 
 
+def _flash_attn_3() -> None:
+    if torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("FlashAttention 3 runs on Hopper")
+    pytest.importorskip("flash_attn_interface")
+
+
 @requires_cuda
-def test_flash_attn_attends_over_pages_as_the_entry_does(tmp_path: Path) -> None:
-    pytest.importorskip("flash_attn")
+@pytest.mark.parametrize("size", [256, 64])
+def test_flash_attn_attends_over_pages_as_the_entry_does(tmp_path: Path, size: int) -> None:
+    if size == 256:
+        pytest.importorskip("flash_attn")
+    else:
+        _flash_attn_3()  # pages of any size
     flash = _plugin("flash-attn", "FlashAttention")
-    source, weights = _serve_model(tmp_path, PAGED_GENERICS)
-    planned, direct = (_compiled(source, PAGED_GENERICS, weights) for _ in range(2))
+    generics = {**PAGED_GENERICS, "PageSize": size}
+    source, weights = _serve_model(tmp_path, generics)
+    planned, direct = (_compiled(source, generics, weights) for _ in range(2))
     # Two rows on pages 1 and 2: prompts of 6 and 8 tokens, 2 of padding.
     table = _ints([1, 2], 2, 1)
     lengths = (6, 8)
     tokens = _ints([7, 1, 2, 3, 4, 5, 9, 8, 7, 6, 5, 4, 3, 2, 0, 0])
     rows = _ints([0] * 6 + [1] * 8 + [0, 0])
     at = _ints([*range(6), *range(8), 0, 0])
-    slots = _ints([256 + p for p in range(6)] + [512 + p for p in range(8)] + [0, 0])
+    slots = _ints([size + p for p in range(6)] + [2 * size + p for p in range(8)] + [0, 0])
     last = _ints([5, 13])
     prompts = [tokens, at, rows, slots, last, table]
     step = [_ints([1, 2], 2, 1), _ints(list(lengths)), table]

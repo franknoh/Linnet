@@ -1,0 +1,13 @@
+[project]
+name = "linnet-marlin"
+version = "0.1.0"
+description = "vLLM's Marlin int4 product as a Linnet backend"
+requires-python = ">=3.11"
+dependencies = ["linnet-lang[torch]", "vllm==0.11.0"]
+
+[project.entry-points."linnet.backends"]
+marlin = "linnet_marlin:Marlin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

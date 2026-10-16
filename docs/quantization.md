@@ -64,6 +64,7 @@ ONNX Runtime's `MatMulNBits`. Under `numerics="fast"`:
 | Backend | `linear_int4_groups` runs as |
 | --- | --- |
 | PyTorch, CUDA, `bf16`, groups of 32 to 256 | fused int4 kernels up to 128 rows, weights repacked at load (`--prepare`); longer prompts dequantize per call |
+| PyTorch plan with the `marlin` plugin | vLLM's Marlin, where a measured plan finds it faster ([Backends](backends.md)) |
 | ONNX Runtime | `com.microsoft.MatMulNBits` (`f32`, `f16`; `bf16` goes through `f32`) |
 | JAX | weights dequantized once at load (`--prepare`), then run as bf16 |
 | everywhere else | dequantize, then `linear` |
