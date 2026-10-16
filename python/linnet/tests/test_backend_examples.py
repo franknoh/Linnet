@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -37,6 +38,7 @@ def _plugin(name: str, backend: str) -> Backend[torch.Tensor]:
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module  # as an installed package's, for its dataclasses
     spec.loader.exec_module(module)
     made_backend: Backend[torch.Tensor] = getattr(module, backend)()
     return made_backend

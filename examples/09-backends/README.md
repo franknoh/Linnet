@@ -74,8 +74,9 @@ takes the layer's `std.quant::linear_int4_groups` call to vLLM's
 groups of 32, 64 or 128 inputs, or one a row, with an output count a
 multiple of 64 and an input count a multiple of 128, in `bf16` or `f16`.
 A GPTQ layer's zero of 8 and an AWQ layer's zero points take the same
-path. Linnet's own int4 product reads a row fast but slows with more
-rows; Marlin keeps up at the batch sizes serving runs.
+path. On one H100, a measured plan of a 14336 by 4096 layer takes Marlin
+from 1 to 256 rows (3.5 to 5 times the generated source's speed at 16 to
+64) and leaves 1,024 rows to the generated source's dequantized product.
 
 The plugin is written against vLLM 0.11.0 (PyTorch 2.8), whose Marlin
 functions it calls; later releases renamed them.
