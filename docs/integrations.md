@@ -115,7 +115,8 @@ Pages cost nothing when every row fits its requests. They pay off once a
 server allows long requests: rows then hold `max_len` each.
 
 `linnet serve MODEL --pool 131072 --batch 128 --max-seq 8192` serves the same
-way.
+way; `linnet serve` serves from pages by default where the card has the
+paged entries.
 
 ### Requests
 
@@ -181,10 +182,12 @@ reply = client.chat.completions.create(
 
 | Option | Does |
 | --- | --- |
-| `--batch`, `--max-seq` | the `Batch` and `MaxSeq` generics |
+| `--batch`, `--max-seq` | the requests in flight and the longest request |
+| `--pool` | serves from pages of one pool of that many positions; by default, on PyTorch with a card that has the paged entries, `--batch` times `--max-seq` |
+| `--fixed-rows` | keeps a row of `--max-seq` positions for each request instead of pages; each step then reads every row whole, which a GPU short of bandwidth pays for (Llama 3.1 8B on a GB10: 8.4 tokens per second against 14 from pages) |
 | `--backend jax`, `--backend onnx` | serves through that runtime instead of PyTorch |
 | `--tokenizer` | the tokenizer and chat template's repository (default: the card's checkpoint repository) |
-| `--warmup 128 512` | compiles those prompt lengths before the first request; others compile when first seen |
+| `--warmup 128 512` | compiles the passes those prompt lengths need before the first request, others when first seen (by default every pass size) |
 | `--plans` | runs the step and packed passes as plans over the backends found, planned while warming up |
 | `--port` | the HTTP port |
 

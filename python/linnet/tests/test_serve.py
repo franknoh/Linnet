@@ -581,6 +581,16 @@ def test_mixed_passes_on_flex_attention(tmp_path: Path, monkeypatch: pytest.Monk
         assert completion.tokens == _greedy(model, completion.request)
 
 
+def test_short_prompts_pass_in_small_passes(paged_files: tuple[Path, Path]) -> None:
+    """By default a short prompt alone passes in 128 or 256 tokens, while
+    the chunk a step carries keeps the scaled sizes' second."""
+    source, weights = paged_files
+    model = load(source, generics=PAGED, std_root=STDLIB, weights=weights, compile=True)
+    engine = Engine(model, graphs=False, rows=4)
+    assert engine.pack_sizes == [128, 256, 512, 1024, 1536, 2048, 3072, 4096]
+    assert engine.chunk == 1024 and engine.mix_size == (1024 if engine.mix else 0)
+
+
 @pytest.mark.parametrize("mix", [True, False])
 def test_paged_rows_decode_as_greedy(paged_files: tuple[Path, Path], mix: bool) -> None:
     """Rows that take pages of one pool as they grow: each request gets

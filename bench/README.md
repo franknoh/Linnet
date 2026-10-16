@@ -77,3 +77,18 @@ which keeps only the rows the page draws.
 [Training](../docs/training.md#compared-with-trl) compares with TRL: step
 time, tokens a second, peak memory and the quality each reached, copied from
 their logs. The page draws it under Training.
+
+## Serving under load
+
+`serve_load.py` load-tests OpenAI-compatible servers (`linnet serve`, vLLM,
+SGLang) with the same seeded chat requests, streamed, at each concurrency:
+requests, output tokens and all tokens a second, and the mean, P50, P90, P95
+and P99 of time to first token (TTFT), time per output token (TPOT), the
+gaps between tokens (ITL) and whole requests (E2E). Standard library only:
+
+```bash
+python bench/serve_load.py \
+    --server linnet=http://localhost:8100 --server vllm=http://localhost:8000 \
+    --model llama-3.1-8b-instruct --concurrency 1 8 32 --requests 8 32 128 \
+    --max-tokens 128 --json serve.json
+```
