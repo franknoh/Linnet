@@ -82,8 +82,11 @@ def _versions(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[int, int]:
 
 def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[object, object]:
     """The experts as `triton_kernels` reads them: the bytes `[E, In / 2,
-    Out]` and the scales `[E, In / 32, Out]`, each in its Hopper layout, and
-    the precision config that pairs them."""
+    Out]` and the scales `[E, In / 32, Out]`, each in the layout of the GPU's
+    generation, and the precision config that pairs them. On compute
+    capability 12 (the GB10, the RTX 50s) they stay strided: `triton_kernels`
+    takes those for a data-center Blackwell and lays the data out for its
+    persistent kernel, whose TMA scatters (`.tile::scatter4`) they lack."""
     versions = _versions(blocks, scales)
     entry = _swizzled.get(blocks.data_ptr())
     if entry is None or entry[0] != versions:
@@ -93,14 +96,13 @@ def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[object, object
 
         count, out_features, groups, _ = blocks.shape
         quant = blocks.reshape(count, out_features, groups * 16).transpose(-2, -1)
-        weight = convert_layout(
-            wrap_torch_tensor(quant, dtype=FP4),
-            layout.make_default_matmul_mxfp4_w_layout(mx_axis=-2),  # pyright: ignore[reportUnknownMemberType]
-        )
-        scale = convert_layout(
-            wrap_torch_tensor(scales.transpose(-2, -1)),
-            layout.make_default_matmul_mxfp4_w_scale_layout(mx_axis=-2, num_warps=8),  # pyright: ignore[reportUnknownMemberType]
-        )
+        if torch.cuda.get_device_capability(blocks.device)[0] == 12:
+            weight_layout = scale_layout = layout.StridedLayout(-2)  # pyright: ignore[reportUnknownMemberType]
+        else:
+            weight_layout = layout.make_default_matmul_mxfp4_w_layout(mx_axis=-2)  # pyright: ignore[reportUnknownMemberType]
+            scale_layout = layout.make_default_matmul_mxfp4_w_scale_layout(mx_axis=-2, num_warps=8)  # pyright: ignore[reportUnknownMemberType]
+        weight = convert_layout(wrap_torch_tensor(quant, dtype=FP4), weight_layout)
+        scale = convert_layout(wrap_torch_tensor(scales.transpose(-2, -1)), scale_layout)
         precision = PrecisionConfig(b_mx_scale=scale, b_microblock_size=32)
         entry = (versions, weight, precision)
         _swizzled[blocks.data_ptr()] = entry
