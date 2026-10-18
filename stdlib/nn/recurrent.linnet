@@ -1,0 +1,101 @@
+module std.nn.recurrent
+
+// The gated delta rule (Gated DeltaNet; Qwen3-Next and Qwen3.5's linear
+// attention): each value head keeps a state `S` of `[K, V]`, and each token,
+// in order,
+//
+//   S = S * exp(decay)                      (forget)
+//   S = S + key (beta * (value - S^T key))^T  (write what S mispredicts)
+//   out = S^T (query * scale)                (read)
+//
+// `query` and `key` have `Hk` heads, each serving `Hv / Hk` consecutive value
+// heads, as grouped attention shares its key heads. `decay` is in log space
+// (`<= 0`); a token with `decay` 0 and `beta` 0 leaves the state as it was,
+// which is how a padded prompt keeps its padding out. `initial` is where every
+// sequence starts, zero for a new one.
+//
+// One tensor out, `[B, S + K, Hv, V]` in f32: each token's output, then the
+// final state, its `K` rows after the `S` outputs (`state'[b, h, k, v]` at
+// `[b, S + k, h, v]`).
+//
+// The body runs the recurrence token by token; a backend with a chunked
+// kernel (PyTorch on CUDA, `fla`'s) runs it in blocks of tokens instead.
+pub op gated_delta_rule<B: Dim, S: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+    query: Tensor[B, S, Hk, K; T],
+    key: Tensor[B, S, Hk, K; T],
+    value: Tensor[B, S, Hv, V; T],
+    decay: Tensor[B, S, Hv; f32],
+    beta: Tensor[B, S, Hv; f32],
+    initial: Tensor[B, Hv, K, V; f32],
+    scale: f32,
+) -> Tensor[B, S + K, Hv, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    var current = initial
+    let outputs = for t in 0..S {
+        let shared_query[b, g, k] = cast<f32>(query[b, t, g, k]) * scale
+        let shared_key[b, g, k] = cast<f32>(key[b, t, g, k])
+        let q = repeat_heads<B, Hk, Hv / Hk, K>(shared_query)
+        let k_t = repeat_heads<B, Hk, Hv / Hk, K>(shared_key)
+        let kept[b, h, i, j] = current[b, h, i, j] * exp(decay[b, t, h])
+        let predicted[b, h, j] = sum[i] kept[b, h, i, j] * k_t[b, h, i]
+        let correction[b, h, j] = (cast<f32>(value[b, t, h, j]) - predicted[b, h, j]) * beta[b, t, h]
+        let written[b, h, i, j] = kept[b, h, i, j] + k_t[b, h, i] * correction[b, h, j]
+        current = written
+        let read[b, h, j] = sum[i] written[b, h, i, j] * q[b, h, i]
+        yield read
+    }
+    return concat(permute(outputs, [1, 0, 2, 3]), permute(current, [0, 2, 1, 3]), axis = 1)
+}
+
+// One token for each of `B` sequences: `gated_delta_rule` with `S` 1, the
+// step a decoder takes per row. `[B, 1 + K, Hv, V]` in f32: the output, then
+// the new state.
+pub fn gated_delta_step<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+    query: Tensor[B, Hk, K; T],
+    key: Tensor[B, Hk, K; T],
+    value: Tensor[B, Hv, V; T],
+    decay: Tensor[B, Hv; f32],
+    beta: Tensor[B, Hv; f32],
+    initial: Tensor[B, Hv, K, V; f32],
+    scale: f32,
+) -> Tensor[B, 1 + K, Hv, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    let q = repeat_heads<B, Hk, Hv / Hk, K>(cast<f32>(query) * scale)
+    let k_t = repeat_heads<B, Hk, Hv / Hk, K>(cast<f32>(key))
+    let kept[b, h, i, j] = initial[b, h, i, j] * exp(decay[b, h])
+    let predicted[b, h, j] = sum[i] kept[b, h, i, j] * k_t[b, h, i]
+    let correction[b, h, j] = (cast<f32>(value[b, h, j]) - predicted[b, h, j]) * beta[b, h]
+    let written[b, h, i, j] = kept[b, h, i, j] + k_t[b, h, i] * correction[b, h, j]
+    let read[b, h, j] = sum[i] written[b, h, i, j] * q[b, h, i]
+    return concat(reshape(read, [B, 1, Hv, V]), permute(written, [0, 2, 1, 3]), axis = 1)
+}
+
+// A depthwise causal convolution over time, `x` `[B, S, C]` and `weight`
+// `[C, W]`: `y[b, t, c] = sum_w weight[c, w] * x[b, t - (W - 1) + w, c]`,
+// positions before the start reading `history` (`[B, W - 1, C]`, the inputs
+// before this span; zero for a new sequence). Accumulated in f32.
+pub fn causal_conv<B: Dim, S: Dim, C: Dim, W: Dim, T: Float>(
+    x: Tensor[B, S, C; T],
+    history: Tensor[B, W - 1, C; T],
+    weight: Tensor[C, W; T],
+) -> Tensor[B, S, C; f32]
+where W > 1 {
+    let padded = concat(history, x, axis = 1)
+    let steps = iota<i64>(S)
+    let taps = iota<i64>(W)
+    let at[t, w] = steps[t] + taps[w]
+    let y[b, t, c] = sum<f32>[w] cast<f32>(weight[c, w]) * cast<f32>(padded[b, at[t, w], c])
+    return y
+}
+
+// Each of `Hk` heads repeated for the `R` value heads it serves, in order:
+// head `h` of the result is head `h / R` of `x`.
+fn repeat_heads<B: Dim, Hk: Dim, R: Dim, K: Dim>(x: Tensor[B, Hk, K; f32]) -> Tensor[B, Hk * R, K; f32] {
+    return reshape(broadcast_to(reshape(x, [B, Hk, 1, K]), [B, Hk, R, K]), [B, Hk * R, K])
+}

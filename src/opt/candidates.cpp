@@ -199,6 +199,12 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.sink_attention",
          fast,
          {"mask is boolean with true meaning attend", "key/value heads divide query heads"}},
+        // The gated delta rule in blocks of tokens (`fla`'s kernel where it is
+        // installed): the same recurrence, its sums in another order.
+        {"std.nn.recurrent::gated_delta_rule",
+         "linnet.gated_delta_rule",
+         fast,
+         {"key heads divide value heads", "decay is in log space"}},
         // FlexAttention over each row's pages where they lie in the pool.
         {"std.nn.attention::paged_attention",
          "linnet.paged_attention",

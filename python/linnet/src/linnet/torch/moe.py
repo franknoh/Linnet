@@ -259,8 +259,76 @@ def mxfp4_grouped(
     return y.reshape(rows, chosen, blocks.shape[1])
 
 
+def bf16_available(x: torch.Tensor, weight: torch.Tensor) -> bool:
+    """Whether `bf16_experts` runs for `x`: bf16 experts on a CUDA GPU
+    without `torch._grouped_mm`'s kernel (compute capability 12, the GB10),
+    with `triton_kernels` installed."""
+    return (
+        x.is_cuda
+        and x.dtype == torch.bfloat16
+        and weight.dtype == torch.bfloat16
+        and not grouped_mm_native(x.device)
+        and torch.cuda.get_device_capability(x.device)[0] >= 9
+        and _triton_kernels()
+    )
+
+
+@torch.library.custom_op("linnet::bf16_grouped", mutates_args=())
+def bf16_grouped_routed(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    order: torch.Tensor,
+    sources: torch.Tensor,
+    counts: torch.Tensor,
+) -> torch.Tensor:
+    """`mxfp4_grouped_routed` for bf16 experts `weight` `[E, Out, In]`: each
+    sorted pair's input row times its expert, read where it lies (a
+    transposed view, no copy), written to row `order[i]`."""
+    from triton_kernels.matmul import matmul
+    from triton_kernels.tensor_details.ragged_tensor import make_ragged_tensor_metadata
+
+    pairs = order.numel()
+    with _tiles(weight, pairs):
+        return matmul(
+            x,
+            weight.transpose(-2, -1),
+            None,
+            a_ragged_metadata=make_ragged_tensor_metadata(counts, pairs),
+            gather_indx=sources,
+            scatter_indx=order,
+        )
+
+
+@bf16_grouped_routed.register_fake  # pyright: ignore[reportUnknownMemberType]
+def _(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    order: torch.Tensor,
+    sources: torch.Tensor,
+    counts: torch.Tensor,
+) -> torch.Tensor:
+    return x.new_empty(order.numel(), weight.shape[1])
+
+
+def bf16_experts(
+    x: torch.Tensor, weight: torch.Tensor, experts: torch.Tensor, shared: bool
+) -> torch.Tensor:
+    """`y[r, k, o] = sum_i x[row, i] * weight[experts[r, k], o, i]`, `[R, K,
+    Out]`, with `row` the pair's row of `x` ([R, In]) when `shared` and the
+    pair itself otherwise (`x` [R, K, In]): `mxfp4_grouped` for bf16
+    experts."""
+    rows, chosen = experts.shape
+    order, sources, counts = routes(experts, weight.shape[0], shared)
+    inputs = x if shared else x.reshape(rows * chosen, -1)
+    y = bf16_grouped_routed(inputs, weight, order, sources, counts)
+    return y.reshape(rows, chosen, weight.shape[1])
+
+
 __all__ = [
     "available",
+    "bf16_available",
+    "bf16_experts",
+    "bf16_grouped_routed",
     "dequantized",
     "grouped_mm_native",
     "mxfp4_grouped",

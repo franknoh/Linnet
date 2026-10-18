@@ -345,6 +345,15 @@ def _sink_attention(args: Args) -> torch.Tensor:
     return torch.matmul(weights, value).reshape(batch, heads, queries, width)
 
 
+def _gated_delta_rule(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_rule`: the chunked kernel
+    (`linnet.torch.delta`)."""
+    from .delta import gated_delta_rule
+
+    query, key, value, decay, beta, initial, scale = args
+    return gated_delta_rule(query, key, value, decay, beta, initial, float(scale.item()))
+
+
 def _layer_norm_fast(args: OptionalArgs) -> torch.Tensor:
     x, weight, bias, eps = cast(_Norm, args)
     scaled = functional.layer_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
@@ -443,6 +452,10 @@ def _linear_experts(args: Args) -> torch.Tensor:
     rows, chosen, width = x.shape
     count, out_features, _ = weight.shape
     flat = experts.reshape(-1).long()
+    from . import moe
+
+    if moe.bf16_available(x, weight):
+        return moe.bf16_experts(x, weight, experts, False)
     if _grouped(x, weight):
         grouped = torch._grouped_mm  # pyright: ignore[reportPrivateUsage, reportPrivateImportUsage]
         order = flat.argsort(stable=True)
@@ -461,6 +474,10 @@ def _linear_experts_shared(args: Args) -> torch.Tensor:
     x, weight, experts = args
     rows, chosen = experts.shape
     count, out_features, width = weight.shape
+    from . import moe
+
+    if moe.bf16_available(x, weight):
+        return moe.bf16_experts(x, weight, experts, True)
     if _grouped(x, weight):
         return _linear_experts([x[:, None, :].expand(rows, chosen, width), weight, experts])
     every = functional.linear(x, weight.reshape(count * out_features, width))
@@ -474,7 +491,9 @@ def _combine_experts(args: Args) -> torch.Tensor:
     x, weight, experts, weights = args
     rows, chosen, width = x.shape
     count, out_features, _ = weight.shape
-    if _grouped(x, weight):
+    from . import moe
+
+    if _grouped(x, weight) or moe.bf16_available(x, weight):
         y = _linear_experts([x, weight, experts]).float() * weights.float()[..., None]
         return y.sum(1).to(x.dtype)
     placed = torch.zeros(rows, count, width, dtype=x.dtype, device=x.device)
@@ -508,6 +527,7 @@ NATIVE: dict[str, Native] = {
     "torch.distributed.all_reduce": _required(_one_shard),
     "torch.distributed.all_gather": _required(_one_shard),
     "linnet.sink_attention": _required(_sink_attention),
+    "linnet.gated_delta_rule": _required(_gated_delta_rule),
     "linnet.mxfp4_experts": _required(_mxfp4_experts),
     "linnet.mxfp4_experts(shared)": _required(_mxfp4_experts_shared),
     "linnet.mxfp4_grouped(shared)": _required(_mxfp4_grouped_shared),
