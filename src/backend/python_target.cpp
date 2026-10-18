@@ -65,7 +65,32 @@ std::string PythonTarget::elementwise(Elementwise kind,
                                       const std::vector<TensorInfo>& operands,
                                       const Dims& shape,
                                       ScalarKind dtype) {
-    (void)shape;
+    // Every operand an expansion of a smaller tensor, or a scalar: the
+    // operation at the smaller shape, its result expanded.
+    std::vector<TensorInfo> narrow;
+    Dims small(shape.size(), 1);
+    bool expanded = false;
+    for (const TensorInfo& operand : operands) {
+        const auto found = broadcasts_.find(operand.name);
+        if (found != broadcasts_.end() && found->second.shape.size() == shape.size()) {
+            narrow.push_back(found->second);
+            for (std::size_t i = 0; i < shape.size(); ++i) {
+                small[i] = std::max(small[i], found->second.shape[i]);
+            }
+            expanded = true;
+        } else if (operand.shape.empty()) {
+            narrow.push_back(operand);
+        } else {
+            expanded = false;
+            break;
+        }
+    }
+    if (expanded && narrow.size() == operands.size() && small != shape) {
+        const std::string result = spell(kind, narrow);
+        const std::string name = define(expand(result, shape));
+        broadcasts_[name] = TensorInfo{result, small, dtype};
+        return name;
+    }
     const std::string name = spell(kind, operands);
     fold(name, kind, operands, dtype);
     return name;
@@ -88,7 +113,12 @@ std::string PythonTarget::reshape(const TensorInfo& value, const Dims& shape) {
 
 std::string PythonTarget::broadcast(const TensorInfo& value, const Dims& dims, const Dims& shape) {
     const TensorInfo placed = place_axes(value, dims, shape);
-    return placed.shape == shape ? placed.name : define(expand(placed.name, shape));
+    if (placed.shape == shape) {
+        return placed.name;
+    }
+    const std::string name = define(expand(placed.name, shape));
+    broadcasts_[name] = TensorInfo{placed.name, placed.shape, value.dtype};
+    return name;
 }
 
 std::string PythonTarget::slice(const TensorInfo& value,

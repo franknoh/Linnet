@@ -248,6 +248,16 @@ public:
             }
             return define(wide + ".to(" + dtype_name(dtype) + ")");
         }
+        // An expansion converted: the smaller tensor converted, then expanded
+        // (`.to` would copy the expansion out to its full size).
+        const auto found = broadcasts_.find(value.name);
+        if (found != broadcasts_.end()) {
+            const TensorInfo small = found->second;
+            const std::string narrow = define(small.name + ".to(" + dtype_name(dtype) + ")");
+            const std::string name = define(expand(narrow, value.shape));
+            broadcasts_[name] = TensorInfo{narrow, small.shape, dtype};
+            return name;
+        }
         const std::string name = define(value.name + ".to(" + dtype_name(dtype) + ")");
         fold_convert(name, value, dtype);
         return name;
@@ -725,6 +735,22 @@ public:
                           name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ", " +
                           std::to_string(*size) + ", " + found->second + ")");
         }
+        if (implementation_base == "torch.nn.functional.conv1d(depthwise)" &&
+            operands.size() == 3 && operands[0] && operands[1] && operands[2]) {
+            // `linnet.torch.delta.causal_conv`: the history and the span as one
+            // signal, convolved channel by channel.
+            delta_helper_ = true;
+            return define("_causal_conv(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
+        }
+        if (implementation_base == "linnet.gated_delta_rule" && operands.size() == 7 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4] &&
+            operands[5]) {
+            // `linnet.torch.delta.gated_delta_rule`: blocks of tokens, `fla`'s
+            // kernel where it is installed.
+            delta_helper_ = true;
+            return define("_gated_delta_rule(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
+                          name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ")");
+        }
         if (implementation_base == "linnet.sink_attention" && operands.size() == 6 && operands[0] &&
             operands[1] && operands[5]) {
             // FlexAttention under `torch.compile` where its blocks pay off, as
@@ -930,6 +956,10 @@ public:
         }
         if (sink_helper_) {
             out += sink_helper();
+        }
+        if (delta_helper_) {
+            out += "from linnet.torch.delta import causal_conv as _causal_conv\n";
+            out += "from linnet.torch.delta import gated_delta_rule as _gated_delta_rule\n\n\n";
         }
         if (shards_helper_) {
             out += shards_helper();
@@ -1786,10 +1816,24 @@ private:
                "        and weight.shape[1] % 8 == 0\n"
                "    )\n"
                "\n\n"
+               "try:\n"
+               "    from linnet.torch.moe import bf16_available as _bf16_available\n"
+               "    from linnet.torch.moe import bf16_experts as _bf16_experts\n"
+               "except ImportError:\n"
+               "    _bf16_available = None\n"
+               "\n\n"
+               "def _routed(x, weight):\n"
+               "    \"\"\"Whether `triton_kernels`' grouped product runs these instead: bf16 "
+               "where\n"
+               "    torch._grouped_mm has no kernel (the GB10).\"\"\"\n"
+               "    return _bf16_available is not None and _bf16_available(x, weight)\n"
+               "\n\n"
                "def _linear_experts(x, weight, experts):\n"
                "    rows, chosen, width = x.shape\n"
                "    count, out_features, _ = weight.shape\n"
                "    flat = experts.reshape(-1)\n"
+               "    if _routed(x, weight):\n"
+               "        return _bf16_experts(x, weight, experts, False)\n"
                "    if _grouped(x, weight):\n"
                "        order = flat.argsort(stable=True)\n"
                "        slots = torch.arange(count, device=x.device)\n"
@@ -1806,6 +1850,8 @@ private:
                "def _linear_experts_shared(x, weight, experts):\n"
                "    rows, chosen = experts.shape\n"
                "    count, out_features, width = weight.shape\n"
+               "    if _routed(x, weight):\n"
+               "        return _bf16_experts(x, weight, experts, True)\n"
                "    if _grouped(x, weight):\n"
                "        return _linear_experts(x[:, None, :].expand(rows, chosen, width), weight, "
                "experts)\n"
@@ -1816,7 +1862,7 @@ private:
                "def _combine_experts(x, weight, experts, weights):\n"
                "    rows, chosen, width = x.shape\n"
                "    count, out_features, _ = weight.shape\n"
-               "    if _grouped(x, weight):\n"
+               "    if _grouped(x, weight) or _routed(x, weight):\n"
                "        y = _linear_experts(x, weight, experts).float() * weights.float()[..., "
                "None]\n"
                "        return y.sum(1).to(x.dtype)\n"
@@ -1867,6 +1913,7 @@ private:
     bool multiply_ = false;                           // `_multiply` (a tile `prod`) is written
     bool flex_helpers_ = false;                       // `_flex_blocks` and `_attend` are used
     bool sink_helper_ = false;                        // `_sink_attend` is used
+    bool delta_helper_ = false;                       // `_gated_delta_rule` is used
     bool shards_helper_ = false;                      // `_all_reduce` is used
     bool mxfp4_helper_ = false;                       // `_mxfp4_experts` is used
     bool mxfp4_grouped_helper_ = false;               // `_mxfp4_grouped` is used

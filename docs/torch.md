@@ -126,7 +126,10 @@ Under `"fast"` on CUDA, attention under an explicit mask (serving batches,
 packed prompts, sliding windows, gpt-oss's sink attention) computes only
 the key blocks the mask reaches. Mixture-of-experts layers run as one
 grouped product over the chosen experts on compute capability 9 or later
-with bf16.
+with bf16: `torch._grouped_mm` on Hopper and the data-center Blackwells,
+OpenAI's `triton_kernels` (if installed) elsewhere, such as the GB10. The
+gated delta rule (`std.nn.recurrent`, Gated DeltaNet) runs in blocks of 64
+tokens, through `fla`'s kernel when `flash-linear-attention` is installed.
 
 ## Entries and state
 
