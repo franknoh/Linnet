@@ -354,6 +354,14 @@ def _gated_delta_rule(args: Args) -> torch.Tensor:
     return gated_delta_rule(query, key, value, decay, beta, initial, float(scale.item()))
 
 
+def _causal_conv(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::causal_conv`: one grouped `F.conv1d`."""
+    from .delta import causal_conv
+
+    x, history, weight = args
+    return causal_conv(x, history, weight)
+
+
 def _layer_norm_fast(args: OptionalArgs) -> torch.Tensor:
     x, weight, bias, eps = cast(_Norm, args)
     scaled = functional.layer_norm(x, [x.shape[-1]], eps=float(eps.item())) * weight
@@ -528,6 +536,7 @@ NATIVE: dict[str, Native] = {
     "torch.distributed.all_gather": _required(_one_shard),
     "linnet.sink_attention": _required(_sink_attention),
     "linnet.gated_delta_rule": _required(_gated_delta_rule),
+    "torch.nn.functional.conv1d(depthwise)": _required(_causal_conv),
     "linnet.mxfp4_experts": _required(_mxfp4_experts),
     "linnet.mxfp4_experts(shared)": _required(_mxfp4_experts_shared),
     "linnet.mxfp4_grouped(shared)": _required(_mxfp4_grouped_shared),

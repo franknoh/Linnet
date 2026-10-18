@@ -144,4 +144,13 @@ def _(
     return value.new_empty(batch, length + key.shape[3], heads, width, dtype=torch.float32)
 
 
-__all__ = ["gated_delta_rule"]
+def causal_conv(x: torch.Tensor, history: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """`std.nn.recurrent::causal_conv`: `x` `[B, S, C]` after `history`
+    `[B, W - 1, C]`, each channel convolved with its row of `weight` `[C, W]`,
+    as one grouped convolution; `[B, S, C]` in f32."""
+    signal = torch.cat([history, x], dim=1).transpose(1, 2)
+    out = functional.conv1d(signal, weight[:, None, :], groups=weight.shape[0])
+    return out.transpose(1, 2).float()
+
+
+__all__ = ["causal_conv", "gated_delta_rule"]

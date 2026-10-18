@@ -161,6 +161,11 @@ protected:
     std::vector<std::string> states_;                                // paths, in argument order
     std::map<std::string, std::string> literals_; // constant name -> Python literal
     std::map<std::string, double> values_;        // constant name -> folded value
+    // An `expand` of a smaller tensor -> that tensor, with the expanded value's
+    // dtype: elementwise operations on such values run at the smaller shape
+    // and expand their result, so a weight's or a constant's arithmetic is
+    // not materialized at the activations' shape (`prepare` would keep it).
+    std::map<std::string, TensorInfo> broadcasts_;
     std::map<std::string, std::pair<std::string, std::string>> adapters_; // weight -> a, b
     std::map<std::string, std::string> gathered_;            // gathered value -> its argument
     std::set<std::string> causal_masks_;                     // square masks from `causal_mask`

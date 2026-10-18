@@ -41,7 +41,8 @@ where
         let k_t = repeat_heads<B, Hk, Hv / Hk, K>(shared_key)
         let kept[b, h, i, j] = current[b, h, i, j] * exp(decay[b, t, h])
         let predicted[b, h, j] = sum[i] kept[b, h, i, j] * k_t[b, h, i]
-        let correction[b, h, j] = (cast<f32>(value[b, t, h, j]) - predicted[b, h, j]) * beta[b, t, h]
+        let correction[b, h, j] =
+            (cast<f32>(value[b, t, h, j]) - predicted[b, h, j]) * beta[b, t, h]
         let written[b, h, i, j] = kept[b, h, i, j] + k_t[b, h, i] * correction[b, h, j]
         current = written
         let read[b, h, j] = sum[i] written[b, h, i, j] * q[b, h, i]
@@ -80,7 +81,10 @@ where
 // `[C, W]`: `y[b, t, c] = sum_w weight[c, w] * x[b, t - (W - 1) + w, c]`,
 // positions before the start reading `history` (`[B, W - 1, C]`, the inputs
 // before this span; zero for a new sequence). Accumulated in f32.
-pub fn causal_conv<B: Dim, S: Dim, C: Dim, W: Dim, T: Float>(
+//
+// The body reads each window through an index tensor; PyTorch runs one
+// grouped `F.conv1d` instead, which reads each input once.
+pub op causal_conv<B: Dim, S: Dim, C: Dim, W: Dim, T: Float>(
     x: Tensor[B, S, C; T],
     history: Tensor[B, W - 1, C; T],
     weight: Tensor[C, W; T],
@@ -96,6 +100,7 @@ where W > 1 {
 
 // Each of `Hk` heads repeated for the `R` value heads it serves, in order:
 // head `h` of the result is head `h / R` of `x`.
-fn repeat_heads<B: Dim, Hk: Dim, R: Dim, K: Dim>(x: Tensor[B, Hk, K; f32]) -> Tensor[B, Hk * R, K; f32] {
+fn repeat_heads<B: Dim, Hk: Dim, R: Dim, K: Dim>(x: Tensor[B, Hk, K; f32]) -> Tensor[B, Hk *
+    R, K; f32] {
     return reshape(broadcast_to(reshape(x, [B, Hk, 1, K]), [B, Hk, R, K]), [B, Hk * R, K])
 }
