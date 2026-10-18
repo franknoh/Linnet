@@ -20,6 +20,7 @@ compiled step fuses, and multiplies them in the custom op
 from __future__ import annotations
 
 import importlib.util
+from contextlib import AbstractContextManager, nullcontext
 from typing import Protocol
 
 import torch
@@ -109,6 +110,41 @@ def swizzled(blocks: torch.Tensor, scales: torch.Tensor) -> tuple[object, object
     return entry[1], entry[2]
 
 
+def tiles_sm12(pairs: int, experts: int) -> dict[str, int]:
+    """`triton_kernels`' tiles for the strided product on compute capability
+    12, by the pairs an expert takes on average. Its own choice there, made
+    for the data-center GPUs, ran 11 to 28 times slower on a GB10 at
+    gpt-oss-20b's sizes, from one row to 4096."""
+    each = pairs / max(experts, 1)
+    if each <= 8:
+        block_m, block_n, block_k, stages = 16, 64, 256, 3
+    elif each <= 32:
+        block_m, block_n, block_k, stages = 32, 64, 256, 3
+    elif each <= 64:
+        block_m, block_n, block_k, stages = 64, 64, 128, 3
+    else:
+        block_m, block_n, block_k, stages = 64, 128, 64, 4
+    return {
+        "block_m": block_m,
+        "block_n": block_n,
+        "block_k": block_k,
+        "num_warps": 4,
+        "num_stages": stages,
+        "is_persistent": False,
+        "split_k": 1,
+    }
+
+
+def _tiles(blocks: torch.Tensor, pairs: int) -> AbstractContextManager[object]:
+    """The tiles `tiles_sm12` gives, for this call only, on compute
+    capability 12; `triton_kernels`' own choice elsewhere."""
+    if torch.cuda.get_device_capability(blocks.device)[0] != 12:
+        return nullcontext()
+    from triton_kernels.matmul_details.opt_flags import scoped_opt_flags_constraints
+
+    return scoped_opt_flags_constraints(tiles_sm12(pairs, blocks.shape[0]))
+
+
 def dequantized(blocks: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     """Every expert's weight in bf16, `[E, Out, G * 32]`, one expert at a
     time so the f32 values of only one are ever there."""
@@ -176,15 +212,16 @@ def mxfp4_grouped_routed(
         from triton_kernels.tensor_details.ragged_tensor import make_ragged_tensor_metadata
 
         weight, precision = swizzled(blocks, scales)
-        return matmul(
-            x,
-            weight,
-            None,
-            a_ragged_metadata=make_ragged_tensor_metadata(counts, pairs),
-            gather_indx=sources,
-            scatter_indx=order,
-            precision_config=precision,
-        )
+        with _tiles(blocks, pairs):
+            return matmul(
+                x,
+                weight,
+                None,
+                a_ragged_metadata=make_ragged_tensor_metadata(counts, pairs),
+                gather_indx=sources,
+                scatter_indx=order,
+                precision_config=precision,
+            )
     weight = dequantized(blocks, scales)
     grouped_mm: _GroupedMM = getattr(torch, "_grouped_mm")  # noqa: B009 - private, checked by `available`
     y = grouped_mm(x[sources], weight.transpose(-2, -1), offs=counts.cumsum(0, dtype=torch.int32))
@@ -230,4 +267,5 @@ __all__ = [
     "mxfp4_grouped_routed",
     "routes",
     "swizzled",
+    "tiles_sm12",
 ]

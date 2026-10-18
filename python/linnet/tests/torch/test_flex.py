@@ -116,6 +116,20 @@ def test_prompts_with_a_mask_each_keep_the_arithmetic(source: Path) -> None:
     assert "_attend(" in _generated(source, "packed", "fast")
 
 
+@requires_cuda
+def test_blocks_are_listed_outside_a_compiled_graph(source: Path) -> None:
+    """A step compiled a layer at a time (`linnet.torch.regions`) lists a
+    mask its layers share in the eager `main` that calls them: listed there,
+    the compiled layers run FlexAttention rather than the arithmetic."""
+    namespace: dict[str, object] = {}
+    exec(_generated(source, "packed", "fast"), namespace)
+    flex_blocks = namespace["_flex_blocks"]
+    assert callable(flex_blocks)
+    mask = torch.ones(1, 256, 256, dtype=torch.bool, device="cuda").tril()
+    assert flex_blocks(mask, 256, 256, 128, 128) is not None
+    assert flex_blocks(mask.cpu(), 256, 256, 128, 128) is None
+
+
 def _packed_inputs(device: str) -> list[torch.Tensor]:
     generator = torch.Generator().manual_seed(1)
     lengths = [100, 37, 90, 29]  # 256 tokens, the last prompt ending the pack
