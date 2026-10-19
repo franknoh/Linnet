@@ -226,4 +226,188 @@ def causal_conv(x: torch.Tensor, history: torch.Tensor, weight: torch.Tensor) ->
     return out.transpose(1, 2).float()
 
 
-__all__ = ["causal_conv", "gated_delta_rule", "gated_delta_update", "gated_delta_update_"]
+def causal_conv_packed(
+    x: torch.Tensor, segments: torch.Tensor, weight: torch.Tensor
+) -> torch.Tensor:
+    """`std.nn.recurrent::causal_conv_packed`: `x` `[P, C]` of prompts packed
+    together, each tap reading only its own prompt's inputs; `[P, C]` in f32."""
+    width = weight.shape[1]
+    taps = weight.float()
+    out = x.float() * taps[:, width - 1]
+    for back in range(1, min(width, x.shape[0])):
+        same = (segments[back:] == segments[:-back])[:, None]
+        out[back:] += x[:-back].float() * taps[:, width - 1 - back] * same
+    return out
+
+
+def causal_history_packed(
+    x: torch.Tensor, segments: torch.Tensor, rows: torch.Tensor, history: torch.Tensor
+) -> torch.Tensor:
+    """`std.nn.recurrent::causal_history_packed`: each packed prompt's last
+    inputs into its row of `history` `[R, L, C]`, found on the device."""
+    total, count, width = x.shape[0], history.shape[0], history.shape[1]
+    after = torch.cat([segments[1:], segments.new_full((1,), -1)])
+    ends = (segments >= 0) & (after != segments)
+    # Each row's prompt's last token; the tokens that end no prompt aim past
+    # the rows, at an entry dropped after.
+    target = torch.where(ends, rows.long(), count)
+    steps = torch.arange(total, device=x.device)
+    last = torch.full((count + 1,), -1, dtype=torch.long, device=x.device)
+    last = last.scatter_reduce(0, target, steps, "amax")[:count]
+    back = last[:, None] + torch.arange(width, device=x.device) - (width - 1)
+    at = back.clamp(min=0)
+    same = (back >= 0) & (segments[at] == segments[last.clamp(min=0)][:, None])
+    window = x[at] * same[..., None]
+    return torch.where((last >= 0)[:, None, None], window.to(history.dtype), history)
+
+
+def _owners(
+    segments: torch.Tensor, rows: torch.Tensor, count: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each prompt's length (`[count]`, by segment) and each row's prompt
+    (`[count]`, `-1` for the rows no prompt fills), without a host sync."""
+    live = segments >= 0
+    index = torch.where(live, segments.long(), count)
+    lengths = torch.zeros(count + 1, dtype=torch.long, device=segments.device)
+    lengths = lengths.scatter_add(0, index, live.long())[:count]
+    owner = torch.full((count + 1,), -1, dtype=torch.long, device=segments.device)
+    owner = owner.scatter_reduce(0, torch.where(live, rows.long(), count), index, "amax")
+    return lengths, owner[:count]
+
+
+def _fla_packed(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    lengths: torch.Tensor,
+    scale: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`fla`'s chunked kernel over the prompts as sequences of their lengths:
+    the outputs `[1, P, Hv, V]` and each prompt's final state. Its sequence
+    and block tables are made on the device at sizes fixed by the shapes
+    (unused prompts empty, the blocks past the last aimed at an empty one), so
+    a CUDA graph replays the pass whatever the prompts' lengths."""
+    from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_fwd
+
+    total, heads, width = value.shape[1], value.shape[2], value.shape[3]
+    count = lengths.shape[0]
+    ends = functional.pad(lengths.cumsum(0), (1, 0))
+    # One more, empty, sequence: where the unused blocks point.
+    bounds = torch.cat([ends, ends[-1:]])
+    blocks = (lengths + _CHUNK - 1) // _CHUNK
+    firsts = functional.pad(blocks.cumsum(0), (1, 0))
+    slots = -(-total // _CHUNK) + min(count, total)
+    step = torch.arange(slots, device=value.device)
+    sequence = torch.searchsorted(firsts[1:], step, right=True)
+    within = torch.where(sequence < count, step - firsts[sequence.clamp(max=count)], 0)
+    initial = value.new_zeros(count + 1, heads, k.shape[3], width, dtype=torch.float32)
+    _, out, _, final, *_ = chunk_gated_delta_rule_fwd(
+        q=q,
+        k=k,
+        v=value,
+        g=decay.float(),
+        beta=beta.to(value.dtype),
+        scale=scale,
+        initial_state=initial,
+        output_final_state=True,
+        cu_seqlens=bounds,
+        chunk_indices=torch.stack([sequence, within], 1),
+    )
+    return cast("torch.Tensor", out), cast("torch.Tensor", final)[:count]
+
+
+def _host(lengths: torch.Tensor) -> list[int]:
+    return [int(n) for n in lengths.cpu()]
+
+
+def _chunked_packed(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    lengths: torch.Tensor,
+    scale: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`_fla_packed` with the PyTorch chunked algorithm, prompt by prompt."""
+    heads, keys, width = value.shape[2], k.shape[3], value.shape[3]
+    out = value.new_zeros(value.shape, dtype=torch.float32)
+    finals = value.new_zeros(lengths.shape[0], heads, keys, width, dtype=torch.float32)
+    start = 0
+    for n, length in enumerate(_host(lengths)):
+        if length:
+            end = start + length
+            zero = value.new_zeros(1, heads, keys, width, dtype=torch.float32)
+            o, state = _chunked(
+                q[:, start:end],
+                k[:, start:end],
+                value[:, start:end],
+                decay[:, start:end],
+                beta[:, start:end],
+                zero,
+                scale,
+            )
+            out[:, start:end] = o
+            finals[n] = state[0]
+            start = end
+    return out, finals
+
+
+@torch.library.custom_op("linnet::gated_delta_rule_packed", mutates_args=())
+def gated_delta_rule_packed(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    segments: torch.Tensor,
+    rows: torch.Tensor,
+    current: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_rule_packed`: `[P * Hv + R * Hv * K,
+    V]` f32, each token's output then the rows' states. The prompts are
+    numbered from 0 (`segments`, as `linnet.serve` packs them), fewer than
+    the rows."""
+    total, heads, width = value.shape[1], value.shape[2], value.shape[3]
+    q, k = _repeat(query, heads), _repeat(key, heads)
+    lengths, owner = _owners(segments, rows, current.shape[0])
+    if _has_fla() and query.is_cuda and query.dtype in (torch.bfloat16, torch.float16):
+        out, finals = _fla_packed(q, k, value, decay, beta, lengths, scale)
+    else:
+        out, finals = _chunked_packed(q, k, value, decay, beta, lengths, scale)
+    out = out[0].float() * (segments >= 0)[:, None, None]
+    state = torch.where(
+        (owner >= 0)[:, None, None, None], finals[owner.clamp(min=0)], current.float()
+    )
+    return torch.cat([out.reshape(total * heads, width), state.reshape(-1, width)])
+
+
+@gated_delta_rule_packed.register_fake  # pyright: ignore[reportUnknownMemberType]
+def _(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    segments: torch.Tensor,
+    rows: torch.Tensor,
+    current: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    total, heads, width = value.shape[1], value.shape[2], value.shape[3]
+    states = current.shape[0] * heads * key.shape[3]
+    return value.new_empty(total * heads + states, width, dtype=torch.float32)
+
+
+__all__ = [
+    "causal_conv",
+    "causal_conv_packed",
+    "causal_history_packed",
+    "gated_delta_rule",
+    "gated_delta_rule_packed",
+    "gated_delta_update",
+    "gated_delta_update_",
+]

@@ -571,6 +571,22 @@ std::string prune_python_assignments(const std::string& body, const std::string&
 // a use inside a loop counts at the loop's end; `live_tail` is never released.
 std::string release_dead_values(const std::string& body, const std::string& live_tail);
 
+// Generated Python (the `torch` target): a state whose next value `main`
+// computes as a tensor of its own, written into the state's tensor
+// (`state.copy_(value)`) as soon as the value exists and nothing reads the
+// old one, rather than returned with the others at the end. A step then
+// holds one layer's new state at a time, not every layer's, and the runtime
+// keeps the state where it is (`IN_PLACE`). Any value a method or an index
+// takes from the state counts as a view of it; a next value that is one is
+// left as it is. Returns the body; `written` gets the pairs it wrote.
+struct StateWrite {
+    std::string state; // the state's argument, `sN`
+    std::string value; // its next value, `vN`
+};
+std::string write_states_early(const std::string& body,
+                               const std::vector<StateWrite>& candidates,
+                               std::vector<StateWrite>& written);
+
 // Weight-only computation split out of a generated Python body so that it
 // runs once, at load, rather than on every call (see `GraphExportOptions::
 // prepare`). A top-level `vN = ...` line is weight-only when it reads nothing

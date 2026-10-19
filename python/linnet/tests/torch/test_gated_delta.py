@@ -13,13 +13,19 @@ import torch
 
 from linnet.compiler import find_compiler
 from linnet.torch import load_function
-from linnet.torch.delta import gated_delta_rule, gated_delta_update, gated_delta_update_
+from linnet.torch.delta import (
+    gated_delta_rule,
+    gated_delta_rule_packed,
+    gated_delta_update,
+    gated_delta_update_,
+)
 from tests.helpers import STDLIB, requires_cuda
 
 SOURCE = """\
 module tests.delta
 
 use std.nn.recurrent::{gated_delta_rule, gated_delta_step, gated_delta_update, causal_conv}
+use std.nn.recurrent::{gated_delta_rule_packed, causal_conv_packed, causal_history_packed}
 
 pub entry rule<B: Dim, S: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
     query: Tensor[B, S, Hk, K; T],
@@ -71,6 +77,40 @@ pub entry conv<B: Dim, S: Dim, C: Dim>(
     weight: Tensor[C, 4; f32],
 ) -> Tensor[B, S, C; f32] {
     return causal_conv(x, history, weight)
+}
+
+pub entry packed<P: Dim, R: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+    query: Tensor[1, P, Hk, K; T],
+    key: Tensor[1, P, Hk, K; T],
+    value: Tensor[1, P, Hv, V; T],
+    decay: Tensor[1, P, Hv; f32],
+    beta: Tensor[1, P, Hv; f32],
+    segments: Tensor[P; i32],
+    rows: Tensor[P; i32],
+    current: Tensor[R, Hv, K, V; f32],
+) -> Tensor[P * Hv + R * Hv * K, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    return gated_delta_rule_packed(query, key, value, decay, beta, segments, rows, current, 0.25)
+}
+
+pub entry conv_packed<P: Dim, C: Dim>(
+    x: Tensor[P, C; f32],
+    segments: Tensor[P; i32],
+    weight: Tensor[C, 4; f32],
+) -> Tensor[P, C; f32] {
+    return causal_conv_packed(x, segments, weight)
+}
+
+pub entry history_packed<P: Dim, R: Dim, C: Dim>(
+    x: Tensor[P, C; f32],
+    segments: Tensor[P; i32],
+    rows: Tensor[P; i32],
+    history: Tensor[R, 3, C; f32],
+) -> Tensor[R, 3, C; f32] {
+    return causal_history_packed(x, segments, rows, history)
 }
 """
 
@@ -240,3 +280,112 @@ def test_a_state_only_the_update_reads_is_updated_in_place(tmp_path: Path) -> No
     text = subprocess.run(command, capture_output=True, text=True, check=True).stdout
     assert "_gated_delta_update_(" in text
     assert 'IN_PLACE = ["memory"]' in text
+
+
+# Three prompts packed as `linnet.serve` packs them, into rows 2, 0 and 3 of
+# four, then two tokens of padding; row 1 keeps its state.
+LENGTHS, ROWS, PAD = [3, 1, 70], [2, 0, 3], 2
+
+
+def _layout(device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    segments = [m for m, n in enumerate(LENGTHS) for _ in range(n)] + [-1] * PAD
+    rows = [r for r, n in zip(ROWS, LENGTHS, strict=True) for _ in range(n)] + [ROWS[0]] * PAD
+    return (
+        torch.tensor(segments, dtype=torch.int32, device=device),
+        torch.tensor(rows, dtype=torch.int32, device=device),
+    )
+
+
+def _packed_reference(inputs: tuple[torch.Tensor, ...], current: torch.Tensor) -> torch.Tensor:
+    """Each prompt alone from zero (`_reference`), laid out as the packed op's
+    result: the outputs (zero for padding), then the rows' states."""
+    key, value = inputs[1], inputs[2]
+    heads, width = value.shape[2], value.shape[3]
+    out = torch.zeros(value.shape[1], heads, width, dtype=torch.float64)
+    state = current.double().cpu().clone()
+    start = 0
+    for row, length in zip(ROWS, LENGTHS, strict=True):
+        end = start + length
+        zero = torch.zeros(1, heads, key.shape[3], width)
+        query, key_part, value_part, decay, beta = (x[:, start:end].cpu() for x in inputs)
+        alone = _reference(query, key_part, value_part, decay, beta, zero)
+        out[start:end] = alone[0, :length]
+        state[row] = alone[0, length:].permute(1, 0, 2)
+        start = end
+    return torch.cat([out.reshape(-1, width), state.reshape(-1, width)])
+
+
+@pytest.mark.parametrize("numerics", ["exact", "fast"])
+def test_packed_prompts_are_each_their_own(tmp_path: Path, numerics: str) -> None:
+    """The body and the PyTorch kernel: every prompt from zero, its final
+    state in its row, the padding and the other rows untouched."""
+    source = tmp_path / "delta.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    packed = load_function(source, "packed", std_root=STDLIB, numerics=numerics)
+    query, key, value, decay, beta, _ = _inputs("cpu", sum(LENGTHS) + PAD, batch=1)
+    current = torch.randn(4, 4, 16, 8, generator=torch.Generator().manual_seed(2))
+    segments, rows = _layout("cpu")
+    inputs = (query, key, value, decay, beta)
+    got = packed(*inputs, segments, rows, current)
+    expected = _packed_reference(inputs, current)
+    torch.testing.assert_close(got.double(), expected, atol=1e-4, rtol=1e-4)
+
+
+@requires_cuda
+def test_packed_prompts_on_cuda_replay_as_a_graph() -> None:
+    """bf16 on CUDA (`fla`'s kernel where it is installed) captured as a CUDA
+    graph once, then replayed for another packing of the same size."""
+    total = sum(LENGTHS) + PAD
+    query, key, value, decay, beta, _ = _inputs("cuda", total, torch.bfloat16, batch=1)
+    current = torch.randn(4, 4, 16, 8, device="cuda") * 0.1
+    segments, rows = _layout("cuda")
+    inputs = (query, key, value, decay, beta)
+    first = gated_delta_rule_packed(*inputs, segments, rows, current, 0.25)
+    torch.testing.assert_close(
+        first.double().cpu(), _packed_reference(inputs, current), atol=3e-2, rtol=3e-2
+    )
+    # Captured with every token one prompt in row 1, replayed with the
+    # layout above.
+    static = [segments.clone().zero_(), rows.clone().fill_(1)]
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        gated_delta_rule_packed(*inputs, *static, current, 0.25)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        replayed = gated_delta_rule_packed(*inputs, *static, current, 0.25)
+    static[0].copy_(segments)
+    static[1].copy_(rows)
+    graph.replay()
+    torch.testing.assert_close(replayed, first, atol=1e-5, rtol=1e-5)
+
+
+def test_packed_convolution_stays_in_each_prompt(tmp_path: Path) -> None:
+    """Each prompt convolved from a zero history; each row's new history its
+    prompt's last three inputs, zero-filled before a short prompt's start."""
+    source = tmp_path / "delta.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    generator = torch.Generator().manual_seed(3)
+    total = sum(LENGTHS) + PAD
+    x = torch.randn(total, 5, generator=generator)
+    weight = torch.randn(5, 4, generator=generator)
+    history = torch.randn(4, 3, 5, generator=generator)
+    segments, rows = _layout("cpu")
+    expected = torch.zeros(total, 5)
+    windows = history.clone()
+    start = 0
+    for row, length in zip(ROWS, LENGTHS, strict=True):
+        end = start + length
+        signal = torch.cat([torch.zeros(3, 5), x[start:end]])
+        expected[start:end] = torch.nn.functional.conv1d(signal.T[None], weight[:, None], groups=5)[
+            0
+        ].T
+        windows[row] = signal[-3:]
+        start = end
+    for numerics in ("exact", "fast"):
+        conv = load_function(source, "conv_packed", std_root=STDLIB, numerics=numerics)
+        ends = load_function(source, "history_packed", std_root=STDLIB, numerics=numerics)
+        got = conv(x, segments, weight)
+        torch.testing.assert_close(got[:start], expected[:start], atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(ends(x, segments, rows, history), windows)

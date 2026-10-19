@@ -362,6 +362,31 @@ def _gated_delta_update(args: Args) -> torch.Tensor:
     return gated_delta_update(state, key, value, decay, beta)
 
 
+def _gated_delta_rule_packed(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_rule_packed`: the prompts as sequences
+    of their own lengths (`linnet.torch.delta`)."""
+    from .delta import gated_delta_rule_packed
+
+    *tensors, scale = args
+    return gated_delta_rule_packed(*tensors, float(scale.item()))
+
+
+def _causal_conv_packed(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::causal_conv_packed`: each tap shifted and masked."""
+    from .delta import causal_conv_packed
+
+    x, segments, weight = args
+    return causal_conv_packed(x, segments, weight)
+
+
+def _causal_history_packed(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::causal_history_packed`: the rows' windows gathered."""
+    from .delta import causal_history_packed
+
+    x, segments, rows, history = args
+    return causal_history_packed(x, segments, rows, history)
+
+
 def _causal_conv(args: Args) -> torch.Tensor:
     """`std.nn.recurrent::causal_conv`: one grouped `F.conv1d`."""
     from .delta import causal_conv
@@ -546,6 +571,9 @@ NATIVE: dict[str, Native] = {
     "linnet.gated_delta_rule": _required(_gated_delta_rule),
     "torch.nn.functional.conv1d(depthwise)": _required(_causal_conv),
     "linnet.gated_delta_update": _required(_gated_delta_update),
+    "linnet.gated_delta_rule_packed": _required(_gated_delta_rule_packed),
+    "linnet.causal_conv_packed": _required(_causal_conv_packed),
+    "linnet.causal_history_packed": _required(_causal_history_packed),
     "linnet.mxfp4_experts": _required(_mxfp4_experts),
     "linnet.mxfp4_experts(shared)": _required(_mxfp4_experts_shared),
     "linnet.mxfp4_grouped(shared)": _required(_mxfp4_grouped_shared),

@@ -130,6 +130,9 @@ with bf16: `torch._grouped_mm` on Hopper and the data-center Blackwells,
 OpenAI's `triton_kernels` (if installed) elsewhere, such as the GB10. The
 gated delta rule (`std.nn.recurrent`, Gated DeltaNet) runs in blocks of 64
 tokens, through `fla`'s kernel when `flash-linear-attention` is installed.
+Over packed prompts (`gated_delta_rule_packed`), each prompt is its own
+sequence. The kernel's tables are built on the device at fixed sizes, so a
+CUDA graph replays the pass for any prompt lengths.
 
 ## Entries and state
 

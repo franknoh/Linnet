@@ -216,10 +216,18 @@ std::vector<NativeCandidate> torch_candidates() {
          {"key heads divide value heads"}},
         // One grouped convolution over the history and the span, in the
         // input dtype (cuDNN accumulates in f32).
-        {"std.nn.recurrent::causal_conv",
-         "torch.nn.functional.conv1d(depthwise)",
+        {"std.nn.recurrent::causal_conv", "torch.nn.functional.conv1d(depthwise)", fast, {}},
+        // Packed prompts as sequences of their own lengths (`fla`'s kernel
+        // over them where it is installed); the convolution shifted per tap
+        // and the rows' histories found on the device.
+        {"std.nn.recurrent::gated_delta_rule_packed",
+         "linnet.gated_delta_rule_packed",
          fast,
-         {}},
+         {"key heads divide value heads",
+          "decay is in log space",
+          "prompts are numbered from 0, fewer than the rows"}},
+        {"std.nn.recurrent::causal_conv_packed", "linnet.causal_conv_packed", fast, {}},
+        {"std.nn.recurrent::causal_history_packed", "linnet.causal_history_packed", fast, {}},
         // FlexAttention over each row's pages where they lie in the pool.
         {"std.nn.attention::paged_attention",
          "linnet.paged_attention",
