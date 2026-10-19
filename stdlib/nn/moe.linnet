@@ -55,3 +55,17 @@ pub op combine_experts<R: Dim, K: Dim, E: Dim, In: Dim, Out: Dim, T: Float>(
     let placed[r, e, i] = sum[k] route[r, e, k] * x[r, k, i]
     return linear(reshape(placed, [R, E * In]), reshape(permute(weight, [1, 0, 2]), [Out, E * In]))
 }
+
+// Each row's `K` largest entries of `x`, as their indices, the largest
+// first: a router's choice of experts. Ties go to the lower index, as
+// `torch.topk` lists them. The body ranks every entry by how many beat it,
+// `[R, E, E]` comparisons; PyTorch's `topk` finds them directly.
+pub op top_k<R: Dim, E: Dim, K: Dim, T: Float>(x: Tensor[R, E; T]) -> Tensor[R, K; i64]
+where K > 0 {
+    let slots = iota<i32>(E)
+    let beats[r, e, j] = x[r, j] > x[r, e] || (x[r, j] == x[r, e] && slots[j] < slots[e])
+    let rank[r, e] = sum<i32>[j] cast<i32>(beats[r, e, j])
+    let places = iota<i32>(K)
+    let chosen[r, k] = sum<i32>[e] select(rank[r, e] == places[k], slots[e], 0)
+    return cast<i64>(chosen)
+}

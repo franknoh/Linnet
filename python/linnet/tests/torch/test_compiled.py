@@ -339,3 +339,55 @@ def test_torch_compile_compiles_each_kind_of_layer_once() -> None:
     graphs.clear()
     torch.testing.assert_close(whole(tokens), reference(tokens), atol=1e-5, rtol=1e-5)
     assert len(graphs) == 1 and graphs[0].count("linear(") > 4 * 4
+
+
+SHIFTING = """\
+module tests.shifting
+
+pub block Window<B: Dim, W: Dim, C: Dim>
+where W > 1 {
+    state window: Tensor[B, W, C; f32]
+
+    pub entry push(x: Tensor[B, 1, C; f32]) -> Tensor[B, C; f32] {
+        window = concat(window[:, 1:W, :], x * 2.0, axis = 1)
+        let total[b, c] = sum[w] window[b, w, c]
+        return total
+    }
+
+    pub entry push_two(x: Tensor[B, 2, C; f32]) -> Tensor[B, C; f32] {
+        window = concat(window[:, 2:W, :], x, axis = 1)
+        let total[b, c] = sum[w] window[b, w, c]
+        return total
+    }
+}
+"""
+
+
+@requires_cuda
+def test_a_returned_state_keeps_its_address_under_graphs(tmp_path: Path) -> None:
+    """A state an entry computes anew is copied into its own tensor, so
+    another entry's first call leaves the graphs already captured over it
+    current."""
+    source = tmp_path / "window.linnet"
+    source.write_text(SHIFTING, encoding="utf-8")
+    graphed = load(
+        source,
+        generics={"B": 2, "W": 4, "C": 3},
+        std_root=STDLIB,
+        device="cuda",
+        compile="reduce-overhead",
+    )
+    assert isinstance(graphed, CompiledLinnetModule)
+    state = graphed.root.get_buffer("window")
+    ones = torch.ones(2, 1, 3, device="cuda")
+    for _ in range(3):
+        graphed.run_entry("push", [ones])
+    graphed.run_entry("push_two", [torch.ones(2, 2, 3, device="cuda")])
+    # Written into the state as soon as the new window exists.
+    assert ".copy_(" in graphed.generated_source("push")
+    assert graphed.root.get_buffer("window") is state
+    fast = graphed._fast.values()  # pyright: ignore[reportPrivateUsage]
+    graphs = [prepared.graph for prepared in fast if prepared.graph is not None]
+    assert graphs and all(graph.current() for graph in graphs)
+    expected = torch.tensor([2.0, 2.0, 1.0, 1.0], device="cuda")[None, :, None].expand(2, 4, 3)
+    torch.testing.assert_close(state, expected)

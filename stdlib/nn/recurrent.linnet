@@ -77,6 +77,30 @@ where
     return concat(reshape(read, [B, 1, Hv, V]), permute(written, [0, 2, 1, 3]), axis = 1)
 }
 
+// `gated_delta_step`'s new state alone: one token for each of `B` rows,
+// `[B, Hv, K, V]` in f32. A decoder reads its output from that state
+// (`sum_k state'[b, h, k, v] * query[b, h / (Hv / Hk), k] * scale`); PyTorch
+// on CUDA updates the state where it lies when nothing else reads the old
+// one, rather than writing a new copy each step.
+pub op gated_delta_update<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+    key: Tensor[B, Hk, K; T],
+    value: Tensor[B, Hv, V; T],
+    decay: Tensor[B, Hv; f32],
+    beta: Tensor[B, Hv; f32],
+    current: Tensor[B, Hv, K, V; f32],
+) -> Tensor[B, Hv, K, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    let k_t = repeat_heads<B, Hk, Hv / Hk, K>(cast<f32>(key))
+    let kept[b, h, i, j] = current[b, h, i, j] * exp(decay[b, h])
+    let predicted[b, h, j] = sum[i] kept[b, h, i, j] * k_t[b, h, i]
+    let correction[b, h, j] = (cast<f32>(value[b, h, j]) - predicted[b, h, j]) * beta[b, h]
+    let written[b, h, i, j] = kept[b, h, i, j] + k_t[b, h, i] * correction[b, h, j]
+    return written
+}
+
 // A depthwise causal convolution over time, `x` `[B, S, C]` and `weight`
 // `[C, W]`: `y[b, t, c] = sum_w weight[c, w] * x[b, t - (W - 1) + w, c]`,
 // positions before the start reading `history` (`[B, W - 1, C]`, the inputs
@@ -103,4 +127,118 @@ where W > 1 {
 fn repeat_heads<B: Dim, Hk: Dim, R: Dim, K: Dim>(x: Tensor[B, Hk, K; f32]) -> Tensor[B, Hk *
     R, K; f32] {
     return reshape(broadcast_to(reshape(x, [B, Hk, 1, K]), [B, Hk, R, K]), [B, Hk * R, K])
+}
+
+// `gated_delta_rule` over prompts packed into one sequence, each from zero:
+// token `p` belongs to prompt `segments[p]` (`-1` for padding, which neither
+// reads nor writes) and to row `rows[p]` of `current` (`[R, Hv, K, V]`, a
+// server's states), and a prompt's tokens lie together in order. The rows
+// the prompts fill take their final states; the others keep theirs.
+//
+// One tensor out, `[P * Hv + R * Hv * K, V]` in f32: each token's output
+// (`[P, Hv, V]`, zero for padding), then the rows' states (`[R, Hv, K, V]`),
+// each part contiguous.
+//
+// The body runs the tokens one by one over every row; PyTorch on CUDA runs
+// `fla`'s chunked kernel over the prompts as sequences of their own lengths.
+pub op gated_delta_rule_packed<
+    P: Dim,
+    R: Dim,
+    Hk: Dim,
+    Hv: Dim,
+    K: Dim,
+    V: Dim,
+    T: Float,
+>(
+    query: Tensor[1, P, Hk, K; T],
+    key: Tensor[1, P, Hk, K; T],
+    value: Tensor[1, P, Hv, V; T],
+    decay: Tensor[1, P, Hv; f32],
+    beta: Tensor[1, P, Hv; f32],
+    segments: Tensor[P; i32],
+    rows: Tensor[P; i32],
+    current: Tensor[R, Hv, K, V; f32],
+    scale: f32,
+) -> Tensor[P * Hv + R * Hv * K, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    let ids = iota<i32>(R)
+    let before = concat(fill<i32>([1], -1), segments, axis = 0)
+    var memory = current
+    let outputs = for t in 0..P {
+        let mine[r] = ids[r] == rows[t] && segments[t] >= 0
+        let starts[r] = mine[r] && before[t] != segments[t]
+        let shared_query[b, g, k] = cast<f32>(query[b, t, g, k]) * scale
+        let shared_key[b, g, k] = cast<f32>(key[b, t, g, k])
+        let q = repeat_heads<1, Hk, Hv / Hk, K>(shared_query)
+        let k_t = repeat_heads<1, Hk, Hv / Hk, K>(shared_key)
+        let base[r, h, i, j] = select(starts[r], 0.0, memory[r, h, i, j])
+        let kept[r, h, i, j] = base[r, h, i, j] * exp(decay[0, t, h])
+        let predicted[r, h, j] = sum[i] kept[r, h, i, j] * k_t[0, h, i]
+        let correction[r, h, j] =
+            (cast<f32>(value[0, t, h, j]) - predicted[r, h, j]) * beta[0, t, h]
+        let written[r, h, i, j] = kept[r, h, i, j] + k_t[0, h, i] * correction[r, h, j]
+        let next[r, h, i, j] = select(mine[r], written[r, h, i, j], memory[r, h, i, j])
+        memory = next
+        let each[r, h, j] = sum[i] select(mine[r], written[r, h, i, j] * q[0, h, i], 0.0)
+        let read[h, j] = sum[r] each[r, h, j]
+        yield read
+    }
+    return concat(reshape(outputs, [P * Hv, V]), reshape(memory, [R * Hv * K, V]), axis = 0)
+}
+
+// `causal_conv` over prompts packed into one sequence, each from zero:
+// `y[p, c] = sum_w weight[c, w] * x[p - (W - 1) + w, c]` over the inputs of
+// token `p`'s own prompt (`segments`), the positions before its start zero.
+pub op causal_conv_packed<P: Dim, C: Dim, W: Dim, T: Float>(
+    x: Tensor[P, C; T],
+    segments: Tensor[P; i32],
+    weight: Tensor[C, W; T],
+) -> Tensor[P, C; f32]
+where W > 1 {
+    let steps = iota<i32>(P)
+    let taps = iota<i32>(W)
+    let back[p, w] = steps[p] + taps[w] - (cast<i32>(W) - 1)
+    let at[p, w] = cast<i64>(max(back[p, w], 0))
+    let same[p, w] = back[p, w] >= 0 && segments[at[p, w]] == segments[p]
+    let y[p, c] =
+        sum<f32>[w]
+            select(
+                same[p, w],
+                cast<f32>(weight[c, w]) * cast<f32>(x[at[p, w], c]),
+                0.0,
+            )
+    return y
+}
+
+// The convolution's history after packed prompts (`causal_conv_packed`):
+// each prompt's row of `history` (`[R, L, C]`, `L` the width less one)
+// takes the prompt's last `L` inputs, zero before its start; the other rows
+// keep theirs.
+pub op causal_history_packed<P: Dim, R: Dim, C: Dim, L: Dim, T: Float>(
+    x: Tensor[P, C; T],
+    segments: Tensor[P; i32],
+    rows: Tensor[P; i32],
+    history: Tensor[R, L, C; T],
+) -> Tensor[R, L, C; T]
+where L > 0 {
+    let ids = iota<i32>(R)
+    let steps = iota<i32>(P)
+    let after = concat(segments, fill<i32>([1], -1), axis = 0)[1:P + 1]
+    let ends[p] = segments[p] >= 0 && after[p] != segments[p]
+    let owns[r, p] = ends[p] && rows[p] == ids[r]
+    let end_at[r] = sum[p] cast<i32>(owns[r, p]) * steps[p]
+    let count[r] = sum[p] cast<i32>(owns[r, p])
+    let taps = iota<i32>(L)
+    let back[r, j] = end_at[r] + taps[j] - (cast<i32>(L) - 1)
+    let at[r, j] = cast<i64>(max(back[r, j], 0))
+    let same[r, j] = back[r, j] >= 0 && segments[at[r, j]] == segments[cast<i64>(end_at[r])]
+    let window[r, j, c] = select(
+        count[r] > 0,
+        select(same[r, j], x[at[r, j], c], cast<T>(0.0)),
+        history[r, j, c],
+    )
+    return window
 }

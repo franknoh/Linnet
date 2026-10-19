@@ -100,6 +100,9 @@ std::vector<NativeCandidate> torch_candidates() {
          fast,
          {"CUDA (compute capability 9 or later), bf16, and widths the kernel takes; otherwise "
           "every expert multiplies every row"}},
+        // The largest entries found directly rather than ranked by pairwise
+        // comparisons; ties may come in another order.
+        {"std.nn.moe::top_k", "torch.topk", fast, {}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.norm::group_norm", "torch.nn.functional.group_norm", equivalent, {}},
@@ -205,12 +208,26 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.gated_delta_rule",
          fast,
          {"key heads divide value heads", "decay is in log space"}},
+        // One token's state update in one pass over the state, in place where
+        // the old state has no other reader.
+        {"std.nn.recurrent::gated_delta_update",
+         "linnet.gated_delta_update",
+         fast,
+         {"key heads divide value heads"}},
         // One grouped convolution over the history and the span, in the
         // input dtype (cuDNN accumulates in f32).
-        {"std.nn.recurrent::causal_conv",
-         "torch.nn.functional.conv1d(depthwise)",
+        {"std.nn.recurrent::causal_conv", "torch.nn.functional.conv1d(depthwise)", fast, {}},
+        // Packed prompts as sequences of their own lengths (`fla`'s kernel
+        // over them where it is installed); the convolution shifted per tap
+        // and the rows' histories found on the device.
+        {"std.nn.recurrent::gated_delta_rule_packed",
+         "linnet.gated_delta_rule_packed",
          fast,
-         {}},
+         {"key heads divide value heads",
+          "decay is in log space",
+          "prompts are numbered from 0, fewer than the rows"}},
+        {"std.nn.recurrent::causal_conv_packed", "linnet.causal_conv_packed", fast, {}},
+        {"std.nn.recurrent::causal_history_packed", "linnet.causal_history_packed", fast, {}},
         // FlexAttention over each row's pages where they lie in the pool.
         {"std.nn.attention::paged_attention",
          "linnet.paged_attention",

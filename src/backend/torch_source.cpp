@@ -735,6 +735,19 @@ public:
                           name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ", " +
                           std::to_string(*size) + ", " + found->second + ")");
         }
+        if (implementation_base == "linnet.gated_delta_update" && operands.size() == 5 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4]) {
+            // `linnet.torch.delta`: the state updated where it lies when this
+            // call is its only reader (`_gated_delta_update_`), else a new one.
+            delta_helper_ = true;
+            return define(writing(name(4), "_gated_delta_update(") + name(4) + ", " + name(0) +
+                          ", " + name(1) + ", " + name(2) + ", " + name(3) + ")");
+        }
+        if (implementation_base == "torch.topk" && operands.size() == 1 && operands[0] &&
+            !shape.empty()) {
+            return define("torch.topk(" + name(0) + ", " + std::to_string(shape.back()) +
+                          ", dim=-1).indices");
+        }
         if (implementation_base == "torch.nn.functional.conv1d(depthwise)" &&
             operands.size() == 3 && operands[0] && operands[1] && operands[2]) {
             // `linnet.torch.delta.causal_conv`: the history and the span as one
@@ -750,6 +763,29 @@ public:
             delta_helper_ = true;
             return define("_gated_delta_rule(" + name(0) + ", " + name(1) + ", " + name(2) + ", " +
                           name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ")");
+        }
+        if (implementation_base == "linnet.gated_delta_rule_packed" && operands.size() == 9 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4] &&
+            operands[5] && operands[6] && operands[7]) {
+            // `linnet.torch.delta.gated_delta_rule_packed`: the prompts as
+            // sequences of their own lengths, `fla`'s kernel where installed.
+            delta_helper_ = true;
+            std::string call = "_gated_delta_rule_packed(";
+            for (std::size_t i = 0; i < 8; ++i) {
+                call += name(i) + ", ";
+            }
+            return define(call + scalar(8) + ")");
+        }
+        if (implementation_base == "linnet.causal_conv_packed" && operands.size() == 3 &&
+            operands[0] && operands[1] && operands[2]) {
+            delta_helper_ = true;
+            return define("_causal_conv_packed(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
+        }
+        if (implementation_base == "linnet.causal_history_packed" && operands.size() == 4 &&
+            operands[0] && operands[1] && operands[2] && operands[3]) {
+            delta_helper_ = true;
+            return define("_causal_history_packed(" + name(0) + ", " + name(1) + ", " + name(2) +
+                          ", " + name(3) + ")");
         }
         if (implementation_base == "linnet.sink_attention" && operands.size() == 6 && operands[0] &&
             operands[1] && operands[5]) {
@@ -959,7 +995,14 @@ public:
         }
         if (delta_helper_) {
             out += "from linnet.torch.delta import causal_conv as _causal_conv\n";
-            out += "from linnet.torch.delta import gated_delta_rule as _gated_delta_rule\n\n\n";
+            out += "from linnet.torch.delta import gated_delta_update as _gated_delta_update\n";
+            out += "from linnet.torch.delta import gated_delta_update_ as _gated_delta_update_\n";
+            out += "from linnet.torch.delta import causal_conv_packed as _causal_conv_packed\n";
+            out +=
+                "from linnet.torch.delta import causal_history_packed as _causal_history_packed\n";
+            out += "from linnet.torch.delta import gated_delta_rule as _gated_delta_rule\n";
+            out += "from linnet.torch.delta import gated_delta_rule_packed as "
+                   "_gated_delta_rule_packed\n\n\n";
         }
         if (shards_helper_) {
             out += shards_helper();
@@ -1034,9 +1077,43 @@ public:
             out += join(fused_, ", ", [&](const auto& item) { return string_list(item); });
             out += "]\n";
         }
+        // A state's next value goes into the state's own tensor once nothing
+        // reads the old one (not while training, nor placed over devices).
+        std::string main_body = prepared.body;
+        if (gradients().empty() && !placed_) {
+            std::vector<StateWrite> candidates;
+            for (std::size_t k = 0; k < states.size(); ++k) {
+                const auto& [path, value] = states[k];
+                const auto found = std::ranges::find(states_, path);
+                if (found == states_.end()) {
+                    continue;
+                }
+                const std::string argument =
+                    "s" + std::to_string(std::distance(states_.begin(), found));
+                if (numbered(value.name, 'v')) {
+                    candidates.push_back({argument, value.name});
+                }
+            }
+            std::vector<StateWrite> early;
+            main_body = write_states_early(main_body, candidates, early);
+            for (const StateWrite& write : early) {
+                if (std::ranges::find(written_, write.state) == written_.end()) {
+                    written_.push_back(write.state);
+                }
+                // Among the states only: a result stays its own tensor.
+                std::replace(outputs.begin() + static_cast<std::ptrdiff_t>(results.size()),
+                             outputs.end(),
+                             write.value,
+                             write.state);
+            }
+            if (!early.empty()) {
+                tail =
+                    "    return (" + join(outputs, ", ") + (outputs.size() == 1 ? ",)\n" : ")\n");
+            }
+        }
         // The states `main` writes into the tensor it was given: CUDA graphs
         // must be told their addresses are fixed, or they are skipped.
-        const std::string body = release_dead_values(prepared.body, tail);
+        const std::string body = release_dead_values(main_body, tail);
         std::vector<std::string> in_place_paths;
         in_place_paths.reserve(written_.size());
         for (const std::string& argument : written_) {

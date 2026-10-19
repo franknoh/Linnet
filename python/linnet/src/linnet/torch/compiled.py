@@ -343,7 +343,16 @@ class CompiledLinnetModule(LinnetModule):
         group joined into one buffer)."""
         self._parameter_list = None
 
-    def _call(self, prepared: _Prepared, inputs: list[torch.Tensor], cuda_graphs: bool) -> Result:  # pyright: ignore[reportExplicitAny]
+    def _call(
+        self,
+        prepared: _Prepared,
+        inputs: list[torch.Tensor],
+        cuda_graphs: bool,
+        keep: bool = False,
+    ) -> Result:  # pyright: ignore[reportExplicitAny]
+        """One call of an entry. With `keep`, a state the entry returns rather
+        than writes in place is copied into the state's own tensor, which
+        keeps its address for the CUDA graphs that read it."""
         generated = prepared.generated
         if self.placement is not None:
             # Inputs enter where the first unit runs.
@@ -403,6 +412,18 @@ class CompiledLinnetModule(LinnetModule):
                 if value.requires_grad:
                     value.detach_()
                 continue
+            held = by_path.get(path)
+            if (
+                keep
+                and held is not None
+                and held.shape == value.shape
+                and held.dtype == value.dtype
+                and held.device == value.device
+            ):
+                # Rebound, the state would leave every graph captured over
+                # it out of date, each holding the old tensor alive.
+                held.copy_(value.detach())
+                continue
             setattr(owner, leaf, value.detach())
         return results[0] if len(results) == 1 else tuple(results)
 
@@ -422,7 +443,7 @@ class CompiledLinnetModule(LinnetModule):
             # The first call runs as it is, on the buffers the graph will
             # read, so what it compiles is what the capture then traces.
             prepared.static = [value.contiguous().clone() for value in inputs]
-            return self._call(prepared, prepared.static, cuda_graphs=False)
+            return self._call(prepared, prepared.static, cuda_graphs=False, keep=True)
         for static, value in zip(prepared.static, inputs, strict=True):
             static.copy_(value)
         if graph is None:
@@ -434,7 +455,7 @@ class CompiledLinnetModule(LinnetModule):
                 # The step had to compile again -- a guard the first call
                 # set no longer held -- which nothing can under a capture.
                 # This call runs as it is, compiling, and the next captures.
-                return self._call(prepared, prepared.static, cuda_graphs=False)
+                return self._call(prepared, prepared.static, cuda_graphs=False, keep=True)
         graph.graph.replay()
         results = [value.clone() for value in graph.results]
         return results[0] if len(results) == 1 else tuple(results)

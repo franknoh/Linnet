@@ -2668,6 +2668,89 @@ std::string release_dead_values(const std::string& body, const std::string& live
     return out;
 }
 
+std::string write_states_early(const std::string& body,
+                               const std::vector<StateWrite>& candidates,
+                               std::vector<StateWrite>& written) {
+    const std::vector<std::string> lines = split_lines(body);
+    const auto indent = [](const std::string& line) {
+        const std::size_t first = line.find_first_not_of(' ');
+        return first == std::string::npos ? line.size() : first;
+    };
+    std::vector<std::pair<std::size_t, std::size_t>> groups;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (groups.empty() || indent(lines[i]) <= 4) {
+            groups.emplace_back(i, i);
+        } else {
+            groups.back().second = i;
+        }
+    }
+    const auto mentions = [&](std::size_t g, const std::set<std::string>& names) {
+        for (std::size_t i = groups[g].first; i <= groups[g].second; ++i) {
+            for (const auto& [at, word] : words_of(lines[i])) {
+                if (names.contains(word)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    std::vector<std::vector<std::string>> after(groups.size());
+    for (const StateWrite& candidate : candidates) {
+        std::optional<std::size_t> defined;
+        std::set<std::string> aliases{candidate.state};
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+            const auto assignment = top_level_assignment(lines[groups[g].first]);
+            if (!assignment) {
+                continue;
+            }
+            const std::string& expression = assignment->second;
+            const std::size_t end = expression.find_first_not_of(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+            const std::string head = expression.substr(0, end);
+            const bool viewed =
+                aliases.contains(head) &&
+                (end == std::string::npos || expression[end] == '.' || expression[end] == '[');
+            // An in-place helper (`_gated_delta_update_(s1, ...)`) returns
+            // the tensor it wrote.
+            const auto call = call_of(expression);
+            bool updated = false;
+            if (call && call->callee.ends_with('_')) {
+                for (const std::string& argument : call->arguments) {
+                    updated = updated || aliases.contains(argument);
+                }
+            }
+            if (viewed || updated) {
+                aliases.insert(assignment->first);
+            }
+            if (assignment->first == candidate.value) {
+                defined = g;
+            }
+        }
+        if (!defined || aliases.contains(candidate.value)) {
+            continue;
+        }
+        std::size_t at = *defined;
+        for (std::size_t g = groups.size(); g-- > at + 1;) {
+            if (mentions(g, aliases)) {
+                at = g;
+                break;
+            }
+        }
+        after[at].push_back("    " + candidate.state + ".copy_(" + candidate.value + ")");
+        written.push_back(candidate);
+    }
+    std::string out;
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        for (std::size_t i = groups[g].first; i <= groups[g].second; ++i) {
+            out += lines[i] + "\n";
+        }
+        for (const std::string& line : after[g]) {
+            out += line + "\n";
+        }
+    }
+    return out;
+}
+
 std::vector<std::string> split_lines(std::string_view text) {
     std::vector<std::string> lines;
     std::size_t start = 0;
