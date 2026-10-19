@@ -735,6 +735,19 @@ public:
                           name(3) + ", " + name(4) + ", " + name(5) + ", " + scalar(6) + ", " +
                           std::to_string(*size) + ", " + found->second + ")");
         }
+        if (implementation_base == "linnet.gated_delta_update" && operands.size() == 5 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4]) {
+            // `linnet.torch.delta`: the state updated where it lies when this
+            // call is its only reader (`_gated_delta_update_`), else a new one.
+            delta_helper_ = true;
+            return define(writing(name(4), "_gated_delta_update(") + name(4) + ", " + name(0) +
+                          ", " + name(1) + ", " + name(2) + ", " + name(3) + ")");
+        }
+        if (implementation_base == "torch.topk" && operands.size() == 1 && operands[0] &&
+            !shape.empty()) {
+            return define("torch.topk(" + name(0) + ", " + std::to_string(shape.back()) +
+                          ", dim=-1).indices");
+        }
         if (implementation_base == "torch.nn.functional.conv1d(depthwise)" &&
             operands.size() == 3 && operands[0] && operands[1] && operands[2]) {
             // `linnet.torch.delta.causal_conv`: the history and the span as one
@@ -959,6 +972,8 @@ public:
         }
         if (delta_helper_) {
             out += "from linnet.torch.delta import causal_conv as _causal_conv\n";
+            out += "from linnet.torch.delta import gated_delta_update as _gated_delta_update\n";
+            out += "from linnet.torch.delta import gated_delta_update_ as _gated_delta_update_\n";
             out += "from linnet.torch.delta import gated_delta_rule as _gated_delta_rule\n\n\n";
         }
         if (shards_helper_) {

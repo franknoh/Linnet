@@ -411,6 +411,9 @@ class Interpreter:
                 if 2 * pad <= window:
                     return [max_pool2d(cast(list[torch.Tensor], operands), window, stride, pad)]
                 return [self.call(callee, callee_env, operands)]
+            if selected == "torch.topk":
+                (scores,) = cast(list[torch.Tensor], operands)
+                return [torch.topk(scores, result_shape()[-1], dim=-1).indices]
             if selected == "torch.nn.functional.interpolate(nearest)":
                 return [
                     upsample_nearest2d(cast(list[torch.Tensor], operands), list(result_shape()))

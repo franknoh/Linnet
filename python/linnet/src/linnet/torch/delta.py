@@ -144,6 +144,79 @@ def _(
     return value.new_empty(batch, length + key.shape[3], heads, width, dtype=torch.float32)
 
 
+def _update_math(
+    state: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    """One token's update in PyTorch: the new state, `[B, Hv, K, V]` f32."""
+    heads = value.shape[1]
+    k = key.float().repeat_interleave(heads // key.shape[1], dim=1)
+    kept = state * decay.float().exp()[..., None, None]
+    predicted = torch.einsum("bhkv,bhk->bhv", kept, k)
+    correction = (value.float() - predicted) * beta.float()[..., None]
+    return kept + k[..., None] * correction[..., None, :]
+
+
+def _kernel_runs(state: torch.Tensor) -> bool:
+    width, columns = state.shape[2], state.shape[3]
+    return (
+        state.is_cuda
+        and state.dtype == torch.float32
+        and state.is_contiguous()
+        and width & (width - 1) == 0
+        and columns & (columns - 1) == 0
+    )
+
+
+def _operands(
+    key: torch.Tensor, value: torch.Tensor, decay: torch.Tensor, beta: torch.Tensor
+) -> tuple[torch.Tensor, ...]:
+    return (
+        key.contiguous(),
+        value.contiguous(),
+        decay.float().contiguous(),
+        beta.float().contiguous(),
+    )
+
+
+def gated_delta_update(
+    state: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_update` into a new state: one pass
+    over the old state on CUDA (`kernels.delta_update`)."""
+    if _kernel_runs(state):
+        from .kernels import delta_update
+
+        return delta_update(state, *_operands(key, value, decay, beta))
+    return _update_math(state, key, value, decay, beta)
+
+
+def gated_delta_update_(
+    state: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    """`gated_delta_update` written into `state` itself, which it returns:
+    where the old state has no other reader (the generated code knows), a
+    decoding step reads and writes it once rather than copying it."""
+    if _kernel_runs(state):
+        from .kernels import delta_update_
+
+        delta_update_(state, *_operands(key, value, decay, beta))
+    else:
+        state.copy_(_update_math(state, key, value, decay, beta))
+    return state
+
+
 def causal_conv(x: torch.Tensor, history: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """`std.nn.recurrent::causal_conv`: `x` `[B, S, C]` after `history`
     `[B, W - 1, C]`, each channel convolved with its row of `weight` `[C, W]`,
@@ -153,4 +226,4 @@ def causal_conv(x: torch.Tensor, history: torch.Tensor, weight: torch.Tensor) ->
     return out.transpose(1, 2).float()
 
 
-__all__ = ["causal_conv", "gated_delta_rule"]
+__all__ = ["causal_conv", "gated_delta_rule", "gated_delta_update", "gated_delta_update_"]

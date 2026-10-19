@@ -916,6 +916,90 @@ int8_mm = _launched(_int8_mm_op, _int8_mm, _int8_mm_kernel)
 
 
 @triton.jit
+def _delta_update_kernel(
+    state_in,
+    state_out,
+    key,
+    value,
+    decay,
+    beta,
+    key_heads,
+    value_heads,
+    width: tl.constexpr,
+    columns: tl.constexpr,
+    block: tl.constexpr,
+):
+    # One program per (row, value head, block of value columns): its
+    # [width, block] slice of the state read once, updated, written back.
+    row_head = tl.program_id(0)
+    row = row_head // value_heads
+    group = (row_head % value_heads) // (value_heads // key_heads)
+    ks = tl.arange(0, width)
+    vs = tl.program_id(1) * block + tl.arange(0, block)
+    at = row_head.to(tl.int64) * width * columns + ks[:, None] * columns + vs[None, :]
+    s = tl.load(state_in + at)
+    k = tl.load(key + (row * key_heads + group) * width + ks).to(tl.float32)
+    v = tl.load(value + row_head * columns + vs).to(tl.float32)
+    s = s * tl.exp(tl.load(decay + row_head))
+    predicted = tl.sum(s * k[:, None], axis=0)
+    correction = (v - predicted) * tl.load(beta + row_head)
+    tl.store(state_out + at, s + k[:, None] * correction[None, :])
+
+
+def _delta_update(
+    state_in: torch.Tensor,
+    state_out: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> None:
+    rows, heads, width, columns = state_in.shape
+    block = 32 if columns % 32 == 0 else columns
+    wrap_triton(_delta_update_kernel)[(rows * heads, columns // block)](
+        state_in,
+        state_out,
+        key,
+        value,
+        decay,
+        beta,
+        key.shape[1],
+        heads,
+        width=width,
+        columns=columns,
+        block=block,
+    )
+
+
+@triton_op("linnet::delta_update", mutates_args=())
+def delta_update(
+    state: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    """One token of the gated delta rule per row (`std.nn.recurrent::
+    gated_delta_update`): `state` [B, Hv, K, V] f32 contiguous, `key` [B,
+    Hk, K], `value` [B, Hv, V], `decay`/`beta` [B, Hv] f32; the new state."""
+    out = torch.empty_like(state)
+    _delta_update(state, out, key, value, decay, beta)
+    return out
+
+
+@triton_op("linnet::delta_update_", mutates_args={"state"})
+def delta_update_(
+    state: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> None:
+    """`delta_update` written into `state` itself."""
+    _delta_update(state, state, key, value, decay, beta)
+
+
+@triton.jit
 def one_shot_all_reduce_kernel(
     x_ptr,
     out_ptr,

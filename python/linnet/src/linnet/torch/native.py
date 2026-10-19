@@ -354,6 +354,14 @@ def _gated_delta_rule(args: Args) -> torch.Tensor:
     return gated_delta_rule(query, key, value, decay, beta, initial, float(scale.item()))
 
 
+def _gated_delta_update(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_update`: one pass over the state."""
+    from .delta import gated_delta_update
+
+    key, value, decay, beta, state = args
+    return gated_delta_update(state, key, value, decay, beta)
+
+
 def _causal_conv(args: Args) -> torch.Tensor:
     """`std.nn.recurrent::causal_conv`: one grouped `F.conv1d`."""
     from .delta import causal_conv
@@ -537,6 +545,7 @@ NATIVE: dict[str, Native] = {
     "linnet.sink_attention": _required(_sink_attention),
     "linnet.gated_delta_rule": _required(_gated_delta_rule),
     "torch.nn.functional.conv1d(depthwise)": _required(_causal_conv),
+    "linnet.gated_delta_update": _required(_gated_delta_update),
     "linnet.mxfp4_experts": _required(_mxfp4_experts),
     "linnet.mxfp4_experts(shared)": _required(_mxfp4_experts_shared),
     "linnet.mxfp4_grouped(shared)": _required(_mxfp4_grouped_shared),

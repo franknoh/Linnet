@@ -100,6 +100,9 @@ std::vector<NativeCandidate> torch_candidates() {
          fast,
          {"CUDA (compute capability 9 or later), bf16, and widths the kernel takes; otherwise "
           "every expert multiplies every row"}},
+        // The largest entries found directly rather than ranked by pairwise
+        // comparisons; ties may come in another order.
+        {"std.nn.moe::top_k", "torch.topk", fast, {}},
         {"std.nn.pool::global_average_pool2d", "torch.Tensor.mean", equivalent, {}},
         {"std.nn.norm::batch_norm", "torch.nn.functional.batch_norm", equivalent, {}},
         {"std.nn.norm::group_norm", "torch.nn.functional.group_norm", equivalent, {}},
@@ -205,6 +208,12 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.gated_delta_rule",
          fast,
          {"key heads divide value heads", "decay is in log space"}},
+        // One token's state update in one pass over the state, in place where
+        // the old state has no other reader.
+        {"std.nn.recurrent::gated_delta_update",
+         "linnet.gated_delta_update",
+         fast,
+         {"key heads divide value heads"}},
         // One grouped convolution over the history and the span, in the
         // input dtype (cuDNN accumulates in f32).
         {"std.nn.recurrent::causal_conv",

@@ -5,19 +5,21 @@ and on CUDA `fla`'s where it is installed."""
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 import torch
 
+from linnet.compiler import find_compiler
 from linnet.torch import load_function
-from linnet.torch.delta import gated_delta_rule
+from linnet.torch.delta import gated_delta_rule, gated_delta_update, gated_delta_update_
 from tests.helpers import STDLIB, requires_cuda
 
 SOURCE = """\
 module tests.delta
 
-use std.nn.recurrent::{gated_delta_rule, gated_delta_step, causal_conv}
+use std.nn.recurrent::{gated_delta_rule, gated_delta_step, gated_delta_update, causal_conv}
 
 pub entry rule<B: Dim, S: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
     query: Tensor[B, S, Hk, K; T],
@@ -47,6 +49,20 @@ where
     Hv % Hk == 0
 {
     return gated_delta_step(query, key, value, decay, beta, initial, 0.25)
+}
+
+pub entry update<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim>(
+    key: Tensor[B, Hk, K; f32],
+    value: Tensor[B, Hv, V; f32],
+    decay: Tensor[B, Hv; f32],
+    beta: Tensor[B, Hv; f32],
+    initial: Tensor[B, Hv, K, V; f32],
+) -> Tensor[B, Hv, K, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    return gated_delta_update(key, value, decay, beta, initial)
 }
 
 pub entry conv<B: Dim, S: Dim, C: Dim>(
@@ -159,3 +175,68 @@ def test_the_kernel_on_cuda(tmp_path: Path, length: int) -> None:
     inputs = _inputs("cuda", length, torch.bfloat16)
     expected = _reference(*inputs)
     torch.testing.assert_close(rule(*inputs).double(), expected, atol=3e-2, rtol=3e-2)
+
+
+def test_an_update_is_one_token_of_the_rule(tmp_path: Path) -> None:
+    """The new state alone, through the body and through the kernel's
+    PyTorch fallback."""
+    source = tmp_path / "delta.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    inputs = _inputs("cpu", 1)
+    expected = _reference(*inputs)[:, 1:].permute(0, 2, 1, 3)
+    _, key, value, decay, beta, initial = inputs
+    arguments = [key[:, 0], value[:, 0], decay[:, 0], beta[:, 0], initial]
+    for numerics in ("exact", "fast"):
+        update = load_function(source, "update", std_root=STDLIB, numerics=numerics)
+        torch.testing.assert_close(update(*arguments).double(), expected, atol=1e-5, rtol=1e-5)
+
+
+@requires_cuda
+def test_the_update_kernel_writes_in_place() -> None:
+    """The Triton kernel, into a new state and into the old one itself."""
+    _, key, value, decay, beta, initial = _inputs("cuda", 1, torch.bfloat16)
+    arguments = (key[:, 0], value[:, 0], decay[:, 0], beta[:, 0])
+    expected = gated_delta_update(initial.clone().cpu(), *(a.cpu() for a in arguments))
+    torch.testing.assert_close(
+        gated_delta_update(initial, *arguments).cpu(), expected, atol=1e-5, rtol=1e-5
+    )
+    state = initial.clone()
+    same = gated_delta_update_(state, *arguments)
+    assert same.data_ptr() == state.data_ptr()
+    torch.testing.assert_close(state.cpu(), expected, atol=1e-5, rtol=1e-5)
+
+
+STATEFUL = """\
+module tests.delta_state
+
+use std.nn.recurrent::{gated_delta_update}
+
+pub block Rows<B: Dim, H: Dim, K: Dim, V: Dim>
+where H > 0 {
+    state memory: Tensor[B, H, K, V; f32]
+
+    pub entry step(
+        key: Tensor[B, H, K; f32],
+        value: Tensor[B, H, V; f32],
+        decay: Tensor[B, H; f32],
+        beta: Tensor[B, H; f32],
+    ) -> Tensor[B, H, V; f32] {
+        memory = gated_delta_update(key, value, decay, beta, memory)
+        let read[b, h, v] = sum[k] memory[b, h, k, v] * key[b, h, k]
+        return read
+    }
+}
+"""
+
+
+def test_a_state_only_the_update_reads_is_updated_in_place(tmp_path: Path) -> None:
+    """The generated step writes the state where it lies (`IN_PLACE`) when
+    the update is the only reader of its old value."""
+    source = tmp_path / "state.linnet"
+    source.write_text(STATEFUL, encoding="utf-8")
+    command = [find_compiler(), "torch", "--root", "Rows", "--entry", "step", "--numerics", "fast"]
+    command += ["--std", str(STDLIB), "--bind", "B=2", "--bind", "H=2", "--bind", "K=8"]
+    command += ["--bind", "V=4", str(source)]
+    text = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    assert "_gated_delta_update_(" in text
+    assert 'IN_PLACE = ["memory"]' in text

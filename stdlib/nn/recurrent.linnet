@@ -77,6 +77,30 @@ where
     return concat(reshape(read, [B, 1, Hv, V]), permute(written, [0, 2, 1, 3]), axis = 1)
 }
 
+// `gated_delta_step`'s new state alone: one token for each of `B` rows,
+// `[B, Hv, K, V]` in f32. A decoder reads its output from that state
+// (`sum_k state'[b, h, k, v] * query[b, h / (Hv / Hk), k] * scale`); PyTorch
+// on CUDA updates the state where it lies when nothing else reads the old
+// one, rather than writing a new copy each step.
+pub op gated_delta_update<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+    key: Tensor[B, Hk, K; T],
+    value: Tensor[B, Hv, V; T],
+    decay: Tensor[B, Hv; f32],
+    beta: Tensor[B, Hv; f32],
+    current: Tensor[B, Hv, K, V; f32],
+) -> Tensor[B, Hv, K, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    let k_t = repeat_heads<B, Hk, Hv / Hk, K>(cast<f32>(key))
+    let kept[b, h, i, j] = current[b, h, i, j] * exp(decay[b, h])
+    let predicted[b, h, j] = sum[i] kept[b, h, i, j] * k_t[b, h, i]
+    let correction[b, h, j] = (cast<f32>(value[b, h, j]) - predicted[b, h, j]) * beta[b, h]
+    let written[b, h, i, j] = kept[b, h, i, j] + k_t[b, h, i] * correction[b, h, j]
+    return written
+}
+
 // A depthwise causal convolution over time, `x` `[B, S, C]` and `weight`
 // `[C, W]`: `y[b, t, c] = sum_w weight[c, w] * x[b, t - (W - 1) + w, c]`,
 // positions before the start reading `history` (`[B, W - 1, C]`, the inputs
