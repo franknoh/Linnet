@@ -337,6 +337,8 @@ def test_packed_prompts_on_cuda_replay_as_a_graph() -> None:
     graph once, then replayed for another packing of the same size."""
     total = sum(LENGTHS) + PAD
     query, key, value, decay, beta, _ = _inputs("cuda", total, torch.bfloat16, batch=1)
+    # Slices of one projection, as a model's heads are: not contiguous.
+    value = torch.cat([value, torch.zeros_like(value)], dim=-1)[..., :8]
     current = torch.randn(4, 4, 16, 8, device="cuda") * 0.1
     segments, rows = _layout("cuda")
     inputs = (query, key, value, decay, beta)

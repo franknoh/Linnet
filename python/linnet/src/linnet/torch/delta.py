@@ -303,12 +303,14 @@ def _fla_packed(
     sequence = torch.searchsorted(firsts[1:], step, right=True)
     within = torch.where(sequence < count, step - firsts[sequence.clamp(max=count)], 0)
     initial = value.new_zeros(count + 1, heads, k.shape[3], width, dtype=torch.float32)
+    # The kernels index their inputs as laid out contiguously, which the
+    # public entry point (not this one) makes sure of.
     _, out, _, final, *_ = chunk_gated_delta_rule_fwd(
-        q=q,
-        k=k,
-        v=value,
-        g=decay.float(),
-        beta=beta.to(value.dtype),
+        q=q.contiguous(),
+        k=k.contiguous(),
+        v=value.contiguous(),
+        g=decay.float().contiguous(),
+        beta=beta.to(value.dtype).contiguous(),
         scale=scale,
         initial_state=initial,
         output_final_state=True,
