@@ -380,7 +380,9 @@ def gated_delta_rule_packed(
         out, finals = _fla_packed(q, k, value, decay, beta, lengths, scale)
     else:
         out, finals = _chunked_packed(q, k, value, decay, beta, lengths, scale)
-    out = out[0].float() * (segments >= 0)[:, None, None]
+    # Selected, not multiplied: `fla` leaves the padding's outputs unwritten,
+    # and what memory held there may not be a number.
+    out = torch.where((segments >= 0)[:, None, None], out[0].float(), 0.0)
     state = torch.where(
         (owner >= 0)[:, None, None, None], finals[owner.clamp(min=0)], current.float()
     )

@@ -343,6 +343,7 @@ def test_packed_prompts_on_cuda_replay_as_a_graph() -> None:
     segments, rows = _layout("cuda")
     inputs = (query, key, value, decay, beta)
     first = gated_delta_rule_packed(*inputs, segments, rows, current, 0.25)
+    assert not first.isnan().any()
     torch.testing.assert_close(
         first.double().cpu(), _packed_reference(inputs, current), atol=3e-2, rtol=3e-2
     )
