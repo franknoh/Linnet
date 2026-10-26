@@ -242,3 +242,27 @@ where L > 0 {
     )
     return window
 }
+
+// `gated_delta_step` on a decoder's state kept as the step returns it:
+// `current` is `[B, 1 + K, Hv, V]`, its rows 1.. the state (`state[b, h, k,
+// v]` at `[b, 1 + k, h, v]`, as `gated_delta_rule` gives it) and row 0 the
+// previous step's output, which is not read. One token for each of `B` rows;
+// the result holds the new state and, in row 0, this step's output. PyTorch
+// on CUDA writes it where it lies when nothing else reads the old state, so
+// a step reads the state once and writes it once.
+pub op gated_delta_decode<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+    query: Tensor[B, Hk, K; T],
+    key: Tensor[B, Hk, K; T],
+    value: Tensor[B, Hv, V; T],
+    decay: Tensor[B, Hv; f32],
+    beta: Tensor[B, Hv; f32],
+    current: Tensor[B, 1 + K, Hv, V; f32],
+    scale: f32,
+) -> Tensor[B, 1 + K, Hv, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    let held = permute(current[:, 1:1 + K, :, :], [0, 2, 1, 3])
+    return gated_delta_step<B, Hk, Hv, K, V, T>(query, key, value, decay, beta, held, scale)
+}

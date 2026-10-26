@@ -217,6 +217,73 @@ def gated_delta_update_(
     return state
 
 
+def _decode_math(
+    state: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """`gated_delta_decode` in PyTorch: `[B, 1 + K, Hv, V]` f32."""
+    heads = value.shape[1]
+    updated = _update_math(state[:, 1:].permute(0, 2, 1, 3), key, value, decay, beta)
+    q = query.float().repeat_interleave(heads // query.shape[1], dim=1) * scale
+    read = torch.einsum("bhkv,bhk->bhv", updated, q)
+    return torch.cat([read[:, None], updated.permute(0, 2, 1, 3)], dim=1)
+
+
+def _decode_runs(state: torch.Tensor) -> bool:
+    width, columns = state.shape[1] - 1, state.shape[3]
+    return (
+        state.is_cuda
+        and state.dtype == torch.float32
+        and state.is_contiguous()
+        and width & (width - 1) == 0
+        and columns & (columns - 1) == 0
+    )
+
+
+def gated_delta_decode(
+    state: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_decode` into a new state: one pass over
+    the old state on CUDA (`kernels.delta_decode`), the output in row 0."""
+    if _decode_runs(state):
+        from .kernels import delta_decode
+
+        return delta_decode(state, query.contiguous(), *_operands(key, value, decay, beta), scale)
+    return _decode_math(state, query, key, value, decay, beta, scale)
+
+
+def gated_delta_decode_(
+    state: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """`gated_delta_decode` written into `state` itself, which it returns:
+    a decoding step reads the state once, writes it once, and reads its
+    output from row 0."""
+    if _decode_runs(state):
+        from .kernels import delta_decode_
+
+        delta_decode_(state, query.contiguous(), *_operands(key, value, decay, beta), scale)
+    else:
+        state.copy_(_decode_math(state, query, key, value, decay, beta, scale))
+    return state
+
+
 def causal_conv(x: torch.Tensor, history: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """`std.nn.recurrent::causal_conv`: `x` `[B, S, C]` after `history`
     `[B, W - 1, C]`, each channel convolved with its row of `weight` `[C, W]`,
@@ -410,6 +477,8 @@ __all__ = [
     "causal_conv",
     "causal_conv_packed",
     "causal_history_packed",
+    "gated_delta_decode",
+    "gated_delta_decode_",
     "gated_delta_rule",
     "gated_delta_rule_packed",
     "gated_delta_update",

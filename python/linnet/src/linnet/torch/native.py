@@ -387,6 +387,14 @@ def _causal_history_packed(args: Args) -> torch.Tensor:
     return causal_history_packed(x, segments, rows, history)
 
 
+def _gated_delta_decode(args: Args) -> torch.Tensor:
+    """`std.nn.recurrent::gated_delta_decode`: one pass over the state."""
+    from .delta import gated_delta_decode
+
+    query, key, value, decay, beta, state, scale = args
+    return gated_delta_decode(state, query, key, value, decay, beta, float(scale.item()))
+
+
 def _causal_conv(args: Args) -> torch.Tensor:
     """`std.nn.recurrent::causal_conv`: one grouped `F.conv1d`."""
     from .delta import causal_conv
@@ -571,6 +579,7 @@ NATIVE: dict[str, Native] = {
     "linnet.gated_delta_rule": _required(_gated_delta_rule),
     "torch.nn.functional.conv1d(depthwise)": _required(_causal_conv),
     "linnet.gated_delta_update": _required(_gated_delta_update),
+    "linnet.gated_delta_decode": _required(_gated_delta_decode),
     "linnet.gated_delta_rule_packed": _required(_gated_delta_rule_packed),
     "linnet.causal_conv_packed": _required(_causal_conv_packed),
     "linnet.causal_history_packed": _required(_causal_history_packed),

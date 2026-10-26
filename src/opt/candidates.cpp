@@ -214,6 +214,12 @@ std::vector<NativeCandidate> torch_candidates() {
          "linnet.gated_delta_update",
          fast,
          {"key heads divide value heads"}},
+        // The same with the output: rows 1.. of the state updated and row 0
+        // read from them in one pass, in place where nothing else reads it.
+        {"std.nn.recurrent::gated_delta_decode",
+         "linnet.gated_delta_decode",
+         fast,
+         {"key heads divide value heads"}},
         // One grouped convolution over the history and the span, in the
         // input dtype (cuDNN accumulates in f32).
         {"std.nn.recurrent::causal_conv", "torch.nn.functional.conv1d(depthwise)", fast, {}},
