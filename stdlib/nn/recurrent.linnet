@@ -251,9 +251,8 @@ where L > 0 {
 // on CUDA writes it where it lies when nothing else reads the old state, so
 // a step reads the state once and writes it once.
 //
-// The state is kept in `S`: f32, or bf16 to read and write half as much
-// (vLLM's default for these models). The step itself runs in f32 and rounds
-// once, when it stores the state.
+// The state is kept in `S`: f32, or bf16 to read and write half as much.
+// The step itself runs in f32 and rounds once, when it stores the state.
 pub op gated_delta_decode<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float, S: Float>(
     query: Tensor[B, Hk, K; T],
     key: Tensor[B, Hk, K; T],
