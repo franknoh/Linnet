@@ -450,6 +450,20 @@ def test_the_decode_kernel_writes_in_place() -> None:
     torch.testing.assert_close(state.cpu(), expected, atol=1e-5, rtol=1e-5)
 
 
+@requires_cuda
+def test_a_bf16_decoding_state_steps_in_f32() -> None:
+    """A state kept in bf16: the kernel steps it in f32 and rounds once on
+    store, as the f32 step rounded to bf16 does."""
+    query, key, value, decay, beta, initial = _inputs("cuda", 1, torch.bfloat16)
+    arguments = (query[:, 0], key[:, 0], value[:, 0], decay[:, 0], beta[:, 0])
+    state = _decoder_state(initial).bfloat16()
+    expected = gated_delta_decode(state.float(), *arguments, 0.25).bfloat16()
+    torch.testing.assert_close(gated_delta_decode(state, *arguments, 0.25), expected)
+    gated_delta_decode_(state, *arguments, 0.25)
+    assert state.dtype == torch.bfloat16
+    torch.testing.assert_close(state, expected)
+
+
 DECODING = """\
 module tests.delta_decoding
 

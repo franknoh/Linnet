@@ -1028,7 +1028,7 @@ def _delta_decode_kernel(
     pitch = value_heads * columns
     base = row.to(tl.int64) * (width + 1) * pitch + head * columns
     at = base + (ks[:, None] + 1) * pitch + vs[None, :]
-    s = tl.load(state_in + at)
+    s = tl.load(state_in + at).to(tl.float32)
     q = tl.load(query + (row * key_heads + group) * width + ks).to(tl.float32)
     k = tl.load(key + (row * key_heads + group) * width + ks).to(tl.float32)
     v = tl.load(value + row_head * columns + vs).to(tl.float32)
@@ -1036,8 +1036,9 @@ def _delta_decode_kernel(
     predicted = tl.sum(s * k[:, None], axis=0)
     correction = (v - predicted) * tl.load(beta + row_head)
     s = s + k[:, None] * correction[None, :]
-    tl.store(state_out + at, s)
-    tl.store(state_out + base + vs, tl.sum(s * q[:, None], axis=0) * scale)
+    kept = state_out.dtype.element_ty
+    tl.store(state_out + at, s.to(kept))
+    tl.store(state_out + base + vs, (tl.sum(s * q[:, None], axis=0) * scale).to(kept))
 
 
 def _delta_decode(
@@ -1080,9 +1081,10 @@ def delta_decode(
     scale: float,
 ) -> torch.Tensor:
     """One token of the gated delta rule per row and its output
-    (`std.nn.recurrent::gated_delta_decode`): `state` [B, 1 + K, Hv, V] f32
-    contiguous, `query`/`key` [B, Hk, K], `value` [B, Hv, V], `decay`/`beta`
-    [B, Hv] f32; the new state, its row 0 the output."""
+    (`std.nn.recurrent::gated_delta_decode`): `state` [B, 1 + K, Hv, V]
+    contiguous, f32 or a 16-bit float (the step in f32 either way),
+    `query`/`key` [B, Hk, K], `value` [B, Hv, V], `decay`/`beta` [B, Hv] f32;
+    the new state, its row 0 the output."""
     out = torch.empty_like(state)
     _delta_decode(state, out, query, key, value, decay, beta, scale)
     return out
