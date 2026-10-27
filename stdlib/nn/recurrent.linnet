@@ -250,19 +250,24 @@ where L > 0 {
 // the result holds the new state and, in row 0, this step's output. PyTorch
 // on CUDA writes it where it lies when nothing else reads the old state, so
 // a step reads the state once and writes it once.
-pub op gated_delta_decode<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
+//
+// The state is kept in `S`: f32, or bf16 to read and write half as much.
+// The step itself runs in f32 and rounds once, when it stores the state.
+pub op gated_delta_decode<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float, S: Float>(
     query: Tensor[B, Hk, K; T],
     key: Tensor[B, Hk, K; T],
     value: Tensor[B, Hv, V; T],
     decay: Tensor[B, Hv; f32],
     beta: Tensor[B, Hv; f32],
-    current: Tensor[B, 1 + K, Hv, V; f32],
+    current: Tensor[B, 1 + K, Hv, V; S],
     scale: f32,
-) -> Tensor[B, 1 + K, Hv, V; f32]
+) -> Tensor[B, 1 + K, Hv, V; S]
 where
     Hk > 0,
     Hv % Hk == 0
 {
-    let held = permute(current[:, 1:1 + K, :, :], [0, 2, 1, 3])
-    return gated_delta_step<B, Hk, Hv, K, V, T>(query, key, value, decay, beta, held, scale)
+    let held = cast<f32>(permute(current[:, 1:1 + K, :, :], [0, 2, 1, 3]))
+    return cast<S>(
+        gated_delta_step<B, Hk, Hv, K, V, T>(query, key, value, decay, beta, held, scale),
+    )
 }
