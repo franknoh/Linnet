@@ -1000,6 +1000,109 @@ def delta_update_(
 
 
 @triton.jit
+def _delta_decode_kernel(
+    state_in,
+    state_out,
+    query,
+    key,
+    value,
+    decay,
+    beta,
+    scale,
+    key_heads,
+    value_heads,
+    width: tl.constexpr,
+    columns: tl.constexpr,
+    block: tl.constexpr,
+):
+    # A decoder's state as `gated_delta_rule` lays it out, [B, 1 + K, Hv, V]:
+    # one program per (row, value head, block of value columns) reads its
+    # [K, block] slice of rows 1.. once, writes it back updated, and writes
+    # what the query reads from it to row 0.
+    row_head = tl.program_id(0)
+    row = row_head // value_heads
+    head = row_head % value_heads
+    group = head // (value_heads // key_heads)
+    ks = tl.arange(0, width)
+    vs = tl.program_id(1) * block + tl.arange(0, block)
+    pitch = value_heads * columns
+    base = row.to(tl.int64) * (width + 1) * pitch + head * columns
+    at = base + (ks[:, None] + 1) * pitch + vs[None, :]
+    s = tl.load(state_in + at)
+    q = tl.load(query + (row * key_heads + group) * width + ks).to(tl.float32)
+    k = tl.load(key + (row * key_heads + group) * width + ks).to(tl.float32)
+    v = tl.load(value + row_head * columns + vs).to(tl.float32)
+    s = s * tl.exp(tl.load(decay + row_head))
+    predicted = tl.sum(s * k[:, None], axis=0)
+    correction = (v - predicted) * tl.load(beta + row_head)
+    s = s + k[:, None] * correction[None, :]
+    tl.store(state_out + at, s)
+    tl.store(state_out + base + vs, tl.sum(s * q[:, None], axis=0) * scale)
+
+
+def _delta_decode(
+    state_in: torch.Tensor,
+    state_out: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+) -> None:
+    rows, height, heads, columns = state_in.shape
+    block = 32 if columns % 32 == 0 else columns
+    wrap_triton(_delta_decode_kernel)[(rows * heads, columns // block)](
+        state_in,
+        state_out,
+        query,
+        key,
+        value,
+        decay,
+        beta,
+        scale,
+        key.shape[1],
+        heads,
+        width=height - 1,
+        columns=columns,
+        block=block,
+    )
+
+
+@triton_op("linnet::delta_decode", mutates_args=())
+def delta_decode(
+    state: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """One token of the gated delta rule per row and its output
+    (`std.nn.recurrent::gated_delta_decode`): `state` [B, 1 + K, Hv, V] f32
+    contiguous, `query`/`key` [B, Hk, K], `value` [B, Hv, V], `decay`/`beta`
+    [B, Hv] f32; the new state, its row 0 the output."""
+    out = torch.empty_like(state)
+    _delta_decode(state, out, query, key, value, decay, beta, scale)
+    return out
+
+
+@triton_op("linnet::delta_decode_", mutates_args={"state"})
+def delta_decode_(
+    state: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    decay: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+) -> None:
+    """`delta_decode` written into `state` itself."""
+    _delta_decode(state, state, query, key, value, decay, beta, scale)
+
+
+@triton.jit
 def one_shot_all_reduce_kernel(
     x_ptr,
     out_ptr,

@@ -743,6 +743,16 @@ public:
             return define(writing(name(4), "_gated_delta_update(") + name(4) + ", " + name(0) +
                           ", " + name(1) + ", " + name(2) + ", " + name(3) + ")");
         }
+        if (implementation_base == "linnet.gated_delta_decode" && operands.size() == 7 &&
+            operands[0] && operands[1] && operands[2] && operands[3] && operands[4] &&
+            operands[5]) {
+            // `linnet.torch.delta`: the state and its output in one pass, where
+            // it lies when this call is its only reader (`_gated_delta_decode_`).
+            delta_helper_ = true;
+            return define(writing(name(5), "_gated_delta_decode(") + name(5) + ", " + name(0) +
+                          ", " + name(1) + ", " + name(2) + ", " + name(3) + ", " + name(4) + ", " +
+                          scalar(6) + ")");
+        }
         if (implementation_base == "torch.topk" && operands.size() == 1 && operands[0] &&
             !shape.empty()) {
             return define("torch.topk(" + name(0) + ", " + std::to_string(shape.back()) +
@@ -1000,6 +1010,8 @@ public:
             out += "from linnet.torch.delta import causal_conv_packed as _causal_conv_packed\n";
             out +=
                 "from linnet.torch.delta import causal_history_packed as _causal_history_packed\n";
+            out += "from linnet.torch.delta import gated_delta_decode as _gated_delta_decode\n";
+            out += "from linnet.torch.delta import gated_delta_decode_ as _gated_delta_decode_\n";
             out += "from linnet.torch.delta import gated_delta_rule as _gated_delta_rule\n";
             out += "from linnet.torch.delta import gated_delta_rule_packed as "
                    "_gated_delta_rule_packed\n\n\n";

@@ -14,6 +14,8 @@ import torch
 from linnet.compiler import find_compiler
 from linnet.torch import load_function
 from linnet.torch.delta import (
+    gated_delta_decode,
+    gated_delta_decode_,
     gated_delta_rule,
     gated_delta_rule_packed,
     gated_delta_update,
@@ -26,6 +28,7 @@ module tests.delta
 
 use std.nn.recurrent::{gated_delta_rule, gated_delta_step, gated_delta_update, causal_conv}
 use std.nn.recurrent::{gated_delta_rule_packed, causal_conv_packed, causal_history_packed}
+use std.nn.recurrent::{gated_delta_decode}
 
 pub entry rule<B: Dim, S: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim, T: Float>(
     query: Tensor[B, S, Hk, K; T],
@@ -69,6 +72,21 @@ where
     Hv % Hk == 0
 {
     return gated_delta_update(key, value, decay, beta, initial)
+}
+
+pub entry decode<B: Dim, Hk: Dim, Hv: Dim, K: Dim, V: Dim>(
+    query: Tensor[B, Hk, K; f32],
+    key: Tensor[B, Hk, K; f32],
+    value: Tensor[B, Hv, V; f32],
+    decay: Tensor[B, Hv; f32],
+    beta: Tensor[B, Hv; f32],
+    current: Tensor[B, 1 + K, Hv, V; f32],
+) -> Tensor[B, 1 + K, Hv, V; f32]
+where
+    Hk > 0,
+    Hv % Hk == 0
+{
+    return gated_delta_decode(query, key, value, decay, beta, current, 0.25)
 }
 
 pub entry conv<B: Dim, S: Dim, C: Dim>(
@@ -392,3 +410,77 @@ def test_packed_convolution_stays_in_each_prompt(tmp_path: Path) -> None:
         got = conv(x, segments, weight)
         torch.testing.assert_close(got[:start], expected[:start], atol=1e-5, rtol=1e-5)
         torch.testing.assert_close(ends(x, segments, rows, history), windows)
+
+
+def _decoder_state(initial: torch.Tensor) -> torch.Tensor:
+    """`initial` `[B, Hv, K, V]` as a decoder keeps it, `[B, 1 + K, Hv, V]`,
+    row 0 something the step does not read."""
+    junk = torch.full_like(initial[:, :, :1], 7.0).permute(0, 2, 1, 3)
+    return torch.cat([junk, initial.permute(0, 2, 1, 3)], dim=1).contiguous()
+
+
+def test_a_decode_is_one_token_of_the_rule(tmp_path: Path) -> None:
+    """The output and the new state in the rule's own layout, through the
+    body and through the PyTorch fallback."""
+    source = tmp_path / "delta.linnet"
+    source.write_text(SOURCE, encoding="utf-8")
+    inputs = _inputs("cpu", 1)
+    expected = _reference(*inputs)
+    query, key, value, decay, beta, initial = inputs
+    arguments = [query[:, 0], key[:, 0], value[:, 0], decay[:, 0], beta[:, 0]]
+    for numerics in ("exact", "fast"):
+        decode = load_function(source, "decode", std_root=STDLIB, numerics=numerics)
+        got = decode(*arguments, _decoder_state(initial))
+        torch.testing.assert_close(got.double(), expected, atol=1e-5, rtol=1e-5)
+
+
+@requires_cuda
+def test_the_decode_kernel_writes_in_place() -> None:
+    """The Triton kernel, into a new state and into the old one itself."""
+    query, key, value, decay, beta, initial = _inputs("cuda", 1, torch.bfloat16)
+    arguments = (query[:, 0], key[:, 0], value[:, 0], decay[:, 0], beta[:, 0])
+    state = _decoder_state(initial)
+    q, k, v, g, b = (a.cpu() for a in arguments)
+    expected = gated_delta_decode(state.cpu(), q, k, v, g, b, 0.25)
+    torch.testing.assert_close(
+        gated_delta_decode(state, *arguments, 0.25).cpu(), expected, atol=1e-5, rtol=1e-5
+    )
+    same = gated_delta_decode_(state, *arguments, 0.25)
+    assert same.data_ptr() == state.data_ptr()
+    torch.testing.assert_close(state.cpu(), expected, atol=1e-5, rtol=1e-5)
+
+
+DECODING = """\
+module tests.delta_decoding
+
+use std.nn.recurrent::{gated_delta_decode}
+
+pub block Rows<B: Dim, H: Dim, K: Dim, V: Dim>
+where H > 0 {
+    state memory: Tensor[B, 1 + K, H, V; f32]
+
+    pub entry step(
+        query: Tensor[B, H, K; f32],
+        key: Tensor[B, H, K; f32],
+        value: Tensor[B, H, V; f32],
+        decay: Tensor[B, H; f32],
+        beta: Tensor[B, H; f32],
+    ) -> Tensor[B, H, V; f32] {
+        memory = gated_delta_decode(query, key, value, decay, beta, memory, 0.5)
+        return reshape(memory[:, 0:1, :, :], [B, H, V])
+    }
+}
+"""
+
+
+def test_a_decoding_state_is_updated_in_place(tmp_path: Path) -> None:
+    """The step writes the state and its output where they lie, then reads
+    the output from row 0."""
+    source = tmp_path / "decoding.linnet"
+    source.write_text(DECODING, encoding="utf-8")
+    command = [find_compiler(), "torch", "--root", "Rows", "--entry", "step", "--numerics", "fast"]
+    command += ["--std", str(STDLIB), "--bind", "B=2", "--bind", "H=2", "--bind", "K=8"]
+    command += ["--bind", "V=4", str(source)]
+    text = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    assert "_gated_delta_decode_(" in text
+    assert 'IN_PLACE = ["memory"]' in text
