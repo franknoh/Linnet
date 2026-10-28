@@ -56,6 +56,10 @@ from .weights import (
     read_header,
 )
 
+# What a model card tells its readers to install: the package is not on PyPI
+# yet, so uv builds it from the repository.
+_PACKAGE = "git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+
 if TYPE_CHECKING:
     from datetime import date, datetime, time
 
@@ -368,7 +372,7 @@ def _check_weights(card: Card, program: ir.Program, bindings: ir.Bindings) -> li
     weights = card.weights
     beside = all((card.directory / f).is_file() for f in weights.files)
     if not beside and importlib.util.find_spec("huggingface_hub") is None:
-        return ["huggingface-hub is not installed (pip install 'linnet-lang[nest]')"]
+        return ["huggingface-hub is not installed (uv add huggingface-hub)"]
     tensors: dict[str, tuple[tuple[int, ...], str]] = {}
     for filename in weights.files:
         try:
@@ -633,9 +637,7 @@ def huggingface_hub() -> HubModule:
     try:
         import huggingface_hub
     except ImportError:
-        raise NestError(
-            "huggingface-hub is not installed (pip install 'linnet-lang[nest]')"
-        ) from None
+        raise NestError("huggingface-hub is not installed (uv add huggingface-hub)") from None
     return huggingface_hub
 
 
@@ -868,7 +870,8 @@ def hub_readme(card: Card, repo: str) -> str:
     usage = (
         "\n\n```python\nfrom linnet import nest\n\n"
         f'model = nest.load("{repo}", backend="torch")\n```\n\n'
-        '[Linnet](https://linnet.franknoh.dev) loads it (`uv add "linnet-lang[nest,torch]"`)'
+        "[Linnet](https://linnet.franknoh.dev) loads it"
+        f' (`uv add "linnet-lang[nest,torch] @ {_PACKAGE}"`)'
         f" without running code from this repo.{weights}\n"
     )
     return "\n".join(lines) + "\n\n" + title + usage + rest

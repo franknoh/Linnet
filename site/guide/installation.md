@@ -1,13 +1,18 @@
 # Installation
 
 One package, `linnet-lang`, holds the `linnet` compiler, its standard
-library and the Python package `linnet`. Install it with
-[uv](https://docs.astral.sh/uv/):
+library and the Python package `linnet`. It is not on PyPI yet: install it
+from the repository with [uv](https://docs.astral.sh/uv/), which builds the
+compiler as it builds the package.
 
 ```bash
-uv add "linnet-lang[torch]"
+uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 uv run linnet --version
 ```
+
+The build needs a C++23 compiler (GCC 13, Clang 19 or MSVC 2022); CMake and
+Ninja come from PyPI. It takes a minute or two, once: uv keeps the built
+wheel for that commit. Put `@<commit>` after `Linnet` to pin one.
 
 Pick the extras for the frameworks you use:
 
@@ -21,13 +26,14 @@ Pick the extras for the frameworks you use:
 | `serve` | `linnet serve`: PyTorch, the Hub and a tokenizer, to serve a model with OpenAI's API |
 | `all` | all of them |
 
-Outside a uv project, `uv pip install "linnet-lang[torch]"` installs into
-the active environment, and `uv run --with "linnet-lang[torch]" python
-script.py` runs one script. `pip install` works the same way.
+Outside a uv project, `uv pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`
+installs into the active environment, and `uv run --with "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+python script.py` runs one script.
 
-The wheels for Linux (x86_64, aarch64), macOS (arm64, 14 or newer) and
-Windows (x64) carry the compiler. On another platform, build the compiler
-from source and point `LINNET_BIN` at it.
+With `LINNET_BUILD_COMPILER=0` the package installs without the compiler and
+runs the one `LINNET_BIN` names, or the one on `PATH`. The
+[releases page](https://github.com/franknoh/Linnet/releases) has the
+compiler built for Linux (x86_64, aarch64), macOS (arm64) and Windows (x64).
 
 ## From source
 
@@ -54,11 +60,13 @@ The editors run the language server, [`linnet lsp`](/docs/tooling#lsp).
 
 ### VS Code
 
-Install **Linnet** from the Visual Studio Marketplace, or from Open VSX in
-VSCodium and Cursor. The builds for Linux, macOS (Apple silicon) and Windows
-carry the compiler and need nothing else. The
-[releases page](https://github.com/franknoh/Linnet/releases) has the same
-`.vsix` files for `code --install-extension`.
+The extension is not on the Visual Studio Marketplace or Open VSX yet.
+Download the `.vsix` for your platform from the
+[releases page](https://github.com/franknoh/Linnet/releases) and install it
+with `code --install-extension linnet-<version>-<platform>.vsix` (in
+VSCodium or Cursor, **Extensions: Install from VSIX...**). The builds for
+Linux, macOS (Apple silicon) and Windows carry the compiler and need nothing
+else; the one without a platform uses `linnet` on `PATH`.
 
 `linnet.path` picks another compiler (in a uv project,
 `.venv/bin/linnet`), and `linnet.stdRoot` passes `--std`. Run

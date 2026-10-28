@@ -6,7 +6,7 @@ a `torch.nn.Module` as Linnet source.
 ## Install
 
 ```bash
-uv add "linnet-lang[torch]"
+uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 ```
 
 ## Load a model

@@ -7,7 +7,8 @@ SafeTensors checkpoint on the Hugging Face Hub. Browse it at
 
 ## Load a model
 
-Install the `nest` extra (`uv add "linnet-lang[nest,torch]"`), then:
+Install the `nest` extra (`uv add "linnet-lang[nest,torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`),
+then:
 
 ```python
 from linnet import nest

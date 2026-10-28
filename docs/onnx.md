@@ -7,7 +7,7 @@ parameters intact.
 ## Install
 
 ```bash
-uv add "linnet-lang[onnx]"
+uv add "linnet-lang[onnx] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 ```
 
 ## Load a model

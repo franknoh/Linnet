@@ -6,7 +6,7 @@ as Linnet source.
 ## Install
 
 ```bash
-uv add "linnet-lang[flax]"
+uv add "linnet-lang[flax] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 ```
 
 ## Loaders

@@ -4,12 +4,12 @@ The Python side of Linnet: one package, `linnet`, with a backend per
 framework behind an extra.
 
 ```bash
-uv add "linnet-lang[torch]"      # linnet.torch
-uv add "linnet-lang[jax]"        # linnet.jax
-uv add "linnet-lang[flax]"       # linnet.jax.load_nnx
-uv add "linnet-lang[onnx]"       # linnet.onnx
-uv add "linnet-lang[nest]"       # linnet.nest
+uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"   # linnet.torch
 ```
+
+The other extras are `jax` (`linnet.jax`), `flax` (`linnet.jax.load_nnx`),
+`onnx` (`linnet.onnx`) and `nest` (`linnet.nest`). The package is not on
+PyPI yet; uv builds it, and the compiler it carries, from the repository.
 
 ```python
 from linnet.torch import load
