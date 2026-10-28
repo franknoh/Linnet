@@ -30,10 +30,18 @@ Outside a uv project, `uv pip install "linnet-lang[torch] @ git+https://github.c
 installs into the active environment, and `uv run --with "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 python script.py` runs one script.
 
+Without a C++23 compiler (Ubuntu 22.04 and Colab ship GCC 11), install a
+wheel from the [releases page](https://github.com/franknoh/Linnet/releases)
+instead: the wheels for Linux (x86_64, aarch64), macOS (arm64, 14 or newer)
+and Windows (x64) carry a built compiler.
+
+```bash
+uv add "linnet-lang[torch] @ https://github.com/franknoh/Linnet/releases/download/<tag>/<wheel>"
+```
+
 With `LINNET_BUILD_COMPILER=0` the package installs without the compiler and
-runs the one `LINNET_BIN` names, or the one on `PATH`. The
-[releases page](https://github.com/franknoh/Linnet/releases) has the
-compiler built for Linux (x86_64, aarch64), macOS (arm64) and Windows (x64).
+runs the one `LINNET_BIN` names, or the one on `PATH`; the releases page has
+the compiler alone too.
 
 ## From source
 
