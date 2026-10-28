@@ -9,7 +9,6 @@ import subprocess
 import threading
 import tomllib
 from collections.abc import Mapping, Sequence
-from importlib import metadata
 from pathlib import Path
 from typing import cast
 
@@ -26,7 +25,7 @@ class PlanError(LinnetError):
 
 def find_compiler() -> str:
     """The `linnet` executable: LINNET_BIN, then the one this package's wheel
-    installed, then PATH."""
+    carries, then PATH."""
     candidate = os.environ.get("LINNET_BIN")
     if candidate and Path(candidate).exists():
         return candidate
@@ -43,18 +42,16 @@ def find_compiler() -> str:
 
 
 def installed_compiler() -> Path | None:
-    """The executable a platform wheel of `linnet-lang` installs beside the
-    Python scripts, or None for a pure or source install."""
-    try:
-        files = metadata.distribution("linnet-lang").files or []
-    except metadata.PackageNotFoundError:
+    """The executable a platform wheel carries inside the package
+    (`linnet/_compiler/bin`), or None for a pure or source install."""
+    name = "linnet.exe" if os.name == "nt" else "linnet"
+    path = Path(__file__).resolve().parent / "_compiler" / "bin" / name
+    if not path.is_file():
         return None
-    for file in files:
-        if file.name in ("linnet", "linnet.exe") and file.parent.name in ("bin", "Scripts"):
-            path = Path(str(file.locate())).resolve()
-            if path.is_file():
-                return path
-    return None
+    if os.name != "nt" and not os.access(path, os.X_OK):
+        # An installer that dropped the executable bit.
+        path.chmod(path.stat().st_mode | 0o111)
+    return path
 
 
 # Commands whose output depends only on their arguments, their standard

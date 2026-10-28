@@ -1,8 +1,9 @@
 name: Release
 
-# A tag v* builds the compiler, the Python wheels and the VS Code extensions
-# on every platform, tests them, and publishes them: a GitHub release, then
-# PyPI, the VS Code Marketplace and Open VSX.
+# A tag v* builds the compiler, the Python wheels (linnet-lang and
+# linnet-cli) and the VS Code extensions on every platform, tests them, and
+# publishes them: a GitHub release, then PyPI, the VS Code Marketplace and
+# Open VSX.
 # A pull request that changes how they are built runs the same builds and
 # tests, and publishes nothing.
 on:
@@ -15,6 +16,7 @@ on:
       - CMakePresets.json
       - python/linnet/pyproject.toml
       - python/linnet/hatch_build.py
+      - python/cli/pyproject.toml
       - python/linnet/src/linnet/compiler.py
       - scripts/build-release.sh
       - scripts/check-version.py
@@ -64,6 +66,12 @@ jobs:
         with:
           package-dir: python/linnet
           output-dir: wheelhouse
+      # linnet-cli (`uv tool install`): the same package and compiler, plus
+      # the `linnet` command on PATH and what `linnet serve` needs.
+      - uses: pypa/cibuildwheel@v4.2.1
+        with:
+          package-dir: python/cli
+          output-dir: wheelhouse-cli
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -76,7 +84,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-${{ matrix.name }}
-          path: wheelhouse/*.whl
+          path: |
+            wheelhouse/*.whl
+            wheelhouse-cli/*.whl
 
   sdist:
     name: Python source

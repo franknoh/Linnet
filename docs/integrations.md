@@ -157,13 +157,14 @@ card that splits itself (`Shards`) plans alike on every process.
 ### Over HTTP
 
 ```bash
-uv add "linnet-lang[serve] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+curl -LsSf https://linnet.franknoh.dev/install.sh | sh   # linnet-cli: the command and what serving needs
 linnet serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
 linnet serve Qwen/Qwen2.5-7B-Instruct          # a transformers checkpoint, converted
 ```
 
-`linnet serve` runs `python -m linnet.serve` with the Python it was
-installed beside (`LINNET_PYTHON` picks another). It takes anything
+`linnet serve` runs `python -m linnet.serve` with the uv tool's own Python,
+which has PyTorch, the Hub and transformers (`LINNET_PYTHON` picks
+another). It takes anything
 `linnet.nest.load` does and serves it with OpenAI's API: `GET /v1/models`,
 `POST /v1/completions` and `POST /v1/chat/completions` (server-sent events
 with `"stream": true`, and `stream_options.include_usage`), and

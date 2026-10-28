@@ -1,33 +1,57 @@
 # Installation
 
-One package, `linnet-lang`, holds the `linnet` compiler, its standard
-library and the Python package `linnet`. It is not on PyPI yet: install it
-from the repository with [uv](https://docs.astral.sh/uv/), which builds the
-compiler as it builds the package.
+Linnet comes as two packages, built from the repository (neither is on PyPI
+yet):
 
-The `linnet` command (`check`, `fmt`, `lsp`, and the editors that run it)
-goes on `PATH` as a uv tool:
+- `linnet-cli`: the `linnet` command (`check`, `fmt`, `inspect`, the
+  language server the editors run, and `linnet serve`), installed once as a
+  [uv](https://docs.astral.sh/uv/) tool.
+- `linnet-lang`: the Python package `linnet`, added to each project that
+  imports it.
+
+Each carries its own build of the compiler and standard library.
+
+## The `linnet` command
 
 ```bash
-uv tool install "linnet-lang @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
-uv tool update-shell      # once, if uv says its bin directory is not on PATH
+curl -LsSf https://linnet.franknoh.dev/install.sh | sh
 linnet --version
 ```
 
-For `linnet serve`, install `"linnet-lang[serve] @ ..."` instead.
+The script installs uv if it is missing, then `linnet-cli` as a uv tool,
+with everything `linnet serve` needs (PyTorch, the Hugging Face Hub,
+transformers). It takes the latest release's wheel for Linux (x86_64,
+aarch64) or macOS (arm64), which carries a built compiler, and otherwise
+builds from the repository. Last, it runs `uv tool update-shell`, which puts
+uv's tool directory (`~/.local/bin`) on `PATH` in the shell's profile.
 
-A project that imports `linnet` adds the package with the extras it uses;
-the project's environment gets its own compiler:
+| Option | Environment | Does |
+| --- | --- | --- |
+| `--no-modify-path` | `LINNET_NO_MODIFY_PATH=1` | leaves `PATH` alone; run `uv tool update-shell` later, or add `uv tool dir --bin` yourself |
+| `--from-source` | `LINNET_FROM_SOURCE=1` | builds from the repository even where a wheel exists |
+| `--ref <ref>` | `LINNET_REF=<ref>` | builds that branch, tag or commit |
+
+Options go after `sh -s --`:
+`curl -LsSf https://linnet.franknoh.dev/install.sh | sh -s -- --no-modify-path`.
+
+Without the script (on Windows, say), it is the same two commands:
+
+```bash
+uv tool install "linnet-cli @ git+https://github.com/franknoh/Linnet#subdirectory=python/cli"
+uv tool update-shell
+```
+
+`uv tool uninstall linnet-cli` removes it.
+
+## The Python package
 
 ```bash
 uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 ```
 
-The build needs a C++23 compiler (GCC 13, Clang 19 or MSVC 2022); CMake and
-Ninja come from PyPI. It takes a minute or two, once: uv keeps the built
-wheel for that commit. Put `@<commit>` after `Linnet` to pin one.
-
-Pick the extras for the frameworks you use:
+The package runs the compiler it carries (or `LINNET_BIN`), so a project
+needs nothing else; it adds no `linnet` command to the project's
+environment. Pick the extras for the frameworks you use:
 
 | Extra | Adds |
 | --- | --- |
@@ -36,17 +60,24 @@ Pick the extras for the frameworks you use:
 | `flax` | `linnet.jax.load_nnx` |
 | `onnx` | `linnet.onnx`; add `onnxruntime`, or `onnxruntime-gpu` for CUDA and TensorRT, to run models |
 | `nest` | `linnet.nest`: models from [Nest](https://nest.franknoh.dev) and the Hugging Face Hub |
-| `serve` | `linnet serve`: PyTorch, the Hub and a tokenizer, to serve a model with OpenAI's API |
 | `all` | all of them |
 
-Outside a uv project, `uv pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`
-installs into the active environment, and `uv run --with "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+Outside a uv project, `uv pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"` installs
+into the active environment, and `uv run --with "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 python script.py` runs one script.
+
+## Building from the repository
+
+Installing either package from git builds the compiler. That needs a C++23
+compiler (GCC 13, Clang 19 or MSVC 2022); CMake and Ninja come from PyPI.
+It takes a minute or two, once: uv keeps the built wheel for that commit.
+Put `@<commit>` after `Linnet` to pin one.
 
 Without a C++23 compiler (Ubuntu 22.04 and Colab ship GCC 11), install a
 wheel from the [releases page](https://github.com/franknoh/Linnet/releases)
-instead: the wheels for Linux (x86_64, aarch64), macOS (arm64, 14 or newer)
-and Windows (x64) carry a built compiler.
+instead: `linnet_lang-*.whl` and `linnet_cli-*.whl` for Linux (x86_64,
+aarch64), macOS (arm64, 14 or newer) and Windows (x64) carry a built
+compiler.
 
 ```bash
 uv add "linnet-lang[torch] @ https://github.com/franknoh/Linnet/releases/download/<tag>/<wheel>"
@@ -89,8 +120,8 @@ VSCodium or Cursor, **Extensions: Install from VSIX...**). The builds for
 Linux, macOS (Apple silicon) and Windows carry the compiler and need nothing
 else; the one without a platform uses `linnet` on `PATH`.
 
-`linnet.path` picks another compiler (in a uv project,
-`.venv/bin/linnet`), and `linnet.stdRoot` passes `--std`. Run
+`linnet.path` picks another compiler (the uv tool's is on `PATH` as
+`linnet`), and `linnet.stdRoot` passes `--std`. Run
 `Linnet: Restart Language Server` after changing the compiler. From a
 checkout:
 

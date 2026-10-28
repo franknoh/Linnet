@@ -22,10 +22,18 @@ from .weights import (
     safetensors_files,
 )
 
-try:
-    __version__ = metadata.version("linnet-lang")
-except metadata.PackageNotFoundError:  # imported from a checkout without installing
-    __version__ = "0.0.0"
+
+def _version() -> str:
+    # `linnet-cli` (the uv tool) carries this same package.
+    for distribution in ("linnet-lang", "linnet-cli"):
+        try:
+            return metadata.version(distribution)
+        except metadata.PackageNotFoundError:
+            pass
+    return "0.0.0"  # imported from a checkout without installing
+
+
+__version__ = _version()
 
 __all__ = [
     "LinnetError",

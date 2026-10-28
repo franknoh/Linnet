@@ -7,10 +7,8 @@ Think SafeTensors for model structure: the architecture lives in a typed
 architecture without importing the model author's Python.
 
 ```bash
-# the `linnet` command, built from this repository and put on PATH
-uv tool install "linnet-lang @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
-# the Python package, in a project: linnet.torch and its own compiler
-uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+curl -LsSf https://linnet.franknoh.dev/install.sh | sh   # the `linnet` command, on PATH
+uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"   # linnet.torch, in a project
 linnet check model.linnet                    # shapes, dtypes, parameters; nothing runs
 linnet inspect --parameters model.linnet     # every tensor a checkpoint must supply
 ```

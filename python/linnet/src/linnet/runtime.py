@@ -14,7 +14,6 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from importlib import metadata
 from pathlib import Path
 
 from .compiler import LinnetError, find_compiler
@@ -106,20 +105,12 @@ _LIBRARY = {"win32": "linnet_runtime.dll", "darwin": "liblinnet_runtime.dylib"}.
 
 
 def find_library() -> Path:
-    """The runtime library: LINNET_RUNTIME, then the one this package's wheel
-    installed, then the one beside the compiler (a build tree)."""
+    """The runtime library: LINNET_RUNTIME, then the one beside the compiler
+    (a build tree) or installed with it (`share/linnet/lib`, where the wheel
+    carries it too)."""
     candidate = os.environ.get("LINNET_RUNTIME")
     if candidate and Path(candidate).is_file():
         return Path(candidate)
-    try:
-        files = metadata.distribution("linnet-lang").files or []
-    except metadata.PackageNotFoundError:
-        files = []
-    for file in files:
-        if file.name == _LIBRARY:
-            path = Path(str(file.locate())).resolve()
-            if path.is_file():
-                return path
     compiler = Path(find_compiler()).resolve().parent
     for directory in (compiler, compiler.parent / "share" / "linnet" / "lib"):
         if (directory / _LIBRARY).is_file():

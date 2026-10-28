@@ -10,6 +10,8 @@ uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory
 The other extras are `jax` (`linnet.jax`), `flax` (`linnet.jax.load_nnx`),
 `onnx` (`linnet.onnx`) and `nest` (`linnet.nest`). The package is not on
 PyPI yet; uv builds it, and the compiler it carries, from the repository.
+It adds no `linnet` command: that is `linnet-cli`, installed once as a uv
+tool (`curl -LsSf https://linnet.franknoh.dev/install.sh | sh`).
 
 ```python
 from linnet.torch import load
