@@ -1,0 +1,60 @@
+# The `linnet` command, for `uv tool install`: the compiler, the language
+# server and `linnet serve`. It carries the same `linnet` package and compiler
+# as `linnet-lang` (python/linnet, built by its hook), plus an entry point on
+# PATH and what serving needs. A project that imports `linnet` adds
+# `linnet-lang` instead; the two do not share an environment.
+[project]
+name = "linnet-cli"
+version = "0.1.0"
+description = "The linnet command: the Linnet compiler, language server and model server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Suho Noh" }]
+dependencies = [
+    "numpy>=1.26",
+    "safetensors>=0.4",
+    "torch>=2.4",
+    "huggingface-hub>=0.24",
+    "transformers>=4.45",
+]
+
+[project.scripts]
+linnet = "linnet._cli:main"
+
+[project.urls]
+Homepage = "https://linnet.franknoh.dev"
+Repository = "https://github.com/franknoh/Linnet"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../linnet/src/linnet" = "linnet"
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "../linnet/hatch_build.py"
+
+# As python/linnet's: the compiler built and tested first, then carried.
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = "*-musllinux_*"
+archs = ["native"]
+environment = { LINNET_PREFIX = "../../build/wheel-prefix" }
+test-command = "python {project}/scripts/check-wheel.py {project} --cli"
+
+[tool.cibuildwheel.linux]
+before-all = "pipx install cmake && pipx install ninja && bash scripts/build-release.sh build/wheel-prefix"
+
+[tool.cibuildwheel.macos]
+environment = { LINNET_PREFIX = "../../build/wheel-prefix", MACOSX_DEPLOYMENT_TARGET = "14.0" }
+before-all = "test -x build/wheel-prefix/bin/linnet || (brew install ninja && bash scripts/build-release.sh build/wheel-prefix)"
+
+[tool.cibuildwheel.windows]
+repair-wheel-command = ""
+before-all = "if not exist build\\wheel-prefix\\bin\\linnet.exe (cmake --preset msvc -DLINNET_WARNINGS_AS_ERRORS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded && cmake --build --preset msvc --config Release && cmake --install build/msvc --config Release --prefix build/wheel-prefix)"

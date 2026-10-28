@@ -1,10 +1,12 @@
 """Puts a built compiler into the wheel.
 
 With LINNET_PREFIX naming a `cmake --install` prefix (relative to this
-directory), the wheel installs `linnet` beside the Python scripts and
-`share/linnet` (the standard library, where the executable looks for it, and
-the Vim files) under the environment's prefix, and is tagged for this
-platform.
+directory), the wheel carries that prefix's `bin/linnet` and `share/linnet`
+(the standard library, where the executable looks for it, the runtime
+library and the Vim files) inside the package, at `linnet/_compiler`, and is
+tagged for this platform. Nothing goes on PATH: `linnet-cli` (python/cli,
+`uv tool install`) is what puts the `linnet` command there, and it builds
+with this same hook.
 
 Without it, a wheel built inside a checkout of the repository -- what
 `uv add "linnet-lang @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`
@@ -45,8 +47,8 @@ class CompilerHook(BuildHookInterface):
         share = root / "share" / "linnet"
         if not executable.is_file() or not (share / "stdlib").is_dir():
             raise RuntimeError(f"{root} holds no installed compiler")
-        build_data["shared_scripts"][str(executable)] = name
-        build_data["shared_data"][str(share)] = "share/linnet"
+        build_data["force_include"][str(executable)] = f"linnet/_compiler/bin/{name}"
+        build_data["force_include"][str(share)] = "linnet/_compiler/share/linnet"
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{platform_tag()}"
 

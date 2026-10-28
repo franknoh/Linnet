@@ -8,8 +8,10 @@ program as typed objects, plus a backend per framework behind an extra.
 `uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"`, with the extras
 for the frameworks you use:
 [Installation](https://linnet.franknoh.dev/guide/installation) lists them.
-The wheel carries the `linnet` compiler, built when the package is. The package runs `LINNET_BIN` if it
-is set, then the wheel's compiler, then the one on `PATH`. In a checkout,
+The wheel carries the `linnet` compiler inside the package, built when the
+package is, and adds no `linnet` command (that is `linnet-cli`, the uv
+tool). The package runs `LINNET_BIN` if it is set, then the wheel's
+compiler, then the one on `PATH`. In a checkout,
 `uv sync --all-extras` in `python/linnet` installs every backend and test
 dependency.
 

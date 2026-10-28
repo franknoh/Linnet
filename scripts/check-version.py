@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks that the compiler, the Python package and the VS Code extension
+"""Checks that the compiler, the Python packages and the VS Code extension
 carry one version, and that it is the release tag's when one is given.
 
     python scripts/check-version.py [v0.1.0]
@@ -23,6 +23,9 @@ def main() -> None:
         "CMakeLists.txt": cmake.group(1),
         "python/linnet/pyproject.toml": tomllib.loads(
             (REPO / "python/linnet/pyproject.toml").read_text()
+        )["project"]["version"],
+        "python/cli/pyproject.toml": tomllib.loads(
+            (REPO / "python/cli/pyproject.toml").read_text()
         )["project"]["version"],
         "editors/vscode/package.json": json.loads(
             (REPO / "editors/vscode/package.json").read_text()

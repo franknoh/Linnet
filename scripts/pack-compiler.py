@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Packs the compiler a platform wheel carries into a release archive, laid
-out as `cmake --install` lays it out: bin/linnet and share/linnet. The
-archive and the wheel then hold the same build.
+"""Packs the compiler a platform wheel carries (at `linnet/_compiler`) into
+a release archive, laid out as `cmake --install` lays it out: bin/linnet
+and share/linnet. The archive and the wheel then hold the same build.
 
     python scripts/pack-compiler.py <wheel> <name>   # <name>.tar.gz; .zip on Windows
 """
@@ -23,14 +23,9 @@ def main() -> None:
             parts = Path(info.filename).parts
             if info.is_dir():
                 continue
-            if len(parts) < 3 or not parts[0].endswith(".data"):
+            if len(parts) < 4 or parts[:2] != ("linnet", "_compiler"):
                 continue
-            if parts[1] == "scripts":
-                target = out / "bin" / Path(*parts[2:])
-            elif parts[1] == "data":
-                target = out / Path(*parts[2:])
-            else:
-                continue
+            target = out / Path(*parts[2:])
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(info))
             mode = info.external_attr >> 16

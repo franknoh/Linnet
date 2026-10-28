@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Checks an installed platform wheel of linnet-lang, outside the checkout.
+"""Checks an installed platform wheel of linnet-lang or linnet-cli, outside
+the checkout.
 
-The package must run the compiler its wheel installed, at the package's own
-version, and that compiler must find the standard library installed beside
-it, whether it is started by path or by name from PATH.
+The package must run the compiler its wheel carries, at the package's own
+version, and that compiler must find the standard library carried beside
+it, whether it is started by path or by name from PATH. linnet-lang puts no
+`linnet` on PATH; linnet-cli (`--cli`) puts its entry point there, which runs
+that compiler.
 
-    python scripts/check-wheel.py <repository>
+    python scripts/check-wheel.py <repository> [--cli]
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -43,6 +48,18 @@ def main() -> None:
     os.environ["PATH"] = os.pathsep.join([str(compiler.parent), os.environ.get("PATH", "")])
     with tempfile.TemporaryDirectory() as elsewhere:
         subprocess.run(["linnet", "check", str(llama)], cwd=elsewhere, check=True)
+    scripts = Path(sysconfig.get_path("scripts"))
+    command = shutil.which("linnet", path=str(scripts))
+    if "--cli" in sys.argv:
+        assert command is not None, f"no linnet in {scripts}"
+        with tempfile.TemporaryDirectory() as elsewhere:
+            out = subprocess.run(
+                [command, "--version"], cwd=elsewhere, capture_output=True, text=True, check=True
+            ).stdout.split()
+            assert out == ["linnet", linnet.__version__], out
+            subprocess.run([command, "check", str(llama)], cwd=elsewhere, check=True)
+    else:
+        assert command is None, f"linnet-lang put {command} on PATH"
     print(f"linnet {linnet.__version__}: {compiler}")
 
 

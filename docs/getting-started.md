@@ -6,14 +6,22 @@ also runs and serves a Hugging Face model.
 
 ## 1. Install
 
+The `linnet` command, as a uv tool on `PATH`:
+
+```bash
+curl -LsSf https://linnet.franknoh.dev/install.sh | sh
+```
+
+Then the Python package, in an environment of its own:
+
 ```bash
 uv venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 uv pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 ```
 
-This builds the `linnet` compiler too (you need a C++23 compiler; CMake and
-Ninja come with it). Other options are in
+Built from the repository, the package compiles the compiler it carries (you
+need a C++23 compiler; CMake and Ninja come with it). Other options are in
 [Installation](https://linnet.franknoh.dev/guide/installation).
 
 ## 2. Create a package
