@@ -652,7 +652,8 @@ public:
         if (implementation_base == "torch.nn.functional.linear" && operands.size() == 3) {
             const std::string product =
                 define("F.linear(" + name(0) + ", " + name(1) + ", " + name(2) + ")");
-            return operands[1] ? with_adapters(product, name(0), *operands[1]) : product;
+            const auto& weight = operands[1];
+            return weight ? with_adapters(product, name(0), *weight) : product;
         }
         // `torch.softmax` and `torch.rms_norm` accumulate in f32 for f16 and
         // bf16 inputs themselves, so their results are bit-identical to the
