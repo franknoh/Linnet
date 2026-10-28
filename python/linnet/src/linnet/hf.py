@@ -585,9 +585,7 @@ def _copy_tokenizer(repo: str, directory: Path) -> tuple[str, ...]:
             list_repo_files,
         )
     except ImportError:
-        raise LinnetError(
-            "huggingface-hub is not installed (pip install 'linnet-lang[nest]')"
-        ) from None
+        raise LinnetError("huggingface-hub is not installed (uv add huggingface-hub)") from None
     available = set(list_repo_files(repo))
     copied: list[str] = []
     for name in TOKENIZER_FILES:

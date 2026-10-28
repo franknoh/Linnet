@@ -12,7 +12,7 @@ files, and the Linnet language server for everything else.
 The extension for Linux (x64, arm64), macOS (Apple silicon) and Windows
 (x64) carries the `linnet` compiler and its standard library, so nothing
 else needs installing. On other platforms, install the compiler with
-`pip install linnet-lang` or
+[uv](https://linnet.franknoh.dev/guide/installation) or
 [build it](https://linnet.franknoh.dev/guide/installation#from-source).
 
 ## Settings

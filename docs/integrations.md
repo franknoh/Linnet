@@ -157,7 +157,7 @@ card that splits itself (`Shards`) plans alike on every process.
 ### Over HTTP
 
 ```bash
-uv add "linnet-lang[serve]"
+uv add "linnet-lang[serve] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 linnet serve llama-3.1-8b-instruct --batch 32 --max-seq 4096 --port 8000
 linnet serve Qwen/Qwen2.5-7B-Instruct          # a transformers checkpoint, converted
 ```

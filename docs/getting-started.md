@@ -9,10 +9,11 @@ also runs and serves a Hugging Face model.
 ```bash
 uv venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-uv pip install "linnet-lang[torch]"
+uv pip install "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 ```
 
-This installs the `linnet` compiler too. Other options are in
+This builds the `linnet` compiler too (you need a C++23 compiler; CMake and
+Ninja come with it). Other options are in
 [Installation](https://linnet.franknoh.dev/guide/installation).
 
 ## 2. Create a package

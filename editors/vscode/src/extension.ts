@@ -59,8 +59,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const message = error instanceof Error ? error.message : String(error);
         void vscode.window.showWarningMessage(
             `Linnet: could not start the language server (${message}). ` +
-                "Set `linnet.path` to the linnet executable, or install it with " +
-                "`pip install linnet-lang`.",
+                "Set `linnet.path` to the linnet executable, or install it: " +
+                "https://linnet.franknoh.dev/guide/installation",
         );
     }
 }
