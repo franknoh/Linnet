@@ -16,8 +16,8 @@ parameter path. The same file runs in PyTorch, JAX and ONNX Runtime.
 ## Workflow
 
 ```bash
-# the compiler, its standard library, linnet.torch
-uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+# the `linnet` command, on PATH
+uv tool install "linnet-lang @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
 linnet init my-model                        # or write one .linnet file
 linnet check --json src/                    # repeat until there are no errors
 linnet fmt src/                             # one canonical style

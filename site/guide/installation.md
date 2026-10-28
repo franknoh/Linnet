@@ -5,9 +5,22 @@ library and the Python package `linnet`. It is not on PyPI yet: install it
 from the repository with [uv](https://docs.astral.sh/uv/), which builds the
 compiler as it builds the package.
 
+The `linnet` command (`check`, `fmt`, `lsp`, and the editors that run it)
+goes on `PATH` as a uv tool:
+
+```bash
+uv tool install "linnet-lang @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
+uv tool update-shell      # once, if uv says its bin directory is not on PATH
+linnet --version
+```
+
+For `linnet serve`, install `"linnet-lang[serve] @ ..."` instead.
+
+A project that imports `linnet` adds the package with the extras it uses;
+the project's environment gets its own compiler:
+
 ```bash
 uv add "linnet-lang[torch] @ git+https://github.com/franknoh/Linnet#subdirectory=python/linnet"
-uv run linnet --version
 ```
 
 The build needs a C++23 compiler (GCC 13, Clang 19 or MSVC 2022); CMake and
