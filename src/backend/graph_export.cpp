@@ -962,7 +962,13 @@ private:
     }
 
     Val broadcast(const Val& value, const Dims& shape, const Dims& dims) {
-        if (value.shape == shape) {
+        // The same shape is the value itself only with its axes in order:
+        // `x[b, s, h]` over a grid `[b, h, s]` with `S == H` is a transpose.
+        bool in_order = dims.size() == shape.size();
+        for (std::size_t i = 0; in_order && i < dims.size(); ++i) {
+            in_order = dims[i] == static_cast<std::int64_t>(i);
+        }
+        if (value.shape == shape && in_order) {
             return value;
         }
         return tensor(target_.broadcast(info(value), dims, shape), shape, value.dtype);
