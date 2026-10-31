@@ -31,6 +31,7 @@ pub block Model<T: Float = f32> {
     param w: Tensor[4, 5, 6; T]
     param q: Tensor[2, 3, 4, 5, 6; T]
     param r: Tensor[4, 7, 6; T]
+    param m: Tensor[4, 4; T]
 
     // A matrix product.
     pub entry plain() -> Tensor[3, 5; f32] {
@@ -77,10 +78,26 @@ pub block Model<T: Float = f32> {
         let c[i, j] = sum<f32>[k] cast<f32>(a[i, k] * b[k, j])
         return c
     }
+
+    // A square tensor read with its axes swapped: the shape it already
+    // has, but transposed.
+    pub entry transposed() -> Tensor[4, 4; f32] {
+        let t[j, i] = cast<f32>(m[i, j]) * 2.0
+        return t
+    }
 }
 """
 
-ENTRIES = ["plain", "swapped", "experts", "relative", "lopsided", "gathered", "narrow"]
+ENTRIES = [
+    "plain",
+    "swapped",
+    "experts",
+    "relative",
+    "lopsided",
+    "gathered",
+    "narrow",
+    "transposed",
+]
 
 
 @pytest.fixture
@@ -93,6 +110,7 @@ def model(tmp_path: Path) -> tuple[Path, Path, dict[str, np.ndarray]]:
         "w": rng.standard_normal((4, 5, 6)),
         "q": rng.standard_normal((2, 3, 4, 5, 6)),
         "r": rng.standard_normal((4, 7, 6)),
+        "m": rng.standard_normal((4, 4)),
     }
     arrays = {k: v.astype(np.float32) for k, v in arrays.items()}
     source = tmp_path / "contract.linnet"
@@ -111,6 +129,8 @@ def _expected(entry: str, v: dict[str, np.ndarray]) -> np.ndarray:
         return np.einsum("nsh,eoh->nseo", v["x"], v["w"])
     if entry == "gathered":
         return np.einsum("k,kj->j", v["a"][0], v["b"][[1, 2, 3, 0]])
+    if entry == "transposed":
+        return 2 * v["m"].T
     if entry == "relative":
         return np.einsum("nhijc,ikc->nhijk", v["q"], v["r"])
     return np.einsum("ik,kj->i", v["a"], v["b"])
