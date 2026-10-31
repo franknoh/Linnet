@@ -206,6 +206,36 @@ Log probabilities cost nothing when no request asks for them. To serve an
 engine of your own, use `linnet.serve.server.Server(engine, tokenizer,
 name=...)`.
 
+### Embeddings
+
+```bash
+linnet serve all-MiniLM-L6-v2
+```
+
+A card with an `embed_padded` or `embed` entry and no decoding entries is
+served at `POST /v1/embeddings` instead, with PyTorch:
+
+```python
+vectors = client.embeddings.create(model="all-MiniLM-L6-v2", input=["A cat sleeps.", "Rates rose."])
+```
+
+The inputs of every request waiting pass together. With `embed_padded<B,
+S>(tokens, token_types, lengths)`, which masks each input's padding out of
+attention and pooling, they are padded to powers of two up to `--max-seq`
+(default: the card's `MaxPositions`) in batches of up to `--batch`, all
+compiled while warming up. With only `embed`, which pools every position,
+inputs share a pass only with others of their length, and each new shape
+compiles when first seen.
+
+| Request field | Does |
+| --- | --- |
+| `input` | a string, a list of token ids, or a list of either (up to 2048) |
+| `encoding_format` | `float`, or `base64`: little-endian f32 bytes |
+| `dimensions` | only the model's own width |
+
+`linnet.serve.server.Server(Embedder(model, max_len=512), tokenizer,
+name=...)` serves a model of your own (`linnet.serve.embeddings`).
+
 ## Triton Inference Server
 
 ```bash

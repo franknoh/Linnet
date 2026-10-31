@@ -41,7 +41,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   under three numerics policies.
 - A language server (`linnet lsp`), a VS Code extension, and Vim and
   Neovim support.
-- `linnet serve`, which serves a model with OpenAI's API.
+- `linnet serve`, which serves a model with OpenAI's API: completions and
+  chat for a decoder, embeddings for an embedding model.
 - `linnet memory` and `linnet fit`: static memory analysis of inference and
   training (weights, KV caches, activation liveness, gradients, optimizer
   states, checkpointing, sharding, tensor and pipeline parallelism), each
@@ -66,8 +67,8 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   Inference Server model, a transformers checkpoint for vLLM, SGLang and
   TGI, and GGUF for llama.cpp and Ollama.
 - `linnet.serve`: continuous batching with packed prompts and a CUDA graph
-  per step, serving from pages of one cache pool, and an OpenAI-compatible
-  HTTP server.
+  per step, serving from pages of one cache pool, embeddings batched across
+  requests, and an OpenAI-compatible HTTP server.
 - 8-bit weights on GPUs: Linnet's kernels multiply int8 and FP8 weights as
   they are stored; under `numerics="fast"` a prompt's rows round to 8 bits
   too (W8A8). `linnet.quant` quantizes checkpoints to int4 and int8 groups

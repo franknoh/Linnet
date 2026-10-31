@@ -2,7 +2,11 @@
 over HTTP with OpenAI's API (see `linnet.serve.server`), its tokenizer from
 Transformers. MODEL is anything `linnet.nest.load` takes: a Nest name, a
 Hub repo (with a card, or a `transformers` checkpoint of a family Nest
-knows), or a model directory."""
+knows), or a model directory.
+
+A card with an `embed_padded` or `embed` entry and no decoding entries is
+an embedding model: it is served at `/v1/embeddings` instead (see
+`linnet.serve.embeddings`), with PyTorch."""
 
 from __future__ import annotations
 
@@ -14,7 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
-    from .server import Tokenizer
+    from .. import nest
+    from .server import Server, Tokenizer
 
     class _Common(TypedDict):
         """The keywords every backend's `nest.load` takes here."""
@@ -45,16 +50,25 @@ if TYPE_CHECKING:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="linnet serve",
-        description="Serve a decoder over HTTP with OpenAI's completions and chat API.",
+        description="Serve a decoder over HTTP with OpenAI's completions and chat API, "
+        "or an embedding model with its embeddings API.",
     )
     parser.add_argument(
         "model", help="a Nest name, a Hugging Face Hub repo (org/name), or a model directory"
     )
     parser.add_argument("--backend", choices=("torch", "jax", "onnx"), default="torch")
     parser.add_argument("--device", help="the PyTorch device (default: cuda when there is one)")
-    parser.add_argument("--batch", type=int, default=32, help="requests in flight (`Batch`)")
     parser.add_argument(
-        "--max-seq", type=int, default=2048, help="the longest prompt plus completion (`MaxSeq`)"
+        "--batch",
+        type=int,
+        default=32,
+        help="requests in flight (`Batch`); for embeddings, the most inputs in one pass",
+    )
+    parser.add_argument(
+        "--max-seq",
+        type=int,
+        help="the longest prompt plus completion (`MaxSeq`, default 2048); for embeddings, "
+        "the longest input (default: the card's `MaxPositions`)",
     )
     parser.add_argument(
         "--pool",
@@ -105,12 +119,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.pool and args.fixed_rows:
         parser.error("--pool serves from pages, --fixed-rows from rows: give one")
     card = nest.resolve(args.model)
-    if args.backend == "torch" and not args.pool and not args.fixed_rows:
-        # Pages by default: a step reads the rows in flight to their lengths,
-        # where fixed rows are read whole, every one of them.
-        entries = {entry.short_name for entry in card.program().entries()}
-        if {"prefill_paged", "decode_paged"} <= entries:
-            args.pool = args.batch * args.max_seq
+    entries = {entry.short_name for entry in card.program().entries()}
+    if entries & {"embed_padded", "embed"} and not entries & {"decode_rows", "decode_paged"}:
+        return _serve_embeddings(parser, args, card)
+    if args.max_seq is None:
+        args.max_seq = 2048
+    # Pages by default: a step reads the rows in flight to their lengths,
+    # where fixed rows are read whole, every one of them.
+    pages = {"prefill_paged", "decode_paged"} <= entries
+    if args.backend == "torch" and pages and not args.pool and not args.fixed_rows:
+        args.pool = args.batch * args.max_seq
     generics: dict[str, int | str] = (
         {"Batch": 1, "MaxSeq": args.pool}
         if args.pool
@@ -133,13 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         model = nest.load(card.directory, backend="onnx_model", numerics="fast", **common)
 
-    import transformers as transformers_module
-
-    transformers = cast("_Transformers", transformers_module)
-    source = args.tokenizer or (card.weights.repo if card.weights else None)
-    if source is None:
-        parser.error("the card names no weights repository: pass --tokenizer")
-    revision = card.weights.revision if card.weights and not args.tokenizer else None
+    transformers, source, revision = _tokenizer_source(parser, args, card)
     tokenizer = transformers.AutoTokenizer.from_pretrained(source, revision=revision)
     # The end-of-sequence tokens: the tokenizer's, and the generation config's
     # (Llama 3's instruct models end a turn with one of their own).
@@ -152,9 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass  # no generation config
     eos = {int(i) for i in ids if i is not None}
 
-    # A Hub repo keeps its id as the model's name, as other servers name it.
-    hub = nest.HUB_REPO.match(args.model)
-    name = args.name or (hub["repo"] if hub and not Path(args.model).exists() else card.name)
+    name = _name(args, card)
     engine = (
         Engine(model, paged=True, rows=args.batch, max_len=args.max_seq, plans=args.plans)
         if args.pool
@@ -163,9 +173,78 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Every pass size by default: a pass first compiled while serving holds
     # up every request in flight for as long.
     engine.warmup(args.warmup or [])
-    server = Server(engine, tokenizer, name=name, eos=eos, host=args.host, port=args.port)
+    return _serve(Server(engine, tokenizer, name=name, eos=eos, host=args.host, port=args.port))
+
+
+def _serve_embeddings(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, card: nest.Card
+) -> int:
+    """Serves the card's embedding entry at `/v1/embeddings`."""
+    from .. import nest
+    from ..torch import LinnetModule
+    from .embeddings import Embedder
+    from .server import Server
+
+    if args.backend != "torch":
+        parser.error("embeddings are served with the PyTorch backend")
+    if args.pool or args.fixed_rows or args.plans:
+        parser.error("--pool, --fixed-rows and --plans are for decoders")
+    import torch
+
+    positions = card.generics.get("MaxPositions")
+    limit = positions if isinstance(positions, int) else None
+    max_len = args.max_seq or limit or 512
+    if limit is not None and max_len > limit:
+        parser.error(f"--max-seq is at most the card's MaxPositions, {limit}")
+    generics: dict[str, int | str] = {"T": args.dtype} if args.dtype else {}
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    model = nest.load(
+        card.directory,
+        backend="torch",
+        device=device,
+        numerics="fast",
+        compile=True,
+        generics=generics,
+        weights=args.weights,
+        cast_dtype=True,
+    )
+    assert isinstance(model, LinnetModule)
+    transformers, source, revision = _tokenizer_source(parser, args, card)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(source, revision=revision)
+    embedder = Embedder(model, max_len=max_len, batch=args.batch)
+    # Every padded shape, so no request waits for one to compile.
+    embedder.warmup()
+    name = _name(args, card)
+    return _serve(Server(embedder, tokenizer, name=name, host=args.host, port=args.port))
+
+
+def _tokenizer_source(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, card: nest.Card
+) -> tuple[_Transformers, str, str | None]:
+    """Transformers, and where the tokenizer is: `--tokenizer`, or the card's
+    weights repository at its revision."""
+    import transformers as transformers_module
+
+    transformers = cast("_Transformers", transformers_module)
+    source = args.tokenizer or (card.weights.repo if card.weights else None)
+    if source is None:
+        parser.error("the card names no weights repository: pass --tokenizer")
+    revision = card.weights.revision if card.weights and not args.tokenizer else None
+    return transformers, source, revision
+
+
+def _name(args: argparse.Namespace, card: nest.Card) -> str:
+    """The model's name in the API: `--name`, else a Hub repo's id, as other
+    servers name it, else the card's name."""
+    from .. import nest
+
+    hub = nest.HUB_REPO.match(args.model)
+    return args.name or (hub["repo"] if hub and not Path(args.model).exists() else card.name)
+
+
+def _serve(server: Server) -> int:
     host, port = server.address
-    print(f"serving {name} at http://{host}:{port}/v1", flush=True)
+    print(f"serving {server.name} at http://{host}:{port}/v1", flush=True)
     with contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()
     return 0

@@ -1,8 +1,10 @@
 """An HTTP front for `Engine` that speaks OpenAI's API: `GET /v1/models`,
 `POST /v1/completions`, `POST /v1/chat/completions` (streamed as server-sent
-events with `"stream": true`), and `GET /health`.
+events with `"stream": true`), and `GET /health`. In front of an `Embedder`
+instead, it serves `POST /v1/embeddings`.
 
     python -m linnet.serve llama-3.1-8b-instruct --batch 32 --max-seq 4096
+    python -m linnet.serve all-MiniLM-L6-v2
 
 One thread runs the engine; each request's handler thread hands it the
 request and reads its tokens back as they are produced. A tokenizer turns
@@ -19,12 +21,19 @@ and `top_logprobs` for a chat, of the model's distribution before
 temperature and filtering. `echo` puts the prompt before a completion's
 text; with `logprobs` it is refused, as the prompt's own log probabilities
 are not computed. Other fields are ignored.
+
+An embeddings request takes `input` (a string, a list of strings, a list of
+token ids, or a list of those), `encoding_format` (`float`, or `base64` for
+little-endian f32 bytes), and `dimensions`, which can only be the model's
+own width. Other fields are ignored.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import queue
+import struct
 import threading
 import time
 import traceback
@@ -35,6 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol, TypeAlias, TypeVar, cast
 
 from . import Completion, Engine, Request
+from .embeddings import Embedder
 from .sampling import Sampling
 
 # A JSON value: a request's body as `json.loads` reads it, or a response's
@@ -80,13 +90,14 @@ class _Pending:
 
 
 class Server:
-    """Serves `engine` over HTTP at `host`:`port`, as the model `name`.
-    `eos` ends every request (the tokenizer's end-of-sequence token and the
+    """Serves `engine` over HTTP at `host`:`port`, as the model `name`:
+    completions from an `Engine`, or embeddings from an `Embedder`. `eos`
+    ends every completion (the tokenizer's end-of-sequence token and the
     model's generation config, say)."""
 
     def __init__(
         self,
-        engine: Engine,
+        engine: Engine | Embedder,
         tokenizer: Tokenizer,
         *,
         name: str,
@@ -94,7 +105,8 @@ class Server:
         host: str = "127.0.0.1",
         port: int = 8000,
     ) -> None:
-        self.engine = engine
+        self.engine = engine if isinstance(engine, Engine) else None
+        self.embedder = engine if isinstance(engine, Embedder) else None
         self.tokenizer = tokenizer
         self.name = name
         self.eos = frozenset(eos)
@@ -113,11 +125,16 @@ class Server:
 
     def serve_forever(self) -> None:
         """Serves until `shutdown` (or an interrupt)."""
-        self._engine_thread.start()
+        if self.embedder is not None:
+            self.embedder.start()
+        else:
+            self._engine_thread.start()
         try:
             self._http.serve_forever()
         finally:
             self._stopping.set()
+            if self.embedder is not None:
+                self.embedder.stop()
             self._http.server_close()
 
     def shutdown(self) -> None:
@@ -127,8 +144,14 @@ class Server:
 
     # ---- the engine thread
 
+    @property
+    def broken(self) -> str | None:
+        """The engine's or embedder's error, once it has one."""
+        return self.embedder.failed if self.embedder is not None else self.failed
+
     def _run(self) -> None:
         engine = self.engine
+        assert engine is not None
         while not self._stopping.is_set():
             try:
                 self._take(wait=not engine.busy)
@@ -147,16 +170,18 @@ class Server:
     def _take(self, wait: bool) -> None:
         """Submits or cancels what handlers sent; waits for something if
         `wait`."""
+        engine = self.engine
+        assert engine is not None
         try:
             kind, pending = self._inbox.get(timeout=0.2) if wait else self._inbox.get_nowait()
         except queue.Empty:
             return
         while True:
             if kind == "submit":
-                pending.completion = self.engine.submit(pending.request)
+                pending.completion = engine.submit(pending.request)
                 self._active.append(pending)
             elif pending.completion is not None:
-                self.engine.cancel(pending.completion)
+                engine.cancel(pending.completion)
             try:
                 kind, pending = self._inbox.get_nowait()
             except queue.Empty:
@@ -169,15 +194,17 @@ class Server:
     ) -> _Generation:
         """Hands a request to the engine, one per choice; their tokens and
         text come from the returned generation as they are produced."""
+        engine = self.engine
+        assert engine is not None
         if self.failed is not None:
             raise RuntimeError("the engine has failed:\n" + self.failed)
         if not prompt:
             raise RequestError("the prompt is empty")
-        room = self.engine.backend.max_seq - len(prompt)
+        room = engine.backend.max_seq - len(prompt)
         if room <= 0:
             raise RequestError(
                 f"the prompt's {len(prompt)} tokens leave no room in a cache of "
-                f"{self.engine.backend.max_seq} positions"
+                f"{engine.backend.max_seq} positions"
             )
         choices = int(_given(body, "n", 1))
         if not 1 <= choices <= 128:
@@ -374,7 +401,7 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             if self.path == "/health":
-                self._json(200 if server.failed is None else 500, {})
+                self._json(200 if server.broken is None else 500, {})
             elif self.path == "/v1/models":
                 model = {"id": server.name, "object": "model", "created": 0, "owned_by": "linnet"}
                 self._json(200, {"object": "list", "data": [model]})
@@ -388,12 +415,14 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 if not isinstance(parsed, dict):
                     raise RequestError("the body is a JSON object")
                 body = parsed
-                if self.path == "/v1/completions":
+                if self.path == "/v1/completions" and server.engine is not None:
                     self._complete(body)
-                elif self.path == "/v1/chat/completions":
+                elif self.path == "/v1/chat/completions" and server.engine is not None:
                     self._chat(body)
+                elif self.path == "/v1/embeddings" and server.embedder is not None:
+                    self._embeddings(body, server.embedder)
                 else:
-                    self._error(404, f"no route {self.path}")
+                    self._error(404, f"no route {self.path} for {server.name}")
             except (TypeError, ValueError) as error:  # a RequestError, or a field's type
                 self._error(400, str(error))
             except (BrokenPipeError, ConnectionResetError):
@@ -428,8 +457,37 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
             ids = server.tokenizer.encode(str(text), add_special_tokens=False)
             if body.get("max_completion_tokens") is not None:
                 body = {**body, "max_tokens": body["max_completion_tokens"]}
-            generation = server.generate(ids, body, limit=server.engine.backend.max_seq, chat=True)
+            assert server.engine is not None
+            limit = server.engine.backend.max_seq
+            generation = server.generate(ids, body, limit=limit, chat=True)
             self._respond(body, generation, len(ids), chat=True)
+
+        def _embeddings(self, body: Mapping[str, _Json], embedder: Embedder) -> None:
+            inputs = _embedding_inputs(body.get("input"))
+            ids = [
+                server.tokenizer.encode(item, add_special_tokens=True)
+                if isinstance(item, str)
+                else item
+                for item in inputs
+            ]
+            encoding = body.get("encoding_format") or "float"
+            if encoding not in ("float", "base64"):
+                raise RequestError("`encoding_format` is `float` or `base64`")
+            dimensions = body.get("dimensions")
+            vectors = embedder.embed(ids)
+            if dimensions is not None and int(cast("int", dimensions)) != len(vectors[0]):
+                raise RequestError(f"`dimensions` can only be the model's own, {len(vectors[0])}")
+            data: list[_Json] = [
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": (vector if encoding == "float" else _base64(vector)),
+                }
+                for index, vector in enumerate(vectors)
+            ]
+            count = sum(len(one) for one in ids)
+            usage = {"prompt_tokens": count, "total_tokens": count}
+            self._json(200, {"object": "list", "data": data, "model": server.name, "usage": usage})
 
         def _respond(
             self,
@@ -531,6 +589,36 @@ def _handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self._json(status, {"error": {"message": message, "type": kind}})
 
     return Handler
+
+
+def _embedding_inputs(value: _Json) -> list[str | list[int]]:
+    """An embeddings request's `input`: a string, a list of token ids, or a
+    list of either."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and value and all(_is_id(t) for t in value):
+        return [[int(cast("int", t)) for t in value]]
+    if isinstance(value, list) and value:
+        inputs: list[str | list[int]] = []
+        for item in value:
+            if isinstance(item, str):
+                inputs.append(item)
+            elif isinstance(item, list) and all(_is_id(t) for t in item):
+                inputs.append([int(cast("int", t)) for t in item])
+            else:
+                raise RequestError("each `input` is a string or a list of token ids")
+        if len(inputs) > 2048:
+            raise RequestError("`input` has at most 2048 items")
+        return inputs
+    raise RequestError("`input` is a string, a list of token ids, or a list of either")
+
+
+def _is_id(value: _Json) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _base64(vector: list[float]) -> str:
+    return base64.b64encode(struct.pack(f"<{len(vector)}f", *vector)).decode()
 
 
 def _logprobs_wanted(body: Mapping[str, _Json], chat: bool) -> int | None:
