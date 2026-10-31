@@ -18,6 +18,8 @@ dependencies = [
     "torch>=2.4",
     "huggingface-hub>=0.24",
     "transformers>=4.45",
+    # The tokenizers Transformers reads through SentencePiece (SigLIP, T5).
+    "sentencepiece>=0.2",
 ]
 
 [project.scripts]

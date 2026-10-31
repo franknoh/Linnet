@@ -11,7 +11,6 @@ an embedding model: it is served at `/v1/embeddings` instead (see
 from __future__ import annotations
 
 import argparse
-import contextlib
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -48,6 +47,15 @@ if TYPE_CHECKING:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        # ^C, while loading or serving: said, not a traceback.
+        print("\nexiting...", file=sys.stderr, flush=True)
+        return 0
+
+
+def _main(argv: Sequence[str] | None) -> int:
     parser = argparse.ArgumentParser(
         prog="linnet serve",
         description="Serve a decoder over HTTP with OpenAI's completions and chat API, "
@@ -68,7 +76,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--max-seq",
         type=int,
         help="the longest prompt plus completion (`MaxSeq`, default 2048); for embeddings, "
-        "the longest input (default: the card's `MaxPositions`)",
+        "the longest input (default: the largest power of two up to the card's `MaxPositions`, "
+        "else 512)",
     )
     parser.add_argument(
         "--pool",
@@ -193,7 +202,9 @@ def _serve_embeddings(
 
     positions = card.generics.get("MaxPositions")
     limit = positions if isinstance(positions, int) else None
-    max_len = args.max_seq or limit or 512
+    # The longest power of two the card's positions hold (512 of RoBERTa's
+    # 514, whose first two rows are reserved), else 512.
+    max_len = args.max_seq or (1 << (limit.bit_length() - 1) if limit else 512)
     if limit is not None and max_len > limit:
         parser.error(f"--max-seq is at most the card's MaxPositions, {limit}")
     generics: dict[str, int | str] = {"T": args.dtype} if args.dtype else {}
@@ -245,8 +256,7 @@ def _name(args: argparse.Namespace, card: nest.Card) -> str:
 def _serve(server: Server) -> int:
     host, port = server.address
     print(f"serving {server.name} at http://{host}:{port}/v1", flush=True)
-    with contextlib.suppress(KeyboardInterrupt):
-        server.serve_forever()
+    server.serve_forever()
     return 0
 
 

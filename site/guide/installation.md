@@ -20,7 +20,7 @@ linnet --version
 
 The script installs uv if it is missing, then `linnet-cli` as a uv tool,
 with everything `linnet serve` needs (PyTorch, the Hugging Face Hub,
-transformers). It takes the latest release's wheel for Linux (x86_64,
+transformers, SentencePiece). It takes the latest release's wheel for Linux (x86_64,
 aarch64) or macOS (arm64), which carries a built compiler, and otherwise
 builds from the repository. Last, it runs `uv tool update-shell`, which puts
 uv's tool directory (`~/.local/bin`) on `PATH` in the shell's profile.

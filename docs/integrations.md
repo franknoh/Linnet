@@ -213,7 +213,10 @@ linnet serve all-MiniLM-L6-v2
 ```
 
 A card with an `embed_padded` or `embed` entry and no decoding entries is
-served at `POST /v1/embeddings` instead, with PyTorch:
+served at `POST /v1/embeddings` instead, with PyTorch. In Nest these are
+all-MiniLM-L6-v2 (a trained sentence embedding), `bert-base-uncased`,
+`roberta-base` and `modernbert-base` (the first token, pooled as vLLM pools
+them), and `siglip-base-patch16-224` (text embeddings):
 
 ```python
 vectors = client.embeddings.create(model="all-MiniLM-L6-v2", input=["A cat sleeps.", "Rates rose."])
@@ -222,7 +225,8 @@ vectors = client.embeddings.create(model="all-MiniLM-L6-v2", input=["A cat sleep
 The inputs of every request waiting pass together. With `embed_padded<B,
 S>(tokens, token_types, lengths)`, which masks each input's padding out of
 attention and pooling, they are padded to powers of two up to `--max-seq`
-(default: the card's `MaxPositions`) in batches of up to `--batch`, all
+(default: the largest power of two the card's `MaxPositions` holds, else
+512) in batches of up to `--batch`, all
 compiled while warming up. With only `embed`, which pools every position,
 inputs share a pass only with others of their length, and each new shape
 compiles when first seen.
