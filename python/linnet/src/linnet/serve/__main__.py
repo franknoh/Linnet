@@ -71,8 +71,14 @@ def _main(argv: Sequence[str] | None) -> int:
     parser.add_argument(
         "model", help="a Nest name, a Hugging Face Hub repo (org/name), or a model directory"
     )
-    parser.add_argument("--backend", choices=("torch", "jax", "onnx", "mlx"), default="torch")
-    parser.add_argument("--device", help="the PyTorch device (default: cuda when there is one)")
+    parser.add_argument(
+        "--backend",
+        choices=("torch", "jax", "onnx", "mlx"),
+        help="the runtime (default: mlx for a decoder on a Mac that has it, else torch)",
+    )
+    parser.add_argument(
+        "--device", help="the PyTorch device (default: cuda, else mps, else the CPU)"
+    )
     parser.add_argument(
         "--batch",
         type=int,
@@ -127,8 +133,18 @@ def _main(argv: Sequence[str] | None) -> int:
     args = parser.parse_args(argv)
 
     from .. import nest
+    from .._self import update_notice
     from . import Engine
     from .server import Server
+
+    notice = update_notice()
+    if notice is not None:
+        print(notice, file=sys.stderr, flush=True)
+    # Chosen for a decoder below; an embedding model serves on PyTorch.
+    args.chosen = args.backend is not None
+    if args.backend is None:
+        pytorch_only = args.pool or args.fixed_rows or args.plans
+        args.backend = "mlx" if not pytorch_only and _mlx_default() else "torch"
 
     if args.pool and args.backend != "torch":
         parser.error("--pool serves from pages with the PyTorch backend")
@@ -156,11 +172,13 @@ def _main(argv: Sequence[str] | None) -> int:
         generics["T"] = "f16"
     common: _Common = {"generics": generics, "weights": args.weights, "cast_dtype": True}
     if args.backend == "torch":
-        import torch
-
-        device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
         model = nest.load(
-            card.directory, backend="torch", device=device, numerics="fast", compile=True, **common
+            card.directory,
+            backend="torch",
+            device=args.device or _torch_device(),
+            numerics="fast",
+            compile=True,
+            **common,
         )
     elif args.backend == "jax":
         model = nest.load(card.directory, backend="jax_model", **common)
@@ -203,11 +221,11 @@ def _serve_embeddings(
     from .embeddings import Embedder
     from .server import Server
 
-    if args.backend != "torch":
+    if args.backend != "torch" and args.chosen:
         parser.error("embeddings are served with the PyTorch backend")
+    args.backend = "torch"
     if args.pool or args.fixed_rows or args.plans:
         parser.error("--pool, --fixed-rows and --plans are for decoders")
-    import torch
 
     positions = card.generics.get("MaxPositions")
     limit = positions if isinstance(positions, int) else None
@@ -217,11 +235,10 @@ def _serve_embeddings(
     if limit is not None and max_len > limit:
         parser.error(f"--max-seq is at most the card's MaxPositions, {limit}")
     generics: dict[str, int | str] = {"T": args.dtype} if args.dtype else {}
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = nest.load(
         card.directory,
         backend="torch",
-        device=device,
+        device=args.device or _torch_device(),
         numerics="fast",
         compile=True,
         generics=generics,
@@ -236,6 +253,31 @@ def _serve_embeddings(
     embedder.warmup()
     name = _name(args, card)
     return _serve(Server(embedder, tokenizer, name=name, host=args.host, port=args.port))
+
+
+def _mlx_default() -> bool:
+    """Whether a decoder serves on MLX unless told otherwise: on Apple
+    silicon, with MLX installed (install.sh adds it there)."""
+    import importlib.util
+    import platform
+
+    return (
+        sys.platform == "darwin"
+        and platform.machine() == "arm64"
+        and importlib.util.find_spec("mlx") is not None
+    )
+
+
+def _torch_device() -> str:
+    """CUDA where there is a GPU of it, else Apple silicon's (`mps`), else
+    the CPU."""
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def _tokenizer_source(
