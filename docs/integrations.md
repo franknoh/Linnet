@@ -240,6 +240,38 @@ compiles when first seen.
 `linnet.serve.server.Server(Embedder(model, max_len=512), tokenizer,
 name=...)` serves a model of your own (`linnet.serve.embeddings`).
 
+### In a container
+
+`docker/` builds serving images from a checkout; none is published.
+`docker/docker-bake.hcl` pins every version (Ubuntu 24.04, PyTorch, JAX,
+ONNX Runtime, Triton, vLLM) and names one image per backend and device:
+
+```bash
+docker buildx bake -f docker/docker-bake.hcl torch-cu130     # linnet-serve:torch-cu130
+docker run --gpus all -p 8000:8000 -v linnet-cache:/cache linnet-serve:torch-cu130 llama-3.1-8b-instruct
+MODEL=all-MiniLM-L6-v2 docker compose -f docker/compose.yaml up
+```
+
+| Target | Serves with |
+| --- | --- |
+| `torch-cu130`, `torch-cu126` | PyTorch on CUDA 13 (x86-64 and Arm, the GB10 among them), or CUDA 12.6 for drivers before 580 |
+| `torch-rocm`, `torch-xpu` | PyTorch on AMD (ROCm 7.2) or Intel GPUs, x86-64 |
+| `torch-cpu` | PyTorch on the CPU |
+| `jax-cuda13`, `jax-cuda12`, `jax-cpu` | `--backend jax` |
+| `onnx-cuda13`, `onnx-cpu` | `--backend onnx` on ONNX Runtime |
+| `triton`, `vllm` | Triton Inference Server or vLLM, serving the model's export (below) |
+
+Arguments after the image are `linnet serve`'s; `--host 0.0.0.0` is given.
+`/cache` holds checkpoints, Nest cards and compiled passes and kernels, so a
+volume there saves the downloads and the warmup's compiling on the next
+start. `docker stop` stops the server as ^C does. The `triton` and `vllm`
+images take a model and the server's own arguments, export the model into
+`/cache/exports` on first start (`LINNET_EXPORT_ARGS` adds the export's
+options, such as `--bind S=128`), and serve that.
+
+Apple silicon has no container image: Docker on macOS reaches no GPU, so
+there `linnet serve` runs as installed.
+
 ## Triton Inference Server
 
 ```bash
