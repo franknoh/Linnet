@@ -137,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"linnet: {command}", flush=True)
     # This process's environment is the one replaced: the installer runs in
     # its place.
-    os.execvp("sh", ["sh", "-c", f"set -o pipefail 2>/dev/null; {command}"])
+    os.execvp("sh", ["sh", "-c", command])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ the record `install.sh` writes; GitHub is never asked."""
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -68,9 +70,19 @@ def test_update_runs_the_installer_with_the_recorded_options(
         ran.append(args)
         raise SystemExit(0)
 
+    # A `curl` that hands over an installer echoing its options.
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    fake = tools / "curl"
+    fake.write_text("#!/bin/sh\necho 'echo installed \"$@\"'\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(_self.os, "execvp", exec_)
     with pytest.raises(SystemExit):
         _self.main(["update"])
     (command,) = ran
     assert command[:2] == ["sh", "-c"]
     assert command[2].endswith(f"{_self.INSTALLER} | sh -s -- --with jax --no-modify-path")
+    # Run as `sh` runs it (dash on Ubuntu).
+    ran_sh = subprocess.run(["sh", "-c", command[2]], capture_output=True, text=True, check=True)
+    assert ran_sh.stdout.strip() == "installed --with jax --no-modify-path"
