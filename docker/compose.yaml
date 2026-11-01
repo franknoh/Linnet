@@ -1,0 +1,42 @@
+# `docker compose -f docker/compose.yaml up`: `linnet serve` on PyTorch with
+# CUDA 13, on the first GPU, at localhost:8000. MODEL picks the model
+# (default llama-3.1-8b-instruct), LINNET_ARGS adds options:
+#
+#     MODEL=all-MiniLM-L6-v2 docker compose -f docker/compose.yaml up
+#     LINNET_ARGS="--batch 64 --max-seq 4096" docker compose -f docker/compose.yaml up
+#
+# IMAGE runs another image from docker-bake.hcl (linnet-serve:jax-cuda13,
+# ...), built beforehand. A gated Hub repository reads HF_TOKEN.
+services:
+  linnet:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: serve-torch
+    image: ${IMAGE:-linnet-serve:torch-cu130}
+    command: ${MODEL:-llama-3.1-8b-instruct} ${LINNET_ARGS:-}
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - cache:/cache
+    # PyTorch's shared memory between processes.
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      # Loading and warming up (compiling every pass) take minutes.
+      start_period: 15m
+    restart: unless-stopped
+
+volumes:
+  cache:
