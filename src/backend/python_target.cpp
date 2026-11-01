@@ -167,9 +167,13 @@ std::optional<std::string> PythonTarget::contract(const TensorInfo& lhs,
 }
 
 std::string PythonTarget::dtype_name(ScalarKind dtype) const {
-    // PyTorch has no 4-bit element type: a 4-bit tensor is its bytes.
+    // PyTorch has no 4-bit element type: a 4-bit tensor is its bytes. MLX
+    // has no 8-bit floats either: those are their bytes too.
     if (library_ == "torch" && sema::is_packed(dtype)) {
         return "torch.uint8";
+    }
+    if (library_ == "mx" && (sema::is_packed(dtype) || sema::is_storage(dtype))) {
+        return "mx.uint8";
     }
     return library_ + "." +
            (dtype == ScalarKind::Bool ? bool_name_ : std::string(dtype_names(dtype).numpy));
@@ -258,7 +262,7 @@ std::string PythonTarget::spell(Elementwise kind, const std::vector<TensorInfo>&
     case Elementwise::Div:
         return define(sema::is_float(operands[0].dtype) ? a + " / " + b : divide_integers(a, b));
     case Elementwise::Rem:
-        return call("fmod", true);
+        return define(truncated_remainder(a, b));
     case Elementwise::Min:
         return call("minimum", true);
     case Elementwise::Max:

@@ -196,6 +196,10 @@ set_tests_properties(cli_stablehlo_while PROPERTIES
 add_test(NAME cli_onnx_while
     COMMAND linnet onnx --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
 set_tests_properties(cli_onnx_while PROPERTIES PASS_REGULAR_EXPRESSION "= Loop <body = loop_body")
+add_test(NAME cli_mlx_source_while
+    COMMAND linnet mlx --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
+set_tests_properties(cli_mlx_source_while PROPERTIES
+    PASS_REGULAR_EXPRESSION "DYNAMIC = True.*def main\\(in_x, in_limit, p0\\):.*while True:.*if not v3.item\\(\\):")
 add_test(NAME cli_jax_source_while
     COMMAND linnet jax --bind N=3 ${PROJECT_SOURCE_DIR}/spec-tests/valid/023_while.linnet)
 set_tests_properties(cli_jax_source_while PROPERTIES

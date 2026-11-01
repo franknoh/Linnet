@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Suho Noh" }]
-keywords = ["tensor", "compiler", "pytorch", "jax", "onnx", "deep learning"]
+keywords = ["tensor", "compiler", "pytorch", "jax", "onnx", "mlx", "deep learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -36,12 +36,16 @@ torch = ["torch>=2.4"]
 jax = ["jax>=0.4.35"]
 flax = ["jax>=0.4.35", "flax>=0.12"]
 onnx = ["onnx>=1.16"]
+# Metal on Apple silicon; the CPU on Linux, where `mlx[cuda13]` runs on NVIDIA GPUs.
+mlx = ["mlx>=0.30; sys_platform == 'darwin'", "mlx[cpu]>=0.30; sys_platform == 'linux'"]
 nest = ["huggingface-hub>=0.24"]
 all = [
     "torch>=2.4",
     "jax>=0.4.35",
     "flax>=0.12",
     "onnx>=1.16",
+    "mlx>=0.30; sys_platform == 'darwin'",
+    "mlx[cpu]>=0.30; sys_platform == 'linux'",
     "huggingface-hub>=0.24",
 ]
 
@@ -99,6 +103,7 @@ dev = [
     "onnx>=1.16",
     "onnxscript>=0.3",
     "onnxruntime>=1.18",
+    "mlx[cpu]>=0.30; sys_platform == 'linux'",
     "transformers>=5.17.0",
     "huggingface-hub>=1.32.0",
     "trl>=1.14",

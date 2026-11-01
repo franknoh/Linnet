@@ -1,9 +1,9 @@
 """E8M0 (`std.dtypes::f8e8m0`), an MX block's power-of-two scale, held as
 its byte on every backend: each byte widens to `2 ** (byte - 127)` (NaN for
 255) and values narrow to the power PyTorch's `float8_e8m0fnu` rounds a
-normal `f32` to, on PyTorch (compiled and interpreted), JAX, ONNX and
-StableHLO alike, save that XLA may flush byte 0's subnormal `2 ** -127`
-to zero (an H100's XLA does, the GB10's does not); a checkpoint's `U8` (or
+normal `f32` to, on PyTorch (compiled and interpreted), JAX, ONNX, MLX
+and StableHLO alike, save that XLA and MLX may flush byte 0's subnormal
+`2 ** -127` to zero (an H100's XLA does, the GB10's does not); a checkpoint's `U8` (or
 `F8_E8M0`) bytes bind to it."""
 
 # pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -194,3 +194,14 @@ def test_onnx_holds_the_byte(model: tuple[Path, Path]) -> None:
     loaded = load_model(source, generics={"N": 256}, weights=weights, std_root=STDLIB)
     np.testing.assert_array_equal(np.asarray(loaded.run_entry("widen", [])), _widened(BYTES))
     _check_round(np.asarray(loaded.run_entry("round", [_values()])))
+
+
+def test_mlx_holds_the_byte(model: tuple[Path, Path]) -> None:
+    pytest.importorskip("mlx.core")
+    from linnet.mlx import load_model
+
+    source, weights = model
+    loaded = load_model(source, generics={"N": 256}, weights=weights, std_root=STDLIB)
+    # A GPU (Metal's, CUDA's) may flush byte 0's subnormal to zero, as XLA's does.
+    _as_xla_holds(np.asarray(loaded.run_entry("widen", [])), _widened(BYTES))
+    _check_round(np.asarray(loaded.run_entry("round", [_values()])), xla=True)

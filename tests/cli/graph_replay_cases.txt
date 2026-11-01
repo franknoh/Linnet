@@ -16,3 +16,7 @@ jax --entry recurrent --bind T=3 --bind H=4 spec-tests/valid/028_for_loops.linne
 torch --entry counted --bind N=4 spec-tests/valid/028_for_loops.linnet
 torch --entry loss --bind N=4 spec-tests/valid/029_op_gradients.linnet
 jax --entry loss --bind N=4 spec-tests/valid/029_op_gradients.linnet
+mlx --numerics fast --entry decode --prepare --bind Vocab=11 --bind H=8 --bind Heads=4 --bind KvHeads=2 --bind Inner=16 --bind Layers=2 --bind Batch=2 --bind MaxSeq=6 --bind T=bf16 examples/01-llama/src/lib.linnet
+mlx --entry run --bind N=4 spec-tests/valid/023_while.linnet
+mlx --entry counted --bind N=4 spec-tests/valid/028_for_loops.linnet
+mlx --entry step --bind B=2 --bind Max=8 --bind D=4 spec-tests/valid/020_state.linnet

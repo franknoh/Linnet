@@ -262,7 +262,7 @@ class Interpreter:
             "sub": torch.sub,
             "mul": torch.mul,
             "div": self._div,
-            "rem": torch.remainder,
+            "rem": torch.fmod,
             "min": torch.minimum,
             "max": torch.maximum,
             "and": torch.logical_and,
@@ -501,7 +501,8 @@ class Interpreter:
     def _div(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if a.dtype.is_floating_point or b.dtype.is_floating_point:
             return torch.div(a, b)
-        return torch.div(a, b, rounding_mode="floor")
+        # Integer division truncates toward zero (spec §5), as `rem` does.
+        return torch.div(a, b, rounding_mode="trunc")
 
     @staticmethod
     def _slice(base: torch.Tensor, axes: tuple[_Axis, ...], env: ir.Bindings) -> torch.Tensor:

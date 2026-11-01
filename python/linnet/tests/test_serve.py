@@ -26,6 +26,7 @@ from tests.helpers import STDLIB, requires_cuda
 
 if TYPE_CHECKING:
     from linnet.jax import LinnetModel
+    from linnet.mlx import MlxModel
     from linnet.onnx import OnnxModel
 
 
@@ -896,6 +897,52 @@ def test_onnx(model_files: tuple[Path, Path]) -> None:
     assert len(model._weights) == 6  # pyright: ignore[reportPrivateUsage]
 
 
+def test_mlx(model_files: tuple[Path, Path]) -> None:
+    """MLX serves the same tokens, every entry over one copy of each
+    weight, with the caches kept between calls."""
+    pytest.importorskip("mlx.core")
+    from linnet.mlx import load_model as load_mlx
+
+    source, weights = model_files
+    torch_model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    model = load_mlx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    done, _ = Engine(model, buckets=[8, 16, 32]).run(_requests())
+    for completion in done:
+        assert completion.tokens == _greedy(torch_model, completion.request)
+    # prefill_slots at several shapes and decode_rows, all over six weights.
+    assert len(model._compiled) > 2  # pyright: ignore[reportPrivateUsage]
+    assert len(model._weights) == 6  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("dtype", ["f16", "bf16"])
+def test_mlx_in_sixteen_bits(model_files: tuple[Path, Path], dtype: str) -> None:
+    """An f32 checkpoint loaded as a 16-bit model (`cast_dtype=True`): the
+    same logits within the narrower type's rounding."""
+    pytest.importorskip("mlx.core")
+    import mlx.core as mx
+
+    from linnet.mlx import load_model as load_mlx
+
+    source, weights = model_files
+    wide = load_mlx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    narrow = load_mlx(
+        source, generics={**GENERICS, "T": dtype}, weights=weights, std_root=STDLIB, cast_dtype=True
+    )
+    tokens = np.array([[3, 1, 4, 1, 5, 9, 2, 6]], dtype=np.int32)
+    reference = wide.run_entry("forward", [tokens])
+    got = narrow.run_entry("forward", [tokens])
+    assert isinstance(reference, mx.array) and isinstance(got, mx.array)
+    assert got.dtype == {"f16": mx.float16, "bf16": mx.bfloat16}[dtype]
+    expected = np.asarray(reference, dtype=np.float32)
+    step = {"f16": 2.0**-10, "bf16": 2.0**-7}[dtype] * float(np.abs(expected).max())
+    np.testing.assert_allclose(
+        np.asarray(got.astype(mx.float32), dtype=np.float32),
+        expected,
+        atol=max(0.15, 6 * step),
+        rtol=0.05,
+    )
+
+
 def test_onnx_step_replays_as_a_cuda_graph(model_files: tuple[Path, Path]) -> None:
     """On a GPU the step is captured once and replayed: the caches are
     scattered into where they lie, so their buffers never move, and the
@@ -1074,15 +1121,21 @@ def test_sampled_requests_draw_alike_in_any_batch(model_files: tuple[Path, Path]
     assert first.sampling.seed != second.sampling.seed
 
 
-@pytest.mark.parametrize("backend", ["jax", "onnx"])
+@pytest.mark.parametrize("backend", ["jax", "onnx", "mlx"])
 def test_backends_sample_as_torch_does(model_files: tuple[Path, Path], backend: str) -> None:
     source, weights = model_files
     torch_model = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
+    model: LinnetModel | OnnxModel | MlxModel
     if backend == "jax":
         pytest.importorskip("jax")
         from linnet.jax import load_model
 
         model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    elif backend == "mlx":
+        pytest.importorskip("mlx.core")
+        from linnet.mlx import load_model as load_mlx
+
+        model = load_mlx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
     else:
         pytest.importorskip("onnxruntime")
         from linnet.onnx import load_model as load_onnx
@@ -1135,7 +1188,7 @@ class _TorchOptions(TypedDict, total=False):
 
 
 @pytest.mark.parametrize(
-    ("backend", "pack"), [("torch", 48), ("torch", 0), ("jax", 0), ("onnx", 0)]
+    ("backend", "pack"), [("torch", 48), ("torch", 0), ("jax", 0), ("onnx", 0), ("mlx", 0)]
 )
 def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, pack: int) -> None:
     """A request with `logprobs` gets its tokens' log-probabilities and the
@@ -1143,12 +1196,17 @@ def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, p
     sequence -- greedy or drawn, beside a request that asked for none."""
     source, weights = model_files
     reference = load(source, generics=GENERICS, std_root=STDLIB, weights=weights, compile=True)
-    model: LinnetModule | LinnetModel | OnnxModel = reference
+    model: LinnetModule | LinnetModel | OnnxModel | MlxModel = reference
     if backend == "jax":
         pytest.importorskip("jax")
         from linnet.jax import load_model
 
         model = load_model(source, generics=GENERICS, weights=weights, std_root=STDLIB)
+    elif backend == "mlx":
+        pytest.importorskip("mlx.core")
+        from linnet.mlx import load_model as load_mlx
+
+        model = load_mlx(source, generics=GENERICS, weights=weights, std_root=STDLIB)
     elif backend == "onnx":
         pytest.importorskip("onnxruntime")
         from linnet.onnx import load_model as load_onnx
@@ -1162,9 +1220,13 @@ def test_logprobs_are_the_models(model_files: tuple[Path, Path], backend: str, p
     options: _TorchOptions = {"graphs": False, "pack": pack} if backend == "torch" else {}
     done, _ = Engine(model, buckets=[8, 16, 32], **options).run(requests)
     assert done[1].logprobs == [] and done[1].top_logprobs == []
-    # JAX and ONNX Runtime on a GPU multiply f32 in TF32: about 1e-3 from the
-    # CPU reference, relative to the log-probability.
+    # JAX, ONNX Runtime and MLX on a GPU multiply f32 in TF32: about 1e-3
+    # from the CPU reference, relative to the log-probability.
     tf32 = backend != "torch" and torch.cuda.is_available()
+    if backend == "mlx":
+        import mlx.core as mx
+
+        tf32 = mx.default_device() == mx.gpu
     rtol, atol = (2e-3, 5e-3) if tf32 else (1e-4, 1e-4)
     for completion in (done[0], done[2]):
         wanted = completion.request.logprobs

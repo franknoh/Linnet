@@ -1,5 +1,6 @@
 #include "linnet/ast/dump.hpp"
 #include "linnet/backend/jax_source.hpp"
+#include "linnet/backend/mlx_source.hpp"
 #include "linnet/backend/onnx.hpp"
 #include "linnet/backend/plan.hpp"
 #include "linnet/backend/plan_reader.hpp"
@@ -132,7 +133,12 @@ void print_usage(std::FILE* out) {
         "                                       compute a block's calls again instead\n"
         "                                       of keeping their values; --lora as for\n"
         "                                       torch\n"
-        "  graph [--target torch|jax] [--replay | --slices <file>] [options of the target] <file>\n"
+        "  mlx [same options as stablehlo] [--prepare] [--lora <pattern>]...\n"
+        "        [--lora-rank <r>] [--lora-alpha <a>] <file>\n"
+        "                                       Print an entry as MLX source; --lora as\n"
+        "                                       for torch\n"
+        "  graph [--target torch|jax|mlx] [--replay | --slices <file>] [options of the target]\n"
+        "        <file>\n"
         "                                       Print an entry's graph (JSON) as the\n"
         "                                       target sees it: every call the export\n"
         "                                       makes, nested by call; --replay prints\n"
@@ -610,8 +616,9 @@ bool print_graph(ir::Module& core,
         return false;
     }
     const auto make = [&] {
-        return format == "jax" ? backend::make_jax_target(export_options)
-                               : backend::make_torch_target(export_options);
+        return format == "jax"   ? backend::make_jax_target(export_options)
+               : format == "mlx" ? backend::make_mlx_target(export_options)
+                                 : backend::make_torch_target(export_options);
     };
     auto inner = make();
     if (!inner) {
@@ -674,7 +681,7 @@ int run_graph_export(std::span<const std::string_view> args,
             arg == "--optionals" || arg == "--numerics" || arg == "--place" || arg == "--offload" ||
             arg == "--fully-shard" || arg == "--absent" || arg == "--absent-file" ||
             (format == "jax" && arg == "--remat") ||
-            ((format == "torch" || format == "jax") &&
+            ((format == "torch" || format == "jax" || format == "mlx") &&
              (arg == "--lora" || arg == "--lora-rank" || arg == "--lora-alpha"))) {
             if (i + 1 == args.size()) {
                 return usage_error(std::string(arg) + " requires a value");
@@ -775,7 +782,8 @@ int run_graph_export(std::span<const std::string_view> args,
             }
         } else if (arg == "--grad") {
             export_options.gradient = true;
-        } else if (arg == "--prepare" && (format == "torch" || format == "jax")) {
+        } else if (arg == "--prepare" &&
+                   (format == "torch" || format == "jax" || format == "mlx")) {
             export_options.prepare = true;
         } else if (arg == "--no-fuse" && format == "torch") {
             export_options.fuse = false;
@@ -820,6 +828,7 @@ int run_graph_export(std::span<const std::string_view> args,
     const auto text = format == "onnx"    ? backend::export_onnx(core, export_options)
                       : format == "torch" ? backend::export_torch_source(core, export_options)
                       : format == "jax"   ? backend::export_jax_source(core, export_options)
+                      : format == "mlx"   ? backend::export_mlx_source(core, export_options)
                                           : backend::export_stablehlo(core, export_options);
     if (!text) {
         std::fprintf(stderr,
@@ -827,6 +836,7 @@ int run_graph_export(std::span<const std::string_view> args,
                      format == "onnx"    ? "ONNX"
                      : format == "torch" ? "PyTorch source"
                      : format == "jax"   ? "JAX source"
+                     : format == "mlx"   ? "MLX source"
                                          : "StableHLO",
                      text.error().c_str());
         return exit_failure;
@@ -1417,7 +1427,8 @@ int main(int argc, char** argv) {
     if (command == "emit") {
         return run_emit(rest, options);
     }
-    if (command == "stablehlo" || command == "onnx" || command == "torch" || command == "jax") {
+    if (command == "stablehlo" || command == "onnx" || command == "torch" || command == "jax" ||
+        command == "mlx") {
         return run_graph_export(rest, options, argv[0], command);
     }
     if (command == "graph") {
@@ -1437,8 +1448,8 @@ int main(int argc, char** argv) {
                 forwarded.push_back(rest[i]);
             }
         }
-        if (target != "torch" && target != "jax") {
-            return usage_error("--target must be `torch` or `jax`");
+        if (target != "torch" && target != "jax" && target != "mlx") {
+            return usage_error("--target must be `torch`, `jax` or `mlx`");
         }
         return run_graph_export(forwarded, options, argv[0], target, mode, slices);
     }

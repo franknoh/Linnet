@@ -84,7 +84,7 @@ import random
 import time
 from array import array
 from collections import OrderedDict, deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
@@ -99,6 +99,7 @@ if TYPE_CHECKING:
 
     from ..backends import Backend
     from ..jax.module import LinnetModel
+    from ..mlx import MlxModel
     from ..onnx.runtime import OnnxModel
     from ..torch.module import LinnetModule
     from ..torch.planned import Captured
@@ -106,8 +107,8 @@ if TYPE_CHECKING:
     # A call of an entry by its inputs' shapes and dtypes.
     _Shapes: TypeAlias = tuple[str, tuple[tuple[int, ...], ...], tuple[torch.dtype, ...]]
     # What `Engine` serves: a `linnet.torch` module, a `linnet.jax`
-    # model, or a `linnet.onnx` model.
-    _Model: TypeAlias = LinnetModule | LinnetModel | OnnxModel
+    # model, a `linnet.onnx` model, or a `linnet.mlx` model.
+    _Model: TypeAlias = LinnetModule | LinnetModel | OnnxModel | MlxModel
     # Each row's temperature, top-k, top-p, and seed key, on the device (JAX).
     _Held: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
     # A JAX pass's rows' next tokens and positions, the tokens it drew, and
@@ -286,8 +287,8 @@ class _Queued:
 class Engine:
     """Continuous batching over a loaded decoder (see the module docs).
 
-    `model` is a `linnet.torch` module, a `linnet.jax.LinnetModel`, or a
-    `linnet.onnx.OnnxModel` with
+    `model` is a `linnet.torch` module, a `linnet.jax.LinnetModel`, a
+    `linnet.onnx.OnnxModel`, or a `linnet.mlx.MlxModel` with
     `prefill_slots` and `decode_rows` entries. `buckets` are the prompt
     lengths compiled (a pass is padded to the smallest that holds its longest
     prompt): by default 16, 32, 48, 64, then four to each doubling (80, 96,
@@ -1194,16 +1195,16 @@ def _backend_for(
     # Told apart by module rather than `isinstance`, which would import every
     # framework: hence the casts.
     module = type(model).__module__
-    if module.startswith(("linnet.jax", "linnet.onnx")):
+    if module.startswith(("linnet.jax", "linnet.onnx", "linnet.mlx")):
         if paged:
             raise ValueError("serving from pages runs with the PyTorch backend")
         if plans:
             raise ValueError("execution plans run with the PyTorch backend")
-        return (
-            _JaxBackend(cast("LinnetModel", model))
-            if module.startswith("linnet.jax")
-            else _OnnxBackend(cast("OnnxModel", model))
-        )
+        if module.startswith("linnet.jax"):
+            return _JaxBackend(cast("LinnetModel", model))
+        if module.startswith("linnet.mlx"):
+            return _MlxBackend(cast("MlxModel", model))
+        return _OnnxBackend(cast("OnnxModel", model))
     return _TorchBackend(cast("LinnetModule", model), graphs, paged, rows, max_len, plans)
 
 
@@ -1690,8 +1691,8 @@ class _TorchTokens:
 
 class _Grouped:
     """A backend whose prompt passes are grouped and padded (`prefill_slots`
-    only): XLA and ONNX Runtime, where a packed pass's mask would cost its
-    whole square."""
+    only): XLA, ONNX Runtime and MLX, where a packed pass's mask would cost
+    its whole square."""
 
     packs = False
     mixes = False
@@ -1867,25 +1868,31 @@ class _JaxTokens:
         return chosen, ids, values
 
 
-class _OnnxBackend(_Grouped):
-    """`linnet.onnx.load_model`: NumPy in, NumPy out, caches on the device,
-    the step replayed as a CUDA graph on a GPU. Each call returns when its
-    results exist, so nothing overlaps. Greedy passes take the argmax in the
-    graph, so only each row's token leaves the device; a pass that samples
-    takes the logits to the host and draws there."""
+class _HostBackend(_Grouped):
+    """A backend whose passes return their results on the host: NumPy in,
+    NumPy out, the caches on the device. Each call returns when its results
+    exist, so nothing overlaps. Greedy passes take the argmax on the device,
+    so only each row's token leaves it; a pass that samples takes the logits
+    to the host and draws there. A subclass runs the entries (`_run`)."""
 
-    def __init__(self, model: OnnxModel) -> None:
+    def __init__(self, model: _Generics, entries: Collection[str]) -> None:
         import numpy as np
 
         for entry in ("prefill_slots", "decode_rows"):
-            if entry not in model.entries:
+            if entry not in entries:
                 raise ValueError(f"the model has no `{entry}` entry, which serving needs")
         self.np = np
-        self.model = model
         self.slots, self.max_seq = _cache_generics(model)
         self.tokens: NDArray[np.integer] = np.zeros((self.slots, 1), dtype=np.int32)
         self.positions: NDArray[np.integer] = np.zeros(self.slots, dtype=np.int32)
         self.sampling = [Sampling()] * self.slots
+
+    def _run(
+        self, entry: str, inputs: list[NDArray[np.integer]], argmax: bool, step: bool
+    ) -> NDArray[np.generic]:
+        """Entry `entry`'s one result on the host: the logits, or with
+        `argmax` each row's token. `step` marks the decoding step."""
+        raise NotImplementedError
 
     def prefill(
         self,
@@ -1897,20 +1904,17 @@ class _OnnxBackend(_Grouped):
     ) -> _Tokens:
         np = self.np
         need = mode(sampling)
-        # The argmax in the graph unless the logits themselves are needed.
+        # The argmax on the device unless the logits themselves are needed.
         on_device = not need and top < 0
-        # One result: the logits, or with `argmax` each row's token.
-        out = cast(
-            "NDArray[np.generic]",
-            self.model.run_entry(
-                "prefill_slots",
-                [
-                    np.asarray(tokens, dtype=np.int32),
-                    np.asarray(slots, dtype=np.int32),
-                    np.asarray(lengths, dtype=np.int32),
-                ],
-                argmax=on_device,
-            ),
+        out = self._run(
+            "prefill_slots",
+            [
+                np.asarray(tokens, dtype=np.int32),
+                np.asarray(slots, dtype=np.int32),
+                np.asarray(lengths, dtype=np.int32),
+            ],
+            on_device,
+            False,
         )
         first = (
             out.reshape(-1)
@@ -1926,12 +1930,7 @@ class _OnnxBackend(_Grouped):
     def decode(self, need: int, top: int = -1) -> _Tokens:
         np = self.np
         on_device = not need and top < 0
-        out = cast(
-            "NDArray[np.generic]",
-            self.model.run_entry(
-                "decode_rows", [self.tokens, self.positions], argmax=on_device, cuda_graph=True
-            ),
-        )
+        out = self._run("decode_rows", [self.tokens, self.positions], on_device, True)
         if on_device:
             produced = out.reshape(-1)
         else:
@@ -1941,6 +1940,41 @@ class _OnnxBackend(_Grouped):
         self.tokens = produced.astype(np.int32).reshape(self.slots, 1)
         self.positions = np.minimum(self.positions + 1, self.max_seq - 1)
         return _HostTokens(produced, _logprobs_numpy(out, produced, top) if top >= 0 else None)
+
+
+class _OnnxBackend(_HostBackend):
+    """`linnet.onnx.load_model`: the argmax in the graph, the step replayed
+    as a CUDA graph on a GPU."""
+
+    def __init__(self, model: OnnxModel) -> None:
+        super().__init__(model, model.entries)
+        self.model = model
+
+    def _run(
+        self, entry: str, inputs: list[NDArray[np.integer]], argmax: bool, step: bool
+    ) -> NDArray[np.generic]:
+        return cast(
+            "NDArray[np.generic]",
+            self.model.run_entry(entry, inputs, argmax=argmax, cuda_graph=step),
+        )
+
+
+class _MlxBackend(_HostBackend):
+    """`linnet.mlx.load_model`: the argmax taken by MLX on its device."""
+
+    def __init__(self, model: MlxModel) -> None:
+        super().__init__(model, model.entries)
+        self.model = model
+
+    def _run(
+        self, entry: str, inputs: list[NDArray[np.integer]], argmax: bool, step: bool
+    ) -> NDArray[np.generic]:
+        import mlx.core as mx
+
+        logits = self.model.run_entry(entry, inputs)
+        assert isinstance(logits, mx.array)
+        out = mx.argmax(logits, axis=-1) if argmax else logits.astype(mx.float32)
+        return cast("NDArray[np.generic]", self.np.array(out))
 
 
 class _HostTokens:
