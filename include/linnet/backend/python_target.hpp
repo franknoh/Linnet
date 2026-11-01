@@ -83,6 +83,10 @@ protected:
     virtual std::string infinity() const = 0;
     // `value` cut from the library's autodiff.
     virtual std::string detach(const std::string& value) const = 0;
+    // The remainder of a division rounding toward zero (C's `fmod`).
+    virtual std::string truncated_remainder(const std::string& a, const std::string& b) {
+        return library_ + ".fmod(" + a + ", " + b + ")";
+    }
 
     // ---- shared
 
@@ -150,7 +154,7 @@ protected:
               const std::function<std::vector<std::string>(const std::vector<TensorInfo>&)>& body,
               const std::string& indent);
 
-    std::string library_;   // `torch`, `jnp`
+    std::string library_;   // `torch`, `jnp`, `mx`
     std::string bool_name_; // the library's boolean dtype, after `library_.`
     bool prepare_ = false;  // split weight-only work into `prepare`
     Lora lora_;

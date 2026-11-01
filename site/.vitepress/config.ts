@@ -59,6 +59,7 @@ function guideSidebar() {
         { text: "Training", link: "/docs/training" },
         { text: "JAX and Flax", link: "/docs/jax" },
         { text: "ONNX", link: "/docs/onnx" },
+        { text: "MLX", link: "/docs/mlx" },
         { text: "Nest", link: "/docs/nest" },
         { text: "Serving and tools", link: "/docs/integrations" },
         { text: "Backends", link: "/docs/backends" },
@@ -133,7 +134,7 @@ export default defineConfig({
   themeConfig: {
     logo: "/logo.svg",
     nav: [
-      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|language|modules-and-packages|random|quantization|kernels|python|torch|training|jax|onnx|nest|integrations))|^/compatibility" },
+      { text: "Guide", link: "/guide/installation", activeMatch: "^/(guide|docs/(getting-started|language-tour|language|modules-and-packages|random|quantization|kernels|python|torch|training|jax|onnx|mlx|nest|integrations))|^/compatibility" },
       { text: "Reference", link: "/docs/tooling", activeMatch: "^/(spec|docs/(tooling|plan-format|diagnostics))" },
       { text: "Examples", link: "/examples/", activeMatch: "^/examples/" },
       { text: "Nest", link: "https://nest.franknoh.dev" },

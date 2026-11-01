@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from torch.distributed.device_mesh import DeviceMesh
 
     from .jax import LinnetFunction, LinnetModel, SourceFunction
+    from .mlx import MlxModel
     from .onnx.runtime import OnnxModel, Provider
     from .torch import LinnetModule
 
@@ -935,6 +936,13 @@ class _OnnxOptions(_CastOptions, total=False):
     providers: Sequence[Provider] | None
 
 
+class _MlxOptions(_CastOptions, total=False):
+    """`linnet.mlx.load_model`'s own keywords (`compile` among
+    `_TorchOptions`', which `_LoadOptions` takes)."""
+
+    compile: bool
+
+
 class _JaxModelOptions(_CastOptions, total=False):
     """`linnet.jax.load_model`'s own keywords."""
 
@@ -981,6 +989,18 @@ def load(
     weights: str | Path | None = None,
     **options: Unpack[_OnnxOptions],
 ) -> OnnxModel: ...
+
+
+@overload
+def load(
+    name_or_dir: str | Path,
+    *,
+    backend: Literal["mlx_model"],
+    std_root: str | Path | None = None,
+    generics: Mapping[str, int | str] | None = None,
+    weights: str | Path | None = None,
+    **options: Unpack[_MlxOptions],
+) -> MlxModel: ...
 
 
 @overload
@@ -1034,12 +1054,16 @@ def load(
 def load(
     name_or_dir: str | Path,
     *,
-    backend: Literal["torch", "jax", "jax_source", "jax_model", "onnx_model", "nnx"] = "torch",
+    backend: Literal[
+        "torch", "jax", "jax_source", "jax_model", "onnx_model", "mlx_model", "nnx"
+    ] = "torch",
     std_root: str | Path | None = None,
     generics: Mapping[str, int | str] | None = None,
     weights: str | Path | None = None,
     **options: Unpack[_LoadOptions],
-) -> LinnetModule | OnnxModel | LinnetModel | LinnetFunction | SourceFunction | nnx.Module:
+) -> (
+    LinnetModule | OnnxModel | MlxModel | LinnetModel | LinnetFunction | SourceFunction | nnx.Module
+):
     """Materializes a model in a backend with its weights.
 
     `name_or_dir` is a Nest name, a Hugging Face Hub repo with a card at its
@@ -1051,7 +1075,8 @@ def load(
     ...). `"jax_model"` is every entry over one copy of
     the weights with the state kept on the device (`linnet.jax.load_model`),
     which decoding and serving need; `"onnx_model"` is the same on ONNX
-    Runtime (`linnet.onnx.load_model`).
+    Runtime (`linnet.onnx.load_model`), and `"mlx_model"` on MLX
+    (`linnet.mlx.load_model`).
     """
     card = resolve(name_or_dir)
     values = {**card.generics, **(generics or {})}
@@ -1073,6 +1098,10 @@ def load(
         from .onnx import load_model as load_onnx
 
         return load_onnx(card.source_path, **common, **cast("_OnnxOptions", options))
+    if backend == "mlx_model":
+        from .mlx import load_model as load_mlx
+
+        return load_mlx(card.source_path, **common, **cast("_MlxOptions", options))
     from . import jax as jax_backend
 
     if backend == "jax_model":

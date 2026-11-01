@@ -37,14 +37,14 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
 
 - `linnet check`, `lint`, `fmt`, `inspect`, `explain` and `init`, with
   stable diagnostic codes and JSON output.
-- Exports of one entry to StableHLO, ONNX, PyTorch source and JAX source,
-  under three numerics policies.
+- Exports of one entry to StableHLO, ONNX, PyTorch source, JAX source and
+  MLX source, under three numerics policies.
 - A language server (`linnet lsp`), a VS Code extension, and Vim and
   Neovim support.
 - `linnet serve`, which serves a model with OpenAI's API: completions and
   chat for a decoder, embeddings for an embedding model.
 - Docker images for serving (`docker/`): `linnet serve` on PyTorch (CUDA,
-  ROCm, XPU, CPU), JAX and ONNX Runtime, and Triton and vLLM serving
+  ROCm, XPU, CPU), JAX, ONNX Runtime and MLX, and Triton and vLLM serving
   exports, every version pinned.
 - `linnet memory` and `linnet fit`: static memory analysis of inference and
   training (weights, KV caches, activation liveness, gradients, optimizer
@@ -58,8 +58,9 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
 ### Python package (`linnet-lang`)
 
 - Loaders for PyTorch (as a `torch.nn.Module`, compiled or replayed as CUDA
-  graphs), JAX (XLA, `jax.numpy`, Flax NNX) and ONNX Runtime (CUDA,
-  TensorRT).
+  graphs), JAX (XLA, `jax.numpy`, Flax NNX), ONNX Runtime (CUDA, TensorRT)
+  and MLX (Apple silicon, CUDA, CPU), which `linnet serve --backend mlx`
+  serves.
 - PyTorch across GPUs: block placement and offloading, tensor parallelism,
   and pipelines of stages over processes under GPipe or 1F1B
   (`linnet.torch.pipeline`), each stage split or sharded across processes

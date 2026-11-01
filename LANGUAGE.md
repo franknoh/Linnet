@@ -11,7 +11,7 @@ uv project), and the site serves it at
 Linnet describes a neural network architecture as checked source. Shapes are
 types, every dimension is a compile-time expression, and the compiler proves
 each shape before anything runs. Weights stay in SafeTensors, bound by
-parameter path. The same file runs in PyTorch, JAX and ONNX Runtime.
+parameter path. The same file runs in PyTorch, JAX, ONNX Runtime and MLX.
 
 ## Workflow
 

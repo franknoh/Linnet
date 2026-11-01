@@ -11,6 +11,7 @@ an embedding model: it is served at `/v1/embeddings` instead (see
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -52,6 +53,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         # ^C, while loading or serving: said, not a traceback.
         print("\nexiting...", file=sys.stderr, flush=True)
+        if "mlx.core" in sys.modules:
+            # MLX's CUDA backend (0.32) may abort while the interpreter
+            # frees arrays another thread computed: there is nothing left to
+            # save, so the process ends here.
+            sys.stdout.flush()
+            os._exit(0)
         return 0
 
 
@@ -64,7 +71,7 @@ def _main(argv: Sequence[str] | None) -> int:
     parser.add_argument(
         "model", help="a Nest name, a Hugging Face Hub repo (org/name), or a model directory"
     )
-    parser.add_argument("--backend", choices=("torch", "jax", "onnx"), default="torch")
+    parser.add_argument("--backend", choices=("torch", "jax", "onnx", "mlx"), default="torch")
     parser.add_argument("--device", help="the PyTorch device (default: cuda when there is one)")
     parser.add_argument(
         "--batch",
@@ -157,6 +164,8 @@ def _main(argv: Sequence[str] | None) -> int:
         )
     elif args.backend == "jax":
         model = nest.load(card.directory, backend="jax_model", **common)
+    elif args.backend == "mlx":
+        model = nest.load(card.directory, backend="mlx_model", numerics="fast", **common)
     else:
         model = nest.load(card.directory, backend="onnx_model", numerics="fast", **common)
 
