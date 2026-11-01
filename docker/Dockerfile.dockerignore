@@ -1,0 +1,21 @@
+# Only what docker/Dockerfile copies; the rest (build trees, virtual
+# environments, notebooks) stays out of the build context.
+*
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+!README.md
+!LANGUAGE.md
+!cmake
+!include
+!src
+!stdlib
+!editors/vim
+!python/cli
+!python/linnet/pyproject.toml
+!python/linnet/README.md
+!python/linnet/LICENSE
+!python/linnet/hatch_build.py
+!python/linnet/src
+!docker/export-and-serve.sh
+**/__pycache__

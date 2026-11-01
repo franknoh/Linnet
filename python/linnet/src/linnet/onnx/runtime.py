@@ -169,6 +169,8 @@ if TYPE_CHECKING:
 
         def get_available_providers(self) -> list[str]: ...
 
+        def preload_dlls(self) -> None: ...
+
 
 class _Options(TypedDict):
     """`load_model`'s arguments that each entry's export takes."""
@@ -226,6 +228,11 @@ class OnnxModel:
         names = [p if isinstance(p, str) else p[0] for p in self.providers]
         gpu = {"CUDAExecutionProvider", "TensorrtExecutionProvider"}
         self._device = "cuda" if gpu & set(names) else "cpu"
+        if self._device == "cuda" and hasattr(onnxruntime, "preload_dlls"):
+            # The CUDA libraries `onnxruntime-gpu[cuda,cudnn]` installs from
+            # PyPI, which ONNX Runtime finds only loaded; without them (no
+            # PyTorch's CUDA build loaded them first) it has no CUDA provider.
+            self._ort.preload_dlls()
         self._signatures = {f.short_name: f for f in program.entries()}
         self.entries = list(self._signatures)
         self.generics = dict(options["generics"])
