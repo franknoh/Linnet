@@ -17,6 +17,7 @@ and writes text, and runs no model.
 | `fetch`, `update` | fetch a package's git dependencies, record them in `linnet.lock` ([Git dependencies](modules-and-packages.md#git-dependencies)) |
 | `lsp` | language server |
 | `serve` | serve a model over HTTP: `python -m linnet.serve` ([Serving](integrations.md#over-http)) |
+| `self update` | install the latest release again with install.sh's options; `--check` only says whether one is newer ([Updating](https://linnet.franknoh.dev/guide/installation#updating)) |
 | `memory`, `fit` | the memory a configuration needs, and the largest that fits a device ([Memory planning](memory.md)) |
 | `spec-test` | run the executable specification |
 

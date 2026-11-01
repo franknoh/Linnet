@@ -158,6 +158,10 @@ void print_usage(std::FILE* out) {
         "  serve <model> [options]              Serve a model over HTTP with OpenAI's API;\n"
         "                                       runs `python -m linnet.serve`, whose\n"
         "                                       --help lists the options\n"
+        "  self update [--check]                Install the latest release again, with\n"
+        "                                       install.sh's options (`python -m\n"
+        "                                       linnet._self`); --check only says\n"
+        "                                       whether one is newer\n"
         "  memory <model> [options]             The memory a configuration needs, before\n"
         "                                       running it (`python -m linnet.resources`)\n"
         "  fit <model> [options]                The largest batch, context or cache that\n"
@@ -1458,6 +1462,9 @@ int main(int argc, char** argv) {
     }
     if (command == "serve") {
         return run_python_module("linnet.serve", rest, argv[0]);
+    }
+    if (command == "self") {
+        return run_python_module("linnet._self", rest, argv[0]);
     }
     if (command == "memory" || command == "fit") {
         std::vector<std::string_view> forwarded{command};

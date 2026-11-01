@@ -43,6 +43,10 @@ package that runs Linnet models in PyTorch, JAX and ONNX Runtime.
   Neovim support.
 - `linnet serve`, which serves a model with OpenAI's API: completions and
   chat for a decoder, embeddings for an embedding model.
+- `install.sh` installs the PyTorch build for the machine's GPU, MLX on a
+  Mac, and JAX and ONNX Runtime on request (`--with`); `linnet self update`
+  installs the latest release again, and `linnet serve` says when one is
+  out.
 - Docker images for serving (`docker/`): `linnet serve` on PyTorch (CUDA,
   ROCm, XPU, CPU), JAX, ONNX Runtime and MLX, and Triton and vLLM serving
   exports, every version pinned.

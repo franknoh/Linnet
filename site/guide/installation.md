@@ -25,8 +25,20 @@ aarch64) or macOS (arm64), which carries a built compiler, and otherwise
 builds from the repository. Last, it runs `uv tool update-shell`, which puts
 uv's tool directory (`~/.local/bin`) on `PATH` in the shell's profile.
 
+PyTorch is the build for the machine's GPU: uv's `--torch-backend auto`
+picks CUDA by the NVIDIA driver's version, ROCm, Intel XPU, or else the CPU
+build. On a Mac the script adds MLX, which `linnet serve` then uses for
+decoders (Metal). `--with` adds the other backends, their CUDA build where
+there is an NVIDIA driver (CUDA 13 from driver 580, else 12):
+
+```bash
+curl -LsSf https://linnet.franknoh.dev/install.sh | sh -s -- --with jax,onnx,mlx
+```
+
 | Option | Environment | Does |
 | --- | --- | --- |
+| `--with <backends>` | `LINNET_WITH=<backends>` | adds `jax`, `onnx` and `mlx`, comma-separated, for `linnet serve --backend` |
+| `--torch-backend <b>` | `LINNET_TORCH_BACKEND=<b>` | PyTorch's build: `auto` (the default), `cpu`, `cu130`, `cu126`, `rocm7.2`, `xpu`, ... |
 | `--no-modify-path` | `LINNET_NO_MODIFY_PATH=1` | leaves `PATH` alone; run `uv tool update-shell` later, or add `uv tool dir --bin` yourself |
 | `--from-source` | `LINNET_FROM_SOURCE=1` | builds from the repository even where a wheel exists |
 | `--ref <ref>` | `LINNET_REF=<ref>` | builds that branch, tag or commit |
@@ -40,6 +52,19 @@ Without the script (on Windows, say), it is the same two commands:
 uv tool install "linnet-cli @ git+https://github.com/franknoh/Linnet#subdirectory=python/cli"
 uv tool update-shell
 ```
+
+### Updating
+
+```bash
+linnet self update            # the latest release, with the options installed with
+linnet self update --check    # only says whether there is a newer one
+```
+
+The script records the release and its options in `~/.linnet/install`
+(`$LINNET_HOME`), and `linnet self update` runs it again with them.
+`linnet serve` says, at most once a day, when a newer release is out;
+`LINNET_NO_UPDATE_CHECK=1` keeps it quiet. A `linnet-cli` installed without
+the script updates as it was installed.
 
 `uv tool uninstall linnet-cli` removes it.
 
@@ -59,6 +84,7 @@ environment. Pick the extras for the frameworks you use:
 | `jax` | `linnet.jax`: load, train and export in JAX |
 | `flax` | `linnet.jax.load_nnx` |
 | `onnx` | `linnet.onnx`; add `onnxruntime`, or `onnxruntime-gpu` for CUDA and TensorRT, to run models |
+| `mlx` | `linnet.mlx`: MLX on Apple silicon, the CPU on Linux (`mlx[cuda13]` for NVIDIA GPUs) |
 | `nest` | `linnet.nest`: models from [Nest](https://nest.franknoh.dev) and the Hugging Face Hub |
 | `all` | all of them |
 
