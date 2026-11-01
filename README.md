@@ -37,7 +37,7 @@ registry: [Nest](https://nest.franknoh.dev). Try it in five minutes:
   before anything runs.
 - **Portable, not interpreted.** Each backend gets its native path:
   generated PyTorch under `torch.compile` or CUDA graphs, XLA, ONNX Runtime
-  and TensorRT.
+  and TensorRT, and MLX.
 
 ## Benchmarks
 
@@ -56,8 +56,8 @@ Every row, including where Linnet loses, is on the
 
 ## Targets
 
-- Load in PyTorch, JAX (XLA, `jax.numpy`, Flax NNX) and ONNX Runtime (CUDA,
-  TensorRT).
+- Load in PyTorch, JAX (XLA, `jax.numpy`, Flax NNX), ONNX Runtime (CUDA,
+  TensorRT) and MLX (Apple silicon, CUDA, CPU).
 - Export StableHLO, ONNX, a Triton Inference Server model, a transformers
   checkpoint for vLLM, and GGUF for llama.cpp and Ollama.
 - Serve with `linnet.serve`: continuous batching and an OpenAI-compatible
@@ -95,7 +95,8 @@ GPT-2 families converts on the way: `nest.load("Qwen/Qwen2.5-7B-Instruct")`.
   coding agents
 - [Command line](docs/tooling.md)
 - [PyTorch](docs/torch.md), [JAX](docs/jax.md), [ONNX](docs/onnx.md),
-  [Nest](docs/nest.md), and [integrations](docs/integrations.md)
+  [MLX](docs/mlx.md), [Nest](docs/nest.md), and
+  [integrations](docs/integrations.md)
 - [Training](docs/training.md)
 - [Benchmarks](https://linnet.franknoh.dev/benchmarks)
 

@@ -9,7 +9,7 @@ and writes text, and runs no model.
 | `fmt` | format |
 | `inspect` | parameter manifest, tokens, AST, Core IR, emitted source |
 | `plan` | JSON plan for a materializer |
-| `stablehlo`, `onnx`, `torch`, `jax` | export one entry with bound shapes |
+| `stablehlo`, `onnx`, `torch`, `jax`, `mlx` | export one entry with bound shapes |
 | `graph` | the calls an export makes to its target, as JSON ([Graph format](graph-format.md)) |
 | `emit` | Linnet source from a plan |
 | `explain` | which implementation each library operation gets |
@@ -142,6 +142,7 @@ linnet stablehlo [--root <Block>] [--entry <name>] [--bind <G>=<value>]...
 linnet onnx  ...same options...
 linnet torch ...same options...
 linnet jax   ...same options...
+linnet mlx   ...same options...
 ```
 
 | Option | Meaning |
@@ -168,6 +169,7 @@ error.
 | `onnx` | ONNX text (`onnx.parser.parse_model`); parameters are `param<N>` inputs with `linnet.path.param<N>` metadata, states `state<N>` in and `next_state<N>` out |
 | `torch` | a Python module: `main(*inputs, *parameters, *states, *constants)` with `PARAMETERS`, `STATES`, `NEXT_STATES`, `RESULTS`, and `constants(device)`, the input-independent tensors computed once per shape |
 | `jax` | the same module in `jax.numpy`, differentiable with `jax.grad` |
+| `mlx` | the same module in `mlx.core`, with `PARAMETER_TYPES` and `STATE_TYPES` (each one's shape and dtype) and `DYNAMIC` (a `while` reads its condition back, so `mx.compile` cannot trace it) |
 
 ### Gradients
 
@@ -191,18 +193,18 @@ after the gradients, as its forward export does.
 
 ### Generated Python
 
-`torch` and `jax` take further options, which the runtimes set when they
-load a model. A block is named by its path: `layers.3`, `lm_head`.
+`torch`, `jax` and `mlx` take further options, which the runtimes set when
+they load a model. A block is named by its path: `layers.3`, `lm_head`.
 
 | Option | Formats | Meaning |
 | --- | --- | --- |
-| `--prepare` | `torch`, `jax` | weight-only work moves into a `prepare` function, run once per loaded model |
+| `--prepare` | `torch`, `jax`, `mlx` | weight-only work moves into a `prepare` function, run once per loaded model |
 | `--no-fuse` | `torch` | with `--prepare`, sibling linear layers stay separate products |
 | `--place <block>=<slot>` | `torch` | the block runs on a device slot; a value crosses slots once |
 | `--offload <block>` | `torch` | the block's parameters stay on the host and move to its slot when it runs |
 | `--fully-shard <block>` | `torch`, `jax` | each process or device holds part of the block's parameters, gathered whole where the block runs (FSDP) |
 | `--remat <block>` | `jax` | the backward pass computes each call of the block again instead of keeping its values (`jax.checkpoint`) |
-| `--lora <pattern>` | `torch`, `jax` | a low-rank adapter beside every weight whose path matches the glob; takes `--lora-rank <r>` and scales by `--lora-alpha <a>` / r |
+| `--lora <pattern>` | `torch`, `jax`, `mlx` | a low-rank adapter beside every weight whose path matches the glob; takes `--lora-rank <r>` and scales by `--lora-alpha <a>` / r |
 | `--absent <path>`, `--absent-file <file>` | all | optional parameters the weights lack, with `--optionals present`; `-` reads the file from stdin |
 
 ### Numerics policy

@@ -6,14 +6,15 @@
 #
 # Images are tagged linnet-serve:<target> and loaded into the local daemon;
 # nothing is pushed. Arm (aarch64) builds where its wheels exist: CUDA and
-# CPU PyTorch, JAX, ONNX Runtime, Triton and vLLM. ROCm and XPU are x86-64
-# only.
+# CPU PyTorch, JAX, ONNX Runtime, MLX, Triton and vLLM. ROCm and XPU are
+# x86-64 only.
 
 variable "UBUNTU" { default = "24.04" }
 variable "TORCH" { default = "2.14.1" }
 variable "JAX" { default = "0.12.0.1" }
 variable "ONNX" { default = "1.23.2" }
 variable "ORT" { default = "1.31.1" }
+variable "MLX" { default = "0.32.4" }
 variable "TRITON" { default = "26.09" }
 variable "VLLM" { default = "v0.32.0" }
 variable "PYTORCH_WHL" { default = "https://download.pytorch.org/whl" }
@@ -27,6 +28,7 @@ group "all" {
     "torch-cu130", "torch-cu126", "torch-rocm", "torch-xpu", "torch-cpu",
     "jax-cuda13", "jax-cuda12", "jax-cpu",
     "onnx-cuda13", "onnx-cpu",
+    "mlx-cuda13", "mlx-cpu",
     "triton", "vllm",
   ]
 }
@@ -118,6 +120,22 @@ target "onnx-cpu" {
   target   = "serve-onnx"
   args     = { ONNX = ONNX, ORT = "onnxruntime", ORT_VERSION = ORT }
   tags     = ["linnet-serve:onnx-cpu"]
+}
+
+# `linnet serve --backend mlx`
+
+target "mlx-cuda13" {
+  inherits = ["_common"]
+  target   = "serve-mlx"
+  args     = { MLX = MLX, MLX_EXTRA = "cuda13" }
+  tags     = ["linnet-serve:mlx-cuda13"]
+}
+
+target "mlx-cpu" {
+  inherits = ["_common"]
+  target   = "serve-mlx"
+  args     = { MLX = MLX, MLX_EXTRA = "cpu" }
+  tags     = ["linnet-serve:mlx-cpu"]
 }
 
 # Exports, served by their own servers

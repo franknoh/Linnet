@@ -11,6 +11,7 @@ tested under `python/` and `tests/`.
 | [JAX](/docs/jax) | `linnet.jax.load`, `load_source`, `load_nnx` | XLA (no VJP), differentiable generated `jnp` code, or either as Flax NNX |
 | [StableHLO](/docs/tooling) | `linnet stablehlo --bind ...` | static shapes |
 | [ONNX](/docs/onnx) | `linnet onnx --bind ...` | opset 20 text format |
+| [MLX](/docs/mlx) | `linnet.mlx.load_model` | generated `mlx.core` code under `mx.compile`; Metal, CUDA or CPU |
 | ONNX, packaged | `linnet.onnx.export_model` | checkpoint embedded; runs in any ONNX runtime |
 | vLLM, SGLang, TGI, transformers | [`linnet.hf.export`](/docs/integrations#vllm-sglang-tgi) | `llama`, `qwen2`, `qwen3`, `phi3`, and `gpt2` families |
 | llama.cpp, Ollama | [`linnet.gguf.export`](/docs/integrations#llama-cpp-and-ollama) | the same families |
@@ -37,19 +38,19 @@ KV-cache decoding. `LINNET_HF_TESTS=1` runs
 
 ## Language features by backend
 
-| Feature | PyTorch | JAX and StableHLO | ONNX |
-| --- | --- | --- | --- |
-| Symbolic shapes | bound at load and from inputs | bound per compile | bound per export |
-| `static for` | yes | unrolled | unrolled |
-| `while` | yes, also in generated source | `stablehlo.while`, `lax.while_loop` | `Loop` |
-| Index notation and reductions | yes | yes | yes |
-| Optional parameters | yes | `--optionals` | yes |
-| Enum constants and `match` | yes | folded | folded |
-| Tuple results | yes | yes | one output per element |
-| `state` members | buffers, `reset_state()` | threaded in and out | threaded in and out |
-| `std.random` | yes | yes | yes (right shifts are logical) |
-| Training | [`linnet.train`](/docs/training): SFT, DPO, GRPO, LoRA, FSDP; transformers' `Trainer` and TRL | [`linnet.jax.train`](/docs/training#jax): SFT, DPO, GRPO, LoRA, FSDP over a mesh, `remat`; `load_source` with `jax.grad` | no |
-| dtypes | f16, bf16, f32, f64, i8 to i64, u8, bool | as the backend supports | as opset 20 supports |
+| Feature | PyTorch | JAX and StableHLO | ONNX | MLX |
+| --- | --- | --- | --- | --- |
+| Symbolic shapes | bound at load and from inputs | bound per compile | bound per export | bound per compile |
+| `static for` | yes | unrolled | unrolled | unrolled |
+| `while` | yes, also in generated source | `stablehlo.while`, `lax.while_loop` | `Loop` | Python `while`, uncompiled |
+| Index notation and reductions | yes | yes | yes | yes |
+| Optional parameters | yes | `--optionals` | yes | yes |
+| Enum constants and `match` | yes | folded | folded | folded |
+| Tuple results | yes | yes | one output per element | yes |
+| `state` members | buffers, `reset_state()` | threaded in and out | threaded in and out | threaded in and out |
+| `std.random` | yes | yes | yes (right shifts are logical) | yes |
+| Training | [`linnet.train`](/docs/training): SFT, DPO, GRPO, LoRA, FSDP; transformers' `Trainer` and TRL | [`linnet.jax.train`](/docs/training#jax): SFT, DPO, GRPO, LoRA, FSDP over a mesh, `remat`; `load_source` with `jax.grad` | no | no |
+| dtypes | f16, bf16, f32, f64, i8 to i64, u8, bool | as the backend supports | as opset 20 supports | as PyTorch's; f64 on the CPU only |
 
 ## Not yet
 

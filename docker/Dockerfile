@@ -7,8 +7,8 @@
 #     docker build -f docker/Dockerfile --target serve-torch -t linnet-serve:torch-cu130 .
 #     docker run --gpus all -p 8000:8000 -v linnet-cache:/cache linnet-serve:torch-cu130 llama-3.1-8b-instruct
 #
-# serve-torch, serve-jax, serve-onnx   `linnet serve` with that backend;
-#                                      arguments after the image are its
+# serve-torch, serve-jax, serve-onnx,  `linnet serve` with that backend;
+# serve-mlx                            arguments after the image are its
 # triton, vllm                         that server, serving MODEL exported
 #                                      on first start (export-and-serve.sh)
 
@@ -118,6 +118,19 @@ RUN --mount=from=build,source=/wheels,target=/wheels \
     && uv pip install /wheels/linnet_cli-*.whl "onnx==${ONNX}" "${ORT}==${ORT_VERSION}"
 USER linnet
 ENTRYPOINT ["python", "-m", "linnet.serve", "--host", "0.0.0.0", "--backend", "onnx"]
+
+# MLX: MLX_EXTRA `cuda13`, `cuda12`, or `cpu`. (Apple silicon's Metal has
+# no container: Docker on macOS reaches no GPU.)
+FROM serve AS serve-mlx
+ARG TORCH=2.14.1
+ARG MLX=0.32.4
+ARG MLX_EXTRA=cuda13
+RUN --mount=from=build,source=/wheels,target=/wheels \
+    --mount=type=cache,target=/root/.cache/uv \
+    uv pip install "torch==${TORCH}" --index-url https://download.pytorch.org/whl/cpu \
+    && uv pip install /wheels/linnet_cli-*.whl "mlx[${MLX_EXTRA}]==${MLX}"
+USER linnet
+ENTRYPOINT ["python", "-m", "linnet.serve", "--host", "0.0.0.0", "--backend", "mlx"]
 
 # ---- Triton Inference Server and vLLM, at the versions given
 

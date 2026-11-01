@@ -173,3 +173,45 @@ def test_e5m2_as_pytorch_rounds() -> None:
     ).astype(np.float16)
     expected = torch.from_numpy(values).to(torch.float8_e5m2).view(torch.uint8).numpy()
     assert np.array_equal(np.asarray(to_e5m2(mx.array(values))), expected)
+
+
+RANDOM = """\
+module tests.mlx_random
+
+use std.random::{bits, fold_in, normal, split, uniform}
+
+pub block Rng<N: Dim> {
+    param unused: Tensor[1; f32]
+
+    pub entry draws(key: Tensor[2; i64]) -> (Tensor[N, 2; i64], Tensor[N; i64], Tensor[N; f32]) {
+        return (split<N>(key), bits<N>(key), uniform<N, f32>(key))
+    }
+
+    pub entry more(key: Tensor[2; i64], data: i32) -> (Tensor[2; i64], Tensor[N; f32]) {
+        return (fold_in(key, data), normal<N, f32>(key))
+    }
+}
+"""
+
+
+def test_random_draws_as_pytorch_does(tmp_path: Path) -> None:
+    """`std.random`'s Threefry, unsigned shifts and all: the same keys, bits
+    and uniforms bit for bit (PyTorch's match JAX's), normals to rounding."""
+    source = tmp_path / "rng.linnet"
+    source.write_text(RANDOM)
+    generics = {"N": 64}
+    reference = load(source, generics=generics, std_root=STDLIB)
+    loaded = load_model(
+        source, generics=generics, weights={"unused": np.zeros(1, np.float32)}, std_root=STDLIB
+    )
+    for seed in (0, 42, 123456):
+        key = np.array([0, seed], dtype=np.int64)
+        expected = _host(reference.run_entry("draws", [torch.from_numpy(key)]))
+        got = _host(loaded.run_entry("draws", [key]))
+        for g, e in zip(got, expected, strict=True):
+            np.testing.assert_array_equal(g, e)
+        data = torch.tensor(7, dtype=torch.int32)
+        expected = _host(reference.run_entry("more", [torch.from_numpy(key), data]))
+        got = _host(loaded.run_entry("more", [key, np.int32(7)]))
+        np.testing.assert_array_equal(got[0], expected[0])
+        np.testing.assert_allclose(got[1], expected[1], rtol=1e-6, atol=1e-6)

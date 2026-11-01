@@ -74,6 +74,7 @@ to `$LINNET_HOME/converted`, keyed by the repo's commit.
 | `"jax_source"` | `linnet.jax.load_source` |
 | `"jax_model"` | `linnet.jax.load_model` |
 | `"onnx_model"` | `linnet.onnx.load_model` |
+| `"mlx_model"` | `linnet.mlx.load_model` |
 | `"nnx"` | `linnet.jax.load_nnx` |
 
 ## Model directory

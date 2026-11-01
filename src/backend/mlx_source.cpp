@@ -22,27 +22,28 @@ namespace {
 // What every module defines: `mlx.core` has no `fmod` and no integer
 // division rounding toward zero, and an array written at an index stays the
 // array other names hold.
-constexpr const char* prelude = "def _div(a, b):\n"
-                                "    # Integer division rounding toward zero.\n"
-                                "    q = mx.floor_divide(a, b)\n"
-                                "    return mx.where((q * b != a) & ((a < 0) != (b < 0)), q + 1, q)\n"
-                                "\n"
-                                "\n"
-                                "def _rem(a, b):\n"
-                                "    # The remainder of a division rounding toward zero.\n"
-                                "    if mx.issubdtype(a.dtype, mx.integer):\n"
-                                "        return a - b * _div(a, b)\n"
-                                "    return a - b * mx.trunc(a / b)\n"
-                                "\n"
-                                "\n"
-                                "def _put(x, index, value):\n"
-                                "    # `x` with `x[index]` set to `value`, as a new array: every name\n"
-                                "    # bound to `x` keeps its values.\n"
-                                "    y = mx.array(x)\n"
-                                "    y[index] = value\n"
-                                "    return y\n"
-                                "\n"
-                                "\n";
+constexpr const char* prelude =
+    "def _div(a, b):\n"
+    "    # Integer division rounding toward zero.\n"
+    "    q = mx.floor_divide(a, b)\n"
+    "    return mx.where((q * b != a) & ((a < 0) != (b < 0)), q + 1, q)\n"
+    "\n"
+    "\n"
+    "def _rem(a, b):\n"
+    "    # The remainder of a division rounding toward zero.\n"
+    "    if mx.issubdtype(a.dtype, mx.integer):\n"
+    "        return a - b * _div(a, b)\n"
+    "    return a - b * mx.trunc(a / b)\n"
+    "\n"
+    "\n"
+    "def _put(x, index, value):\n"
+    "    # `x` with `x[index]` set to `value`, as a new array: every name\n"
+    "    # bound to `x` keeps its values.\n"
+    "    y = mx.array(x)\n"
+    "    y[index] = value\n"
+    "    return y\n"
+    "\n"
+    "\n";
 
 // What a module converting to or from a 4-bit or an FP8 E5M2 tensor imports.
 constexpr const char* formats_import =
@@ -99,8 +100,8 @@ public:
         }
         if (from == ScalarKind::F8E4M3) {
             const ScalarKind wide = sema::is_float(dtype) ? dtype : ScalarKind::F32;
-            std::string name = define("mx.from_fp8(" + value.name + ", dtype=" + dtype_name(wide) +
-                                      ")");
+            const std::string name =
+                define("mx.from_fp8(" + value.name + ", dtype=" + dtype_name(wide) + ")");
             return wide == dtype ? name : define(name + ".astype(" + dtype_name(dtype) + ")");
         }
         if (dtype == ScalarKind::F8E4M3) {
@@ -139,7 +140,12 @@ public:
     // nothing is detached.
     std::vector<std::string>
     begin_custom_gradient(const std::vector<TensorInfo>& arguments) override {
-        return GraphTarget::begin_custom_gradient(arguments);
+        std::vector<std::string> names;
+        names.reserve(arguments.size());
+        for (const TensorInfo& argument : arguments) {
+            names.push_back(argument.name);
+        }
+        return names;
     }
 
     std::optional<std::string> scatter_add(const Dims& shape,
@@ -148,12 +154,13 @@ public:
                                            const TensorInfo& values) override {
         std::vector<std::string> axes;
         const std::int64_t count = indices.shape.empty() ? 0 : indices.shape.back();
+        axes.reserve(static_cast<std::size_t>(count));
         for (std::int64_t k = 0; k < count; ++k) {
             axes.push_back(indices.name + "[..., " + std::to_string(k) + "]");
         }
-        return define("mx.zeros(" + python_tuple(shape) + ", dtype=" + dtype_name(dtype) +
-                      ").at[" + join(axes, ", ") + (axes.size() == 1 ? "," : "") + "].add(" +
-                      values.name + ")");
+        return define("mx.zeros(" + python_tuple(shape) + ", dtype=" + dtype_name(dtype) + ").at[" +
+                      join(axes, ", ") + (axes.size() == 1 ? "," : "") + "].add(" + values.name +
+                      ")");
     }
 
     std::string
@@ -206,8 +213,7 @@ public:
             return fast ? expression : "(" + expression + ").astype(" + name(like) + ".dtype)";
         };
         const auto i32 = [&](std::size_t i) { return name(i) + ".astype(mx.int32)"; };
-        if (base == "torch.nn.functional.embedding" && at.size() == 2 && present(0) &&
-            present(1)) {
+        if (base == "torch.nn.functional.embedding" && at.size() == 2 && present(0) && present(1)) {
             return define("mx.take(" + name(1) + ", " + name(0) + ", axis=0)");
         }
         if (base == "torch.index_select" && at.size() == 2 && present(0) && present(1)) {
@@ -217,9 +223,9 @@ public:
             return define("mx.from_fp8(" + name(0) + ", dtype=mx.float32)");
         }
         if (base == "torch.tril" && at.empty() && shape.size() == 2) {
-            std::string mask = define("mx.tril(mx.ones(" + python_tuple(shape) +
-                                      ", dtype=mx.bool_), " +
-                                      std::to_string(shape[1] - shape[0]) + ")");
+            std::string mask =
+                define("mx.tril(mx.ones(" + python_tuple(shape) + ", dtype=mx.bool_), " +
+                       std::to_string(shape[1] - shape[0]) + ")");
             if (shape[0] == shape[1]) {
                 causal_masks_.insert(mask);
             }
@@ -244,8 +250,8 @@ public:
             if (at.size() == 3) {
                 // `write_rows`: row b at at[b], a scatter of B x H vectors.
                 return define("_put(" + name(0) + ", (mx.arange(" + std::to_string(cache[0]) +
-                              ")[:, None], mx.arange(" + std::to_string(cache[1]) +
-                              ")[None, :], " + i32(2) + "[:, None]), " + name(1) + "[:, :, 0])");
+                              ")[:, None], mx.arange(" + std::to_string(cache[1]) + ")[None, :], " +
+                              i32(2) + "[:, None]), " + name(1) + "[:, :, 0])");
             }
             if (present(2) && !at[2]->shape.empty()) {
                 // `write_slots`: a span in each of several rows, a scatter.
@@ -274,8 +280,8 @@ public:
             const std::string w = define("mx.transpose(" + name(1) + ", " + last + ")");
             std::string call;
             if (flat) {
-                call = "mx.conv1d(" + x + ", " + w + ", stride=" +
-                       std::to_string(window->strides[0]) +
+                call = "mx.conv1d(" + x + ", " + w +
+                       ", stride=" + std::to_string(window->strides[0]) +
                        ", padding=" + std::to_string(window->pads[0]) + ")";
             } else {
                 call = "mx.conv2d(" + x + ", " + w + ", stride=" + python_tuple(window->strides) +
@@ -342,9 +348,8 @@ public:
             const std::string x = define(f32(0));
             const std::string centered =
                 define(x + " - mx.mean(" + x + ", axis=-1, keepdims=True)");
-            const std::string scale =
-                define("mx.rsqrt(mx.mean(" + centered + " * " + centered +
-                       ", axis=-1, keepdims=True) + " + scalar(3) + ")");
+            const std::string scale = define("mx.rsqrt(mx.mean(" + centered + " * " + centered +
+                                             ", axis=-1, keepdims=True) + " + scalar(3) + ")");
             std::string scaled = define(back(centered + " * " + scale, 0));
             if (present(1)) {
                 scaled = define(scaled + " * " + name(1));
@@ -442,14 +447,14 @@ public:
                        const std::string& module_path,
                        const std::string& block_name,
                        const std::string& entry_name) override {
-        std::string out =
-            "# " + entry_label(block_name, entry_name) + " from module " + module_path +
-            ", generated by `linnet mlx` for one shape\n"
-            "# binding. `main` takes the entry's inputs, then the parameters in\n"
-            "# PARAMETERS order, then the states in STATES order; it returns the\n"
-            "# entry's RESULTS results followed by the states in NEXT_STATES\n"
-            "# order. 8-bit and 4-bit floats are held as their bytes.\n"
-            "import mlx.core as mx\n\n";
+        std::string out = "# " + entry_label(block_name, entry_name) + " from module " +
+                          module_path +
+                          ", generated by `linnet mlx` for one shape\n"
+                          "# binding. `main` takes the entry's inputs, then the parameters in\n"
+                          "# PARAMETERS order, then the states in STATES order; it returns the\n"
+                          "# entry's RESULTS results followed by the states in NEXT_STATES\n"
+                          "# order. 8-bit and 4-bit floats are held as their bytes.\n"
+                          "import mlx.core as mx\n\n";
         if (uses_formats_) {
             out += formats_import;
         }

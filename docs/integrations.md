@@ -186,7 +186,7 @@ reply = client.chat.completions.create(
 | `--batch`, `--max-seq` | the requests in flight and the longest request |
 | `--pool` | serves from pages of one pool of that many positions; by default, on PyTorch with a card that has the paged entries, `--batch` times `--max-seq` |
 | `--fixed-rows` | keeps a row of `--max-seq` positions for each request instead of pages; each step then reads every row whole, which a GPU short of bandwidth pays for (Llama 3.1 8B on a GB10: 8.4 tokens per second against 14 from pages) |
-| `--backend jax`, `--backend onnx` | serves through that runtime instead of PyTorch |
+| `--backend jax`, `--backend onnx`, `--backend mlx` | serves through that runtime instead of PyTorch ([MLX](mlx.md)) |
 | `--tokenizer` | the tokenizer and chat template's repository (default: the card's checkpoint repository) |
 | `--warmup 128 512` | compiles the passes those prompt lengths need before the first request, others when first seen (by default every pass size) |
 | `--plans` | runs the step and packed passes as plans over the backends found, planned while warming up |
@@ -259,6 +259,7 @@ MODEL=all-MiniLM-L6-v2 docker compose -f docker/compose.yaml up
 | `torch-cpu` | PyTorch on the CPU |
 | `jax-cuda13`, `jax-cuda12`, `jax-cpu` | `--backend jax` |
 | `onnx-cuda13`, `onnx-cpu` | `--backend onnx` on ONNX Runtime |
+| `mlx-cuda13`, `mlx-cpu` | `--backend mlx` |
 | `triton`, `vllm` | Triton Inference Server or vLLM, serving the model's export (below) |
 
 Arguments after the image are `linnet serve`'s; `--host 0.0.0.0` is given.
@@ -270,7 +271,7 @@ images take a model and the server's own arguments, export the model into
 options, such as `--bind S=128`), and serve that.
 
 Apple silicon has no container image: Docker on macOS reaches no GPU, so
-there `linnet serve` runs as installed.
+there `linnet serve` runs as installed, on Metal with `--backend mlx`.
 
 ## Triton Inference Server
 

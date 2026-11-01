@@ -11,6 +11,7 @@ an embedding model: it is served at `/v1/embeddings` instead (see
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -52,6 +53,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         # ^C, while loading or serving: said, not a traceback.
         print("\nexiting...", file=sys.stderr, flush=True)
+        if "mlx.core" in sys.modules:
+            # MLX's CUDA backend (0.32) may abort while the interpreter
+            # frees arrays another thread computed: there is nothing left to
+            # save, so the process ends here.
+            sys.stdout.flush()
+            os._exit(0)
         return 0
 
 
